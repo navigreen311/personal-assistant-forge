@@ -2,11 +2,17 @@
   "name": "personal-assistant-forge",
   "version": "0.1.0",
   "private": true,
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:seed": "npx prisma db seed",
+    "db:reset": "npx prisma migrate reset --force",
+    "db:generate": "npx prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^7.4.0",
