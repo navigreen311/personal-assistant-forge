@@ -7,8 +7,8 @@ const UpdateRuleSchema = z.object({
   name: z.string().min(1).optional(),
   scope: z.enum(['GLOBAL', 'ENTITY', 'PROJECT', 'CONTACT', 'CHANNEL']).optional(),
   entityId: z.string().optional(),
-  condition: z.record(z.unknown()).optional(),
-  action: z.record(z.unknown()).optional(),
+  condition: z.record(z.string(), z.unknown()).optional(),
+  action: z.record(z.string(), z.unknown()).optional(),
   precedence: z.number().int().min(0).optional(),
   isActive: z.boolean().optional(),
 });

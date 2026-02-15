@@ -32,14 +32,14 @@ export async function detectCorrectionPattern(
 
   for (const log of corrections) {
     const key = `${log.target}:${log.actionType}`;
-    const group = patternGroups.get(key) ?? {
-      target: log.target,
-      actionType: log.actionType,
+    const group: { target: string; actionType: string; count: number; reasons: string[] } = patternGroups.get(key) ?? {
+      target: log.target as string,
+      actionType: log.actionType as string,
       count: 0,
-      reasons: [],
+      reasons: [] as string[],
     };
     group.count++;
-    if (log.reason) group.reasons.push(log.reason);
+    if (log.reason) group.reasons.push(log.reason as string);
     patternGroups.set(key, group);
   }
 

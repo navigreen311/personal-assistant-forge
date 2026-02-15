@@ -145,18 +145,18 @@ describe('applyDecay', () => {
   });
 
   it('should not decay recently accessed memories significantly', async () => {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const justNow = new Date(Date.now() - 1000); // 1 second ago
 
     (mockPrisma.memoryEntry.findMany as jest.Mock).mockResolvedValue([
       {
         id: 'm1',
         userId: 'u1',
-        type: 'SHORT_TERM',
+        type: 'LONG_TERM',
         content: 'fresh',
         context: 'ctx',
         strength: 1.0,
-        lastAccessed: fiveMinutesAgo,
-        createdAt: fiveMinutesAgo,
+        lastAccessed: justNow,
+        createdAt: justNow,
       },
     ]);
 

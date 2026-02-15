@@ -4,7 +4,7 @@ import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, getWinningAction } from '@/engines/policy/rule-engine';
 
 const EvaluateSchema = z.object({
-  context: z.record(z.unknown()),
+  context: z.record(z.string(), z.unknown()),
   entityId: z.string().optional(),
 });
 

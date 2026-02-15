@@ -63,10 +63,11 @@ export async function searchMemories(
   // Text-based relevance scoring
   const queryTerms = query.query.toLowerCase().split(/\s+/).filter(Boolean);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results: MemorySearchResult[] = entries
-    .map((entry) => {
-      const contentLower = entry.content.toLowerCase();
-      const contextLower = entry.context.toLowerCase();
+    .map((entry: any) => {
+      const contentLower = (entry.content as string).toLowerCase();
+      const contextLower = (entry.context as string).toLowerCase();
       const matchedTerms: string[] = [];
       let matchCount = 0;
 
@@ -81,7 +82,7 @@ export async function searchMemories(
 
       if (matchedTerms.length === 0) return null;
 
-      const relevanceScore = matchCount * entry.strength;
+      const relevanceScore = matchCount * (entry.strength as number);
 
       return {
         entry: mapPrismaMemory(entry),
@@ -89,8 +90,8 @@ export async function searchMemories(
         matchedTerms,
       };
     })
-    .filter((r): r is MemorySearchResult => r !== null)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+    .filter((r: MemorySearchResult | null): r is MemorySearchResult => r !== null)
+    .sort((a: MemorySearchResult, b: MemorySearchResult) => b.relevanceScore - a.relevanceScore);
 
   return query.limit ? results.slice(0, query.limit) : results;
 }

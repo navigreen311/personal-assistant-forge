@@ -37,7 +37,8 @@ export async function evaluateRules(
     orderBy: { precedence: 'desc' },
   });
 
-  return rules.map((rule) => evaluateSingleRule(rule, context));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return rules.map((rule: any) => evaluateSingleRule(rule, context));
 }
 
 function evaluateSingleRule(
@@ -299,8 +300,9 @@ export async function getInheritedRules(
   const ruleMap = new Map<string, Rule>();
 
   // Sort by scope breadth (GLOBAL first, CONTACT last)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sortedRules = rules.sort(
-    (a, b) => SCOPE_PRIORITY[a.scope as RuleScope] - SCOPE_PRIORITY[b.scope as RuleScope]
+    (a: any, b: any) => SCOPE_PRIORITY[a.scope as RuleScope] - SCOPE_PRIORITY[b.scope as RuleScope]
   );
 
   for (const raw of sortedRules) {

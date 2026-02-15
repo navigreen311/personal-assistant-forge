@@ -4,7 +4,7 @@ import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, resolveConflicts } from '@/engines/policy/rule-engine';
 
 const ConflictsSchema = z.object({
-  context: z.record(z.unknown()),
+  context: z.record(z.string(), z.unknown()),
   entityId: z.string().optional(),
 });
 

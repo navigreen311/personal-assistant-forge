@@ -29,15 +29,15 @@ export async function explainAction(actionId: string): Promise<ExplainResponse> 
     take: 10,
   });
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rulesApplied = rules
-    .filter((r) => {
-      // Check if the rule's action type matches the action log's action type
+    .filter((r: any) => {
       const ruleAction = r.action as Record<string, unknown>;
       return ruleAction?.type === actionLog.actionType;
     })
-    .map((r) => ({
-      ruleId: r.id,
-      ruleName: r.name,
+    .map((r: any) => ({
+      ruleId: r.id as string,
+      ruleName: r.name as string,
       matchReason: `Rule action type matches action "${actionLog.actionType}"`,
     }));
 

@@ -46,7 +46,8 @@ export async function getRecentReceipts(
     take: limit * 2, // fetch extra to account for actions without receipts
   });
 
-  const actionIds = actionLogs.map((a) => a.id);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const actionIds = actionLogs.map((a: any) => a.id as string);
 
   const receipts = await prisma.consentReceipt.findMany({
     where: { actionId: { in: actionIds } },

@@ -48,10 +48,11 @@ export async function recallEpisode(
     ? getQuarterMonths(parseInt(quarterMatch[1]))
     : null;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results: MemorySearchResult[] = episodes
-    .map((entry) => {
-      const contentLower = entry.content.toLowerCase();
-      const contextLower = entry.context.toLowerCase();
+    .map((entry: any) => {
+      const contentLower = (entry.content as string).toLowerCase();
+      const contextLower = (entry.context as string).toLowerCase();
       const matchedTerms: string[] = [];
       let score = 0;
 
@@ -68,7 +69,7 @@ export async function recallEpisode(
 
       // Boost score for date-range matches
       if (quarterMonths) {
-        const month = entry.createdAt.getMonth();
+        const month = (entry.createdAt as Date).getMonth();
         if (quarterMonths.includes(month)) {
           score += 3;
           matchedTerms.push(`Q${quarterMatch![1]}`);
@@ -79,12 +80,12 @@ export async function recallEpisode(
 
       return {
         entry: mapPrismaMemory(entry),
-        relevanceScore: score * entry.strength,
+        relevanceScore: score * (entry.strength as number),
         matchedTerms,
       };
     })
-    .filter((r): r is MemorySearchResult => r !== null)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+    .filter((r: MemorySearchResult | null): r is MemorySearchResult => r !== null)
+    .sort((a: MemorySearchResult, b: MemorySearchResult) => b.relevanceScore - a.relevanceScore);
 
   return results;
 }

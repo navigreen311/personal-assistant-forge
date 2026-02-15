@@ -29,14 +29,17 @@ export async function GET(
     });
 
     // Get associated consent receipts
-    const actionIds = actionLogs.map((l) => l.id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const actionIds = actionLogs.map((l: any) => l.id as string);
     const receipts = await prisma.consentReceipt.findMany({
       where: { actionId: { in: actionIds } },
     });
 
-    const receiptMap = new Map(receipts.map((r) => [r.actionId, r]));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const receiptMap = new Map(receipts.map((r: any) => [r.actionId as string, r]));
 
-    const auditEntries = actionLogs.map((log) => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const auditEntries = actionLogs.map((log: any) => ({
       actionId: log.id,
       timestamp: log.timestamp,
       actor: log.actor,
