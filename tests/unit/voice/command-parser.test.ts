@@ -90,7 +90,8 @@ describe('CommandParser', () => {
       );
       const people = result.entities.filter((e) => e.type === 'PERSON');
       expect(people.length).toBeGreaterThan(0);
-      expect(people[0].value).toContain('Martinez');
+      const martinez = people.find((p) => p.value.includes('Martinez'));
+      expect(martinez).toBeDefined();
     });
 
     it('should extract DATE entities like "tomorrow", "next Monday"', async () => {

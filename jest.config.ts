@@ -6,6 +6,7 @@ const config: Config = {
   roots: ['<rootDir>/tests', '<rootDir>/src'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    '^uuid$': '<rootDir>/tests/__mocks__/uuid.ts',
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.json' }],

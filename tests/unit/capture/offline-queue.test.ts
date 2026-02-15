@@ -146,7 +146,7 @@ describe('OfflineQueue', () => {
       // Sync again to verify retry count increment
       await queue.syncQueue();
       const items = queue.getQueuedItems();
-      expect((items[0] as Record<string, unknown>)['retryCount']).toBe(2);
+      expect((items[0] as unknown as Record<string, unknown>)['retryCount']).toBe(2);
     });
 
     it('should return all failed when no processor is set', async () => {

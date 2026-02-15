@@ -158,23 +158,42 @@ function extractEntities(transcript: string): ExtractedEntity[] {
   }
 
   // Person entities — "with [Name]", "to [Name]", "call [Name]"
-  const personPatterns = [
-    /(?:with|to|from|call|contact|email|message)\s+(?:dr\.?\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-  ];
-  for (const pattern of personPatterns) {
-    let personMatch: RegExpExecArray | null;
-    const personRe = new RegExp(pattern.source, pattern.flags);
-    while ((personMatch = personRe.exec(transcript)) !== null) {
-      const name = personMatch[1];
-      // Skip common non-name words
-      const skipWords = new Set(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
-      if (!skipWords.has(name)) {
-        entities.push({
-          type: 'PERSON',
-          value: name,
-          confidence: 0.7,
-        });
-      }
+  // First: match "Dr. Name" patterns (must come first to avoid partial matches)
+  const drPattern = /(?:with|to|from|call|contact|email|message)\s+(?:Dr\.?\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g;
+  const drRe = new RegExp(drPattern.source, drPattern.flags);
+  let drMatch: RegExpExecArray | null;
+  const drMatchedRanges: Array<[number, number]> = [];
+  while ((drMatch = drRe.exec(transcript)) !== null) {
+    const name = `Dr. ${drMatch[1]}`;
+    drMatchedRanges.push([drMatch.index, drMatch.index + drMatch[0].length]);
+    entities.push({
+      type: 'PERSON',
+      value: name,
+      confidence: 0.75,
+    });
+  }
+
+  // Then: match plain "Name" patterns, skipping ranges already matched
+  const plainPattern = /(?:with|to|from|call|contact|email|message)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g;
+  const plainRe = new RegExp(plainPattern.source, plainPattern.flags);
+  let personMatch: RegExpExecArray | null;
+  while ((personMatch = plainRe.exec(transcript)) !== null) {
+    const matchStart = personMatch.index;
+    const matchEnd = matchStart + personMatch[0].length;
+    // Skip if this overlaps with a Dr. match
+    const overlaps = drMatchedRanges.some(
+      ([s, e]) => matchStart >= s && matchStart < e,
+    );
+    if (overlaps) continue;
+
+    const name = personMatch[1];
+    const skipWords = new Set(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+    if (!skipWords.has(name)) {
+      entities.push({
+        type: 'PERSON',
+        value: name,
+        confidence: 0.7,
+      });
     }
   }
 
