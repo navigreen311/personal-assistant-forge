@@ -1,5 +1,5 @@
 import type { TimeSavedEntry, TimeSavedSummary } from './types';
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => crypto.randomUUID();
 
 // In-memory store
 const timeSavedEntries: TimeSavedEntry[] = [];

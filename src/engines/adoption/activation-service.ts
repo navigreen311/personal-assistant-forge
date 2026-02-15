@@ -1,5 +1,5 @@
 import type { ActivationChecklist, ActivationPhase, ActivationTask } from './types';
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => crypto.randomUUID();
 
 // In-memory checklist store
 const checklists = new Map<string, ActivationChecklist>();

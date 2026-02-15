@@ -1,5 +1,5 @@
 import type { Playbook } from './types';
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => crypto.randomUUID();
 
 // In-memory store for user activations
 const userActivations = new Map<string, Set<string>>();

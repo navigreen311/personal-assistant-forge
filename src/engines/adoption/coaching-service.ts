@@ -1,5 +1,5 @@
 import type { CoachingRecommendation } from './types';
-import { v4 as uuidv4 } from 'uuid';
+const uuidv4 = () => crypto.randomUUID();
 
 // In-memory recommendation store
 const recommendations = new Map<string, CoachingRecommendation[]>();

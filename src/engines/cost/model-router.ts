@@ -46,7 +46,7 @@ function classifyComplexity(inputText: string, taskType?: string): 'SIMPLE' | 'M
     'multi-step', 'step by step', 'comprehensive',
   ];
   const hasComplexIndicator = complexIndicators.some(ind => lower.includes(ind));
-  if (hasComplexIndicator && tokenCount > 200) return 'COMPLEX';
+  if (hasComplexIndicator && tokenCount > 150) return 'COMPLEX';
   if (hasComplexIndicator) return 'MODERATE';
 
   return 'MODERATE';
