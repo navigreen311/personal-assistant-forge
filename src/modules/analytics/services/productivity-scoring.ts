@@ -22,7 +22,7 @@ export async function calculateProductivityScore(
     where: { id: userId },
     include: { entities: { select: { id: true } } },
   });
-  const entityIds = user?.entities.map((e) => e.id) ?? [];
+  const entityIds = user?.entities.map((e: any) => e.id) ?? [];
 
   // Dimension 1: High Priority Completion (P0/P1 tasks completed on time)
   const highPriTasks = await prisma.task.findMany({
@@ -33,7 +33,7 @@ export async function calculateProductivityScore(
     },
   });
   const completedOnTime = highPriTasks.filter(
-    (t) =>
+    (t: any) =>
       t.status === 'DONE' &&
       (!t.dueDate || t.updatedAt <= t.dueDate)
   ).length;
@@ -79,14 +79,14 @@ export async function calculateProductivityScore(
       createdAt: { gte: weekStart, lte: dayEnd },
     },
   });
-  const doneWeekTasks = allWeekTasks.filter((t) => t.status === 'DONE').length;
+  const doneWeekTasks = allWeekTasks.filter((t: any) => t.status === 'DONE').length;
   const goalProgress =
     allWeekTasks.length > 0
       ? Math.round((doneWeekTasks / allWeekTasks.length) * 100)
       : 100;
 
   // Dimension 4: Meeting Efficiency (prep-to-meeting ratio, higher = better)
-  const eventsWithPrep = events.filter((e) => e.prepPacket !== null);
+  const eventsWithPrep = events.filter((e: any) => e.prepPacket !== null);
   const meetingEfficiency =
     events.length > 0
       ? Math.min(100, Math.round((eventsWithPrep.length / events.length) * 100))

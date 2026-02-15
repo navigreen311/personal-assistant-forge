@@ -16,7 +16,7 @@ export async function calculateAccuracyMetrics(
     },
   });
   const triageOverrides = triageActions.filter(
-    (a) => a.status === 'ROLLED_BACK'
+    (a: any) => a.status === 'ROLLED_BACK'
   ).length;
   const triageAccuracy =
     triageActions.length > 0
@@ -31,9 +31,9 @@ export async function calculateAccuracyMetrics(
       createdAt: { gte: startDate, lte: endDate },
     },
   });
-  const drafts = messages.filter((m) => m.draftStatus !== null);
+  const drafts = messages.filter((m: any) => m.draftStatus !== null);
   const approved = drafts.filter(
-    (m) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
+    (m: any) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
   ).length;
   const draftApprovalRate =
     drafts.length > 0 ? Math.round((approved / drafts.length) * 100) : 100;
@@ -48,7 +48,7 @@ export async function calculateAccuracyMetrics(
     },
   });
   const onTime = tasks.filter(
-    (t) => t.dueDate && t.updatedAt <= t.dueDate
+    (t: any) => t.dueDate && t.updatedAt <= t.dueDate
   ).length;
   const predictionAccuracy =
     tasks.length > 0 ? Math.round((onTime / tasks.length) * 100) : 100;
@@ -63,7 +63,7 @@ export async function calculateAccuracyMetrics(
   const automationSuccess =
     workflows.length > 0
       ? Math.round(
-          workflows.reduce((sum, w) => sum + w.successRate, 0) / workflows.length
+          workflows.reduce((sum: number, w: any) => sum + w.successRate, 0) / workflows.length
         )
       : 100;
 

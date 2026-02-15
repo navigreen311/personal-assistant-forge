@@ -65,12 +65,15 @@ describe('updateGoalProgress', () => {
       startDate: new Date('2026-01-01'),
       endDate: new Date('2026-12-31'),
       autoProgress: true,
-      linkedTaskIds: ['task1'],
+      linkedTaskIds: ['task1', 'task2', 'task3'],
       linkedWorkflowIds: [],
     });
 
+    // 2 out of 3 = 67% progress, only ~13% of time elapsed -> ON_TRACK
     prisma.task.findMany.mockResolvedValueOnce([
       { id: 'task1', status: 'DONE' },
+      { id: 'task2', status: 'DONE' },
+      { id: 'task3', status: 'TODO' },
     ]);
 
     const updated = await updateGoalProgress(goal.id);

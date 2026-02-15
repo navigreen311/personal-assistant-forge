@@ -16,16 +16,16 @@ export async function getCallAnalytics(
   const totalCalls = calls.length;
 
   // Connect rate: calls with outcome CONNECTED / total calls
-  const connected = calls.filter((c) => c.outcome === 'CONNECTED').length;
+  const connected = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
   const connectRate =
     totalCalls > 0 ? Math.round((connected / totalCalls) * 100) : 0;
 
   // Average duration (seconds)
-  const callsWithDuration = calls.filter((c) => c.duration != null);
+  const callsWithDuration = calls.filter((c: any) => c.duration != null);
   const averageDuration =
     callsWithDuration.length > 0
       ? Math.round(
-          callsWithDuration.reduce((sum, c) => sum + (c.duration ?? 0), 0) /
+          callsWithDuration.reduce((sum: number, c: any) => sum + (c.duration ?? 0), 0) /
             callsWithDuration.length
         )
       : 0;
@@ -38,12 +38,12 @@ export async function getCallAnalytics(
   }
 
   // Sentiment average
-  const callsWithSentiment = calls.filter((c) => c.sentiment != null);
+  const callsWithSentiment = calls.filter((c: any) => c.sentiment != null);
   const sentimentAverage =
     callsWithSentiment.length > 0
       ? Math.round(
           (callsWithSentiment.reduce(
-            (sum, c) => sum + (c.sentiment ?? 0),
+            (sum: number, c: any) => sum + (c.sentiment ?? 0), 
             0
           ) /
             callsWithSentiment.length) *
@@ -119,7 +119,7 @@ export async function getCallTrend(
       },
     });
 
-    const connected = calls.filter((c) => c.outcome === 'CONNECTED').length;
+    const connected = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
     const connectRate =
       calls.length > 0 ? Math.round((connected / calls.length) * 100) : 0;
 

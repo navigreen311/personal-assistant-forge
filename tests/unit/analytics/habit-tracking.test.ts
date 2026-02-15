@@ -1,7 +1,7 @@
-import {
-  calculateStreak,
-  pearsonCorrelation,
-} from '@/modules/analytics/services/habit-tracking-service';
+// Mock uuid before importing service
+jest.mock('uuid', () => ({
+  v4: jest.fn().mockReturnValue('test-uuid'),
+}));
 
 // Mock prisma and productivity scoring
 jest.mock('@/lib/db', () => ({
@@ -12,6 +12,11 @@ jest.mock('@/lib/db', () => ({
     message: { findMany: jest.fn() },
   },
 }));
+
+import {
+  calculateStreak,
+  pearsonCorrelation,
+} from '@/modules/analytics/services/habit-tracking-service';
 
 describe('calculateStreak', () => {
   it('should return 0 for empty history', () => {

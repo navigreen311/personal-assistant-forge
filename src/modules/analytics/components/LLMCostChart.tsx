@@ -45,7 +45,7 @@ export default function LLMCostChart({ dashboard }: Props) {
                   <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} />
+              <Tooltip formatter={(value: unknown) => `$${typeof value === 'number' ? value.toFixed(2) : String(value)}`} />
             </PieChart>
           </ResponsiveContainer>
         </div>

@@ -40,8 +40,8 @@ export default function HabitCorrelationChart({ correlations }: Props) {
                 name="Correlation"
               />
               <Tooltip
-                formatter={(value: number) => value.toFixed(3)}
-                labelFormatter={(label: string) => `Metric: ${label}`}
+                formatter={(value: unknown) => typeof value === 'number' ? value.toFixed(3) : String(value)}
+                labelFormatter={(label: unknown) => `Metric: ${String(label)}`}
               />
               <Scatter data={data} fill="#8b5cf6" />
             </ScatterChart>

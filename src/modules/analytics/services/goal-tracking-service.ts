@@ -40,7 +40,7 @@ export async function updateGoalProgress(
     const tasks = await prisma.task.findMany({
       where: { id: { in: goal.linkedTaskIds } },
     });
-    const completedCount = tasks.filter((t) => t.status === 'DONE').length;
+    const completedCount = tasks.filter((t: any) => t.status === 'DONE').length;
     const totalCount = tasks.length;
     goal.currentValue =
       totalCount > 0
@@ -54,7 +54,7 @@ export async function updateGoalProgress(
       where: { id: { in: goal.linkedWorkflowIds } },
     });
     const avgSuccessRate =
-      workflows.reduce((sum, w) => sum + w.successRate, 0) / workflows.length;
+      workflows.reduce((sum: number, w: any) => sum + w.successRate, 0) / workflows.length;
     // Blend workflow success rate with current value
     if (goal.linkedTaskIds.length === 0) {
       goal.currentValue = Math.round(
