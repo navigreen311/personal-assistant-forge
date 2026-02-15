@@ -1,0 +1,213 @@
+import type { Budget, BudgetCategory } from '@/modules/finance/types';
+
+const mockPrisma = {
+  document: {
+    create: jest.fn(),
+    findUniqueOrThrow: jest.fn(),
+  },
+  financialRecord: {
+    findMany: jest.fn(),
+  },
+};
+
+jest.mock('@/lib/db', () => ({
+  prisma: mockPrisma,
+}));
+
+import {
+  createBudget,
+  getBudgetWithActuals,
+  checkBudgetAlerts,
+  forecastSpending,
+} from '@/modules/finance/services/budget-service';
+
+describe('Budget Service', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('createBudget', () => {
+    it('should calculate totalBudgeted from categories', async () => {
+      mockPrisma.document.create.mockResolvedValue({
+        id: 'budget-1',
+        entityId: 'entity-1',
+        title: 'Q1 Budget',
+        content: JSON.stringify({
+          periodStart: '2026-01-01',
+          periodEnd: '2026-03-31',
+          categories: [],
+          totalBudgeted: 5000,
+          totalSpent: 0,
+          remainingBudget: 5000,
+          status: 'DRAFT',
+        }),
+      });
+
+      const result = await createBudget({
+        entityId: 'entity-1',
+        name: 'Q1 Budget',
+        period: { start: new Date('2026-01-01'), end: new Date('2026-03-31') },
+        categories: [
+          { category: 'Software', budgeted: 2000, spent: 0, remaining: 2000, percentUsed: 0, forecast: 0, alert: null },
+          { category: 'Travel', budgeted: 3000, spent: 0, remaining: 3000, percentUsed: 0, forecast: 0, alert: null },
+        ],
+        totalBudgeted: 5000,
+        status: 'DRAFT',
+      });
+
+      expect(result.totalBudgeted).toBeCloseTo(5000, 2);
+      expect(result.totalSpent).toBe(0);
+      expect(result.remainingBudget).toBeCloseTo(5000, 2);
+    });
+  });
+
+  describe('getBudgetWithActuals', () => {
+    it('should enrich categories with actual spend and calculate alerts', async () => {
+      mockPrisma.document.findUniqueOrThrow.mockResolvedValue({
+        id: 'budget-1',
+        entityId: 'entity-1',
+        title: 'Q1 Budget',
+        content: JSON.stringify({
+          periodStart: '2026-01-01T00:00:00.000Z',
+          periodEnd: '2026-03-31T23:59:59.999Z',
+          categories: [
+            { category: 'Software', budgeted: 1000, spent: 0, remaining: 1000, percentUsed: 0, forecast: 0, alert: null },
+            { category: 'Travel', budgeted: 2000, spent: 0, remaining: 2000, percentUsed: 0, forecast: 0, alert: null },
+            { category: 'Marketing', budgeted: 500, spent: 0, remaining: 500, percentUsed: 0, forecast: 0, alert: null },
+          ],
+          totalBudgeted: 3500,
+          totalSpent: 0,
+          remainingBudget: 3500,
+          status: 'ACTIVE',
+        }),
+      });
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { category: 'Software', amount: 850, type: 'EXPENSE' },   // 85% of $1000 -> WARNING
+        { category: 'Travel', amount: 2100, type: 'EXPENSE' },    // 105% of $2000 -> OVER_BUDGET
+        { category: 'Marketing', amount: 200, type: 'EXPENSE' },  // 40% of $500 -> ON_TRACK
+      ]);
+
+      const result = await getBudgetWithActuals('budget-1');
+
+      const software = result.categories.find((c) => c.category === 'Software')!;
+      expect(software.spent).toBeCloseTo(850, 2);
+      expect(software.percentUsed).toBeCloseTo(85, 2);
+      expect(software.alert).toBe('WARNING');
+
+      const travel = result.categories.find((c) => c.category === 'Travel')!;
+      expect(travel.spent).toBeCloseTo(2100, 2);
+      expect(travel.percentUsed).toBeCloseTo(105, 2);
+      expect(travel.alert).toBe('OVER_BUDGET');
+
+      const marketing = result.categories.find((c) => c.category === 'Marketing')!;
+      expect(marketing.spent).toBeCloseTo(200, 2);
+      expect(marketing.percentUsed).toBeCloseTo(40, 2);
+      expect(marketing.alert).toBe('ON_TRACK');
+
+      expect(result.totalSpent).toBeCloseTo(3150, 2);
+      expect(result.remainingBudget).toBeCloseTo(350, 2);
+    });
+
+    it('should fire alerts at 80% threshold', async () => {
+      mockPrisma.document.findUniqueOrThrow.mockResolvedValue({
+        id: 'budget-2',
+        entityId: 'entity-1',
+        title: 'Budget',
+        content: JSON.stringify({
+          periodStart: '2026-01-01T00:00:00.000Z',
+          periodEnd: '2026-03-31T23:59:59.999Z',
+          categories: [
+            { category: 'Test', budgeted: 1000, spent: 0, remaining: 1000, percentUsed: 0, forecast: 0, alert: null },
+          ],
+          totalBudgeted: 1000,
+          totalSpent: 0,
+          remainingBudget: 1000,
+          status: 'ACTIVE',
+        }),
+      });
+
+      // Exactly 80% = WARNING
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { category: 'Test', amount: 800, type: 'EXPENSE' },
+      ]);
+
+      const result = await getBudgetWithActuals('budget-2');
+      expect(result.categories[0].alert).toBe('WARNING');
+    });
+
+    it('should fire OVER_BUDGET at 100% threshold', async () => {
+      mockPrisma.document.findUniqueOrThrow.mockResolvedValue({
+        id: 'budget-3',
+        entityId: 'entity-1',
+        title: 'Budget',
+        content: JSON.stringify({
+          periodStart: '2026-01-01T00:00:00.000Z',
+          periodEnd: '2026-03-31T23:59:59.999Z',
+          categories: [
+            { category: 'Test', budgeted: 1000, spent: 0, remaining: 1000, percentUsed: 0, forecast: 0, alert: null },
+          ],
+          totalBudgeted: 1000,
+          totalSpent: 0,
+          remainingBudget: 1000,
+          status: 'ACTIVE',
+        }),
+      });
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { category: 'Test', amount: 1000, type: 'EXPENSE' },
+      ]);
+
+      const result = await getBudgetWithActuals('budget-3');
+      expect(result.categories[0].alert).toBe('OVER_BUDGET');
+    });
+  });
+
+  describe('checkBudgetAlerts', () => {
+    it('should return only categories at or above 80%', async () => {
+      mockPrisma.document.findUniqueOrThrow.mockResolvedValue({
+        id: 'budget-4',
+        entityId: 'entity-1',
+        title: 'Budget',
+        content: JSON.stringify({
+          periodStart: '2026-01-01T00:00:00.000Z',
+          periodEnd: '2026-03-31T23:59:59.999Z',
+          categories: [
+            { category: 'Low', budgeted: 1000, spent: 0, remaining: 1000, percentUsed: 0, forecast: 0, alert: null },
+            { category: 'High', budgeted: 1000, spent: 0, remaining: 1000, percentUsed: 0, forecast: 0, alert: null },
+          ],
+          totalBudgeted: 2000,
+          totalSpent: 0,
+          remainingBudget: 2000,
+          status: 'ACTIVE',
+        }),
+      });
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { category: 'Low', amount: 300, type: 'EXPENSE' },   // 30%
+        { category: 'High', amount: 900, type: 'EXPENSE' },  // 90%
+      ]);
+
+      const alerts = await checkBudgetAlerts('budget-4');
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].category).toBe('High');
+    });
+  });
+
+  describe('forecastSpending', () => {
+    it('should calculate historical monthly average', async () => {
+      // Mock 3 months of data: $1000, $1200, $800
+      mockPrisma.financialRecord.findMany
+        .mockResolvedValueOnce([{ amount: 1000 }])  // month 3 ago
+        .mockResolvedValueOnce([{ amount: 1200 }])  // month 2 ago
+        .mockResolvedValueOnce([{ amount: 800 }])   // month 1 ago
+        .mockResolvedValueOnce([{ amount: 500 }]);   // current month so far
+
+      const forecast = await forecastSpending('entity-1', 'Software', 3);
+
+      expect(forecast.category).toBe('Software');
+      expect(forecast.historicalMonthlyAvg).toBeCloseTo(1000, 2);
+      expect(forecast.confidence).toBeGreaterThan(0);
+    });
+  });
+});
