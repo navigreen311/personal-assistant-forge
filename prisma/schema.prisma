@@ -1,0 +1,337 @@
+// PersonalAssistantForge — Database Schema
+// All 14 core entities + cross-cutting tables
+// Workers: DO NOT modify existing models. Only ADD fields/models in your domain.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// === CORE ENTITIES ===
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  preferences  Json     @default("{}")
+  timezone     String   @default("America/Chicago")
+  chronotype   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entities     Entity[]
+  tasks        Task[]     @relation("TaskAssignee")
+  actionLogs   ActionLog[]
+  memories     MemoryEntry[]
+}
+
+model Entity {
+  id                String   @id @default(cuid())
+  userId            String
+  name              String
+  type              String   @default("Personal")
+  complianceProfile String[] @default([])
+  brandKit          Json?
+  voicePersonaId    String?
+  phoneNumbers      String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user              User     @relation(fields: [userId], references: [id])
+  contacts          Contact[]
+  tasks             Task[]
+  projects          Project[]
+  events            CalendarEvent[]
+  messages          Message[]
+  documents         Document[]
+  knowledgeEntries  KnowledgeEntry[]
+  workflows         Workflow[]
+  calls             Call[]
+  rules             Rule[]
+  financialRecords  FinancialRecord[]
+
+  @@index([userId])
+}
+
+model Contact {
+  id                String   @id @default(cuid())
+  entityId          String
+  name              String
+  email             String?
+  phone             String?
+  channels          Json     @default("[]")
+  relationshipScore Int      @default(50)
+  lastTouch         DateTime?
+  commitments       Json     @default("[]")
+  preferences       Json     @default("{}")
+  tags              String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  entity            Entity   @relation(fields: [entityId], references: [id])
+  messages          Message[] @relation("ContactMessages")
+  calls             Call[]
+
+  @@index([entityId])
+  @@index([email])
+}
+
+model Task {
+  id           String   @id @default(cuid())
+  title        String
+  description  String?
+  entityId     String
+  projectId    String?
+  priority     String   @default("P1")
+  status       String   @default("TODO")
+  dueDate      DateTime?
+  dependencies String[] @default([])
+  assigneeId   String?
+  createdFrom  Json?
+  tags         String[] @default([])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entity       Entity   @relation(fields: [entityId], references: [id])
+  project      Project? @relation(fields: [projectId], references: [id])
+  assignee     User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+
+  @@index([entityId])
+  @@index([projectId])
+  @@index([status])
+  @@index([priority])
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  entityId    String
+  description String?
+  milestones  Json     @default("[]")
+  status      String   @default("TODO")
+  health      String   @default("GREEN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity      Entity   @relation(fields: [entityId], references: [id])
+  tasks       Task[]
+
+  @@index([entityId])
+}
+
+model CalendarEvent {
+  id            String   @id @default(cuid())
+  title         String
+  entityId      String
+  participantIds String[] @default([])
+  startTime     DateTime
+  endTime       DateTime
+  bufferBefore  Int?
+  bufferAfter   Int?
+  prepPacket    Json?
+  meetingNotes  String?
+  recurrence    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  entity        Entity   @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+  @@index([startTime])
+}
+
+model Message {
+  id           String   @id @default(cuid())
+  channel      String
+  senderId     String
+  recipientId  String
+  entityId     String
+  threadId     String?
+  subject      String?
+  body         String
+  triageScore  Int      @default(5)
+  intent       String?
+  sensitivity  String   @default("INTERNAL")
+  draftStatus  String?
+  attachments  Json     @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  entity       Entity   @relation(fields: [entityId], references: [id])
+  contact      Contact? @relation("ContactMessages", fields: [senderId], references: [id])
+
+  @@index([entityId])
+  @@index([threadId])
+  @@index([triageScore])
+}
+
+model Document {
+  id         String   @id @default(cuid())
+  title      String
+  entityId   String
+  type       String
+  version    Int      @default(1)
+  templateId String?
+  citations  Json     @default("[]")
+  content    String?
+  status     String   @default("DRAFT")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  entity     Entity   @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+  @@index([type])
+}
+
+model KnowledgeEntry {
+  id             String   @id @default(cuid())
+  content        String
+  tags           String[] @default([])
+  entityId       String
+  source         String
+  linkedEntities String[] @default([])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  entity         Entity   @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+}
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  entityId    String
+  triggers    Json     @default("[]")
+  steps       Json     @default("[]")
+  status      String   @default("DRAFT")
+  lastRun     DateTime?
+  successRate Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity      Entity   @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+  @@index([status])
+}
+
+model Call {
+  id          String   @id @default(cuid())
+  entityId    String
+  contactId   String?
+  direction   String
+  personaId   String?
+  scriptId    String?
+  outcome     String?
+  transcript  String?
+  recordingUrl String?
+  sentiment   Float?
+  duration    Int?
+  actionItems Json     @default("[]")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity      Entity   @relation(fields: [entityId], references: [id])
+  contact     Contact? @relation(fields: [contactId], references: [id])
+
+  @@index([entityId])
+  @@index([contactId])
+}
+
+model Rule {
+  id         String   @id @default(cuid())
+  name       String
+  scope      String   @default("GLOBAL")
+  entityId   String?
+  condition  Json
+  action     Json
+  precedence Int      @default(0)
+  createdBy  String   @default("HUMAN")
+  version    Int      @default(1)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  entity     Entity?  @relation(fields: [entityId], references: [id])
+
+  @@index([scope])
+  @@index([isActive])
+}
+
+model ActionLog {
+  id           String   @id @default(cuid())
+  actor        String
+  actorId      String?
+  actionType   String
+  target       String
+  reason       String
+  blastRadius  String   @default("LOW")
+  reversible   Boolean  @default(true)
+  rollbackPath String?
+  status       String   @default("PENDING")
+  cost         Float?
+  timestamp    DateTime @default(now())
+
+  user         User?    @relation(fields: [actorId], references: [id])
+
+  @@index([actor])
+  @@index([actionType])
+  @@index([timestamp])
+}
+
+model FinancialRecord {
+  id          String   @id @default(cuid())
+  entityId    String
+  type        String
+  amount      Float
+  currency    String   @default("USD")
+  status      String   @default("PENDING")
+  dueDate     DateTime?
+  category    String
+  vendor      String?
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity      Entity   @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+  @@index([type])
+  @@index([status])
+}
+
+model ConsentReceipt {
+  id          String   @id @default(cuid())
+  actionId    String
+  description String
+  reason      String
+  impacted    String[] @default([])
+  reversible  Boolean  @default(true)
+  rollbackLink String?
+  confidence  Float    @default(0.5)
+  timestamp   DateTime @default(now())
+
+  @@index([actionId])
+}
+
+model MemoryEntry {
+  id           String   @id @default(cuid())
+  userId       String
+  type         String
+  content      String
+  context      String
+  strength     Float    @default(1.0)
+  lastAccessed DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([type])
+}
