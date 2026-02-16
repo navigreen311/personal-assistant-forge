@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import { differenceInDays } from 'date-fns';
 import type { MessageChannel, Tone } from '@/shared/types';
 import type {
@@ -202,6 +203,112 @@ export async function suggestReengagement(contactId: string): Promise<Reengageme
     bestChannel: preferredChannel,
     bestTime: '10:00 AM (recipient timezone)',
   };
+}
+
+/**
+ * Get AI-powered insights for a contact relationship.
+ */
+export async function getRelationshipInsights(contactId: string): Promise<{
+  healthScore: number;
+  riskFactors: string[];
+  opportunities: string[];
+  suggestedActions: string[];
+}> {
+  const contact = await prisma.contact.findUnique({
+    where: { id: contactId },
+    include: {
+      messages: { take: 20, orderBy: { createdAt: 'desc' } },
+      calls: { take: 10, orderBy: { createdAt: 'desc' } },
+    },
+  });
+
+  if (!contact) throw new Error(`Contact not found: ${contactId}`);
+
+  const score = await calculateRelationshipScore(contactId);
+  const ghosting = await detectGhosting(contactId);
+
+  try {
+    const result = await generateJSON<{
+      riskFactors: string[];
+      opportunities: string[];
+      suggestedActions: string[];
+    }>(`Analyze this contact relationship and provide insights.
+
+Contact: ${contact.name}
+Relationship score: ${score}/100
+Days since last contact: ${ghosting.daysSinceLastContact}
+Average communication cadence: ${ghosting.averageCadenceDays} days
+Ghosting risk: ${ghosting.riskLevel}
+Recent messages: ${(contact.messages as unknown[])?.length ?? 0}
+Recent calls: ${(contact.calls as unknown[])?.length ?? 0}
+Tags: ${contact.tags.join(', ')}
+Commitments: ${JSON.stringify(contact.commitments).substring(0, 500)}
+
+Return JSON with:
+- riskFactors: array of risks to this relationship
+- opportunities: array of opportunities to strengthen the relationship
+- suggestedActions: array of specific next steps to take`, {
+      maxTokens: 512,
+      temperature: 0.5,
+      system: 'You are a relationship management advisor. Provide practical, specific insights for maintaining professional relationships.',
+    });
+
+    return {
+      healthScore: score,
+      ...result,
+    };
+  } catch {
+    return {
+      healthScore: score,
+      riskFactors: ghosting.riskLevel === 'HIGH' ? ['Contact has gone silent'] : [],
+      opportunities: [],
+      suggestedActions: [ghosting.suggestedAction],
+    };
+  }
+}
+
+/**
+ * Get contacts that need attention based on low scores or no recent contact.
+ */
+export async function getContactsNeedingAttention(
+  entityId: string,
+  limit = 10
+): Promise<Array<{ contactId: string; name: string; score: number; reason: string }>> {
+  const contacts = await prisma.contact.findMany({
+    where: { entityId },
+    select: { id: true, name: true, relationshipScore: true, lastTouch: true },
+    orderBy: { relationshipScore: 'asc' },
+    take: limit * 2,
+  });
+
+  const now = new Date();
+  const results: Array<{ contactId: string; name: string; score: number; reason: string }> = [];
+
+  for (const contact of contacts) {
+    if (results.length >= limit) break;
+
+    const daysSinceTouch = contact.lastTouch
+      ? differenceInDays(now, contact.lastTouch)
+      : 999;
+
+    let reason = '';
+    if (daysSinceTouch > 30) {
+      reason = `No contact in ${daysSinceTouch} days`;
+    } else if (contact.relationshipScore < 30) {
+      reason = `Low relationship score: ${contact.relationshipScore}/100`;
+    } else {
+      continue;
+    }
+
+    results.push({
+      contactId: contact.id,
+      name: contact.name,
+      score: contact.relationshipScore,
+      reason,
+    });
+  }
+
+  return results;
 }
 
 function getConnectionStrength(score: number): 'STRONG' | 'MODERATE' | 'WEAK' | 'DORMANT' {
