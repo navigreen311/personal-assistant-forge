@@ -1,3 +1,4 @@
+import { generateText } from '@/lib/ai';
 import type { CoachingRecommendation } from './types';
 const uuidv4 = () => crypto.randomUUID();
 
@@ -56,7 +57,30 @@ function generateDefaultRecommendations(userId: string): CoachingRecommendation[
 export async function generateRecommendations(userId: string): Promise<CoachingRecommendation[]> {
   const existing = recommendations.get(userId);
   if (existing && existing.some(r => r.status === 'PENDING')) {
-    return existing.filter(r => r.status === 'PENDING');
+    const pending = existing.filter(r => r.status === 'PENDING');
+
+    // Enhance existing recommendations with AI-personalized descriptions
+    try {
+      const aiTips = await generateText(
+        `Generate personalized coaching tips for a user with these pending recommendations:
+${pending.map((r) => `- ${r.title}: ${r.description} (type: ${r.type}, priority: ${r.priority})`).join('\n')}
+
+Provide a brief, specific, and actionable tip for each recommendation (one line each). Be conversational and motivating.`,
+        { temperature: 0.7 }
+      );
+
+      const tips = aiTips.split('\n').filter(Boolean);
+      for (let i = 0; i < Math.min(tips.length, pending.length); i++) {
+        const cleaned = tips[i].replace(/^[-•\d.]\s*/, '').trim();
+        if (cleaned) {
+          pending[i].description = cleaned;
+        }
+      }
+    } catch {
+      // Keep default descriptions on AI failure
+    }
+
+    return pending;
   }
 
   const recs = generateDefaultRecommendations(userId);

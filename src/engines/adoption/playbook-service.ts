@@ -1,4 +1,5 @@
-import type { Playbook } from './types';
+import { generateJSON } from '@/lib/ai';
+import type { Playbook, PlaybookStep } from './types';
 const uuidv4 = () => crypto.randomUUID();
 
 // In-memory store for user activations
@@ -119,6 +120,62 @@ export async function getPlaybooks(category?: string): Promise<Playbook[]> {
 export async function getPlaybook(playbookId: string): Promise<Playbook | null> {
   ensureCache();
   return playbookCache.get(playbookId) ?? null;
+}
+
+export async function generatePersonalizedPlaybook(
+  userId: string,
+  role: string,
+  industry: string,
+  goals: string[]
+): Promise<Playbook> {
+  try {
+    const aiPlaybook = await generateJSON<{
+      name: string;
+      description: string;
+      category: string;
+      steps: { title: string; description: string; actionType: string; isOptional: boolean }[];
+      estimatedTimeSavedMinutes: number;
+    }>(
+      `Generate a personalized adoption playbook for this user profile.
+
+Role: ${role}
+Industry: ${industry}
+Goals: ${goals.join(', ')}
+
+Create a structured playbook with 3-5 actionable steps. Return JSON with:
+- name: playbook name
+- description: brief description
+- category: one of "productivity", "email", "calendar", "finance", "communication", "reporting"
+- steps: array of { title, description, actionType ("CONFIGURE"|"CONNECT"|"AUTOMATE"|"REVIEW"), isOptional: boolean }
+- estimatedTimeSavedMinutes: estimated time savings per use`,
+      { temperature: 0.6 }
+    );
+
+    const playbook: Playbook = {
+      id: `pb-${uuidv4()}`,
+      name: aiPlaybook.name,
+      description: aiPlaybook.description,
+      category: aiPlaybook.category,
+      steps: aiPlaybook.steps.map((s, i) => ({
+        order: i + 1,
+        title: s.title,
+        description: s.description,
+        actionType: s.actionType as PlaybookStep['actionType'],
+        isOptional: s.isOptional,
+      })),
+      estimatedTimeSavedMinutes: aiPlaybook.estimatedTimeSavedMinutes,
+      activationCount: 0,
+      rating: 0,
+    };
+
+    playbookCache.set(playbook.id, playbook);
+    return playbook;
+  } catch {
+    // Fall back to the most relevant default playbook
+    ensureCache();
+    const defaults = Array.from(playbookCache.values());
+    return defaults[0];
+  }
 }
 
 export async function activatePlaybook(

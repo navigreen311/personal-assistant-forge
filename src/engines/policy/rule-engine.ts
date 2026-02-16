@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { Rule } from '@/shared/types';
 import type {
   RuleCondition,
@@ -147,7 +148,7 @@ function evaluateCondition(
   }
 }
 
-export function resolveConflicts(evaluatedRules: EvaluatedRule[]): ConflictReport[] {
+export async function resolveConflicts(evaluatedRules: EvaluatedRule[]): Promise<ConflictReport[]> {
   const matchedRules = evaluatedRules.filter((r) => r.matched && r.action);
   const conflicts: ConflictReport[] = [];
 
@@ -157,6 +158,28 @@ export function resolveConflicts(evaluatedRules: EvaluatedRule[]): ConflictRepor
       const b = matchedRules[j];
       const conflict = detectConflict(a, b);
       if (conflict) conflicts.push(conflict);
+    }
+  }
+
+  // Enhance MANUAL_REQUIRED conflicts with AI-generated explanations
+  for (const conflict of conflicts) {
+    if (conflict.resolution === 'MANUAL_REQUIRED') {
+      try {
+        const aiExplanation = await generateText(
+          `Two automation rules conflict and cannot be auto-resolved. Explain to a non-technical user why manual resolution is needed and what they should consider.
+
+Rule A: "${conflict.ruleA}"
+Rule B: "${conflict.ruleB}"
+Conflict type: ${conflict.conflictType}
+Current explanation: ${conflict.explanation}
+
+Provide a clear, concise explanation (2-3 sentences) of why these rules conflict and what the user should do to resolve it.`,
+          { temperature: 0.5 }
+        );
+        conflict.explanation = aiExplanation;
+      } catch {
+        // Keep the existing static explanation on AI failure
+      }
     }
   }
 
@@ -247,21 +270,45 @@ export function getWinningAction(evaluatedRules: EvaluatedRule[]): EvaluatedRule
   return matched[0];
 }
 
-export function buildAuditTrail(
+export async function buildAuditTrail(
   actionId: string,
   evaluatedRules: EvaluatedRule[],
   dataSources: string[]
-): AuditTrail {
+): Promise<AuditTrail> {
   const winner = getWinningAction(evaluatedRules);
   const matchedRules = evaluatedRules.filter((r) => r.matched);
   const totalRules = evaluatedRules.length;
   const confidence = matchedRules.length > 0 ? 1 / matchedRules.length : 0;
 
-  const explanation = winner
+  const fallbackExplanation = winner
     ? `Action taken based on rule "${winner.ruleName}" (${winner.scope} scope, precedence ${winner.precedence}). ` +
       `Evaluated ${totalRules} rules, ${matchedRules.length} matched. ` +
       `Action type: ${winner.action?.type}.`
     : `No matching rules found among ${totalRules} evaluated rules.`;
+
+  let explanation = fallbackExplanation;
+
+  try {
+    const rulesDescription = matchedRules
+      .map((r) => `- "${r.ruleName}" (scope: ${r.scope}, precedence: ${r.precedence}, action: ${r.action?.type})`)
+      .join('\n');
+
+    explanation = await generateText(
+      `Produce a clear, non-technical explanation of why an automated action was taken. This will be shown to users who ask "Why did you do that?"
+
+Evaluated rules:
+${rulesDescription || 'No rules matched.'}
+
+Winning rule: ${winner ? `"${winner.ruleName}" with action ${winner.action?.type}` : 'None'}
+Data sources used: ${dataSources.join(', ') || 'None'}
+Total rules evaluated: ${totalRules}, matched: ${matchedRules.length}
+
+Write a brief, human-readable explanation (2-3 sentences).`,
+      { temperature: 0.5 }
+    );
+  } catch {
+    // Fall back to static explanation on AI failure
+  }
 
   return {
     actionId,

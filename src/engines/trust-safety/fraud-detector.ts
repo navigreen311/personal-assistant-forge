@@ -1,3 +1,4 @@
+import { generateJSON } from '@/lib/ai';
 import type { ActionLog } from '@/shared/types';
 import type { FraudHeuristic, FraudCheckResult, ThreatLevel } from './types';
 
@@ -130,7 +131,7 @@ export function evaluateHeuristic(
   }
 }
 
-export function checkForFraud(action: ActionLog, history?: ActionLog[]): FraudCheckResult {
+export async function checkForFraud(action: ActionLog, history?: ActionLog[]): Promise<FraudCheckResult> {
   const heuristics = getDefaultHeuristics();
   const triggeredHeuristics: FraudHeuristic[] = [];
 
@@ -138,6 +139,49 @@ export function checkForFraud(action: ActionLog, history?: ActionLog[]): FraudCh
     if (evaluateHeuristic(heuristic, action, history)) {
       triggeredHeuristics.push(heuristic);
     }
+  }
+
+  // AI-powered fraud pattern analysis
+  try {
+    const recentHistory = (history ?? []).slice(0, 10);
+    const aiResult = await generateJSON<{
+      isFraudulent: boolean;
+      confidence: number;
+      reasoning: string;
+      patterns: string[];
+    }>(
+      `Analyze the following action and recent history for signs of fraudulent activity.
+
+Current action:
+- Type: ${action.actionType}
+- Target: ${action.target}
+- Reason: ${action.reason}
+- Cost: ${action.cost ?? 'N/A'}
+- Timestamp: ${action.timestamp}
+
+Recent history (${recentHistory.length} actions):
+${recentHistory.map((h) => `- ${h.actionType} on ${h.target} at ${h.timestamp} (cost: ${h.cost ?? 'N/A'})`).join('\n') || 'No history available'}
+
+Return a JSON object with:
+- isFraudulent: boolean indicating if this looks like fraud
+- confidence: number 0-1
+- reasoning: explanation of assessment
+- patterns: array of suspicious patterns detected`,
+      { temperature: 0.1 }
+    );
+
+    if (aiResult.isFraudulent && aiResult.confidence > 0.7) {
+      triggeredHeuristics.push({
+        id: 'AI_FRAUD_DETECTION',
+        name: 'AI Fraud Pattern',
+        description: aiResult.reasoning,
+        triggers: aiResult.patterns,
+        severity: aiResult.confidence > 0.9 ? 'CRITICAL' : 'HIGH',
+        requiresHumanApproval: true,
+      });
+    }
+  } catch {
+    // Fall back to heuristic-only detection on AI failure
   }
 
   const passed = triggeredHeuristics.length === 0;

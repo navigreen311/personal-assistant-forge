@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Prisma } from '@prisma/client';
 import type { Rule } from '@/shared/types';
 import type { RuleCondition, RuleAction, RuleSuggestion } from './types';
@@ -49,9 +50,46 @@ export async function detectCorrectionPattern(
   for (const [, group] of patternGroups) {
     if (group.count < MIN_CORRECTIONS_FOR_SUGGESTION) continue;
 
+    // Use AI to enhance suggestion quality
+    let aiSuggestion: {
+      suggestedName?: string;
+      suggestedCondition?: RuleCondition[];
+      suggestedAction?: RuleAction;
+      suggestedScope?: RuleSuggestion['suggestedScope'];
+      evidence?: string;
+    } | null = null;
+
+    try {
+      aiSuggestion = await generateJSON<{
+        suggestedName: string;
+        suggestedCondition: RuleCondition[];
+        suggestedAction: RuleAction;
+        suggestedScope: RuleSuggestion['suggestedScope'];
+        evidence: string;
+      }>(
+        `Analyze this correction pattern and suggest an automation rule.
+
+Correction pattern:
+- Action type: ${group.actionType}
+- Target: ${group.target}
+- Number of corrections: ${group.count} in ${lookbackDays} days
+- User reasons: ${group.reasons.slice(0, 5).join('; ') || 'No reasons provided'}
+
+Produce a JSON object with:
+- suggestedName: A clear, descriptive rule name
+- suggestedCondition: Array of RuleCondition objects with fields: field (string), operator ("eq"|"neq"|"gt"|"gte"|"lt"|"lte"|"in"|"contains"|"matches"), value (unknown), logicalGroup ("AND"|"OR" optional)
+- suggestedAction: Object with type ("ESCALATE"|"AUTO_ASSIGN"|"NOTIFY"|"BLOCK"|"TAG"|"REDIRECT"|"LOG"|"APPROVE"|"REJECT") and config (object)
+- suggestedScope: One of "GLOBAL"|"ENTITY"|"PROJECT"|"CONTACT"|"CHANNEL"
+- evidence: A human-readable description of the pattern and why this rule is recommended`,
+        { temperature: 0.3 }
+      );
+    } catch {
+      // AI enhancement failed — fall back to basic suggestion
+    }
+
     const suggestion: RuleSuggestion = {
-      suggestedName: `Auto-rule: ${group.actionType} for ${group.target}`,
-      suggestedCondition: [
+      suggestedName: aiSuggestion?.suggestedName ?? `Auto-rule: ${group.actionType} for ${group.target}`,
+      suggestedCondition: aiSuggestion?.suggestedCondition ?? [
         {
           field: 'actionType',
           operator: 'eq',
@@ -64,9 +102,9 @@ export async function detectCorrectionPattern(
           logicalGroup: 'AND',
         },
       ] as RuleCondition[],
-      suggestedAction: inferAction(group.actionType) as RuleAction,
-      suggestedScope: 'ENTITY',
-      evidence: `You corrected this ${group.count} times in ${lookbackDays} days`,
+      suggestedAction: aiSuggestion?.suggestedAction ?? inferAction(group.actionType) as RuleAction,
+      suggestedScope: aiSuggestion?.suggestedScope ?? 'ENTITY',
+      evidence: aiSuggestion?.evidence ?? `You corrected this ${group.count} times in ${lookbackDays} days`,
       correctionCount: group.count,
       correctionPattern: `${group.actionType}:${group.target}`,
     };

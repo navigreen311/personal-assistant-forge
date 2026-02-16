@@ -1,3 +1,4 @@
+import { generateText } from '@/lib/ai';
 import type { BudgetConfig, BudgetAlert } from './types';
 
 // In-memory budget store (placeholder for database-backed storage)
@@ -72,6 +73,33 @@ export async function checkBudget(
 
 export async function getBudgetAlerts(entityId: string): Promise<BudgetAlert[]> {
   const result = await checkBudget(entityId, 0);
+  const budget = budgets.get(entityId);
+
+  // Enhance alert messages with AI-generated recommendations
+  if (result.alerts.length > 0 && budget) {
+    try {
+      const aiMessage = await generateText(
+        `Provide a concise budget optimization recommendation for this entity.
+
+Current spending: $${budget.currentSpend.toFixed(2)}
+Monthly cap: $${budget.monthlyCapUsd.toFixed(2)}
+Percent used: ${Math.round((budget.currentSpend / budget.monthlyCapUsd) * 100)}%
+Remaining budget: $${result.remainingBudget.toFixed(2)}
+Overage behavior: ${budget.overageBehavior}
+Alerts triggered: ${result.alerts.length}
+
+Write a brief, actionable recommendation (1-2 sentences) on how to optimize spending.`,
+        { temperature: 0.5 }
+      );
+
+      // Enhance the last alert with AI recommendation
+      const lastAlert = result.alerts[result.alerts.length - 1];
+      lastAlert.message = `${lastAlert.message} Recommendation: ${aiMessage}`;
+    } catch {
+      // Keep original alert messages on AI failure
+    }
+  }
+
   return result.alerts;
 }
 

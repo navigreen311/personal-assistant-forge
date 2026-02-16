@@ -1,3 +1,4 @@
+import { generateJSON } from '@/lib/ai';
 import type { ModelTier, ModelRoutingDecision } from './types';
 
 // Pricing per 1M tokens: [input, output]
@@ -52,9 +53,30 @@ function classifyComplexity(inputText: string, taskType?: string): 'SIMPLE' | 'M
   return 'MODERATE';
 }
 
-export function routeRequest(inputText: string, taskType?: string): ModelRoutingDecision {
-  const complexity = classifyComplexity(inputText, taskType);
+export async function routeRequest(inputText: string, taskType?: string): Promise<ModelRoutingDecision> {
+  let complexity = classifyComplexity(inputText, taskType);
   const tokenCount = estimateTokenCount(inputText);
+
+  // Use AI as optional refinement when rule-based classifier returns MODERATE
+  if (complexity === 'MODERATE') {
+    try {
+      const startTime = Date.now();
+      const aiResult = await generateJSON<{ complexity: 'SIMPLE' | 'MODERATE' | 'COMPLEX' }>(
+        `Classify the complexity of this task. Return JSON with "complexity": "SIMPLE", "MODERATE", or "COMPLEX".
+
+Task: "${inputText.slice(0, 200)}"${taskType ? `\nType: ${taskType}` : ''}`,
+        { temperature: 0.1, maxTokens: 50, model: MODEL_MAP.FAST }
+      );
+      const elapsed = Date.now() - startTime;
+
+      // Only use AI result if response was fast enough (<200ms)
+      if (elapsed < 200 && aiResult.complexity) {
+        complexity = aiResult.complexity;
+      }
+    } catch {
+      // Fall back to rule-based classification
+    }
+  }
 
   let recommendedTier: ModelTier;
   let reason: string;
