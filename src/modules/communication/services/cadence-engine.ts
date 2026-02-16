@@ -165,3 +165,77 @@ export async function getNextFollowUps(
 
   return results;
 }
+
+/**
+ * Create Notification records for overdue cadences.
+ * Skips contacts that already have a reminder for the current period.
+ */
+export async function triggerCadenceReminders(entityId: string): Promise<number> {
+  const overdue = await getOverdueFollowUps(entityId);
+  let triggered = 0;
+
+  for (const cadence of overdue) {
+    const contact = await prisma.contact.findUnique({
+      where: { id: cadence.contactId },
+      select: { name: true, entityId: true },
+    });
+
+    if (!contact) continue;
+
+    // Check if we already sent a reminder for this cadence period
+    const existing = await prisma.notification.findFirst({
+      where: {
+        entityId,
+        type: 'cadence_reminder',
+        metadata: {
+          path: ['contactId'],
+          equals: cadence.contactId,
+        },
+        createdAt: { gte: cadence.nextDue },
+      },
+    });
+
+    if (existing) continue;
+
+    await prisma.notification.create({
+      data: {
+        type: 'cadence_reminder',
+        title: `Follow up with ${contact.name}`,
+        body: `${contact.name} is overdue for a ${cadence.frequency.toLowerCase()} follow-up.`,
+        priority: cadence.isOverdue ? 'high' : 'normal',
+        entityId,
+        userId: entityId,
+        metadata: {
+          contactId: cadence.contactId,
+          frequency: cadence.frequency,
+          nextDue: cadence.nextDue.toISOString(),
+        },
+      },
+    });
+
+    triggered++;
+  }
+
+  return triggered;
+}
+
+/**
+ * Get cadence status for a single contact.
+ */
+export async function getCadenceStatus(contactId: string): Promise<FollowUpCadence | null> {
+  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  if (!contact) return null;
+
+  const { frequency, escalationAfterMisses } = parseCadencePreferences(contact.preferences);
+  if (!frequency) return null;
+
+  const nextDue = computeNextDue(contact.lastTouch, frequency);
+
+  return {
+    contactId,
+    frequency,
+    nextDue,
+    escalationAfterMisses: escalationAfterMisses ?? 3,
+    isOverdue: isBefore(nextDue, new Date()),
+  };
+}
