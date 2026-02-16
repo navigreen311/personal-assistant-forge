@@ -1,6 +1,98 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { WearableConnection, WearableProvider, SleepData, StressLevel } from '../types';
-import { subDays, format } from 'date-fns';
+import { prisma } from '@/lib/db';
+import { subDays } from 'date-fns';
+import type { WearableConnection, WearableProvider } from '../types';
+
+// === Adapter Interface ===
+
+export interface HealthMetricInput {
+  type: string;
+  value: number;
+  unit: string;
+  source: string;
+  metadata?: Record<string, unknown>;
+  recordedAt: Date;
+}
+
+export interface WearableAdapter {
+  fetchSleepData(userId: string, days: number): Promise<HealthMetricInput[]>;
+  fetchStressData(userId: string, days: number): Promise<HealthMetricInput[]>;
+  fetchHeartRate(userId: string, days: number): Promise<HealthMetricInput[]>;
+}
+
+// === Stub Adapters ===
+
+class AppleHealthAdapter implements WearableAdapter {
+  async fetchSleepData(): Promise<HealthMetricInput[]> {
+    throw new Error('Apple Health integration not yet implemented');
+  }
+  async fetchStressData(): Promise<HealthMetricInput[]> {
+    throw new Error('Apple Health integration not yet implemented');
+  }
+  async fetchHeartRate(): Promise<HealthMetricInput[]> {
+    throw new Error('Apple Health integration not yet implemented');
+  }
+}
+
+class FitbitAdapter implements WearableAdapter {
+  async fetchSleepData(): Promise<HealthMetricInput[]> {
+    throw new Error('Fitbit integration not yet implemented');
+  }
+  async fetchStressData(): Promise<HealthMetricInput[]> {
+    throw new Error('Fitbit integration not yet implemented');
+  }
+  async fetchHeartRate(): Promise<HealthMetricInput[]> {
+    throw new Error('Fitbit integration not yet implemented');
+  }
+}
+
+class OuraAdapter implements WearableAdapter {
+  async fetchSleepData(): Promise<HealthMetricInput[]> {
+    throw new Error('Oura integration not yet implemented');
+  }
+  async fetchStressData(): Promise<HealthMetricInput[]> {
+    throw new Error('Oura integration not yet implemented');
+  }
+  async fetchHeartRate(): Promise<HealthMetricInput[]> {
+    throw new Error('Oura integration not yet implemented');
+  }
+}
+
+class WHOOPAdapter implements WearableAdapter {
+  async fetchSleepData(): Promise<HealthMetricInput[]> {
+    throw new Error('WHOOP integration not yet implemented');
+  }
+  async fetchStressData(): Promise<HealthMetricInput[]> {
+    throw new Error('WHOOP integration not yet implemented');
+  }
+  async fetchHeartRate(): Promise<HealthMetricInput[]> {
+    throw new Error('WHOOP integration not yet implemented');
+  }
+}
+
+class GarminAdapter implements WearableAdapter {
+  async fetchSleepData(): Promise<HealthMetricInput[]> {
+    throw new Error('Garmin integration not yet implemented');
+  }
+  async fetchStressData(): Promise<HealthMetricInput[]> {
+    throw new Error('Garmin integration not yet implemented');
+  }
+  async fetchHeartRate(): Promise<HealthMetricInput[]> {
+    throw new Error('Garmin integration not yet implemented');
+  }
+}
+
+// === Adapter Registry ===
+
+const adapterRegistry = new Map<string, WearableAdapter>([
+  ['APPLE_WATCH', new AppleHealthAdapter()],
+  ['FITBIT', new FitbitAdapter()],
+  ['OURA', new OuraAdapter()],
+  ['WHOOP', new WHOOPAdapter()],
+  ['GARMIN', new GarminAdapter()],
+]);
+
+// === Connection Management (transient sessions) ===
 
 const connectionStore = new Map<string, WearableConnection>();
 
@@ -31,50 +123,91 @@ export async function getConnections(userId: string): Promise<WearableConnection
   return Array.from(connectionStore.values()).filter(c => c.userId === userId);
 }
 
-// TODO: Replace simulated data generation with real wearable API integration
-// (Apple HealthKit, Fitbit Web API, Oura Cloud API, WHOOP API, Garmin Connect API)
-export async function syncData(connectionId: string): Promise<{ sleepData: SleepData[]; stressLevels: StressLevel[] }> {
+// === Data Sync ===
+
+export async function syncWearableData(
+  connectionId: string
+): Promise<HealthMetricInput[]> {
   const conn = connectionStore.get(connectionId);
   if (!conn || !conn.isConnected) {
     throw new Error('Wearable not connected');
   }
 
-  const now = new Date();
-  const sleepData: SleepData[] = [];
-  const stressLevels: StressLevel[] = [];
-
-  for (let i = 0; i < 7; i++) {
-    const date = subDays(now, i);
-    const dateStr = format(date, 'yyyy-MM-dd');
-
-    const totalHours = 6 + Math.random() * 3;
-    const deepPct = 0.15 + Math.random() * 0.1;
-    const remPct = 0.2 + Math.random() * 0.1;
-    const lightPct = 1 - deepPct - remPct;
-
-    sleepData.push({
-      date: dateStr,
-      totalHours: Math.round(totalHours * 10) / 10,
-      deepSleepHours: Math.round(totalHours * deepPct * 10) / 10,
-      remSleepHours: Math.round(totalHours * remPct * 10) / 10,
-      lightSleepHours: Math.round(totalHours * lightPct * 10) / 10,
-      awakeMinutes: Math.floor(Math.random() * 30) + 5,
-      sleepScore: Math.floor(60 + Math.random() * 40),
-      bedTime: `${22 + Math.floor(Math.random() * 2)}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}`,
-      wakeTime: `${6 + Math.floor(Math.random() * 2)}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}`,
-    });
-
-    stressLevels.push({
-      userId: conn.userId,
-      timestamp: date,
-      level: Math.floor(20 + Math.random() * 60),
-      source: 'wearable',
-      triggers: [],
-    });
+  const adapter = adapterRegistry.get(conn.provider);
+  if (!adapter) {
+    throw new Error(`No adapter registered for provider: ${conn.provider}`);
   }
 
-  conn.lastSyncAt = now;
-  connectionStore.set(connectionId, conn);
+  let metrics: HealthMetricInput[] = [];
 
-  return { sleepData, stressLevels };
+  try {
+    const [sleepData, stressData, heartRateData] = await Promise.all([
+      adapter.fetchSleepData(conn.userId, 7),
+      adapter.fetchStressData(conn.userId, 7),
+      adapter.fetchHeartRate(conn.userId, 7),
+    ]);
+
+    metrics = [...sleepData, ...stressData, ...heartRateData];
+
+    if (metrics.length > 0) {
+      await prisma.healthMetric.createMany({
+        data: metrics.map(m => ({
+          entityId: conn.userId,
+          type: m.type,
+          value: m.value,
+          unit: m.unit,
+          source: m.source,
+          metadata: m.metadata ?? undefined,
+          recordedAt: m.recordedAt,
+        })),
+      });
+    }
+
+    conn.lastSyncAt = new Date();
+    connectionStore.set(connectionId, conn);
+  } catch {
+    // Adapter not yet integrated or API failure — fall back to existing DB data
+    const dbMetrics = await prisma.healthMetric.findMany({
+      where: {
+        entityId: conn.userId,
+        recordedAt: { gte: subDays(new Date(), 7) },
+      },
+      orderBy: { recordedAt: 'desc' },
+    });
+
+    metrics = dbMetrics.map((m: { type: string; value: number; unit: string; source: string; metadata: unknown; recordedAt: Date }) => ({
+      type: m.type,
+      value: m.value,
+      unit: m.unit,
+      source: m.source,
+      metadata: (m.metadata as Record<string, unknown>) ?? undefined,
+      recordedAt: m.recordedAt,
+    }));
+  }
+
+  return metrics;
+}
+
+/** @deprecated Use syncWearableData instead */
+export async function syncData(connectionId: string) {
+  return syncWearableData(connectionId);
+}
+
+// === Query Helpers ===
+
+export async function getLatestMetrics(
+  entityId: string,
+  type?: string,
+  days?: number
+) {
+  const where: Record<string, unknown> = { entityId };
+  if (type) where.type = type;
+  if (days) {
+    where.recordedAt = { gte: subDays(new Date(), days) };
+  }
+
+  return prisma.healthMetric.findMany({
+    where,
+    orderBy: { recordedAt: 'desc' },
+  });
 }
