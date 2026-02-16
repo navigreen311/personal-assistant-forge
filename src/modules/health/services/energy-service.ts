@@ -1,47 +1,87 @@
+import { subDays } from 'date-fns';
+import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { EnergyForecast } from '../types';
-import { getSleepHistory } from './sleep-service';
+
+// Deterministic perturbation based on hour and date
+function deterministicPerturbation(hour: number, dateStr: string): number {
+  let dateHash = 0;
+  for (let i = 0; i < dateStr.length; i++) {
+    dateHash = (dateHash * 31 + dateStr.charCodeAt(i)) | 0;
+  }
+  return Math.sin(hour * 0.7 + dateHash) * 0.05;
+}
 
 export async function forecastEnergy(userId: string, date: string): Promise<EnergyForecast> {
-  const recentSleep = await getSleepHistory(userId, 3);
-  const avgScore = recentSleep.length > 0
-    ? recentSleep.reduce((sum, d) => sum + d.sleepScore, 0) / recentSleep.length
-    : 70;
+  // Query recent sleep data from DB
+  const recentSleep = await prisma.healthMetric.findMany({
+    where: {
+      entityId: userId,
+      type: 'sleep',
+      recordedAt: { gte: subDays(new Date(), 3) },
+    },
+    orderBy: { recordedAt: 'desc' },
+    take: 3,
+  });
+
+  // Query historical energy patterns
+  const historicalEnergy = await prisma.healthMetric.findMany({
+    where: {
+      entityId: userId,
+      type: 'energy',
+      recordedAt: { gte: subDays(new Date(), 7) },
+    },
+    orderBy: { recordedAt: 'desc' },
+  });
+
+  // Calculate base energy from sleep quality
+  let avgScore = 70; // default if no data
+  if (recentSleep.length > 0) {
+    avgScore = recentSleep.reduce((sum: number, d: { value: number }) => sum + d.value, 0) / recentSleep.length;
+    // Normalize: sleep value is totalHours, convert to a 0-100 score
+    // 8 hours = score 100, scale linearly
+    avgScore = Math.min(100, (avgScore / 8) * 100);
+  }
+
+  // If we have historical energy data, blend it in
+  if (historicalEnergy.length > 0) {
+    const avgHistorical = historicalEnergy.reduce((sum: number, d: { value: number }) => sum + d.value, 0) / historicalEnergy.length;
+    avgScore = avgScore * 0.7 + avgHistorical * 0.3;
+  }
 
   const baseEnergy = avgScore / 100;
 
-  // Model circadian rhythm: peaks at 10am and 3pm, troughs at 2pm and after 9pm
+  // Model circadian rhythm with deterministic perturbation
   const hourlyEnergy: { hour: number; energyLevel: number; confidence: number }[] = [];
   for (let hour = 0; hour < 24; hour++) {
     let level: number;
 
     if (hour >= 6 && hour <= 9) {
-      // Morning ramp up
       level = baseEnergy * (0.5 + (hour - 6) * 0.125);
     } else if (hour >= 10 && hour <= 12) {
-      // Morning peak
       level = baseEnergy * 0.95;
     } else if (hour >= 13 && hour <= 14) {
-      // Post-lunch dip
       level = baseEnergy * 0.6;
     } else if (hour >= 15 && hour <= 17) {
-      // Afternoon peak
       level = baseEnergy * 0.85;
     } else if (hour >= 18 && hour <= 21) {
-      // Evening wind down
       level = baseEnergy * (0.7 - (hour - 18) * 0.1);
     } else {
-      // Night / early morning
       level = baseEnergy * 0.2;
     }
 
-    // Add some noise
-    level = Math.max(0, Math.min(1, level + (Math.random() - 0.5) * 0.1));
+    // Deterministic perturbation instead of Math.random()
+    const perturbation = deterministicPerturbation(hour, date);
+    level = Math.max(0, Math.min(1, level + perturbation));
+
+    // Confidence based on data availability
+    const dataConfidence = recentSleep.length > 0 ? 0.8 : 0.5;
+    const hourConfidence = (hour >= 8 && hour <= 20) ? dataConfidence + 0.1 : dataConfidence - 0.1;
 
     hourlyEnergy.push({
       hour,
       energyLevel: Math.round(level * 100),
-      confidence: Math.round((0.7 + Math.random() * 0.3) * 100) / 100,
+      confidence: Math.round(Math.max(0.3, Math.min(1, hourConfidence)) * 100) / 100,
     });
   }
 
@@ -53,7 +93,6 @@ export async function forecastEnergy(userId: string, date: string): Promise<Ener
     .filter(h => h.hour >= 6 && h.hour <= 22 && h.energyLevel < 50)
     .map(h => h.hour);
 
-  // Use AI to generate personalized recommendation
   let recommendation: string;
   try {
     const aiResult = await generateJSON<{ recommendation: string; peakHours: number[]; troughHours: number[] }>(
@@ -97,7 +136,6 @@ export async function getOptimalSchedule(
 ): Promise<{ deepWorkSlots: string[]; meetingSlots: string[]; breakSlots: string[] }> {
   const forecast = await forecastEnergy(userId, date);
 
-  // Use AI to generate intelligent slot recommendations
   try {
     const energySummary = forecast.hourlyEnergy
       .filter(h => h.hour >= 7 && h.hour <= 21)
@@ -126,7 +164,6 @@ Use 24-hour format with zero-padded hours (e.g. "07:00", "14:00").`,
       breakSlots: aiResult.breakSlots ?? [],
     };
   } catch {
-    // Fallback to rule-based slot assignment
     const deepWorkSlots: string[] = [];
     const meetingSlots: string[] = [];
     const breakSlots: string[] = [];

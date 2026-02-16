@@ -1,7 +1,32 @@
+import { subDays, format } from 'date-fns';
+import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { StressLevel, StressAdjustment } from '../types';
 
-const stressStore = new Map<string, StressLevel[]>();
+// === Helpers ===
+
+interface StressMetadata {
+  triggers?: string[];
+}
+
+function mapDbToStressLevel(record: {
+  entityId: string;
+  value: number;
+  source: string;
+  metadata: unknown;
+  recordedAt: Date;
+}): StressLevel {
+  const meta = (record.metadata as StressMetadata) ?? {};
+  return {
+    userId: record.entityId,
+    timestamp: record.recordedAt,
+    level: record.value,
+    source: record.source,
+    triggers: meta.triggers ?? [],
+  };
+}
+
+// === Public API ===
 
 export async function recordStressLevel(
   userId: string,
@@ -9,26 +34,34 @@ export async function recordStressLevel(
   source: string,
   triggers?: string[]
 ): Promise<StressLevel> {
-  const entry: StressLevel = {
-    userId,
-    timestamp: new Date(),
-    level: Math.max(0, Math.min(100, level)),
-    source,
-    triggers: triggers ?? [],
-  };
+  const clampedLevel = Math.max(0, Math.min(100, level));
 
-  const existing = stressStore.get(userId) ?? [];
-  existing.unshift(entry);
-  stressStore.set(userId, existing);
+  const record = await prisma.healthMetric.create({
+    data: {
+      entityId: userId,
+      type: 'stress',
+      value: clampedLevel,
+      unit: 'score',
+      source,
+      metadata: { triggers: triggers ?? [] },
+      recordedAt: new Date(),
+    },
+  });
 
-  return entry;
+  return mapDbToStressLevel(record);
 }
 
 export async function getStressHistory(userId: string, days: number): Promise<StressLevel[]> {
-  const all = stressStore.get(userId) ?? [];
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  return all.filter(s => new Date(s.timestamp) >= cutoff);
+  const records = await prisma.healthMetric.findMany({
+    where: {
+      entityId: userId,
+      type: 'stress',
+      recordedAt: { gte: subDays(new Date(), days) },
+    },
+    orderBy: { recordedAt: 'desc' },
+  });
+
+  return records.map(mapDbToStressLevel);
 }
 
 export async function suggestScheduleAdjustments(userId: string): Promise<StressAdjustment[]> {
@@ -38,7 +71,6 @@ export async function suggestScheduleAdjustments(userId: string): Promise<Stress
   const latestStress = recent[0].level;
   if (latestStress <= 70) return [];
 
-  // Use AI to generate personalized schedule adjustments
   try {
     const triggers = recent[0].triggers;
     const adjustments = await generateJSON<StressAdjustment[]>(
@@ -61,7 +93,6 @@ Provide ${latestStress > 90 ? '3-5' : latestStress > 80 ? '2-4' : '1-3'} suggest
 
     return adjustments;
   } catch {
-    // Fallback to rule-based adjustments
     const adjustments: StressAdjustment[] = [];
 
     if (latestStress > 90) {
@@ -106,13 +137,21 @@ export async function getStressTrend(
   userId: string,
   days: number
 ): Promise<{ date: string; average: number }[]> {
-  const history = await getStressHistory(userId, days);
+  const records = await prisma.healthMetric.findMany({
+    where: {
+      entityId: userId,
+      type: 'stress',
+      recordedAt: { gte: subDays(new Date(), days) },
+    },
+    orderBy: { recordedAt: 'asc' },
+  });
+
   const dailyMap = new Map<string, number[]>();
 
-  for (const entry of history) {
-    const dateKey = new Date(entry.timestamp).toISOString().split('T')[0];
+  for (const record of records) {
+    const dateKey = format(record.recordedAt, 'yyyy-MM-dd');
     const existing = dailyMap.get(dateKey) ?? [];
-    existing.push(entry.level);
+    existing.push(record.value);
     dailyMap.set(dateKey, existing);
   }
 

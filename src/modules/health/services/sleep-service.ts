@@ -1,20 +1,75 @@
 import { subDays, format } from 'date-fns';
+import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { SleepData, SleepOptimization } from '../types';
 
-const sleepStore = new Map<string, SleepData[]>();
+// === Sleep Score Calculation ===
+
+interface SleepMetadata {
+  deepSleepHours?: number;
+  remSleepHours?: number;
+  lightSleepHours?: number;
+  awakeMinutes?: number;
+  bedTime?: string;
+  wakeTime?: string;
+}
+
+function calculateSleepScore(totalHours: number, meta: SleepMetadata): number {
+  const deepHours = meta.deepSleepHours ?? totalHours * 0.2;
+  const remHours = meta.remSleepHours ?? totalHours * 0.25;
+  const awakeMin = meta.awakeMinutes ?? 15;
+
+  const deepPct = totalHours > 0 ? deepHours / totalHours : 0;
+  const remPct = totalHours > 0 ? remHours / totalHours : 0;
+  const awakePct = totalHours > 0 ? (awakeMin / 60) / totalHours : 0;
+
+  // Consistency bonus: 7-9 hours is ideal
+  const idealDiff = Math.abs(totalHours - 8);
+  const consistencyBonus = Math.max(0, 1 - idealDiff / 4);
+
+  const score =
+    deepPct * 35 +
+    remPct * 30 +
+    (1 - awakePct) * 20 +
+    consistencyBonus * 15;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function mapDbToSleepData(record: {
+  value: number;
+  metadata: unknown;
+  recordedAt: Date;
+}): SleepData {
+  const meta = (record.metadata as SleepMetadata) ?? {};
+  const totalHours = record.value;
+
+  return {
+    date: format(record.recordedAt, 'yyyy-MM-dd'),
+    totalHours,
+    deepSleepHours: meta.deepSleepHours ?? 0,
+    remSleepHours: meta.remSleepHours ?? 0,
+    lightSleepHours: meta.lightSleepHours ?? 0,
+    awakeMinutes: meta.awakeMinutes ?? 0,
+    sleepScore: calculateSleepScore(totalHours, meta),
+    bedTime: meta.bedTime ?? '22:30',
+    wakeTime: meta.wakeTime ?? '06:30',
+  };
+}
+
+// === Public API ===
 
 export async function getSleepHistory(userId: string, days: number): Promise<SleepData[]> {
-  const allData = sleepStore.get(userId) ?? [];
+  const records = await prisma.healthMetric.findMany({
+    where: {
+      entityId: userId,
+      type: 'sleep',
+      recordedAt: { gte: subDays(new Date(), days) },
+    },
+    orderBy: { recordedAt: 'desc' },
+  });
 
-  if (allData.length === 0) {
-    // Generate simulated data if none exists
-    const generated = generateSimulatedSleepData(days);
-    sleepStore.set(userId, generated);
-    return generated;
-  }
-
-  return allData.slice(0, days);
+  return records.map(mapDbToSleepData);
 }
 
 export async function analyzeSleepPatterns(userId: string): Promise<SleepOptimization> {
@@ -33,7 +88,6 @@ export async function analyzeSleepPatterns(userId: string): Promise<SleepOptimiz
 
   const avgScore = data.reduce((sum, d) => sum + d.sleepScore, 0) / data.length;
 
-  // Find bed times with highest sleep scores
   const bedTimeScores = data.map(d => ({ bedTime: d.bedTime, score: d.sleepScore }));
   bedTimeScores.sort((a, b) => b.score - a.score);
   const idealBedTime = bedTimeScores[0]?.bedTime ?? '22:30';
@@ -42,7 +96,6 @@ export async function analyzeSleepPatterns(userId: string): Promise<SleepOptimiz
   wakeTimeScores.sort((a, b) => b.score - a.score);
   const idealWakeTime = wakeTimeScores[0]?.wakeTime ?? '06:30';
 
-  // Use AI to generate personalized correlations and recommendations
   let correlations: SleepOptimization['correlations'];
   let recommendations: string[];
 
@@ -83,7 +136,6 @@ Return a JSON object with:
     correlations = aiResult.correlations ?? [];
     recommendations = aiResult.recommendations ?? [];
   } catch {
-    // Fallback to static analysis
     correlations = [
       { factor: 'Deep sleep duration', correlation: 0.85, suggestion: 'Aim for 1.5-2 hours of deep sleep for optimal recovery.' },
       { factor: 'Consistent bed time', correlation: 0.72, suggestion: 'Going to bed within 30 minutes of your ideal time improves sleep quality.' },
@@ -114,34 +166,23 @@ Return a JSON object with:
 }
 
 export async function getSleepScore(userId: string, date: string): Promise<number> {
-  const data = await getSleepHistory(userId, 30);
-  const entry = data.find(d => d.date === date);
-  return entry?.sleepScore ?? 0;
-}
+  const targetDate = new Date(date);
+  const nextDay = new Date(date);
+  nextDay.setDate(nextDay.getDate() + 1);
 
-function generateSimulatedSleepData(days: number): SleepData[] {
-  const data: SleepData[] = [];
-  const now = new Date();
+  const record = await prisma.healthMetric.findFirst({
+    where: {
+      entityId: userId,
+      type: 'sleep',
+      recordedAt: {
+        gte: targetDate,
+        lt: nextDay,
+      },
+    },
+  });
 
-  for (let i = 0; i < days; i++) {
-    const date = subDays(now, i);
-    const totalHours = 6 + Math.random() * 3;
-    const deepPct = 0.15 + Math.random() * 0.1;
-    const remPct = 0.2 + Math.random() * 0.1;
-    const lightPct = 1 - deepPct - remPct;
+  if (!record) return 0;
 
-    data.push({
-      date: format(date, 'yyyy-MM-dd'),
-      totalHours: Math.round(totalHours * 10) / 10,
-      deepSleepHours: Math.round(totalHours * deepPct * 10) / 10,
-      remSleepHours: Math.round(totalHours * remPct * 10) / 10,
-      lightSleepHours: Math.round(totalHours * lightPct * 10) / 10,
-      awakeMinutes: Math.floor(Math.random() * 30) + 5,
-      sleepScore: Math.floor(60 + Math.random() * 40),
-      bedTime: `${22 + Math.floor(Math.random() * 2)}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}`,
-      wakeTime: `${6 + Math.floor(Math.random() * 2)}:${String(Math.floor(Math.random() * 60)).padStart(2, '0')}`,
-    });
-  }
-
-  return data;
+  const meta = (record.metadata as SleepMetadata) ?? {};
+  return calculateSleepScore(record.value, meta);
 }
