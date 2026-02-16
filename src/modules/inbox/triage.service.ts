@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Message, Sensitivity, Contact } from '@/shared/types';
 import type {
   TriageResult,
@@ -206,6 +207,45 @@ const MONEY_PATTERNS = [
 ];
 
 export class TriageService {
+  private async triageMessageWithAI(
+    message: { subject?: string | null; body: string; channel: string },
+    sender?: Contact
+  ): Promise<{
+    urgencyScore: number;
+    intent: MessageIntent;
+    sensitivity: Sensitivity;
+    category: MessageCategory;
+    suggestedAction: SuggestedAction;
+    reasoning: string;
+    confidence: number;
+    flags: TriageFlag[];
+  }> {
+    const prompt = `Analyze this message and return a JSON triage result.
+
+Message subject: ${message.subject ?? '(none)'}
+Message body: ${message.body}
+Channel: ${message.channel}
+Sender: ${sender?.name ?? 'Unknown'} (${sender?.tags?.includes('VIP') ? 'VIP' : 'standard'})
+
+Return JSON with these exact fields:
+{
+  "urgencyScore": <1-10 integer>,
+  "intent": <one of: INQUIRY, REQUEST, UPDATE, URGENT, FYI, COMPLAINT, FOLLOW_UP, INTRODUCTION, SCHEDULING, FINANCIAL, APPROVAL, SOCIAL>,
+  "sensitivity": <one of: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED, REGULATED>,
+  "category": <one of: OPERATIONS, SALES, FINANCE, LEGAL, HR, MARKETING, SUPPORT, PERSONAL, COMPLIANCE, EXECUTIVE>,
+  "suggestedAction": <one of: RESPOND_IMMEDIATELY, RESPOND_TODAY, RESPOND_THIS_WEEK, DELEGATE, ARCHIVE, FLAG_FOR_REVIEW, SCHEDULE_FOLLOW_UP, NO_ACTION>,
+  "reasoning": "<brief explanation of triage decision>",
+  "confidence": <0.0-1.0 float>,
+  "flags": [{"type": "<flag type>", "description": "<why flagged>", "severity": "<LOW|MEDIUM|HIGH>"}]
+}`;
+
+    return generateJSON(prompt, {
+      maxTokens: 512,
+      temperature: 0.3,
+      system: 'You are a message triage analyst. Score urgency accurately. Be concise in reasoning.',
+    });
+  }
+
   async triageMessage(
     messageId: string,
     entityId: string
@@ -246,25 +286,50 @@ export class TriageService {
 
     const entityProfiles = entity?.complianceProfile ?? [];
 
-    const text = `${message.subject ?? ''} ${message.body}`;
-    const urgencyScore = this.calculateUrgencyScore(
-      message as unknown as Message,
-      sender
-    );
-    const intent = this.classifyIntent(message.body, message.subject ?? undefined);
-    const sensitivity = this.detectSensitivity(text, entityProfiles);
-    const category = this.categorizeMessage(
-      text,
-      intent,
-      entity?.type ?? 'Personal'
-    );
-    const flags = this.detectFlags(text, sender);
-    const suggestedAction = this.suggestAction(urgencyScore, intent);
+    // Try AI-powered triage first, fall back to keyword-based scoring
+    let urgencyScore: number;
+    let intent: MessageIntent;
+    let sensitivity: Sensitivity;
+    let category: MessageCategory;
+    let suggestedAction: SuggestedAction;
+    let reasoning: string;
+    let confidence: number;
+    let flags: TriageFlag[];
+
+    try {
+      const aiResult = await this.triageMessageWithAI(message, sender);
+      urgencyScore = aiResult.urgencyScore;
+      intent = aiResult.intent;
+      sensitivity = aiResult.sensitivity;
+      category = aiResult.category;
+      suggestedAction = aiResult.suggestedAction;
+      reasoning = aiResult.reasoning;
+      confidence = aiResult.confidence;
+      flags = aiResult.flags;
+      console.log(`[TriageService] AI triage used for message ${messageId}`);
+    } catch (aiError) {
+      console.warn(`[TriageService] AI triage failed for message ${messageId}, using keyword fallback:`, aiError);
+
+      const text = `${message.subject ?? ''} ${message.body}`;
+      urgencyScore = this.calculateUrgencyScore(
+        message as unknown as Message,
+        sender
+      );
+      intent = this.classifyIntent(message.body, message.subject ?? undefined);
+      sensitivity = this.detectSensitivity(text, entityProfiles);
+      category = this.categorizeMessage(
+        text,
+        intent,
+        entity?.type ?? 'Personal'
+      );
+      flags = this.detectFlags(text, sender);
+      suggestedAction = this.suggestAction(urgencyScore, intent);
+      reasoning = this.buildReasoning(urgencyScore, intent, flags);
+      confidence = this.calculateConfidence(text, flags);
+    }
+
     const suggestedPriority: 'P0' | 'P1' | 'P2' =
       urgencyScore >= 8 ? 'P0' : urgencyScore >= 5 ? 'P1' : 'P2';
-
-    const reasoning = this.buildReasoning(urgencyScore, intent, flags);
-    const confidence = this.calculateConfidence(text, flags);
 
     const result: TriageResult = {
       messageId,
