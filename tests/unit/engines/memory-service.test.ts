@@ -1,5 +1,12 @@
 import { searchMemories, recallMemory } from '@/engines/memory/memory-service';
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn().mockResolvedValue('AI-generated explanation'),
+  generateJSON: jest.fn().mockResolvedValue({ rankedIds: [] }),
+  chat: jest.fn().mockResolvedValue('AI conversational response'),
+}));
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     memoryEntry: {

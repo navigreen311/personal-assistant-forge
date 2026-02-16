@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { TrustScoreBreakdown } from './types';
 
 // Local type for action log records from Prisma (avoids implicit any)
@@ -114,6 +115,38 @@ const DEFAULT_DOMAINS = [
   'FINANCIAL',
   'COMMUNICATION',
 ];
+
+export async function getTrustScoreSummary(
+  domain: string,
+  userId: string
+): Promise<{ score: TrustScoreBreakdown; summary: string }> {
+  const score = await calculateTrustScore(domain, userId);
+
+  let summary = `Trust score for ${domain}: ${score.overallScore}/100 (${score.trend})`;
+
+  try {
+    summary = await generateText(
+      `Provide a brief trust score summary and recommendation for a user.
+
+Domain: ${domain}
+Overall score: ${score.overallScore}/100
+Dimensions:
+- Accuracy: ${score.dimensions.accuracy}%
+- Transparency: ${score.dimensions.transparency}%
+- Reversibility: ${score.dimensions.reversibility}%
+- User override rate: ${score.dimensions.userOverrideRate}%
+Trend: ${score.trend}
+Sample size: ${score.sampleSize} actions
+
+Write a concise 2-sentence summary with one actionable recommendation.`,
+      { temperature: 0.5 }
+    );
+  } catch {
+    // Keep fallback summary
+  }
+
+  return { score, summary };
+}
 
 export async function getTrustScores(
   userId: string

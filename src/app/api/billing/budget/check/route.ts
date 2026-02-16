@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { checkBudget } from '@/engines/cost/budget-service';
 
 const CheckBudgetSchema = z.object({
@@ -9,19 +10,21 @@ const CheckBudgetSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = CheckBudgetSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = CheckBudgetSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const result = await checkBudget(parsed.data.entityId, parsed.data.additionalCost);
+      return success(result);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to check budget', 500);
     }
-
-    const result = await checkBudget(parsed.data.entityId, parsed.data.additionalCost);
-    return success(result);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to check budget', 500);
-  }
+  });
 }

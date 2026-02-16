@@ -1,3 +1,4 @@
+import { generateText } from '@/lib/ai';
 import type { ReengagementTrigger } from './types';
 
 // Simulated user activity data (placeholder for database-backed tracking)
@@ -100,7 +101,24 @@ export async function checkForReengagementTriggers(userId: string): Promise<Reen
   return triggers;
 }
 
-export function generateReengagementMessage(trigger: ReengagementTrigger): string {
-  const prefix = trigger.severity === 'HIGH' ? 'We miss you!' : 'Quick tip:';
-  return `${prefix} ${trigger.message} ${trigger.suggestedAction}`;
+export async function generateReengagementMessage(trigger: ReengagementTrigger): Promise<string> {
+  const fallback = `${trigger.severity === 'HIGH' ? 'We miss you!' : 'Quick tip:'} ${trigger.message} ${trigger.suggestedAction}`;
+
+  try {
+    const aiMessage = await generateText(
+      `Write a personalized re-engagement message for a user.
+
+Trigger type: ${trigger.triggerType}
+Severity: ${trigger.severity}
+Context: ${trigger.message}
+Suggested action: ${trigger.suggestedAction}
+
+Write a warm, concise message (2-3 sentences) that references their past usage and motivates them to return. Don't be pushy.`,
+      { temperature: 0.7 }
+    );
+
+    return aiMessage;
+  } catch {
+    return fallback;
+  }
 }

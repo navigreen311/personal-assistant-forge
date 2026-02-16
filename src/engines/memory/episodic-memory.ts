@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText, generateJSON } from '@/lib/ai';
 import type { MemoryEntry } from '@/shared/types';
 import type { MemorySearchResult } from './types';
 
@@ -8,9 +9,43 @@ export async function storeEpisode(
   context: string,
   tags?: string[]
 ): Promise<MemoryEntry> {
-  const enrichedContext = tags
+  let enrichedContext = tags
     ? `${context} [tags: ${tags.join(', ')}]`
     : context;
+
+  // Use AI to enrich episode with structured who/what/when/where/why
+  try {
+    const enrichment = await generateJSON<{
+      who: string[];
+      what: string;
+      when: string;
+      where: string;
+      why: string;
+    }>(
+      `Extract structured episodic context from this content.
+
+Content: ${content}
+Context: ${context}
+
+Return a JSON object with:
+- who: array of people/entities involved
+- what: brief description of what happened
+- when: time reference if available, otherwise "unspecified"
+- where: location/channel if available, otherwise "unspecified"
+- why: purpose or reason if available, otherwise "unspecified"`,
+      { temperature: 0.2 }
+    );
+
+    const parts = [enrichedContext];
+    if (enrichment.who?.length) parts.push(`[who: ${enrichment.who.join(', ')}]`);
+    if (enrichment.what) parts.push(`[what: ${enrichment.what}]`);
+    if (enrichment.when && enrichment.when !== 'unspecified') parts.push(`[when: ${enrichment.when}]`);
+    if (enrichment.where && enrichment.where !== 'unspecified') parts.push(`[where: ${enrichment.where}]`);
+    if (enrichment.why && enrichment.why !== 'unspecified') parts.push(`[why: ${enrichment.why}]`);
+    enrichedContext = parts.join(' ');
+  } catch {
+    // Keep basic context on AI failure
+  }
 
   const entry = await prisma.memoryEntry.create({
     data: {
@@ -86,6 +121,34 @@ export async function recallEpisode(
     })
     .filter((r: MemorySearchResult | null): r is MemorySearchResult => r !== null)
     .sort((a: MemorySearchResult, b: MemorySearchResult) => b.relevanceScore - a.relevanceScore);
+
+  // Use AI for semantic matching and summarization of why each result matches
+  if (results.length > 0) {
+    try {
+      const aiResult = await generateText(
+        `Given this natural language query and search results, explain why each result is relevant.
+
+Query: "${naturalLanguageQuery}"
+
+Results:
+${results.slice(0, 5).map((r, i) => `${i + 1}. ${r.entry.content} (context: ${r.entry.context})`).join('\n')}
+
+For each result, provide a brief explanation of semantic relevance. Format as numbered lines matching the results.`,
+        { temperature: 0.3 }
+      );
+
+      // Append AI explanations to matched terms
+      const explanations = aiResult.split('\n').filter((l) => l.trim());
+      for (let i = 0; i < Math.min(explanations.length, results.length); i++) {
+        const cleaned = explanations[i].replace(/^\d+\.\s*/, '').trim();
+        if (cleaned) {
+          results[i].matchedTerms.push(`ai: ${cleaned}`);
+        }
+      }
+    } catch {
+      // Continue with keyword-only results on AI failure
+    }
+  }
 
   return results;
 }

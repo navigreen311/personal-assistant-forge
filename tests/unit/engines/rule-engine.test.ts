@@ -3,8 +3,16 @@ import {
   resolveConflicts,
   getWinningAction,
   getInheritedRules,
+  buildAuditTrail,
 } from '@/engines/policy/rule-engine';
 import type { EvaluatedRule } from '@/engines/policy/types';
+
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn().mockResolvedValue('AI-generated explanation'),
+  generateJSON: jest.fn().mockResolvedValue({}),
+  chat: jest.fn().mockResolvedValue('AI conversational response'),
+}));
 
 // Mock prisma
 jest.mock('@/lib/db', () => ({
@@ -17,8 +25,10 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+const mockGenerateText = generateText as jest.MockedFunction<typeof generateText>;
 
 describe('evaluateRules', () => {
   beforeEach(() => {
@@ -179,7 +189,7 @@ describe('evaluateRules', () => {
 });
 
 describe('resolveConflicts', () => {
-  it('should detect contradictory actions (BLOCK vs APPROVE)', () => {
+  it('should detect contradictory actions (BLOCK vs APPROVE)', async () => {
     const rules: EvaluatedRule[] = [
       {
         ruleId: 'r1',
@@ -201,12 +211,12 @@ describe('resolveConflicts', () => {
       },
     ];
 
-    const conflicts = resolveConflicts(rules);
+    const conflicts = await resolveConflicts(rules);
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0].conflictType).toBe('CONTRADICTORY_ACTIONS');
   });
 
-  it('should resolve by higher precedence first', () => {
+  it('should resolve by higher precedence first', async () => {
     const rules: EvaluatedRule[] = [
       {
         ruleId: 'r1',
@@ -228,12 +238,12 @@ describe('resolveConflicts', () => {
       },
     ];
 
-    const conflicts = resolveConflicts(rules);
+    const conflicts = await resolveConflicts(rules);
     expect(conflicts[0].resolution).toBe('HIGHER_PRECEDENCE');
     expect(conflicts[0].resolvedWinnerId).toBe('r1');
   });
 
-  it('should resolve by narrower scope when precedence is tied', () => {
+  it('should resolve by narrower scope when precedence is tied', async () => {
     const rules: EvaluatedRule[] = [
       {
         ruleId: 'r1',
@@ -255,12 +265,12 @@ describe('resolveConflicts', () => {
       },
     ];
 
-    const conflicts = resolveConflicts(rules);
+    const conflicts = await resolveConflicts(rules);
     expect(conflicts[0].resolution).toBe('NARROWER_SCOPE');
     expect(conflicts[0].resolvedWinnerId).toBe('r2');
   });
 
-  it('should flag MANUAL_REQUIRED when all resolution criteria tie', () => {
+  it('should flag MANUAL_REQUIRED when all resolution criteria tie', async () => {
     const rules: EvaluatedRule[] = [
       {
         ruleId: 'r1',
@@ -282,13 +292,68 @@ describe('resolveConflicts', () => {
       },
     ];
 
-    const conflicts = resolveConflicts(rules);
+    const conflicts = await resolveConflicts(rules);
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0].conflictType).toBe('OVERLAPPING_SCOPE');
     expect(conflicts[0].resolution).toBe('MANUAL_REQUIRED');
   });
 
-  it('should return empty array when no conflicts exist', () => {
+  it('should call generateText for MANUAL_REQUIRED conflict explanations', async () => {
+    const rules: EvaluatedRule[] = [
+      {
+        ruleId: 'r1',
+        ruleName: 'Rule A',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'NOTIFY', config: {} },
+        precedence: 50,
+        scope: 'GLOBAL',
+      },
+      {
+        ruleId: 'r2',
+        ruleName: 'Rule B',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'NOTIFY', config: {} },
+        precedence: 50,
+        scope: 'GLOBAL',
+      },
+    ];
+
+    const conflicts = await resolveConflicts(rules);
+    expect(conflicts[0].resolution).toBe('MANUAL_REQUIRED');
+    expect(mockGenerateText).toHaveBeenCalled();
+    expect(conflicts[0].explanation).toBe('AI-generated explanation');
+  });
+
+  it('should not call AI for auto-resolved conflicts', async () => {
+    mockGenerateText.mockClear();
+    const rules: EvaluatedRule[] = [
+      {
+        ruleId: 'r1',
+        ruleName: 'High Prec',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'BLOCK', config: {} },
+        precedence: 100,
+        scope: 'GLOBAL',
+      },
+      {
+        ruleId: 'r2',
+        ruleName: 'Low Prec',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'APPROVE', config: {} },
+        precedence: 50,
+        scope: 'GLOBAL',
+      },
+    ];
+
+    await resolveConflicts(rules);
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it('should return empty array when no conflicts exist', async () => {
     const rules: EvaluatedRule[] = [
       {
         ruleId: 'r1',
@@ -310,8 +375,72 @@ describe('resolveConflicts', () => {
       },
     ];
 
-    const conflicts = resolveConflicts(rules);
+    const conflicts = await resolveConflicts(rules);
     expect(conflicts).toHaveLength(0);
+  });
+});
+
+describe('buildAuditTrail (AI-powered)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should call generateText to produce human-readable explanation', async () => {
+    const rules: EvaluatedRule[] = [
+      {
+        ruleId: 'r1',
+        ruleName: 'Test Rule',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'NOTIFY', config: {} },
+        precedence: 100,
+        scope: 'GLOBAL',
+      },
+    ];
+
+    const trail = await buildAuditTrail('action-1', rules, ['email-inbox']);
+    expect(mockGenerateText).toHaveBeenCalled();
+    expect(trail.explanation).toBe('AI-generated explanation');
+  });
+
+  it('should include evaluated rules and winning action in prompt', async () => {
+    const rules: EvaluatedRule[] = [
+      {
+        ruleId: 'r1',
+        ruleName: 'Escalate Rule',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'ESCALATE', config: {} },
+        precedence: 100,
+        scope: 'ENTITY',
+      },
+    ];
+
+    await buildAuditTrail('action-2', rules, ['crm-data']);
+    const callArgs = mockGenerateText.mock.calls[0][0];
+    expect(callArgs).toContain('Escalate Rule');
+    expect(callArgs).toContain('ESCALATE');
+    expect(callArgs).toContain('crm-data');
+  });
+
+  it('should handle AI failure with fallback static explanation', async () => {
+    mockGenerateText.mockRejectedValueOnce(new Error('AI unavailable'));
+
+    const rules: EvaluatedRule[] = [
+      {
+        ruleId: 'r1',
+        ruleName: 'Test Rule',
+        matched: true,
+        conditionResults: [],
+        action: { type: 'NOTIFY', config: {} },
+        precedence: 100,
+        scope: 'GLOBAL',
+      },
+    ];
+
+    const trail = await buildAuditTrail('action-3', rules, []);
+    expect(trail.explanation).toContain('Test Rule');
+    expect(trail.explanation).toContain('NOTIFY');
   });
 });
 

@@ -1,3 +1,4 @@
+import { generateJSON } from '@/lib/ai';
 import type { AhaMoment } from './types';
 
 const AHA_MOMENTS: AhaMoment[] = [
@@ -61,6 +62,34 @@ export async function checkAhaMomentProgress(userId: string): Promise<{
     guidanceMessage = `Welcome! Your first milestone is: "${next.description}". This typically happens around day ${next.targetDay}.`;
   } else {
     guidanceMessage = `Great progress! ${completed.length}/${AHA_MOMENTS.length} milestones completed. Next up: "${next.description}" (target: day ${next.targetDay}).`;
+  }
+
+  // Use AI to generate celebratory and engaging messages
+  try {
+    const aiResult = await generateJSON<{
+      guidanceMessage: string;
+      celebration?: string;
+    }>(
+      `Generate an engaging aha-moment progress message for a user.
+
+Completed milestones (${completed.length}/${AHA_MOMENTS.length}):
+${completed.map((m) => `- ${m.description} (retention correlation: ${m.retentionCorrelation})`).join('\n') || 'None yet'}
+
+Next milestone: ${next ? `"${next.description}" (target day: ${next.targetDay})` : 'All completed!'}
+
+Return JSON with:
+- guidanceMessage: a personalized, motivating guidance message (1-2 sentences)
+- celebration: if milestones were completed, a brief celebratory note`,
+      { temperature: 0.6 }
+    );
+
+    if (aiResult.guidanceMessage) {
+      guidanceMessage = aiResult.celebration
+        ? `${aiResult.celebration} ${aiResult.guidanceMessage}`
+        : aiResult.guidanceMessage;
+    }
+  } catch {
+    // Keep fallback guidance message
   }
 
   return { completed, next, guidanceMessage };

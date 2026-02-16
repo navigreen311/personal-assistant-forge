@@ -1,19 +1,16 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { getMemoryStats } from '@/engines/memory/memory-service';
+import { withAuth } from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = request.nextUrl;
-    const userId = searchParams.get('userId');
-
-    if (!userId) {
-      return error('VALIDATION_ERROR', 'userId query parameter is required', 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const stats = await getMemoryStats(session.userId);
+      return success(stats);
+    } catch (err) {
+      return error('INTERNAL_ERROR', (err as Error).message, 500);
     }
-
-    const stats = await getMemoryStats(userId);
-    return success(stats);
-  } catch (err) {
-    return error('INTERNAL_ERROR', (err as Error).message, 500);
-  }
+  });
 }

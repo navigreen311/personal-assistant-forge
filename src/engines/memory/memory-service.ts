@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { MemoryEntry, MemoryType } from '@/shared/types';
 import type { MemorySearchQuery, MemorySearchResult, MemoryStats } from './types';
 import { getDecayConfig } from './decay-service';
@@ -93,7 +94,49 @@ export async function searchMemories(
     .filter((r: MemorySearchResult | null): r is MemorySearchResult => r !== null)
     .sort((a: MemorySearchResult, b: MemorySearchResult) => b.relevanceScore - a.relevanceScore);
 
-  return query.limit ? results.slice(0, query.limit) : results;
+  const keywordResults = query.limit ? results.slice(0, query.limit) : results;
+
+  // Use AI for semantic re-ranking of top results
+  if (keywordResults.length > 1) {
+    try {
+      const topResults = keywordResults.slice(0, 10);
+      const aiRanking = await generateJSON<{ rankedIds: string[] }>(
+        `Re-rank these memory search results by semantic relevance to the query.
+
+Query: "${query.query}"
+
+Results (id -> content):
+${topResults.map((r, i) => `${i}. [${r.entry.id}] ${r.entry.content} (context: ${r.entry.context})`).join('\n')}
+
+Return a JSON object with a "rankedIds" array containing the ids in order of true semantic relevance to the query (most relevant first).`,
+        { temperature: 0.2 }
+      );
+
+      if (aiRanking.rankedIds && Array.isArray(aiRanking.rankedIds)) {
+        const resultMap = new Map(topResults.map((r) => [r.entry.id, r]));
+        const reranked: MemorySearchResult[] = [];
+
+        for (const id of aiRanking.rankedIds) {
+          const result = resultMap.get(id);
+          if (result) {
+            reranked.push(result);
+            resultMap.delete(id);
+          }
+        }
+        // Append any results not in the AI ranking
+        for (const remaining of resultMap.values()) {
+          reranked.push(remaining);
+        }
+        // Append any results beyond the top 10 that weren't re-ranked
+        reranked.push(...keywordResults.slice(10));
+        return reranked;
+      }
+    } catch {
+      // Fall back to keyword ranking on AI failure
+    }
+  }
+
+  return keywordResults;
 }
 
 export async function getMemoriesByType(
