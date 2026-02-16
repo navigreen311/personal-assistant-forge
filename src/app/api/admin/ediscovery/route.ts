@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
+import { withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { requestExport, listExports } from '@/modules/admin/services/ediscovery-service';
 
@@ -14,27 +15,31 @@ const requestExportSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const entityId = request.nextUrl.searchParams.get('entityId');
-    if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
+  return withRole(request, ['admin'], async (req, session) => {
+    try {
+      const entityId = req.nextUrl.searchParams.get('entityId');
+      if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
 
-    const exports = await listExports(entityId);
-    return success(exports);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const exports = await listExports(entityId);
+      return success(exports);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = requestExportSchema.safeParse(body);
-    if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['admin'], async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = requestExportSchema.safeParse(body);
+      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-    const { entityId, requestedBy, dateRange, dataTypes } = parsed.data;
-    const exportRequest = await requestExport(entityId, requestedBy, dateRange, dataTypes);
-    return success(exportRequest, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const { entityId, dateRange, dataTypes } = parsed.data;
+      const exportRequest = await requestExport(entityId, session.userId, dateRange, dataTypes);
+      return success(exportRequest, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }

@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
+import { withAuth } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { generateDocument } from '@/modules/documents/services/document-generation-service';
 
@@ -19,14 +20,16 @@ const generateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = generateSchema.safeParse(body);
-    if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = generateSchema.safeParse(body);
+      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-    const doc = await generateDocument(parsed.data as Parameters<typeof generateDocument>[0]);
-    return success(doc, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const doc = await generateDocument(parsed.data as Parameters<typeof generateDocument>[0]);
+      return success(doc, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }

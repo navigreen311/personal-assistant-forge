@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { createHmac } from 'crypto';
+import { generateText } from '@/lib/ai';
 import type { WebhookConfig, WebhookEvent } from '../types';
 
 const webhookStore = new Map<string, WebhookConfig>();
@@ -94,6 +95,32 @@ export async function retryFailedEvent(eventId: string): Promise<WebhookEvent> {
 
   webhookEventStore.set(eventId, event);
   return event;
+}
+
+export async function getDebuggingSuggestions(eventId: string): Promise<string> {
+  const event = webhookEventStore.get(eventId);
+  if (!event) throw new Error(`Event ${eventId} not found`);
+
+  if (event.status !== 'FAILED') {
+    return 'Event was delivered successfully. No debugging needed.';
+  }
+
+  try {
+    return await generateText(
+      `A webhook event failed to deliver. Provide debugging suggestions.
+
+Event: ${event.event}
+Payload: ${JSON.stringify(event.payload)}
+Attempts: ${event.attempts}
+Response Status: ${event.response?.status || 'No response'}
+Response Body: ${event.response?.body || 'No body'}
+
+Provide 3-5 actionable debugging suggestions for why the webhook delivery failed and how to fix it.`,
+      { temperature: 0.5, maxTokens: 300 }
+    );
+  } catch {
+    return 'Unable to generate debugging suggestions. Check the webhook URL, ensure the endpoint is accessible, and verify the payload format.';
+  }
 }
 
 export function verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {

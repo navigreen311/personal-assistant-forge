@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateText, generateJSON } from '@/lib/ai';
 import type { ToneTrainingSample } from '../types';
 
 const sampleStore = new Map<string, ToneTrainingSample>();
@@ -13,11 +14,25 @@ const sampleTemplates: { text: string; context: string }[] = [
 
 export async function generateSample(userId: string, context: string): Promise<ToneTrainingSample> {
   const template = sampleTemplates[Math.floor(Math.random() * sampleTemplates.length)];
+  const sampleContext = context || template.context;
+
+  let sampleText = template.text;
+  try {
+    sampleText = await generateText(
+      `Generate a sample message for the following context: "${sampleContext}".
+
+Write a professional message that could be rated by the user for tone calibration. The message should be 1-3 sentences and appropriate for the context.`,
+      { temperature: 0.7, maxTokens: 200 }
+    );
+  } catch {
+    // Fall back to template
+  }
+
   const sample: ToneTrainingSample = {
     id: uuidv4(),
     userId,
-    sampleText: template.text,
-    context: context || template.context,
+    sampleText,
+    context: sampleContext,
     userRating: 0,
     adjustments: [],
   };
@@ -61,17 +76,46 @@ export async function applyTraining(userId: string): Promise<{ toneProfile: Reco
     adjustmentCounts.set(adj, (adjustmentCounts.get(adj) || 0) + 1);
   }
 
-  return {
-    toneProfile: {
-      averageRating: avgRating,
-      samplesRated: rated.length,
-      topAdjustments: Array.from(adjustmentCounts.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
-        .map(([adj]) => adj),
-      formality: avgRating >= 4 ? 'formal' : avgRating >= 3 ? 'balanced' : 'casual',
-    },
+  const fallbackProfile = {
+    averageRating: avgRating,
+    samplesRated: rated.length,
+    topAdjustments: Array.from(adjustmentCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([adj]) => adj),
+    formality: avgRating >= 4 ? 'formal' : avgRating >= 3 ? 'balanced' : 'casual',
   };
+
+  try {
+    const sampleData = rated.map((s) => ({
+      context: s.context,
+      text: s.sampleText,
+      rating: s.userRating,
+      adjustments: s.adjustments,
+    }));
+
+    const aiProfile = await generateJSON<Record<string, unknown>>(
+      `Analyze these tone training samples and synthesize a tone profile for this user.
+
+Samples:
+${JSON.stringify(sampleData, null, 2)}
+
+Produce a JSON object with:
+- "formality": "formal" | "balanced" | "casual"
+- "warmth": "warm" | "neutral" | "reserved"
+- "directness": "direct" | "diplomatic" | "indirect"
+- "preferredLength": "concise" | "moderate" | "detailed"
+- "topAdjustments": array of most requested adjustments
+- "averageRating": number
+- "samplesRated": number
+- "summary": one-sentence description of the user's preferred tone`,
+      { temperature: 0.5, maxTokens: 512 }
+    );
+
+    return { toneProfile: { ...fallbackProfile, ...aiProfile } };
+  } catch {
+    return { toneProfile: fallbackProfile };
+  }
 }
 
 export { sampleStore };

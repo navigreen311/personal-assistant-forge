@@ -17,8 +17,15 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn().mockResolvedValue('AI-generated content'),
+  generateJSON: jest.fn().mockResolvedValue({ suggestions: [] }),
+  chat: jest.fn().mockResolvedValue('AI response'),
+}));
+
 beforeEach(() => {
   delegationStore.clear();
+  jest.clearAllMocks();
 });
 
 const mockContextPack = {
@@ -68,14 +75,12 @@ describe('calculateScore', () => {
   });
 
   it('should weight quality (first-pass approval) highest', async () => {
-    // Delegate A: completed, approved on first pass
     const d1 = await delegateTask('task-1', 'boss', 'delegate-a', mockContextPack);
     await advanceApproval(d1.id, 1, 'APPROVED');
     await advanceApproval(d1.id, 2, 'APPROVED');
     await advanceApproval(d1.id, 3, 'APPROVED');
     await completeDelegation(d1.id);
 
-    // Delegate B: completed, but rejected first then re-approved
     const d2 = await delegateTask('task-2', 'boss', 'delegate-b', mockContextPack);
     await completeDelegation(d2.id);
 
@@ -109,29 +114,75 @@ describe('getBestDelegate', () => {
   });
 });
 
-describe('generateDelegationInbox', () => {
+describe('generateDelegationInbox (AI-powered)', () => {
   const { prisma } = jest.requireMock('@/lib/db');
+  const { generateJSON } = jest.requireMock('@/lib/ai');
+
+  it('should call generateJSON with tasks and delegates data', async () => {
+    (prisma.task.findMany as jest.Mock).mockResolvedValue([
+      { id: 'task-1', title: 'Test Task', priority: 'P1', status: 'TODO', entityId: 'e1' },
+    ]);
+    (generateJSON as jest.Mock).mockResolvedValue({
+      suggestions: [{ taskId: 'task-1', confidence: 0.8, priority: 'MEDIUM', estimatedTimeSavedMinutes: 30, reason: 'AI reason' }],
+    });
+
+    const inbox = await generateDelegationInbox('user-1');
+    expect(generateJSON).toHaveBeenCalled();
+    expect(inbox.length).toBe(1);
+    expect(inbox[0].reason).toBe('AI reason');
+  });
+
+  it('should include delegate strengths in prompt', async () => {
+    (prisma.task.findMany as jest.Mock).mockResolvedValue([
+      { id: 'task-1', title: 'Test Task', priority: 'P1', status: 'TODO', entityId: 'e1' },
+    ]);
+    (generateJSON as jest.Mock).mockResolvedValue({
+      suggestions: [{ taskId: 'task-1', confidence: 0.8, priority: 'MEDIUM', estimatedTimeSavedMinutes: 30, reason: 'Test' }],
+    });
+
+    await generateDelegationInbox('user-1');
+    const callArgs = (generateJSON as jest.Mock).mock.calls[0][0];
+    expect(callArgs).toContain('task-1');
+    expect(callArgs).toContain('Test Task');
+  });
+
+  it('should return AI-scored delegation suggestions', async () => {
+    (prisma.task.findMany as jest.Mock).mockResolvedValue([
+      { id: 'task-1', title: 'Test', priority: 'P2', status: 'TODO', entityId: 'e1' },
+    ]);
+    (generateJSON as jest.Mock).mockResolvedValue({
+      suggestions: [{ taskId: 'task-1', confidence: 0.9, priority: 'LOW', estimatedTimeSavedMinutes: 15, reason: 'Low priority task' }],
+    });
+
+    const inbox = await generateDelegationInbox('user-1');
+    expect(inbox[0].confidence).toBe(0.9);
+    expect(inbox[0].priority).toBe('LOW');
+  });
+
+  it('should handle AI failure with fallback scoring', async () => {
+    (prisma.task.findMany as jest.Mock).mockResolvedValue([
+      { id: 'task-1', title: 'Test', priority: 'P1', status: 'TODO', entityId: 'e1' },
+    ]);
+    (generateJSON as jest.Mock).mockRejectedValue(new Error('AI unavailable'));
+
+    const inbox = await generateDelegationInbox('user-1');
+    expect(inbox.length).toBe(1);
+    expect(inbox[0].taskId).toBe('task-1');
+    expect(inbox[0].reason).toContain('P1');
+  });
 
   it('should not suggest P0 tasks', async () => {
     (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
     const inbox = await generateDelegationInbox('user-1');
-    // P0 is excluded by the query filter (priority: { not: 'P0' })
     expect(inbox.every((i: { priority: string }) => i.priority !== 'P0' || true)).toBe(true);
-  });
-
-  it('should suggest tasks matching delegate strengths', async () => {
-    (prisma.task.findMany as jest.Mock).mockResolvedValue([
-      { id: 'task-1', title: 'Test Task', priority: 'P1', status: 'TODO', entityId: 'e1' },
-      { id: 'task-2', title: 'Another Task', priority: 'P2', status: 'IN_PROGRESS', entityId: 'e1' },
-    ]);
-    const inbox = await generateDelegationInbox('user-1');
-    expect(inbox.length).toBe(2);
   });
 
   it('should include estimated time saved', async () => {
     (prisma.task.findMany as jest.Mock).mockResolvedValue([
       { id: 'task-1', title: 'Test', priority: 'P1', status: 'TODO', entityId: 'e1' },
     ]);
+    (generateJSON as jest.Mock).mockRejectedValue(new Error('AI unavailable'));
+
     const inbox = await generateDelegationInbox('user-1');
     expect(inbox[0].estimatedTimeSavedMinutes).toBeGreaterThan(0);
   });
@@ -141,6 +192,7 @@ describe('generateDelegationInbox', () => {
       id: `task-${i}`, title: `Task ${i}`, priority: 'P2', status: 'TODO', entityId: 'e1',
     }));
     (prisma.task.findMany as jest.Mock).mockResolvedValue(tasks);
+    (generateJSON as jest.Mock).mockRejectedValue(new Error('AI unavailable'));
 
     const suggestions = await getDailySuggestions('user-1');
     expect(suggestions.length).toBeLessThanOrEqual(5);

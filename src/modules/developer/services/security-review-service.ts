@@ -1,3 +1,4 @@
+import { generateJSON } from '@/lib/ai';
 import type { PluginSecurityReview } from '../types';
 import { pluginStore } from './plugin-service';
 
@@ -56,6 +57,43 @@ export async function conductReview(
       severity: 'MEDIUM',
       description: 'Plugin requests more than 10 permissions. Review for least privilege.',
     });
+  }
+
+  // AI-assisted security analysis
+  try {
+    const aiReview = await generateJSON<{ findings: { severity: string; description: string }[] }>(
+      `Perform a security review of this plugin.
+
+Plugin: ${plugin.name} v${plugin.version}
+Author: ${plugin.author}
+Permissions: ${JSON.stringify(plugin.permissions)}
+Entry Point: ${plugin.entryPoint}
+Config Schema: ${JSON.stringify(plugin.configSchema)}
+
+Analyze for:
+1. Principle of least privilege - are permissions minimal and necessary?
+2. Dangerous patterns - network access, file system access, credential access
+3. Isolation enforcement - could the plugin escape its sandbox?
+4. Configuration risks - could config values be exploited?
+
+Return JSON: { "findings": [{ "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO", "description": "finding description" }] }
+Only include genuine concerns, not trivial observations.`,
+      { temperature: 0.1, maxTokens: 512 }
+    );
+
+    if (aiReview.findings && Array.isArray(aiReview.findings)) {
+      for (const f of aiReview.findings) {
+        // Avoid duplicating findings already detected by rule-based checks
+        const isDuplicate = findings.some((existing) =>
+          existing.description.toLowerCase().includes(f.description.toLowerCase().slice(0, 30))
+        );
+        if (!isDuplicate) {
+          findings.push(f);
+        }
+      }
+    }
+  } catch {
+    // Rule-based findings still apply if AI fails
   }
 
   const status = findings.some((f) => f.severity === 'CRITICAL') ? 'REJECTED' as const

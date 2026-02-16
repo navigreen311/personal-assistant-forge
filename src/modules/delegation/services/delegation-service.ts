@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { DelegationTask, ContextPack, ApprovalStep } from '../types';
 
 // In-memory store for delegations (since no dedicated Prisma model)
@@ -107,10 +108,31 @@ export async function buildContextPack(taskId: string): Promise<ContextPack> {
     orderBy: { createdAt: 'desc' },
   });
 
+  const docIds = documents.map((d: { id: string }) => d.id);
+  const msgIds = messages.map((m: { id: string }) => m.id);
+
+  let summary = `Context for task: ${task.title}${task.description ? ' - ' + task.description : ''}`;
+  try {
+    summary = await generateText(
+      `Summarize the following task context for a delegate who will take over this work.
+
+Task: ${task.title}
+Description: ${task.description || 'No description'}
+Due Date: ${task.dueDate ? task.dueDate.toISOString() : 'No due date'}
+Related Documents: ${docIds.length} documents
+Recent Messages: ${msgIds.length} messages
+
+Produce a concise context summary (2-3 sentences) that helps the delegate understand the task scope, urgency, and key considerations.`,
+      { temperature: 0.5, maxTokens: 256 }
+    );
+  } catch {
+    // Fallback to static summary if AI fails
+  }
+
   return {
-    summary: `Context for task: ${task.title}${task.description ? ' - ' + task.description : ''}`,
-    relevantDocuments: documents.map((d: { id: string }) => d.id),
-    relevantMessages: messages.map((m: { id: string }) => m.id),
+    summary,
+    relevantDocuments: docIds,
+    relevantMessages: msgIds,
     relevantContacts: [],
     deadlines: task.dueDate
       ? [{ description: 'Task due date', date: task.dueDate }]
