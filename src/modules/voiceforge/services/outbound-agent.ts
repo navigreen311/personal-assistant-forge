@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import { MockVoiceProvider } from '@/lib/voice/mock-provider';
 import { checkConsentRequirements, verifyConsent } from '@/lib/voice/consent-manager';
+import { updateStats } from '@/modules/voiceforge/services/campaign-service';
 import type {
   OutboundCallRequest,
   OutboundCallResult,
@@ -131,6 +132,24 @@ export function checkGuardrails(
     shouldEscalate,
     escalationReason,
   };
+}
+
+/**
+ * Initiate an outbound call as part of a campaign and update campaign stats.
+ */
+export async function initiateOutboundCallForCampaign(
+  request: OutboundCallRequest & { campaignId: string }
+): Promise<OutboundCallResult> {
+  const result = await initiateOutboundCall(request);
+
+  // Update campaign stats
+  try {
+    await updateStats(request.campaignId, result);
+  } catch {
+    // Stats update failed -- call still succeeded
+  }
+
+  return result;
 }
 
 function extractExcerpt(text: string, keyword: string): string {
