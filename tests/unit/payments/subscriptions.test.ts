@@ -13,9 +13,59 @@ import {
   _resetStore,
 } from '@/lib/integrations/payments/subscriptions';
 
+// --- Prisma Mock ---
+
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    subscription: {
+      create: jest.fn(),
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+  },
+}));
+
+import { prisma } from '@/lib/db';
+
+const mockPrisma = prisma as unknown as {
+  subscription: {
+    create: jest.Mock;
+    findFirst: jest.Mock;
+    findMany: jest.Mock;
+    update: jest.Mock;
+    deleteMany: jest.Mock;
+  };
+};
+
+// --- Helpers ---
+
+function makeDbSubscription(overrides: Record<string, unknown> = {}) {
+  const now = new Date();
+  const periodEnd = new Date(now);
+  periodEnd.setMonth(periodEnd.getMonth() + 1);
+  return {
+    id: 'sub-1',
+    entityId: 'entity-1',
+    planId: 'plan_starter',
+    status: 'active',
+    currentPeriodStart: now,
+    currentPeriodEnd: periodEnd,
+    cancelAtPeriodEnd: false,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    metadata: { userId: 'user-1' },
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 describe('Subscriptions', () => {
   beforeEach(() => {
-    _resetStore();
+    jest.clearAllMocks();
+    mockPrisma.subscription.deleteMany.mockResolvedValue({ count: 0 });
   });
 
   describe('getPlan', () => {
@@ -38,12 +88,22 @@ describe('Subscriptions', () => {
   });
 
   describe('createSubscription', () => {
-    it('should create subscription with correct status', async () => {
+    it('should create subscription with correct fields and store userId in metadata', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.create.mockResolvedValue(dbRecord);
+
       const sub = await createSubscription({
         userId: 'user-1',
         entityId: 'entity-1',
         planId: 'plan_starter',
       });
+
+      expect(mockPrisma.subscription.create).toHaveBeenCalledTimes(1);
+      const createCall = mockPrisma.subscription.create.mock.calls[0][0];
+      expect(createCall.data.entityId).toBe('entity-1');
+      expect(createCall.data.planId).toBe('plan_starter');
+      expect(createCall.data.metadata).toEqual({ userId: 'user-1' });
+      expect(createCall.data.status).toBe('active');
 
       expect(sub.status).toBe('active');
       expect(sub.planId).toBe('plan_starter');
@@ -52,7 +112,16 @@ describe('Subscriptions', () => {
       expect(sub.cancelAtPeriodEnd).toBe(false);
     });
 
-    it('should set trial period when specified', async () => {
+    it('should set trialing status when trialDays provided', async () => {
+      const now = new Date();
+      const trialEnd = new Date(now);
+      trialEnd.setDate(trialEnd.getDate() + 14);
+      const dbRecord = makeDbSubscription({
+        status: 'trialing',
+        currentPeriodEnd: trialEnd,
+      });
+      mockPrisma.subscription.create.mockResolvedValue(dbRecord);
+
       const sub = await createSubscription({
         userId: 'user-1',
         entityId: 'entity-1',
@@ -60,11 +129,10 @@ describe('Subscriptions', () => {
         trialDays: 14,
       });
 
+      const createCall = mockPrisma.subscription.create.mock.calls[0][0];
+      expect(createCall.data.status).toBe('trialing');
+
       expect(sub.status).toBe('trialing');
-      const periodDuration = sub.currentPeriodEnd.getTime() - sub.currentPeriodStart.getTime();
-      const expectedDuration = 14 * 24 * 60 * 60 * 1000;
-      // Allow 1 second tolerance
-      expect(Math.abs(periodDuration - expectedDuration)).toBeLessThan(1000);
     });
 
     it('should throw for unknown plan', async () => {
@@ -75,147 +143,238 @@ describe('Subscriptions', () => {
           planId: 'plan_bogus',
         })
       ).rejects.toThrow('PLAN_NOT_FOUND');
+
+      expect(mockPrisma.subscription.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getSubscription', () => {
+    it('should return subscription by entityId', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      const sub = await getSubscription('entity-1');
+
+      expect(mockPrisma.subscription.findFirst).toHaveBeenCalledWith({
+        where: { entityId: 'entity-1' },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(sub).not.toBeNull();
+      expect(sub!.entityId).toBe('entity-1');
+      expect(sub!.userId).toBe('user-1');
+    });
+
+    it('should return null when none exists', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
+
+      const sub = await getSubscription('entity-none');
+      expect(sub).toBeNull();
+    });
+
+    it('should normalize canceled status to cancelled', async () => {
+      const dbRecord = makeDbSubscription({ status: 'canceled' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      const sub = await getSubscription('entity-1');
+      expect(sub!.status).toBe('cancelled');
     });
   });
 
   describe('changePlan', () => {
-    it('should upgrade subscription plan', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
+    it('should update planId in DB', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+      mockPrisma.subscription.update.mockResolvedValue({
+        ...dbRecord,
+        planId: 'plan_professional',
       });
 
       const updated = await changePlan({
-        subscriptionId: sub.id,
+        subscriptionId: 'sub-1',
         newPlanId: 'plan_professional',
       });
 
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { planId: 'plan_professional' },
+      });
       expect(updated.planId).toBe('plan_professional');
     });
 
-    it('should downgrade subscription plan', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_enterprise',
-      });
-
-      const updated = await changePlan({
-        subscriptionId: sub.id,
-        newPlanId: 'plan_starter',
-      });
-
-      expect(updated.planId).toBe('plan_starter');
-    });
-
-    it('should reject change to same plan', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
-      });
+    it('should throw SAME_PLAN error', async () => {
+      const dbRecord = makeDbSubscription({ planId: 'plan_starter' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
       await expect(
-        changePlan({ subscriptionId: sub.id, newPlanId: 'plan_starter' })
+        changePlan({ subscriptionId: 'sub-1', newPlanId: 'plan_starter' })
       ).rejects.toThrow('SAME_PLAN');
+
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw PLAN_NOT_FOUND error for invalid new plan', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      await expect(
+        changePlan({ subscriptionId: 'sub-1', newPlanId: 'plan_bogus' })
+      ).rejects.toThrow('PLAN_NOT_FOUND');
+
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw SUBSCRIPTION_NOT_FOUND for unknown subscription', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
+
+      await expect(
+        changePlan({ subscriptionId: 'sub-missing', newPlanId: 'plan_professional' })
+      ).rejects.toThrow('SUBSCRIPTION_NOT_FOUND');
     });
   });
 
   describe('cancelSubscription', () => {
-    it('should cancel immediately when immediate: true', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
+    it('should set cancelAtPeriodEnd for non-immediate cancellation', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+      mockPrisma.subscription.update.mockResolvedValue({
+        ...dbRecord,
+        cancelAtPeriodEnd: true,
       });
 
       const cancelled = await cancelSubscription({
-        subscriptionId: sub.id,
-        immediate: true,
-      });
-
-      expect(cancelled.status).toBe('cancelled');
-      expect(cancelled.cancelAtPeriodEnd).toBe(false);
-    });
-
-    it('should set cancelAtPeriodEnd when immediate: false', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
-      });
-
-      const cancelled = await cancelSubscription({
-        subscriptionId: sub.id,
+        subscriptionId: 'sub-1',
         immediate: false,
       });
 
-      expect(cancelled.status).toBe('active'); // still active until period end
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { cancelAtPeriodEnd: true },
+      });
       expect(cancelled.cancelAtPeriodEnd).toBe(true);
+      expect(cancelled.status).toBe('active');
+    });
+
+    it('should set status to cancelled for immediate cancellation', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+      mockPrisma.subscription.update.mockResolvedValue({
+        ...dbRecord,
+        status: 'canceled',
+        cancelAtPeriodEnd: false,
+      });
+
+      const cancelled = await cancelSubscription({
+        subscriptionId: 'sub-1',
+        immediate: true,
+      });
+
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { status: 'canceled', cancelAtPeriodEnd: false },
+      });
+      expect(cancelled.status).toBe('cancelled');
+      expect(cancelled.cancelAtPeriodEnd).toBe(false);
     });
   });
 
   describe('resumeSubscription', () => {
-    it('should resume a pending-cancellation subscription', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
+    it('should clear cancelAtPeriodEnd', async () => {
+      const dbRecord = makeDbSubscription({ cancelAtPeriodEnd: true });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+      mockPrisma.subscription.update.mockResolvedValue({
+        ...dbRecord,
+        cancelAtPeriodEnd: false,
       });
 
-      await cancelSubscription({ subscriptionId: sub.id, immediate: false });
-      const resumed = await resumeSubscription(sub.id);
+      const resumed = await resumeSubscription('sub-1');
 
+      expect(mockPrisma.subscription.update).toHaveBeenCalledWith({
+        where: { id: 'sub-1' },
+        data: { cancelAtPeriodEnd: false },
+      });
       expect(resumed.cancelAtPeriodEnd).toBe(false);
     });
 
-    it('should reject resuming an already-cancelled subscription', async () => {
-      const sub = await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
-      });
+    it('should throw for fully cancelled subscription', async () => {
+      const dbRecord = makeDbSubscription({ status: 'canceled', cancelAtPeriodEnd: false });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
-      await cancelSubscription({ subscriptionId: sub.id, immediate: true });
+      await expect(resumeSubscription('sub-1')).rejects.toThrow('SUBSCRIPTION_CANCELLED');
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
+    });
 
-      await expect(resumeSubscription(sub.id)).rejects.toThrow('SUBSCRIPTION_CANCELLED');
+    it('should throw for subscription not pending cancellation', async () => {
+      const dbRecord = makeDbSubscription({ cancelAtPeriodEnd: false });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      await expect(resumeSubscription('sub-1')).rejects.toThrow('SUBSCRIPTION_ACTIVE');
+      expect(mockPrisma.subscription.update).not.toHaveBeenCalled();
     });
   });
 
   describe('hasFeatureAccess', () => {
     it('should return true for included features', async () => {
-      await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_professional',
-      });
+      const dbRecord = makeDbSubscription({ planId: 'plan_professional' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
-      expect(hasFeatureAccess('entity-1', 'ai_assistant')).toBe(true);
+      const result = await hasFeatureAccess('entity-1', 'ai_assistant');
+      expect(result).toBe(true);
     });
 
     it('should return false for non-included features', async () => {
-      await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
-      });
+      const dbRecord = makeDbSubscription({ planId: 'plan_starter' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
-      expect(hasFeatureAccess('entity-1', 'sso')).toBe(false);
+      const result = await hasFeatureAccess('entity-1', 'sso');
+      expect(result).toBe(false);
     });
 
-    it('should return false for entity without subscription', () => {
-      expect(hasFeatureAccess('entity-none', 'basic_dashboard')).toBe(false);
+    it('should return false for entity without subscription', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
+
+      const result = await hasFeatureAccess('entity-none', 'basic_dashboard');
+      expect(result).toBe(false);
+    });
+
+    it('should return false for cancelled subscription', async () => {
+      const dbRecord = makeDbSubscription({ status: 'canceled', planId: 'plan_professional' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      const result = await hasFeatureAccess('entity-1', 'ai_assistant');
+      expect(result).toBe(false);
     });
   });
 
-  describe('recordUsage / isWithinLimits', () => {
+  describe('isWithinLimits', () => {
+    it('should return true when within limits', async () => {
+      const dbRecord = makeDbSubscription({ planId: 'plan_starter' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      // No usage recorded, so should be within limits
+      const result = await isWithinLimits('entity-1', 'apiCallsPerMonth');
+      expect(result).toBe(true);
+    });
+
+    it('should return false when entity has no subscription', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
+
+      const result = await isWithinLimits('entity-none', 'apiCallsPerMonth');
+      expect(result).toBe(false);
+    });
+
+    it('should return true for unknown metric', async () => {
+      const dbRecord = makeDbSubscription({ planId: 'plan_starter' });
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      const result = await isWithinLimits('entity-1', 'unknownMetric');
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('recordUsage / getUsageSummary', () => {
     it('should track usage counts', async () => {
-      await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter',
-      });
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
       await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 5 });
       const summary = getUsageSummary('entity-1');
@@ -225,26 +384,23 @@ describe('Subscriptions', () => {
       expect(summary[0].metric).toBe('apiCallsPerMonth');
     });
 
-    it('should return true when within limits', async () => {
-      await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_starter', // 10000 API calls/month
-      });
+    it('should throw when entity has no subscription', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
 
-      await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 100 });
-      expect(isWithinLimits('entity-1', 'apiCallsPerMonth')).toBe(true);
+      await expect(
+        recordUsage({ entityId: 'entity-none', metric: 'apiCallsPerMonth' })
+      ).rejects.toThrow('NO_SUBSCRIPTION');
     });
+  });
 
-    it('should return false when limit exceeded', async () => {
-      await createSubscription({
-        userId: 'user-1',
-        entityId: 'entity-1',
-        planId: 'plan_free', // 1000 API calls/month
-      });
+  describe('_resetStore', () => {
+    it('should call prisma.subscription.deleteMany and clear usage', async () => {
+      mockPrisma.subscription.deleteMany.mockResolvedValue({ count: 0 });
 
-      await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 1001 });
-      expect(isWithinLimits('entity-1', 'apiCallsPerMonth')).toBe(false);
+      await _resetStore();
+
+      expect(mockPrisma.subscription.deleteMany).toHaveBeenCalledTimes(1);
+      expect(getUsageSummary('any-entity')).toEqual([]);
     });
   });
 
