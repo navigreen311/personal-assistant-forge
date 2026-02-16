@@ -1,5 +1,14 @@
 import { BatchCaptureService } from '@/modules/capture/services/batch-capture';
 
+// Mock Prisma
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    document: {
+      create: jest.fn().mockResolvedValue({ id: 'doc-batch-1' }),
+    },
+  },
+}));
+
 // Mock capture service
 jest.mock('@/modules/capture/services/capture-service', () => {
   const items = new Map<string, Record<string, unknown>>();
@@ -42,6 +51,9 @@ jest.mock('@/modules/capture/services/capture-service', () => {
 
 describe('BatchCapture', () => {
   let service: BatchCaptureService;
+  const { prisma } = jest.requireMock('@/lib/db') as {
+    prisma: { document: { create: jest.Mock } };
+  };
 
   beforeEach(() => {
     service = new BatchCaptureService();
@@ -97,6 +109,13 @@ describe('BatchCapture', () => {
       expect(item.source).toBe('MANUAL');
     });
 
+    it('should accept custom contentType', () => {
+      const session = service.startBatchSession('user-1');
+      const item = service.addToBatch(session.id, 'Image capture', 'CAMERA_SCAN', 'IMAGE');
+
+      expect(item.contentType).toBe('IMAGE');
+    });
+
     it('should throw for non-existent session', () => {
       expect(() =>
         service.addToBatch('fake-session', 'Content'),
@@ -113,6 +132,26 @@ describe('BatchCapture', () => {
       expect(() =>
         service.addToBatch(session.id, 'Too late'),
       ).toThrow('not active');
+    });
+
+    it('should validate non-empty rawContent', () => {
+      const session = service.startBatchSession('user-1');
+
+      expect(() =>
+        service.addToBatch(session.id, ''),
+      ).toThrow('rawContent must be non-empty');
+
+      expect(() =>
+        service.addToBatch(session.id, '   '),
+      ).toThrow('rawContent must be non-empty');
+    });
+
+    it('should validate source is a valid CaptureSource', () => {
+      const session = service.startBatchSession('user-1');
+
+      expect(() =>
+        service.addToBatch(session.id, 'Content', 'INVALID_SOURCE' as never),
+      ).toThrow('Invalid source');
     });
   });
 
@@ -160,6 +199,49 @@ describe('BatchCapture', () => {
       await expect(
         service.completeBatch('fake-session'),
       ).rejects.toThrow('Batch session "fake-session" not found');
+    });
+
+    it('should mark individual items as FAILED on processing error', async () => {
+      const { captureService } = jest.requireMock(
+        '@/modules/capture/services/capture-service',
+      ) as { captureService: { processCapture: jest.Mock; createCapture: jest.Mock } };
+
+      // Make processCapture fail for one item
+      captureService.processCapture
+        .mockRejectedValueOnce(new Error('Processing failed'));
+
+      const session = service.startBatchSession('user-1');
+      service.addToBatch(session.id, 'Will fail');
+      service.addToBatch(session.id, 'Will succeed');
+
+      const results = await service.completeBatch(session.id);
+      expect(results.length).toBe(2);
+      expect(results[0].status).toBe('FAILED');
+      expect(results[1].status).toBe('ROUTED');
+    });
+
+    it('should store batch summary Document with item counts', async () => {
+      const session = service.startBatchSession('user-1');
+      service.addToBatch(session.id, 'Item 1');
+      service.addToBatch(session.id, 'Item 2');
+
+      await service.completeBatch(session.id);
+
+      expect(prisma.document.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          title: expect.stringContaining('Batch Capture'),
+          type: 'BATCH_CAPTURE',
+          status: 'APPROVED',
+          entityId: 'user-1',
+        }),
+      });
+
+      // Verify content includes counts
+      const callArg = prisma.document.create.mock.calls[0][0];
+      const content = JSON.parse(callArg.data.content);
+      expect(content.itemCount).toBe(2);
+      expect(content.successCount).toBe(2);
+      expect(content.failedCount).toBe(0);
     });
   });
 
