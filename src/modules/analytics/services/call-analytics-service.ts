@@ -1,6 +1,8 @@
 import { prisma } from '@/lib/db';
-import { generateText } from '@/lib/ai';
+import { generateText, generateJSON } from '@/lib/ai';
 import type { CallAnalytics } from '../types';
+
+// --- Core call analytics (Phase 2) ---
 
 export async function getCallAnalytics(
   entityId: string,
@@ -44,7 +46,7 @@ export async function getCallAnalytics(
     callsWithSentiment.length > 0
       ? Math.round(
           (callsWithSentiment.reduce(
-            (sum: number, c: any) => sum + (c.sentiment ?? 0), 
+            (sum: number, c: any) => sum + (c.sentiment ?? 0),
             0
           ) /
             callsWithSentiment.length) *
@@ -70,9 +72,8 @@ export async function getCallAnalytics(
 
   const roiPerCallType = Array.from(callsByDirection.entries()).map(
     ([callType, data]) => {
-      // Estimate: revenue from connected calls, cost from time spent
       const avgDuration = data.totalDuration / data.count;
-      const averageCost = Math.round((avgDuration / 60) * 25 * 100) / 100; // $25/hr
+      const averageCost = Math.round((avgDuration / 60) * 25 * 100) / 100;
       const averageRevenue =
         callType === 'OUTBOUND'
           ? Math.round(averageCost * 3 * 100) / 100
@@ -149,9 +150,9 @@ export async function getCallTrend(
       },
     });
 
-    const connected = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
+    const connectedCount = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
     const connectRate =
-      calls.length > 0 ? Math.round((connected / calls.length) * 100) : 0;
+      calls.length > 0 ? Math.round((connectedCount / calls.length) * 100) : 0;
 
     trend.push({
       date: dayStart.toISOString().split('T')[0],
@@ -161,4 +162,224 @@ export async function getCallTrend(
   }
 
   return trend;
+}
+
+// --- Additional analytics functions (Phase 3) ---
+
+export async function getCallsPerPeriod(
+  entityId: string,
+  period: 'day' | 'week' | 'month',
+  dateRange?: { start: Date; end: Date }
+): Promise<{ period: string; count: number }[]> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const calls = await prisma.call.findMany({ where });
+
+  const groups = new Map<string, number>();
+  for (const call of calls) {
+    const d = new Date(call.createdAt);
+    let key: string;
+    if (period === 'day') {
+      key = d.toISOString().split('T')[0];
+    } else if (period === 'week') {
+      const weekStart = new Date(d);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      key = weekStart.toISOString().split('T')[0];
+    } else {
+      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([p, count]) => ({ period: p, count }));
+}
+
+export async function getAverageDuration(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<number> {
+  const where: Record<string, unknown> = {
+    entityId,
+    duration: { not: null },
+  };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const result = await prisma.call.aggregate({
+    where,
+    _avg: { duration: true },
+  });
+
+  return Math.round(result._avg.duration ?? 0);
+}
+
+export async function getSentimentDistribution(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ positive: number; neutral: number; negative: number }> {
+  const where: Record<string, unknown> = {
+    entityId,
+    sentiment: { not: null },
+  };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const calls = await prisma.call.findMany({ where });
+  if (calls.length === 0) {
+    return { positive: 0, neutral: 0, negative: 0 };
+  }
+
+  let positive = 0;
+  let neutral = 0;
+  let negative = 0;
+
+  for (const call of calls) {
+    const s = call.sentiment as number;
+    if (s > 0.3) positive++;
+    else if (s < -0.3) negative++;
+    else neutral++;
+  }
+
+  const total = calls.length;
+  return {
+    positive: Math.round((positive / total) * 100),
+    neutral: Math.round((neutral / total) * 100),
+    negative: Math.round((negative / total) * 100),
+  };
+}
+
+export async function getOutcomeRates(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ outcome: string; count: number; percentage: number }[]> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const calls = await prisma.call.findMany({ where });
+  const total = calls.length;
+  if (total === 0) return [];
+
+  const outcomeMap = new Map<string, number>();
+  for (const call of calls) {
+    const outcome = call.outcome ?? 'UNKNOWN';
+    outcomeMap.set(outcome, (outcomeMap.get(outcome) ?? 0) + 1);
+  }
+
+  return Array.from(outcomeMap.entries()).map(([outcome, count]) => ({
+    outcome,
+    count,
+    percentage: Math.round((count / total) * 100),
+  }));
+}
+
+export async function getTopCallers(
+  entityId: string,
+  limit = 10,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ contactId: string; contactName: string; callCount: number }[]> {
+  const where: Record<string, unknown> = {
+    entityId,
+    contactId: { not: null },
+  };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const calls = await prisma.call.findMany({ where });
+
+  const contactCounts = new Map<string, number>();
+  for (const call of calls) {
+    if (call.contactId) {
+      contactCounts.set(
+        call.contactId,
+        (contactCounts.get(call.contactId) ?? 0) + 1
+      );
+    }
+  }
+
+  const topContactIds = Array.from(contactCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+
+  if (topContactIds.length === 0) return [];
+
+  const contacts = await prisma.contact.findMany({
+    where: { id: { in: topContactIds.map(([id]) => id) } },
+    select: { id: true, name: true },
+  });
+
+  const contactMap = new Map<string, string>(
+    contacts.map((c: any) => [c.id, c.name])
+  );
+
+  return topContactIds.map(([contactId, callCount]) => ({
+    contactId,
+    contactName: contactMap.get(contactId) ?? 'Unknown',
+    callCount,
+  }));
+}
+
+export async function getCallTrends(
+  entityId: string
+): Promise<{ insights: string[]; busiestHour?: number; sentimentTrend?: string }> {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const calls = await prisma.call.findMany({
+    where: {
+      entityId,
+      createdAt: { gte: thirtyDaysAgo },
+    },
+  });
+
+  if (calls.length === 0) {
+    return { insights: ['No call data available for trend analysis.'] };
+  }
+
+  // Pre-compute stats for AI prompt
+  const outcomes: Record<string, number> = {};
+  for (const c of calls) {
+    const o = c.outcome ?? 'UNKNOWN';
+    outcomes[o] = (outcomes[o] ?? 0) + 1;
+  }
+  const withSentiment = calls.filter((c: any) => c.sentiment != null);
+  const avgSentiment = withSentiment.length > 0
+    ? (withSentiment.reduce((s: number, c: any) => s + (c.sentiment ?? 0), 0) / withSentiment.length).toFixed(2)
+    : 'N/A';
+  const withDuration = calls.filter((c: any) => c.duration != null);
+  const avgDur = withDuration.length > 0
+    ? Math.round(withDuration.reduce((s: number, c: any) => s + (c.duration ?? 0), 0) / withDuration.length)
+    : 0;
+
+  try {
+    const result = await generateJSON<{
+      insights: string[];
+      busiestHour?: number;
+      sentimentTrend?: string;
+    }>(
+      `Analyze this call data and provide trend insights in JSON format { "insights": ["..."], "busiestHour": <0-23>, "sentimentTrend": "improving|stable|declining" }.
+
+Total calls (30 days): ${calls.length}
+Outcomes: ${JSON.stringify(outcomes)}
+Avg sentiment: ${avgSentiment}
+Avg duration: ${avgDur}s
+
+Provide 2-3 actionable insights.`,
+      { temperature: 0.5, maxTokens: 256 }
+    );
+    return result;
+  } catch {
+    return {
+      insights: [`${calls.length} calls in the last 30 days. Connect and review sentiment trends manually.`],
+    };
+  }
 }

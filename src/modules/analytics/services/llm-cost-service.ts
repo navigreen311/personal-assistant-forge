@@ -4,31 +4,29 @@ import type { LLMCostDashboard } from '../types';
 
 const DEFAULT_BUDGET_CAP = 500; // $500/month default
 
+// --- Core cost dashboard (Phase 2, now uses UsageRecord) ---
+
 export async function getCostDashboard(
   entityId: string,
   period: string
 ): Promise<LLMCostDashboard> {
-  // Parse period to date range
   const { startDate, endDate } = parsePeriodRange(period);
 
-  // Get action logs with costs for this entity
-  const actionLogs = await prisma.actionLog.findMany({
+  // Query UsageRecord for this entity
+  const records = await prisma.usageRecord.findMany({
     where: {
-      actor: 'AI',
-      timestamp: { gte: startDate, lte: endDate },
+      entityId,
+      createdAt: { gte: startDate, lte: endDate },
     },
   });
 
-  // Aggregate by feature (actionType)
+  // Aggregate by module (feature)
   const featureMap = new Map<string, { cost: number; tokenCount: number }>();
-
-  for (const log of actionLogs) {
-    const feature = log.actionType;
-    const cost = log.cost ?? 0;
+  for (const rec of records) {
+    const feature = rec.module;
     const existing = featureMap.get(feature) ?? { cost: 0, tokenCount: 0 };
-    existing.cost += cost;
-    // Estimate token count from cost (rough: $0.01 per 1K tokens)
-    existing.tokenCount += Math.round(cost * 100000);
+    existing.cost += rec.cost;
+    existing.tokenCount += rec.inputTokens + rec.outputTokens;
     featureMap.set(feature, existing);
   }
 
@@ -45,10 +43,6 @@ export async function getCostDashboard(
 
   // Calculate projected month-end spend
   const now = new Date();
-  const daysInPeriod = Math.max(
-    1,
-    (endDate.getTime() - startDate.getTime()) / 86400000
-  );
   const daysElapsed = Math.max(
     1,
     (now.getTime() - startDate.getTime()) / 86400000
@@ -89,6 +83,284 @@ export async function getCostAlerts(entityId: string): Promise<string[]> {
   const dashboard = await getCostDashboard(entityId, period);
   return dashboard.alerts;
 }
+
+// --- Phase 3: UsageRecord aggregation functions ---
+
+export async function getCostsByModule(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<
+  {
+    module: string;
+    totalCost: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    requestCount: number;
+  }[]
+> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.usageRecord.findMany({ where });
+
+  const moduleMap = new Map<
+    string,
+    { cost: number; input: number; output: number; count: number }
+  >();
+  for (const rec of records) {
+    const existing = moduleMap.get(rec.module) ?? {
+      cost: 0,
+      input: 0,
+      output: 0,
+      count: 0,
+    };
+    existing.cost += rec.cost;
+    existing.input += rec.inputTokens;
+    existing.output += rec.outputTokens;
+    existing.count++;
+    moduleMap.set(rec.module, existing);
+  }
+
+  return Array.from(moduleMap.entries()).map(([module, data]) => ({
+    module,
+    totalCost: Math.round(data.cost * 100) / 100,
+    totalInputTokens: data.input,
+    totalOutputTokens: data.output,
+    requestCount: data.count,
+  }));
+}
+
+export async function getCostsByModel(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<
+  {
+    model: string;
+    totalCost: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    requestCount: number;
+  }[]
+> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.usageRecord.findMany({ where });
+
+  const modelMap = new Map<
+    string,
+    { cost: number; input: number; output: number; count: number }
+  >();
+  for (const rec of records) {
+    const existing = modelMap.get(rec.model) ?? {
+      cost: 0,
+      input: 0,
+      output: 0,
+      count: 0,
+    };
+    existing.cost += rec.cost;
+    existing.input += rec.inputTokens;
+    existing.output += rec.outputTokens;
+    existing.count++;
+    modelMap.set(rec.model, existing);
+  }
+
+  return Array.from(modelMap.entries()).map(([model, data]) => ({
+    model,
+    totalCost: Math.round(data.cost * 100) / 100,
+    totalInputTokens: data.input,
+    totalOutputTokens: data.output,
+    requestCount: data.count,
+  }));
+}
+
+export async function getCostsByPeriod(
+  entityId: string,
+  period: 'day' | 'week' | 'month',
+  dateRange?: { start: Date; end: Date }
+): Promise<{ period: string; cost: number; tokens: number }[]> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.usageRecord.findMany({ where });
+
+  const groups = new Map<string, { cost: number; tokens: number }>();
+  for (const rec of records) {
+    const d = new Date(rec.createdAt);
+    let key: string;
+    if (period === 'day') {
+      key = d.toISOString().split('T')[0];
+    } else if (period === 'week') {
+      const weekStart = new Date(d);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+      key = weekStart.toISOString().split('T')[0];
+    } else {
+      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+    const existing = groups.get(key) ?? { cost: 0, tokens: 0 };
+    existing.cost += rec.cost;
+    existing.tokens += rec.inputTokens + rec.outputTokens;
+    groups.set(key, existing);
+  }
+
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([p, data]) => ({
+      period: p,
+      cost: Math.round(data.cost * 100) / 100,
+      tokens: data.tokens,
+    }));
+}
+
+export async function getTotalCost(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<number> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const result = await prisma.usageRecord.aggregate({
+    where,
+    _sum: { cost: true },
+  });
+
+  return Math.round((result._sum.cost ?? 0) * 100) / 100;
+}
+
+export async function getCostTrend(
+  entityId: string,
+  periods: number
+): Promise<{ period: string; cost: number; changePercent: number }[]> {
+  const now = new Date();
+  const results: { period: string; cost: number; changePercent: number }[] = [];
+  let previousCost = 0;
+
+  for (let i = periods - 1; i >= 0; i--) {
+    const end = new Date(now);
+    end.setDate(end.getDate() - i * 7);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 7);
+
+    const cost = await getTotalCost(entityId, { start, end });
+    const changePercent =
+      previousCost > 0
+        ? Math.round(((cost - previousCost) / previousCost) * 100)
+        : 0;
+
+    results.push({
+      period: start.toISOString().split('T')[0],
+      cost,
+      changePercent,
+    });
+    previousCost = cost;
+  }
+
+  return results;
+}
+
+export async function getCostForecast(
+  entityId: string,
+  forecastDays: number
+): Promise<{ forecastedCost: number; confidence: number; basedOnDays: number }> {
+  // Get last 30 days of cost data for projection
+  const basedOnDays = 30;
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - basedOnDays);
+
+  const records = await prisma.usageRecord.findMany({
+    where: {
+      entityId,
+      createdAt: { gte: start, lte: end },
+    },
+  });
+
+  if (records.length === 0) {
+    return { forecastedCost: 0, confidence: 0, basedOnDays: 0 };
+  }
+
+  const totalCost = records.reduce((sum: number, r: any) => sum + r.cost, 0);
+  const actualDays = Math.max(
+    1,
+    (end.getTime() - start.getTime()) / 86400000
+  );
+  const dailyAvg = totalCost / actualDays;
+
+  // Simple linear projection
+  const forecastedCost = Math.round(dailyAvg * forecastDays * 100) / 100;
+
+  // Confidence based on data density (more records = higher confidence)
+  const confidence = Math.min(95, Math.round((records.length / basedOnDays) * 50 + 30));
+
+  return {
+    forecastedCost,
+    confidence,
+    basedOnDays: Math.round(actualDays),
+  };
+}
+
+export async function getTokenUsageSummary(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  avgTokensPerRequest: number;
+  mostExpensiveModule: string;
+}> {
+  const where: Record<string, unknown> = { entityId };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.usageRecord.findMany({ where });
+
+  if (records.length === 0) {
+    return {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      avgTokensPerRequest: 0,
+      mostExpensiveModule: 'none',
+    };
+  }
+
+  const totalInputTokens = records.reduce((s: number, r: any) => s + r.inputTokens, 0);
+  const totalOutputTokens = records.reduce((s: number, r: any) => s + r.outputTokens, 0);
+  const avgTokensPerRequest = Math.round(
+    (totalInputTokens + totalOutputTokens) / records.length
+  );
+
+  // Find most expensive module
+  const moduleCosts = new Map<string, number>();
+  for (const rec of records) {
+    moduleCosts.set(rec.module, (moduleCosts.get(rec.module) ?? 0) + rec.cost);
+  }
+  let mostExpensiveModule = 'none';
+  let maxCost = 0;
+  for (const [mod, cost] of moduleCosts) {
+    if (cost > maxCost) {
+      maxCost = cost;
+      mostExpensiveModule = mod;
+    }
+  }
+
+  return {
+    totalInputTokens,
+    totalOutputTokens,
+    avgTokensPerRequest,
+    mostExpensiveModule,
+  };
+}
+
+// --- Internal helpers ---
 
 async function getCostAlerts_internal(
   totalCost: number,
