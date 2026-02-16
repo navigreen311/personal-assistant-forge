@@ -47,6 +47,8 @@ export default function SettingsPage() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -102,6 +104,24 @@ export default function SettingsPage() {
     { key: 'apikeys', label: 'API Keys' },
     { key: 'danger', label: 'Danger Zone' },
   ];
+
+  const handleDeleteAccount = async () => {
+    try {
+      setDeleting(true);
+      setErrorMessage(null);
+      const res = await fetch('/api/settings', { method: 'DELETE' });
+      if (res.ok) {
+        window.location.href = '/login';
+      } else {
+        const json = await res.json();
+        setErrorMessage(json.error?.message || 'Failed to delete account.');
+      }
+    } catch {
+      setErrorMessage('Failed to delete account.');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -507,21 +527,38 @@ export default function SettingsPage() {
                   <p className="text-sm text-red-800 font-medium mb-3">
                     Are you sure? This will permanently delete your account.
                   </p>
+                  <label htmlFor="delete-confirm-input" className="block text-sm text-gray-700 mb-1">
+                    Type <strong>DELETE</strong> to confirm:
+                  </label>
+                  <input
+                    id="delete-confirm-input"
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder="DELETE"
+                    disabled={deleting}
+                    className="w-full max-w-xs p-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500 mb-3"
+                  />
                   <div className="flex gap-3">
                     <button
-                      onClick={() => setShowDeleteConfirm(false)}
+                      onClick={() => {
+                        setShowDeleteConfirm(false);
+                        setDeleteConfirmText('');
+                      }}
+                      disabled={deleting}
                       className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
                     >
                       Cancel
                     </button>
                     <button
-                      className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                      onClick={handleDeleteAccount}
+                      disabled={deleteConfirmText !== 'DELETE' || deleting}
+                      className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       aria-label="Confirm account deletion"
                     >
-                      Confirm Delete
+                      {deleting ? 'Deleting...' : 'Confirm Delete'}
                     </button>
                   </div>
-                  <p className="mt-2 text-xs text-gray-400">Account deletion is not yet implemented. This is placeholder UI.</p>
                 </div>
               )}
             </div>
