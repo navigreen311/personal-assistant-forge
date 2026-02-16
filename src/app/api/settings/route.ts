@@ -173,7 +173,7 @@ async function handlePatch(req: NextRequest, session: AuthSession): Promise<Resp
     await prisma.user.update({
       where: { id: session.userId },
       data: {
-        preferences: { ...existingPrefs, settings: updatedSettings },
+        preferences: { ...existingPrefs, settings: updatedSettings } as unknown as import('@prisma/client').Prisma.InputJsonValue,
       },
     });
 

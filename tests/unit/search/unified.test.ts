@@ -8,9 +8,7 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
-const mockQueryRaw = prisma.$queryRawUnsafe as jest.MockedFunction<
-  typeof prisma.$queryRawUnsafe
->;
+const mockQueryRaw = prisma.$queryRawUnsafe as jest.Mock;
 
 describe('Unified Search', () => {
   beforeEach(() => {

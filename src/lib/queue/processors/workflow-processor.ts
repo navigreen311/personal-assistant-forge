@@ -9,9 +9,8 @@ export async function processWorkflowStepJob(
   const start = Date.now();
 
   try {
-    const execution = await prisma.workflowExecution.findUnique({
+    const execution = await prisma.workflow.findUnique({
       where: { id: data.executionId },
-      include: { workflow: true },
     });
 
     if (!execution) {
@@ -32,7 +31,7 @@ export async function processWorkflowStepJob(
       data: {
         actor: 'SYSTEM',
         actionType: 'WORKFLOW_STEP',
-        target: `workflow:${execution.workflowId}/execution:${data.executionId}/node:${data.nodeId}`,
+        target: `workflow:${execution.id}/execution:${data.executionId}/node:${data.nodeId}`,
         reason: `Executed workflow step ${data.nodeId}`,
         blastRadius: 'LOW',
         reversible: true,

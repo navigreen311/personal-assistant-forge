@@ -18,18 +18,18 @@ function makeAction(overrides: Partial<ActionLog> = {}): ActionLog {
 }
 
 describe('checkForFraud', () => {
-  it('should flag urgent wire transfers', () => {
+  it('should flag urgent wire transfers', async () => {
     const action = makeAction({
       actionType: 'wire_transfer',
       reason: 'Urgent wire needed ASAP',
       cost: 10000,
     });
-    const result = checkForFraud(action);
+    const result = await checkForFraud(action);
     expect(result.passed).toBe(false);
-    expect(result.triggeredHeuristics.some(h => h.id === 'URGENT_WIRE')).toBe(true);
+    expect(result.triggeredHeuristics.some((h: any) => h.id === 'URGENT_WIRE')).toBe(true);
   });
 
-  it('should flag new payees not seen in 90 days', () => {
+  it('should flag new payees not seen in 90 days', async () => {
     const action = makeAction({
       actionType: 'payment',
       target: 'new-vendor',
@@ -37,11 +37,11 @@ describe('checkForFraud', () => {
     const history: ActionLog[] = [
       makeAction({ actionType: 'payment', target: 'old-vendor', timestamp: new Date('2026-01-01T10:00:00Z') }),
     ];
-    const result = checkForFraud(action, history);
-    expect(result.triggeredHeuristics.some(h => h.id === 'NEW_PAYEE')).toBe(true);
+    const result = await checkForFraud(action, history);
+    expect(result.triggeredHeuristics.some((h: any) => h.id === 'NEW_PAYEE')).toBe(true);
   });
 
-  it('should flag invoice amounts > 2x vendor average', () => {
+  it('should flag invoice amounts > 2x vendor average', async () => {
     const action = makeAction({
       actionType: 'invoice_payment',
       target: 'vendor-x',
@@ -51,38 +51,38 @@ describe('checkForFraud', () => {
       makeAction({ actionType: 'invoice_payment', target: 'vendor-x', cost: 1000, timestamp: new Date('2026-02-01') }),
       makeAction({ actionType: 'invoice_payment', target: 'vendor-x', cost: 1200, timestamp: new Date('2026-02-05') }),
     ];
-    const result = checkForFraud(action, history);
-    expect(result.triggeredHeuristics.some(h => h.id === 'INVOICE_ANOMALY')).toBe(true);
+    const result = await checkForFraud(action, history);
+    expect(result.triggeredHeuristics.some((h: any) => h.id === 'INVOICE_ANOMALY')).toBe(true);
   });
 
-  it('should flag transactions outside business hours', () => {
+  it('should flag transactions outside business hours', async () => {
     const action = makeAction({
       actionType: 'payment',
       timestamp: new Date('2026-02-15T23:00:00Z'), // 11 PM
     });
-    const result = checkForFraud(action);
-    expect(result.triggeredHeuristics.some(h => h.id === 'UNUSUAL_TIME')).toBe(true);
+    const result = await checkForFraud(action);
+    expect(result.triggeredHeuristics.some((h: any) => h.id === 'UNUSUAL_TIME')).toBe(true);
   });
 
-  it('should pass clean transactions', () => {
+  it('should pass clean transactions', async () => {
     const action = makeAction({
       actionType: 'send_email',
       target: 'contact@example.com',
       reason: 'Follow up meeting',
       cost: 0,
     });
-    const result = checkForFraud(action);
+    const result = await checkForFraud(action);
     expect(result.passed).toBe(true);
     expect(result.overallRisk).toBe('NONE');
   });
 
-  it('should require human approval for HIGH+ severity', () => {
+  it('should require human approval for HIGH+ severity', async () => {
     const action = makeAction({
       actionType: 'wire_transfer',
       reason: 'Urgent wire ASAP',
       cost: 10000,
     });
-    const result = checkForFraud(action);
+    const result = await checkForFraud(action);
     expect(result.requiresApproval).toBe(true);
   });
 });

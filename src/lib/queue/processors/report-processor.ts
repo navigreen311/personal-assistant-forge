@@ -41,7 +41,7 @@ async function queryReportData(
       return JSON.stringify({ messageCount: messages, tasks });
     }
     case 'FINANCIAL': {
-      const invoices = await prisma.invoice.findMany({
+      const invoices = await prisma.financialRecord.findMany({
         where,
         select: { amount: true, status: true, dueDate: true },
         take: 100,
@@ -51,7 +51,7 @@ async function queryReportData(
     case 'INBOX_DIGEST': {
       const messages = await prisma.message.findMany({
         where,
-        select: { subject: true, from: true, body: true, createdAt: true },
+        select: { subject: true, senderId: true, body: true, createdAt: true },
         take: 50,
         orderBy: { createdAt: 'desc' },
       });

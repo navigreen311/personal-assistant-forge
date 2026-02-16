@@ -4,7 +4,12 @@ const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const fromNumber = process.env.TWILIO_PHONE_NUMBER;
 
-const twilioClient = accountSid && authToken ? twilio(accountSid, authToken) : null;
+let twilioClient: ReturnType<typeof twilio> | null = null;
+try {
+  twilioClient = accountSid && authToken ? twilio(accountSid, authToken) : null;
+} catch {
+  // Twilio SDK validates accountSid format — silently skip if invalid
+}
 
 export type SMSOptions = {
   to: string;

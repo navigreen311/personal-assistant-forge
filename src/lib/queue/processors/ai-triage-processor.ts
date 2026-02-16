@@ -31,7 +31,7 @@ export async function processAITriageJob(
     const prompt = `Analyze the following message and provide a triage assessment.
 
 Subject: ${message.subject ?? 'N/A'}
-From: ${message.from ?? 'Unknown'}
+From: ${message.senderId ?? 'Unknown'}
 Body: ${message.body ?? ''}
 Thread ID: ${message.threadId ?? 'N/A'}
 

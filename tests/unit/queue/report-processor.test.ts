@@ -8,7 +8,7 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     message: { count: jest.fn(), findMany: jest.fn() },
     task: { findMany: jest.fn() },
-    invoice: { findMany: jest.fn() },
+    financialRecord: { findMany: jest.fn() },
     document: { create: jest.fn() },
   },
 }));
@@ -29,8 +29,8 @@ const mockMessageFindMany = prisma.message.findMany as jest.MockedFunction<
 const mockTaskFindMany = prisma.task.findMany as jest.MockedFunction<
   typeof prisma.task.findMany
 >;
-const mockInvoiceFindMany = prisma.invoice.findMany as jest.MockedFunction<
-  typeof prisma.invoice.findMany
+const mockInvoiceFindMany = (prisma as any).financialRecord.findMany as jest.MockedFunction<
+  typeof prisma.financialRecord.findMany
 >;
 
 describe('processReportJob', () => {

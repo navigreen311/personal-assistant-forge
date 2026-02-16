@@ -8,7 +8,7 @@ export async function processInvoiceJob(
   const start = Date.now();
 
   try {
-    const invoice = await prisma.invoice.findUnique({
+    const invoice = await prisma.financialRecord.findUnique({
       where: { id: data.invoiceId },
     });
 
@@ -48,7 +48,7 @@ export async function processInvoiceJob(
         break;
       }
       case 'RECONCILE': {
-        await prisma.invoice.update({
+        await prisma.financialRecord.update({
           where: { id: data.invoiceId },
           data: { status: 'RECONCILED' },
         });

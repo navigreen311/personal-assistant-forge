@@ -8,7 +8,7 @@ export async function processCalendarSyncJob(
   const start = Date.now();
 
   try {
-    const events = await prisma.event.findMany({
+    const events = await prisma.calendarEvent.findMany({
       where: { entityId: data.entityId },
       select: { id: true, title: true, startTime: true, endTime: true },
       take: 100,

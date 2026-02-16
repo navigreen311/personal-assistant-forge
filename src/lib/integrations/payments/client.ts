@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 
 const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2025-04-30.basil' })
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null;
 
 export function getStripe(): Stripe {
@@ -32,7 +32,7 @@ export async function createInvoice(
   }
 
   const finalized = await s.invoices.finalizeInvoice(invoice.id);
-  return { id: finalized.id, url: finalized.hosted_invoice_url };
+  return { id: finalized.id, url: finalized.hosted_invoice_url ?? null };
 }
 
 export async function createCheckoutSession(

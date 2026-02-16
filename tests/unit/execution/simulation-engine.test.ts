@@ -610,7 +610,7 @@ describe('SimulationEngine', () => {
         entityId: 'entity-test-001',
       });
 
-      expect((result as Record<string, unknown>).aiRiskAssessment).toBe('This is a low-risk operation');
+      expect((result as unknown as Record<string, unknown>).aiRiskAssessment).toBe('This is a low-risk operation');
     });
   });
 });

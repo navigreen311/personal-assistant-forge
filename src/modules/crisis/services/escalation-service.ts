@@ -107,7 +107,7 @@ The message should be appropriate for the contact method (${firstPending.contact
         }
       );
       // Store the generated message on the step for reference
-      (firstPending as Record<string, unknown>).notificationMessage = message;
+      (firstPending as unknown as Record<string, unknown>).notificationMessage = message;
     } catch {
       // Continue without AI message
     }

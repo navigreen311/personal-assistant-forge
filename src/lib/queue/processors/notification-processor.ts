@@ -35,7 +35,8 @@ export async function processNotificationJob(
             userId: data.userId,
             title: data.title,
             body: data.body,
-            data: data.data ?? {},
+            type: 'system',
+            metadata: (data.data ?? {}) as unknown as import('@prisma/client').Prisma.InputJsonValue,
           },
         });
         resultData = { channel: 'IN_APP', stored: true };

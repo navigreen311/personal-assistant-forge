@@ -54,7 +54,7 @@ function createRequest(url: string, options: { method?: string; headers?: Record
     init.body = JSON.stringify(options.body);
     (init.headers as Record<string, string>)['content-type'] = 'application/json';
   }
-  return new NextRequest(fullUrl, init);
+  return new NextRequest(fullUrl, init as any);
 }
 
 describe('Admin route auth', () => {
