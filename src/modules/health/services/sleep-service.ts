@@ -1,4 +1,5 @@
 import { subDays, format } from 'date-fns';
+import { generateJSON } from '@/lib/ai';
 import type { SleepData, SleepOptimization } from '../types';
 
 const sleepStore = new Map<string, SleepData[]>();
@@ -41,23 +42,66 @@ export async function analyzeSleepPatterns(userId: string): Promise<SleepOptimiz
   wakeTimeScores.sort((a, b) => b.score - a.score);
   const idealWakeTime = wakeTimeScores[0]?.wakeTime ?? '06:30';
 
-  const correlations = [
-    { factor: 'Deep sleep duration', correlation: 0.85, suggestion: 'Aim for 1.5-2 hours of deep sleep for optimal recovery.' },
-    { factor: 'Consistent bed time', correlation: 0.72, suggestion: 'Going to bed within 30 minutes of your ideal time improves sleep quality.' },
-    { factor: 'Total sleep hours', correlation: 0.68, suggestion: 'Target 7-9 hours of total sleep per night.' },
-  ];
+  // Use AI to generate personalized correlations and recommendations
+  let correlations: SleepOptimization['correlations'];
+  let recommendations: string[];
 
-  const recommendations: string[] = [];
-  if (avgScore < 70) {
-    recommendations.push('Your average sleep score is below optimal. Consider establishing a consistent bedtime routine.');
+  try {
+    const sleepSummary = data.map(d => ({
+      date: d.date,
+      score: d.sleepScore,
+      totalHours: d.totalHours,
+      deepHours: d.deepSleepHours,
+      remHours: d.remSleepHours,
+      bedTime: d.bedTime,
+      wakeTime: d.wakeTime,
+      awakeMin: d.awakeMinutes,
+    }));
+
+    const aiResult = await generateJSON<{
+      correlations: { factor: string; correlation: number; suggestion: string }[];
+      recommendations: string[];
+    }>(
+      `Analyze this sleep data and identify correlations and recommendations.
+
+Sleep history (last ${data.length} days):
+${JSON.stringify(sleepSummary, null, 2)}
+
+Average sleep score: ${Math.round(avgScore)}
+Best bedtime: ${idealBedTime}
+Best wake time: ${idealWakeTime}
+
+Return a JSON object with:
+- "correlations": array of { "factor": string, "correlation": number (-1 to 1), "suggestion": string } identifying what factors most affect sleep quality
+- "recommendations": array of specific, actionable recommendation strings based on the patterns found`,
+      {
+        temperature: 0.4,
+        system: 'You are a sleep science expert. Analyze sleep data and provide evidence-based recommendations. Be specific and actionable.',
+      }
+    );
+
+    correlations = aiResult.correlations ?? [];
+    recommendations = aiResult.recommendations ?? [];
+  } catch {
+    // Fallback to static analysis
+    correlations = [
+      { factor: 'Deep sleep duration', correlation: 0.85, suggestion: 'Aim for 1.5-2 hours of deep sleep for optimal recovery.' },
+      { factor: 'Consistent bed time', correlation: 0.72, suggestion: 'Going to bed within 30 minutes of your ideal time improves sleep quality.' },
+      { factor: 'Total sleep hours', correlation: 0.68, suggestion: 'Target 7-9 hours of total sleep per night.' },
+    ];
+
+    recommendations = [];
+    if (avgScore < 70) {
+      recommendations.push('Your average sleep score is below optimal. Consider establishing a consistent bedtime routine.');
+    }
+    if (avgScore >= 70 && avgScore < 85) {
+      recommendations.push('Your sleep is good but could improve. Focus on reducing awake time during the night.');
+    }
+    if (avgScore >= 85) {
+      recommendations.push('Excellent sleep quality! Maintain your current sleep habits.');
+    }
+    recommendations.push(`Your ideal bedtime appears to be around ${idealBedTime}.`);
   }
-  if (avgScore >= 70 && avgScore < 85) {
-    recommendations.push('Your sleep is good but could improve. Focus on reducing awake time during the night.');
-  }
-  if (avgScore >= 85) {
-    recommendations.push('Excellent sleep quality! Maintain your current sleep habits.');
-  }
-  recommendations.push(`Your ideal bedtime appears to be around ${idealBedTime}.`);
 
   return {
     userId,

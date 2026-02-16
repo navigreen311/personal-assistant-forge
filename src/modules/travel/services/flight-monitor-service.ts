@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateText } from '@/lib/ai';
 import type { FlightAlert, Itinerary, ItineraryLeg, DisruptionResponse } from '../types';
 import { getItinerary, listItineraries } from './itinerary-service';
 
@@ -75,11 +76,30 @@ export async function generateDisruptionResponse(
   ];
 
   const recommendation = alternatives[1]; // Cheaper option
+
+  // Use AI to generate a detailed explanation for the recommendation
+  let reason: string;
+  try {
+    reason = await generateText(
+      `A flight from ${originalLeg.departureLocation} to ${originalLeg.arrivalLocation} was ${alert.alertType === 'CANCELLATION' ? 'cancelled' : 'delayed'}.
+The recommended alternative is with ${recommendation.provider}, departing at ${recommendation.departureTime.toISOString()} (${recommendation.costUsd > originalLeg.costUsd ? 'costs $' + (recommendation.costUsd - originalLeg.costUsd).toFixed(2) + ' more' : 'saves $' + (originalLeg.costUsd - recommendation.costUsd).toFixed(2)}).
+Other alternative: ${alternatives[0].provider} departing at ${alternatives[0].departureTime.toISOString()} at $${alternatives[0].costUsd.toFixed(2)}.
+
+Explain in 2-3 sentences why the recommended alternative is the best choice considering cost, timing, and travel disruption impact.`,
+      {
+        temperature: 0.7,
+        system: 'You are a travel disruption advisor. Provide concise, practical explanations for flight alternative recommendations.',
+      }
+    );
+  } catch {
+    reason = 'Recommended based on lower cost and reasonable timing';
+  }
+
   return {
     originalLeg,
     alternatives,
     recommendation,
-    reason: 'Recommended based on lower cost and reasonable timing',
+    reason,
     additionalCost: recommendation.costUsd - originalLeg.costUsd,
   };
 }

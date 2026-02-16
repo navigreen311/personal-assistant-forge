@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateJSON } from '@/lib/ai';
 import type { CrisisDetectionSignal, CrisisType, CrisisSeverity, CrisisEvent, CrisisStatus } from '../types';
 import { getEscalationChain } from './escalation-service';
 import { getPlaybook } from './playbook-service';
@@ -126,12 +127,59 @@ export async function analyzeSignals(signals: CrisisDetectionSignal[]): Promise<
     }
   }
 
-  // No pattern matched
-  return {
-    isCrisis: false,
-    confidence: 0.1,
-    explanation: 'No crisis patterns detected in the provided signals.',
-  };
+  // AI second-pass analysis: when keyword matching doesn't find a clear pattern
+  try {
+    const signalSummaries = signals.map(s => ({
+      source: s.source,
+      type: s.signalType,
+      confidence: s.confidence,
+      data: s.rawData,
+      time: s.timestamp,
+    }));
+
+    const aiResult = await generateJSON<{
+      isCrisis: boolean;
+      type?: CrisisType;
+      severity?: CrisisSeverity;
+      confidence: number;
+      explanation: string;
+    }>(
+      `Analyze these signals to determine if a crisis is occurring.
+
+Signals: ${JSON.stringify(signalSummaries, null, 2)}
+
+Valid crisis types: LEGAL_THREAT, PR_ISSUE, HEALTH_EMERGENCY, FINANCIAL_ANOMALY, DATA_BREACH, CLIENT_COMPLAINT, REGULATORY_INQUIRY, NATURAL_DISASTER
+Valid severities: LOW, MEDIUM, HIGH, CRITICAL
+
+Return a JSON object with:
+- "isCrisis": boolean (true if signals indicate a crisis)
+- "type": crisis type string (only if isCrisis is true)
+- "severity": severity string (only if isCrisis is true)
+- "confidence": number 0-1 representing your confidence
+- "explanation": brief explanation of your reasoning
+
+Be conservative: only flag a crisis if signals clearly indicate one. False negatives are preferable to false positives for safety-critical detection.`,
+      {
+        temperature: 0.2,
+        system: 'You are a crisis detection analyst. Analyze signals conservatively — only flag a crisis when evidence is clear. Err on the side of caution. When in doubt, set isCrisis to false.',
+      }
+    );
+
+    return {
+      isCrisis: aiResult.isCrisis ?? false,
+      type: aiResult.type,
+      severity: aiResult.severity,
+      confidence: aiResult.confidence ?? 0.1,
+      explanation: aiResult.explanation ?? 'AI analysis completed.',
+    };
+  } catch {
+    // Fallback: no pattern matched and AI unavailable
+    return {
+      isCrisis: false,
+      confidence: 0.1,
+      explanation: 'No crisis patterns detected in the provided signals.',
+    };
+  }
 }
 
 export async function createCrisisEvent(

@@ -1,10 +1,10 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import * as dmsService from '@/modules/crisis/services/dead-man-switch-service';
 
 const configSchema = z.object({
-  userId: z.string().min(1),
   isEnabled: z.boolean(),
   checkInIntervalHours: z.number().min(1),
   triggerAfterMisses: z.number().min(1),
@@ -19,26 +19,30 @@ const configSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const userId = request.nextUrl.searchParams.get('userId');
-    if (!userId) return error('MISSING_PARAM', 'userId is required', 400);
-
-    const status = await dmsService.getStatus(userId);
-    return success(status);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  return withAuth(request, async (req, session) => {
+    try {
+      const status = await dmsService.getStatus(session.userId);
+      return success(status);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = configSchema.safeParse(body);
-    if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = configSchema.safeParse(body);
+      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-    const config = await dmsService.configure(parsed.data.userId, parsed.data);
-    return success(config, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const config = await dmsService.configure(session.userId, {
+        ...parsed.data,
+        userId: session.userId,
+      });
+      return success(config, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }

@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { addMonths, addDays, isBefore, addYears } from 'date-fns';
+import { generateJSON } from '@/lib/ai';
 import type { MaintenanceTask } from '../types';
 
 const taskStore = new Map<string, MaintenanceTask>();
@@ -113,8 +114,58 @@ export async function generateAnnualSchedule(userId: string): Promise<Maintenanc
     { userId, category: 'APPLIANCE', title: 'Clean dryer vent', frequency: 'ANNUAL', season: 'ANY', nextDueDate: new Date(year, 5, 1), estimatedCostUsd: 100 },
   ];
 
+  // Use AI to optimize the schedule based on seasonal considerations
+  let optimizedTemplates = templates;
+  try {
+    const taskSummary = templates.map(t => ({
+      title: t.title,
+      category: t.category,
+      frequency: t.frequency,
+      season: t.season,
+      month: new Date(t.nextDueDate).getMonth() + 1,
+      cost: t.estimatedCostUsd,
+    }));
+
+    const aiResult = await generateJSON<{
+      optimizations: { title: string; suggestedMonth?: number; reason?: string }[];
+    }>(
+      `Review this annual home maintenance schedule and suggest optimizations.
+
+Current schedule: ${JSON.stringify(taskSummary, null, 2)}
+
+Consider:
+- Seasonal appropriateness (e.g., HVAC before extreme weather)
+- Cost optimization (bundle related tasks)
+- Regional climate patterns
+
+Return a JSON object with:
+- "optimizations": array of { "title": string, "suggestedMonth": number (1-12), "reason": string }
+Only include tasks that should be rescheduled. Omit tasks that are already optimally scheduled.`,
+      {
+        temperature: 0.4,
+        system: 'You are a home maintenance scheduling expert. Suggest practical schedule optimizations considering seasonal factors, cost efficiency, and common maintenance best practices.',
+      }
+    );
+
+    // Apply AI-suggested optimizations to templates
+    if (aiResult.optimizations) {
+      for (const opt of aiResult.optimizations) {
+        const idx = optimizedTemplates.findIndex(t => t.title === opt.title && opt.suggestedMonth);
+        if (idx >= 0 && opt.suggestedMonth) {
+          const currentDate = new Date(optimizedTemplates[idx].nextDueDate);
+          optimizedTemplates[idx] = {
+            ...optimizedTemplates[idx],
+            nextDueDate: new Date(year, opt.suggestedMonth - 1, currentDate.getDate()),
+          };
+        }
+      }
+    }
+  } catch {
+    // Fall through to use original templates
+  }
+
   const tasks: MaintenanceTask[] = [];
-  for (const template of templates) {
+  for (const template of optimizedTemplates) {
     const task = await createTask(userId, template);
     tasks.push(task);
   }
