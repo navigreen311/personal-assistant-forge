@@ -1,6 +1,22 @@
-import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
 
 // --- Types ---
+
+/** Shape of the Prisma Subscription DB record (mirrors prisma/schema.prisma). */
+interface PrismaSubscription {
+  id: string;
+  entityId: string;
+  planId: string;
+  status: string;
+  currentPeriodStart: Date;
+  currentPeriodEnd: Date;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  cancelAtPeriodEnd: boolean;
+  metadata: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export interface Plan {
   id: string;
@@ -119,16 +135,44 @@ export const PLANS: Plan[] = [
   },
 ];
 
-// --- In-Memory Stores ---
+// --- In-Memory Usage Store ---
+// NOTE: Usage metering is kept in-memory because there is no dedicated UsageMeter
+// Prisma model. Usage resets each billing period anyway. For production, consider
+// persisting usage to a dedicated table or the UsageRecord model.
+const usageStore = new Map<string, UsageMeter[]>();
 
-const subscriptionStore = new Map<string, Subscription>();
-const entitySubscriptionIndex = new Map<string, string>(); // entityId -> subscriptionId
-const usageStore = new Map<string, UsageMeter[]>(); // entityId -> meters
+// --- DB <-> Local Mapping Helpers ---
 
-/** Exposed for testing: clears all subscriptions and usage data. */
-export function _resetStore(): void {
-  subscriptionStore.clear();
-  entitySubscriptionIndex.clear();
+/** Convert a Prisma Subscription record to the local Subscription interface. */
+function mapDbToLocal(db: PrismaSubscription): Subscription {
+  const metadata = (db.metadata as Record<string, unknown>) ?? {};
+  return {
+    id: db.id,
+    userId: (metadata.userId as string) ?? '',
+    entityId: db.entityId,
+    planId: db.planId,
+    // Normalize DB 'canceled' (single-l) to local 'cancelled' (double-l)
+    status: db.status === 'canceled'
+      ? 'cancelled'
+      : db.status as Subscription['status'],
+    currentPeriodStart: db.currentPeriodStart,
+    currentPeriodEnd: db.currentPeriodEnd,
+    cancelAtPeriodEnd: db.cancelAtPeriodEnd,
+    stripeSubscriptionId: db.stripeSubscriptionId ?? undefined,
+    stripeCustomerId: db.stripeCustomerId ?? undefined,
+    createdAt: db.createdAt,
+    updatedAt: db.updatedAt,
+  };
+}
+
+/** Normalize local status for DB storage: 'cancelled' -> 'canceled'. */
+function normalizeStatusForDb(status: string): string {
+  return status === 'cancelled' ? 'canceled' : status;
+}
+
+/** Exposed for testing: clears subscriptions from DB (test env only) and in-memory usage. */
+export async function _resetStore(): Promise<void> {
+  await prisma.subscription.deleteMany();
   usageStore.clear();
 }
 
@@ -141,9 +185,12 @@ export function getPlan(planIdOrTier: string): Plan | undefined {
 // --- Subscription CRUD ---
 
 export async function getSubscription(entityId: string): Promise<Subscription | null> {
-  const subId = entitySubscriptionIndex.get(entityId);
-  if (!subId) return null;
-  return subscriptionStore.get(subId) ?? null;
+  const record = await prisma.subscription.findFirst({
+    where: { entityId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!record) return null;
+  return mapDbToLocal(record);
 }
 
 export async function createSubscription(params: {
@@ -170,24 +217,23 @@ export async function createSubscription(params: {
     trialEnd.setDate(trialEnd.getDate() + params.trialDays!);
   }
 
-  const subscription: Subscription = {
-    id: uuidv4(),
-    userId: params.userId,
-    entityId: params.entityId,
-    planId: params.planId,
-    status: isTrialing ? 'trialing' : 'active',
-    currentPeriodStart: now,
-    currentPeriodEnd: trialEnd ?? periodEnd,
-    cancelAtPeriodEnd: false,
-    stripeSubscriptionId: params.stripeSubscriptionId,
-    stripeCustomerId: params.stripeCustomerId,
-    createdAt: now,
-    updatedAt: now,
-  };
+  const status = isTrialing ? 'trialing' : 'active';
 
-  subscriptionStore.set(subscription.id, subscription);
-  entitySubscriptionIndex.set(params.entityId, subscription.id);
-  return subscription;
+  const record = await prisma.subscription.create({
+    data: {
+      entityId: params.entityId,
+      planId: params.planId,
+      status,
+      currentPeriodStart: now,
+      currentPeriodEnd: trialEnd ?? periodEnd,
+      cancelAtPeriodEnd: false,
+      stripeSubscriptionId: params.stripeSubscriptionId ?? null,
+      stripeCustomerId: params.stripeCustomerId ?? null,
+      metadata: { userId: params.userId },
+    },
+  });
+
+  return mapDbToLocal(record);
 }
 
 export async function changePlan(params: {
@@ -195,12 +241,14 @@ export async function changePlan(params: {
   newPlanId: string;
   immediate?: boolean;
 }): Promise<Subscription> {
-  const sub = subscriptionStore.get(params.subscriptionId);
-  if (!sub) {
+  const existing = await prisma.subscription.findFirst({
+    where: { id: params.subscriptionId },
+  });
+  if (!existing) {
     throw new Error(`SUBSCRIPTION_NOT_FOUND: No subscription with id '${params.subscriptionId}'`);
   }
 
-  if (sub.planId === params.newPlanId) {
+  if (existing.planId === params.newPlanId) {
     throw new Error('SAME_PLAN: Cannot change to the same plan');
   }
 
@@ -209,18 +257,24 @@ export async function changePlan(params: {
     throw new Error(`PLAN_NOT_FOUND: No plan with id '${params.newPlanId}'`);
   }
 
-  sub.planId = params.newPlanId;
-  sub.updatedAt = new Date();
+  const updateData: Record<string, unknown> = {
+    planId: params.newPlanId,
+  };
 
   if (params.immediate) {
     const now = new Date();
-    sub.currentPeriodStart = now;
     const periodEnd = new Date(now);
     periodEnd.setMonth(periodEnd.getMonth() + 1);
-    sub.currentPeriodEnd = periodEnd;
+    updateData.currentPeriodStart = now;
+    updateData.currentPeriodEnd = periodEnd;
   }
 
-  return sub;
+  const record = await prisma.subscription.update({
+    where: { id: params.subscriptionId },
+    data: updateData,
+  });
+
+  return mapDbToLocal(record);
 }
 
 export async function cancelSubscription(params: {
@@ -228,48 +282,58 @@ export async function cancelSubscription(params: {
   immediate?: boolean;
   reason?: string;
 }): Promise<Subscription> {
-  const sub = subscriptionStore.get(params.subscriptionId);
-  if (!sub) {
+  const existing = await prisma.subscription.findFirst({
+    where: { id: params.subscriptionId },
+  });
+  if (!existing) {
     throw new Error(`SUBSCRIPTION_NOT_FOUND: No subscription with id '${params.subscriptionId}'`);
   }
 
+  const updateData: Record<string, unknown> = {};
+
   if (params.immediate) {
-    sub.status = 'cancelled';
-    sub.cancelAtPeriodEnd = false;
+    updateData.status = 'canceled';
+    updateData.cancelAtPeriodEnd = false;
   } else {
-    sub.cancelAtPeriodEnd = true;
+    updateData.cancelAtPeriodEnd = true;
   }
 
-  sub.updatedAt = new Date();
-  return sub;
+  const record = await prisma.subscription.update({
+    where: { id: params.subscriptionId },
+    data: updateData,
+  });
+
+  return mapDbToLocal(record);
 }
 
 export async function resumeSubscription(subscriptionId: string): Promise<Subscription> {
-  const sub = subscriptionStore.get(subscriptionId);
-  if (!sub) {
+  const existing = await prisma.subscription.findFirst({
+    where: { id: subscriptionId },
+  });
+  if (!existing) {
     throw new Error(`SUBSCRIPTION_NOT_FOUND: No subscription with id '${subscriptionId}'`);
   }
 
-  if (sub.status === 'cancelled') {
+  if (existing.status === 'canceled') {
     throw new Error('SUBSCRIPTION_CANCELLED: Cannot resume a fully cancelled subscription');
   }
 
-  if (!sub.cancelAtPeriodEnd) {
+  if (!existing.cancelAtPeriodEnd) {
     throw new Error('SUBSCRIPTION_ACTIVE: Subscription is not pending cancellation');
   }
 
-  sub.cancelAtPeriodEnd = false;
-  sub.updatedAt = new Date();
-  return sub;
+  const record = await prisma.subscription.update({
+    where: { id: subscriptionId },
+    data: { cancelAtPeriodEnd: false },
+  });
+
+  return mapDbToLocal(record);
 }
 
 // --- Feature & Limit Checks ---
 
-export function hasFeatureAccess(entityId: string, feature: string): boolean {
-  const subId = entitySubscriptionIndex.get(entityId);
-  if (!subId) return false;
-
-  const sub = subscriptionStore.get(subId);
+export async function hasFeatureAccess(entityId: string, feature: string): Promise<boolean> {
+  const sub = await getSubscription(entityId);
   if (!sub || sub.status === 'cancelled') return false;
 
   const plan = getPlan(sub.planId);
@@ -278,11 +342,8 @@ export function hasFeatureAccess(entityId: string, feature: string): boolean {
   return plan.features.includes(feature);
 }
 
-export function isWithinLimits(entityId: string, metric: string): boolean {
-  const subId = entitySubscriptionIndex.get(entityId);
-  if (!subId) return false;
-
-  const sub = subscriptionStore.get(subId);
+export async function isWithinLimits(entityId: string, metric: string): Promise<boolean> {
+  const sub = await getSubscription(entityId);
   if (!sub) return false;
 
   const plan = getPlan(sub.planId);
@@ -298,7 +359,7 @@ export function isWithinLimits(entityId: string, metric: string): boolean {
   return meter.count < limit;
 }
 
-// --- Usage Metering ---
+// --- Usage Metering (in-memory) ---
 
 export async function recordUsage(params: {
   entityId: string;
@@ -307,12 +368,11 @@ export async function recordUsage(params: {
 }): Promise<UsageMeter> {
   const { entityId, metric, count = 1 } = params;
 
-  const subId = entitySubscriptionIndex.get(entityId);
-  if (!subId) {
+  const sub = await getSubscription(entityId);
+  if (!sub) {
     throw new Error(`NO_SUBSCRIPTION: Entity '${entityId}' has no active subscription`);
   }
 
-  const sub = subscriptionStore.get(subId)!;
   const plan = getPlan(sub.planId);
   const limit = plan ? (plan.limits as Record<string, number>)[metric] ?? 0 : 0;
 
