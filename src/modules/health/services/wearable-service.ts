@@ -31,6 +31,8 @@ export async function getConnections(userId: string): Promise<WearableConnection
   return Array.from(connectionStore.values()).filter(c => c.userId === userId);
 }
 
+// TODO: Replace simulated data generation with real wearable API integration
+// (Apple HealthKit, Fitbit Web API, Oura Cloud API, WHOOP API, Garmin Connect API)
 export async function syncData(connectionId: string): Promise<{ sleepData: SleepData[]; stressLevels: StressLevel[] }> {
   const conn = connectionStore.get(connectionId);
   if (!conn || !conn.isConnected) {
