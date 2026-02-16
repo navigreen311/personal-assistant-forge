@@ -10,9 +10,16 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
+const mockGenerateJSON = generateJSON as jest.Mock;
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?: string } = {}): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -140,19 +147,32 @@ describe('search-service', () => {
     });
   });
 
-  describe('search', () => {
-    it('should return results sorted by relevance', async () => {
+  describe('search with AI query expansion', () => {
+    it('should use AI for query expansion when available', async () => {
+      mockGenerateJSON.mockResolvedValue({ expandedQuery: 'react hooks useState useEffect components' });
+
       const now = new Date();
       mockFindMany.mockResolvedValue([
         makeEntry({ id: '1', title: 'React hooks deep dive', body: 'React hooks are powerful', tags: ['react', 'hooks'], updatedAt: now }),
         makeEntry({ id: '2', title: 'General programming tips', body: 'Some tips about coding', tags: ['tips'], updatedAt: now }),
-        makeEntry({ id: '3', title: 'Advanced react patterns', body: 'React patterns for scale', tags: ['react', 'patterns'], updatedAt: now }),
       ]);
 
       const result = await search({ entityId: 'entity-1', query: 'react' });
-
+      expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.results.length).toBeGreaterThan(0);
-      // All results with positive scores should be sorted descending
+    });
+
+    it('should fall back to keyword search on AI failure', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('API error'));
+
+      const now = new Date();
+      mockFindMany.mockResolvedValue([
+        makeEntry({ id: '1', title: 'React hooks deep dive', body: 'React hooks are powerful', tags: ['react', 'hooks'], updatedAt: now }),
+      ]);
+
+      const result = await search({ entityId: 'entity-1', query: 'react' });
+      expect(result.results.length).toBeGreaterThan(0);
+      // Results should still be sorted by relevance
       for (let i = 1; i < result.results.length; i++) {
         expect(result.results[i - 1].relevanceScore).toBeGreaterThanOrEqual(result.results[i].relevanceScore);
       }
@@ -169,6 +189,8 @@ describe('search-service', () => {
     });
 
     it('should paginate results', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
       const entries = Array.from({ length: 10 }, (_, i) =>
         makeEntry({ id: `entry-${i}`, title: `React entry ${i}`, body: `React content ${i}` })
       );

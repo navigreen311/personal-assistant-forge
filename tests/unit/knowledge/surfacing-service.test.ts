@@ -13,9 +13,16 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn(),
+}));
+
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
+const mockGenerateText = generateText as jest.Mock;
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?: string } = {}): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -37,8 +44,25 @@ describe('surfacing-service', () => {
     jest.clearAllMocks();
   });
 
-  describe('surfaceRelevant', () => {
+  describe('surfaceRelevant with AI', () => {
+    it('should use AI for content summarization', async () => {
+      const longBody = 'A'.repeat(200) + ' detailed content about react patterns and best practices for building scalable applications';
+      mockFindMany.mockResolvedValue([
+        makeEntry({ id: 'e1', tags: ['react', 'typescript'], body: longBody }),
+      ]);
+      mockGenerateText.mockResolvedValue('This entry covers React patterns for scalable apps.');
+
+      const results = await surfaceRelevant({
+        entityId: 'entity-1',
+        currentActivity: 'working on react components',
+      });
+
+      const ids = results.map((r) => r.entry.id);
+      expect(ids).toContain('e1');
+    });
+
     it('should return entries matching current activity context', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       mockFindMany.mockResolvedValue([
         makeEntry({ id: 'e1', tags: ['react', 'typescript'], body: 'React component patterns' }),
         makeEntry({ id: 'e2', tags: ['python', 'django'], body: 'Python web development' }),
@@ -54,6 +78,7 @@ describe('surfacing-service', () => {
     });
 
     it('should limit results to top 5', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       const entries = Array.from({ length: 10 }, (_, i) =>
         makeEntry({ id: `e${i}`, tags: ['react'], body: 'React content' })
       );
@@ -68,6 +93,7 @@ describe('surfacing-service', () => {
     });
 
     it('should match entries by current tags', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       mockFindMany.mockResolvedValue([
         makeEntry({ id: 'e1', tags: ['deployment'] }),
         makeEntry({ id: 'e2', tags: ['cooking'] }),
@@ -84,6 +110,7 @@ describe('surfacing-service', () => {
     });
 
     it('should boost entries linked to active contacts', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       mockFindMany.mockResolvedValue([
         makeEntry({ id: 'e1', linkedEntities: ['contact-1'] }),
         makeEntry({ id: 'e2', linkedEntities: [] }),
@@ -105,6 +132,7 @@ describe('surfacing-service', () => {
     });
 
     it('should sort by relevance score descending', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       mockFindMany.mockResolvedValue([
         makeEntry({ id: 'e1', tags: ['react'], body: 'React stuff' }),
         makeEntry({ id: 'e2', tags: ['react', 'typescript'], body: 'React TypeScript hooks development' }),
@@ -123,6 +151,7 @@ describe('surfacing-service', () => {
 
   describe('dismissSuggestion', () => {
     it('should prevent re-surfacing after dismissal', async () => {
+      mockGenerateText.mockResolvedValue('Summary');
       const entries = [
         makeEntry({ id: 'e1', tags: ['react'], body: 'React development' }),
       ];
