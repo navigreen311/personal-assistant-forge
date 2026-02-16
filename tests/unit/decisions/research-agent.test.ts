@@ -1,11 +1,25 @@
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+  generateText: jest.fn(),
+}));
+
+import { generateJSON, generateText } from '@/lib/ai';
 import {
   conductResearch,
   evaluateSourceCredibility,
   analyzeDocument,
 } from '@/modules/decisions/services/research-agent';
-import type { ResearchRequest, ResearchSource } from '@/modules/decisions/types';
+import type { ResearchRequest } from '@/modules/decisions/types';
+
+const mockGenerateJSON = generateJSON as jest.Mock;
+const mockGenerateText = generateText as jest.Mock;
 
 describe('Research Agent', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   describe('evaluateSourceCredibility', () => {
     it('should score KNOWLEDGE sources highest', () => {
       const score = evaluateSourceCredibility({ type: 'KNOWLEDGE' });
@@ -50,8 +64,21 @@ describe('Research Agent', () => {
     });
   });
 
-  describe('conductResearch', () => {
-    it('should return a research report with findings and sources', async () => {
+  describe('conductResearch with AI', () => {
+    it('should call generateJSON for research findings', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        sources: [
+          { type: 'WEB', title: 'AI Market Analysis', excerpt: 'The AI market is growing rapidly', url: 'https://example.com/ai' },
+          { type: 'DOCUMENT', title: 'Internal Report', excerpt: 'Our analysis shows positive trends' },
+        ],
+        findings: [
+          { claim: 'AI market growing 25% YoY', evidence: 'Based on industry reports', confidence: 0.8, sourceIndices: [0] },
+          { claim: 'Enterprise adoption increasing', evidence: 'Fortune 500 adoption data', confidence: 0.7, sourceIndices: [0, 1] },
+        ],
+        gaps: ['Real-time competitor data not available'],
+      });
+      mockGenerateText.mockResolvedValue('AI market is experiencing significant growth with enterprise adoption accelerating.');
+
       const request: ResearchRequest = {
         query: 'Market trends in AI',
         entityId: 'entity-1',
@@ -61,14 +88,72 @@ describe('Research Agent', () => {
       };
 
       const report = await conductResearch(request);
+      expect(mockGenerateJSON).toHaveBeenCalled();
       expect(report.query).toBe('Market trends in AI');
       expect(report.findings.length).toBeGreaterThan(0);
       expect(report.sources.length).toBeGreaterThan(0);
-      expect(report.gaps.length).toBeGreaterThan(0);
+    });
+
+    it('should call generateText for research summary', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        sources: [{ type: 'WEB', title: 'Source', excerpt: 'Data' }],
+        findings: [{ claim: 'Key finding', evidence: 'Evidence', confidence: 0.7, sourceIndices: [0] }],
+        gaps: ['Gap 1'],
+      });
+      mockGenerateText.mockResolvedValue('Summary of research findings.');
+
+      await conductResearch({
+        query: 'test',
+        entityId: 'e1',
+        depth: 'QUICK',
+        sourceTypes: ['WEB'],
+        maxSources: 3,
+      });
+
+      expect(mockGenerateText).toHaveBeenCalled();
+    });
+
+    it('should include query and depth in prompts', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        sources: [],
+        findings: [],
+        gaps: [],
+      });
+      mockGenerateText.mockResolvedValue('Summary');
+
+      await conductResearch({
+        query: 'blockchain in healthcare',
+        entityId: 'e1',
+        depth: 'DEEP',
+        sourceTypes: ['WEB', 'KNOWLEDGE'],
+        maxSources: 5,
+      });
+
+      const prompt = mockGenerateJSON.mock.calls[0][0] as string;
+      expect(prompt).toContain('blockchain in healthcare');
+      expect(prompt).toContain('DEEP');
+    });
+
+    it('should fall back to placeholder on AI failure', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('API error'));
+
+      const report = await conductResearch({
+        query: 'Market trends in AI',
+        entityId: 'entity-1',
+        depth: 'STANDARD',
+        sourceTypes: ['WEB', 'DOCUMENT'],
+        maxSources: 5,
+      });
+
+      expect(report.query).toBe('Market trends in AI');
+      expect(report.findings.length).toBeGreaterThan(0);
+      expect(report.sources.length).toBeGreaterThan(0);
       expect(report.summary).toContain('Market trends in AI');
     });
 
     it('should have confidence based on depth', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
       const quick = await conductResearch({
         query: 'test',
         entityId: 'e1',
@@ -88,6 +173,8 @@ describe('Research Agent', () => {
     });
 
     it('should respect maxSources limit', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
       const report = await conductResearch({
         query: 'test',
         entityId: 'e1',

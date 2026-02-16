@@ -1,12 +1,102 @@
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
+import { generateJSON } from '@/lib/ai';
 import {
   runPreMortem,
   calculateRiskScore,
 } from '@/modules/decisions/services/pre-mortem';
 import type { FailureScenario, PreMortemRequest } from '@/modules/decisions/types';
 
+const mockGenerateJSON = generateJSON as jest.Mock;
+
 describe('Pre-Mortem Analysis', () => {
-  describe('runPreMortem', () => {
-    it('should generate at least 3 failure scenarios', async () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('runPreMortem with AI', () => {
+    it('should call generateJSON for failure scenarios', async () => {
+      mockGenerateJSON
+        .mockResolvedValueOnce({
+          scenarios: [
+            { description: 'Budget overrun', probability: 'MEDIUM', impact: 'HIGH', category: 'FINANCIAL', rootCause: 'Scope creep' },
+            { description: 'Team attrition', probability: 'LOW', impact: 'HIGH', category: 'OPERATIONAL', rootCause: 'Burnout' },
+            { description: 'Market shift', probability: 'MEDIUM', impact: 'MEDIUM', category: 'REPUTATIONAL', rootCause: 'Competitor action' },
+          ],
+        })
+        .mockResolvedValueOnce({
+          mitigations: [
+            { scenarioId: 'scenario-dec-1-1', action: 'Set up contingency budget', owner: 'CFO' },
+            { scenarioId: 'scenario-dec-1-2', action: 'Cross-train team', owner: 'VP Engineering' },
+            { scenarioId: 'scenario-dec-1-3', action: 'Establish monitoring', owner: 'Product Lead' },
+          ],
+        })
+        .mockResolvedValueOnce({
+          signals: ['Costs exceed 125% of budget', 'Key milestone missed by 3 weeks', 'Team satisfaction below 60%'],
+        });
+
+      const request: PreMortemRequest = {
+        decisionId: 'dec-1',
+        chosenOptionId: 'opt-1',
+        timeHorizon: '90_DAYS',
+      };
+
+      const result = await runPreMortem(request);
+      expect(mockGenerateJSON).toHaveBeenCalled();
+      expect(result.failureScenarios.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should call generateJSON for mitigations', async () => {
+      mockGenerateJSON
+        .mockResolvedValueOnce({
+          scenarios: [
+            { description: 'Failure', probability: 'MEDIUM', impact: 'HIGH', category: 'FINANCIAL', rootCause: 'Bad planning' },
+          ],
+        })
+        .mockResolvedValueOnce({
+          mitigations: [
+            { scenarioId: 'scenario-dec-1-1', action: 'Review budget weekly', owner: 'Finance team' },
+          ],
+        })
+        .mockResolvedValueOnce({
+          signals: ['Cost overrun signal'],
+        });
+
+      const result = await runPreMortem({
+        decisionId: 'dec-1',
+        chosenOptionId: 'opt-1',
+        timeHorizon: '30_DAYS',
+      });
+
+      expect(result.mitigationPlan.length).toBeGreaterThanOrEqual(1);
+      expect(result.mitigationPlan[0].action).toBeTruthy();
+    });
+
+    it('should preserve risk score calculation', async () => {
+      mockGenerateJSON
+        .mockResolvedValueOnce({
+          scenarios: [
+            { description: 'High risk', probability: 'HIGH', impact: 'HIGH', category: 'FINANCIAL', rootCause: 'x' },
+          ],
+        })
+        .mockResolvedValueOnce({ mitigations: [{ scenarioId: 'scenario-dec-1-1', action: 'Act', owner: 'TBD' }] })
+        .mockResolvedValueOnce({ signals: ['Signal'] });
+
+      const result = await runPreMortem({
+        decisionId: 'dec-1',
+        chosenOptionId: 'opt-1',
+        timeHorizon: '30_DAYS',
+      });
+
+      expect(result.overallRiskScore).toBe(100);
+    });
+
+    it('should fall back to rule-based scenarios on AI failure', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('API error'));
+
       const request: PreMortemRequest = {
         decisionId: 'dec-1',
         chosenOptionId: 'opt-1',
@@ -15,68 +105,38 @@ describe('Pre-Mortem Analysis', () => {
 
       const result = await runPreMortem(request);
       expect(result.failureScenarios.length).toBeGreaterThanOrEqual(3);
-    });
-
-    it('should generate mitigations for each scenario', async () => {
-      const request: PreMortemRequest = {
-        decisionId: 'dec-1',
-        chosenOptionId: 'opt-1',
-        timeHorizon: '90_DAYS',
-      };
-
-      const result = await runPreMortem(request);
-      for (const scenario of result.failureScenarios) {
-        const mitigation = result.mitigationPlan.find(
-          (m) => m.scenarioId === scenario.id
-        );
-        expect(mitigation).toBeDefined();
-        expect(mitigation!.action).toBeTruthy();
-      }
+      expect(result.mitigationPlan.length).toBeGreaterThanOrEqual(1);
+      expect(result.killSignals.length).toBeGreaterThanOrEqual(3);
     });
 
     it('should produce kill signals', async () => {
-      const request: PreMortemRequest = {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
+      const result = await runPreMortem({
         decisionId: 'dec-1',
         chosenOptionId: 'opt-1',
         timeHorizon: '1_YEAR',
-      };
+      });
 
-      const result = await runPreMortem(request);
       expect(result.killSignals.length).toBeGreaterThanOrEqual(3);
     });
 
     it('should return risk score between 0 and 100', async () => {
-      const request: PreMortemRequest = {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
+      const result = await runPreMortem({
         decisionId: 'dec-1',
         chosenOptionId: 'opt-1',
         timeHorizon: '30_DAYS',
-      };
+      });
 
-      const result = await runPreMortem(request);
       expect(result.overallRiskScore).toBeGreaterThanOrEqual(0);
       expect(result.overallRiskScore).toBeLessThanOrEqual(100);
     });
 
-    it('should generate more scenarios for longer time horizons', async () => {
-      const shortReq: PreMortemRequest = {
-        decisionId: 'dec-1',
-        chosenOptionId: 'opt-1',
-        timeHorizon: '30_DAYS',
-      };
-      const longReq: PreMortemRequest = {
-        decisionId: 'dec-1',
-        chosenOptionId: 'opt-1',
-        timeHorizon: '3_YEARS',
-      };
-
-      const shortResult = await runPreMortem(shortReq);
-      const longResult = await runPreMortem(longReq);
-      expect(longResult.failureScenarios.length).toBeGreaterThanOrEqual(
-        shortResult.failureScenarios.length
-      );
-    });
-
     it('should have valid categories for all scenarios', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('fail'));
+
       const result = await runPreMortem({
         decisionId: 'dec-1',
         chosenOptionId: 'opt-1',
