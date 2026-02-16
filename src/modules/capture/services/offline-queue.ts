@@ -1,6 +1,7 @@
 // ============================================================================
 // Offline Capture Queue
 // Stores captures created while offline and replays them on reconnection.
+// Includes dead-letter queue for items exceeding max retries.
 //
 // Storage: In-memory array for development.
 // Production: IndexedDB (client-side) or Redis (server-side) for persistence.
@@ -25,6 +26,8 @@ type CreateCaptureParams = Omit<CaptureItem, 'id' | 'status' | 'createdAt' | 'up
 
 class OfflineQueue {
   private queue: OfflineQueueItem[] = [];
+  private deadLetterQueue: OfflineQueueItem[] = [];
+  private maxRetries = 3;
   private lastSyncAttempt?: Date;
   private processorFn?: (item: CaptureItem) => Promise<CaptureItem>;
 
@@ -63,6 +66,10 @@ class OfflineQueue {
     return [...this.queue];
   }
 
+  getDeadLetterItems(): CaptureItem[] {
+    return [...this.deadLetterQueue];
+  }
+
   async syncQueue(): Promise<{ synced: number; failed: number }> {
     this.lastSyncAttempt = new Date();
 
@@ -76,6 +83,13 @@ class OfflineQueue {
     const remaining: OfflineQueueItem[] = [];
 
     for (const item of this.queue) {
+      // Check if item has exceeded max retries
+      if (item.retryCount >= this.maxRetries) {
+        this.deadLetterQueue.push(item);
+        failed++;
+        continue;
+      }
+
       try {
         await this.processorFn(item);
         item.syncedAt = new Date();

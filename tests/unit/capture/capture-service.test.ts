@@ -9,6 +9,13 @@ jest.mock('@/modules/capture/services/routing-service', () => ({
       confidence: 0.8,
       appliedRules: ['rule-1'],
     }),
+    routeAndStore: jest.fn().mockResolvedValue({
+      targetType: 'NOTE',
+      entityId: 'entity-1',
+      confidence: 0.8,
+      appliedRules: ['rule-1'],
+      storedId: 'stored-1',
+    }),
   },
 }));
 
@@ -107,7 +114,7 @@ describe('CaptureService', () => {
       });
 
       await service.processCapture(capture.id);
-      expect(routingService.routeCapture).toHaveBeenCalled();
+      expect(routingService.routeAndStore).toHaveBeenCalled();
     });
 
     it('should track processing latency', async () => {

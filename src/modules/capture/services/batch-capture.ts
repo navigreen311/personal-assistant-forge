@@ -2,15 +2,23 @@
 // Batch Capture Service
 // Supports rapid-fire capture sessions ("I have 5 things to capture").
 // Items are collected, then processed and routed all at once.
+// Stores batch summary in Prisma Document model on completion.
 // ============================================================================
 
 import { v4 as uuidv4 } from 'uuid';
 import type {
   CaptureItem,
   CaptureSource,
+  CaptureContentType,
   BatchCaptureSession,
 } from '@/modules/capture/types';
 import { captureService } from '@/modules/capture/services/capture-service';
+import { prisma } from '@/lib/db';
+
+const VALID_SOURCES: CaptureSource[] = [
+  'VOICE', 'SCREENSHOT', 'CLIPBOARD', 'SHARE_SHEET', 'BROWSER_EXTENSION',
+  'EMAIL_FORWARD', 'SMS_BRIDGE', 'DESKTOP_TRAY', 'CAMERA_SCAN', 'MANUAL',
+];
 
 class BatchCaptureService {
   private sessions = new Map<string, BatchCaptureSession>();
@@ -32,6 +40,7 @@ class BatchCaptureService {
     sessionId: string,
     rawContent: string,
     source: CaptureSource = 'VOICE',
+    contentType: CaptureContentType = 'TEXT',
   ): CaptureItem {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -42,12 +51,22 @@ class BatchCaptureService {
       throw new Error(`Batch session "${sessionId}" is not active`);
     }
 
+    // Validate rawContent is non-empty
+    if (!rawContent || rawContent.trim().length === 0) {
+      throw new Error('rawContent must be non-empty');
+    }
+
+    // Validate source is a valid CaptureSource
+    if (!VALID_SOURCES.includes(source)) {
+      throw new Error(`Invalid source "${source}". Must be one of: ${VALID_SOURCES.join(', ')}`);
+    }
+
     const now = new Date();
     const item: CaptureItem = {
       id: uuidv4(),
       userId: session.userId,
       source,
-      contentType: 'TEXT',
+      contentType,
       rawContent,
       metadata: {},
       status: 'PENDING',
@@ -97,6 +116,23 @@ class BatchCaptureService {
     session.status = 'COMPLETED';
     session.completedAt = new Date();
     session.items = processedItems;
+
+    // Store batch summary in Prisma Document
+    await prisma.document.create({
+      data: {
+        title: `Batch Capture ${session.id}`,
+        entityId: session.userId,
+        type: 'BATCH_CAPTURE',
+        content: JSON.stringify({
+          sessionId: session.id,
+          itemCount: processedItems.length,
+          successCount: processedItems.filter(i => i.status !== 'FAILED').length,
+          failedCount: processedItems.filter(i => i.status === 'FAILED').length,
+          processedAt: new Date().toISOString(),
+        }),
+        status: 'APPROVED',
+      },
+    });
 
     return processedItems;
   }
