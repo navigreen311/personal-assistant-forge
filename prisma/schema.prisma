@@ -60,6 +60,10 @@ model Entity {
   notifications     Notification[]
   voicePersonas     VoicePersona[]
   runbooks          Runbook[]
+  subscriptions     Subscription[]
+  usageRecords      UsageRecord[]
+  habitEntries      HabitEntry[]
+  healthMetrics     HealthMetric[]
 
   @@index([userId])
 }
@@ -466,4 +470,80 @@ model Runbook {
   @@index([entityId])
   @@index([category])
   @@index([isActive])
+}
+
+// === PHASE 3 MODELS ===
+
+model Subscription {
+  id                   String   @id @default(cuid())
+  entityId             String
+  entity               Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  planId               String   // "free", "starter", "professional", "enterprise"
+  status               String   @default("active") // "active", "past_due", "canceled", "trialing"
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  cancelAtPeriodEnd    Boolean  @default(false)
+  metadata             Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([status])
+  @@index([stripeCustomerId])
+}
+
+model UsageRecord {
+  id           String   @id @default(cuid())
+  entityId     String
+  entity       Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  model        String   // AI model used (e.g., "claude-sonnet-4-5-20250929")
+  inputTokens  Int
+  outputTokens Int
+  cost         Float    // cost in USD
+  module       String   // which module made the call (e.g., "inbox", "calendar")
+  userId       String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([entityId])
+  @@index([module])
+  @@index([createdAt])
+}
+
+model HabitEntry {
+  id             String   @id @default(cuid())
+  entityId       String
+  entity         Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name           String
+  description    String?
+  frequency      String   // "daily", "weekly", "weekdays", "custom"
+  targetPerPeriod Int     @default(1)
+  streak         Int      @default(0)
+  longestStreak  Int      @default(0)
+  completedDates Json     @default("[]") // Array of ISO date strings
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([isActive])
+}
+
+model HealthMetric {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  type        String   // "sleep", "stress", "energy", "heart_rate", "steps", "weight"
+  value       Float
+  unit        String   // "hours", "score", "bpm", "steps", "kg"
+  source      String   @default("manual") // "manual", "apple_health", "fitbit", "oura", "whoop", "garmin"
+  metadata    Json?    // Additional data (e.g., sleep stages, stress factors)
+  recordedAt  DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([entityId])
+  @@index([type])
+  @@index([recordedAt])
 }
