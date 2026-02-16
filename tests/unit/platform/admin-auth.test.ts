@@ -40,8 +40,35 @@ jest.mock('@/shared/middleware/auth', () => ({
   withEntityAccess: jest.fn(),
 }));
 
+const mockPrisma = {
+  rule: {
+    create: jest.fn().mockResolvedValue({ id: 'r1', name: 'test', scope: 'ORG_POLICY', entityId: 'e1', condition: {}, action: {}, isActive: true, createdAt: new Date(), updatedAt: new Date() }),
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue(null),
+    update: jest.fn().mockResolvedValue({}),
+  },
+  actionLog: {
+    create: jest.fn().mockResolvedValue({}),
+    findMany: jest.fn().mockResolvedValue([]),
+  },
+  document: {
+    create: jest.fn().mockResolvedValue({}),
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn().mockResolvedValue(null),
+  },
+  entity: {
+    findFirst: jest.fn().mockResolvedValue(null),
+    findUnique: jest.fn().mockResolvedValue(null),
+    update: jest.fn().mockResolvedValue({}),
+  },
+  calendarEvent: {
+    create: jest.fn().mockResolvedValue({}),
+    findMany: jest.fn().mockResolvedValue([]),
+  },
+};
+
 jest.mock('@/lib/db', () => ({
-  prisma: {},
+  prisma: mockPrisma,
 }));
 
 function createRequest(url: string, options: { method?: string; headers?: Record<string, string>; body?: unknown } = {}): NextRequest {

@@ -66,7 +66,7 @@ function createMockRequest(
   if (options?.body) {
     init.body = options.body;
   }
-  return new NextRequest(url, init);
+  return new NextRequest(url, init as any);
 }
 
 describe('compliance middleware', () => {

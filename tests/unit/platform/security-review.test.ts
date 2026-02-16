@@ -1,5 +1,17 @@
-import { conductReview, requestReview, reviewStore } from '@/modules/developer/services/security-review-service';
-import { registerPlugin, pluginStore } from '@/modules/developer/services/plugin-service';
+import { v4 as uuidv4 } from 'uuid';
+
+// Mock prisma before importing any services
+const mockPrisma = {
+  document: {
+    create: jest.fn(),
+    findMany: jest.fn().mockResolvedValue([]),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+  },
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
 
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated content'),
@@ -11,10 +23,29 @@ jest.mock('@/lib/ai', () => ({
   chat: jest.fn().mockResolvedValue('AI response'),
 }));
 
+import { conductReview, requestReview, reviewStore } from '@/modules/developer/services/security-review-service';
+import { registerPlugin, pluginStore } from '@/modules/developer/services/plugin-service';
+
 beforeEach(() => {
   pluginStore.clear();
   reviewStore.clear();
   jest.clearAllMocks();
+
+  // Make prisma.document.create return a proper document object
+  mockPrisma.document.create.mockImplementation(async ({ data }: any) => {
+    const id = uuidv4();
+    return {
+      id,
+      title: data.title,
+      entityId: data.entityId,
+      type: data.type,
+      status: data.status,
+      content: data.content,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
+    };
+  });
 });
 
 describe('conductReview (AI-powered)', () => {

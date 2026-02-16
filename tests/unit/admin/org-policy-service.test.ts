@@ -1,3 +1,23 @@
+import { v4 as uuidv4 } from 'uuid';
+
+// In-memory store for rules used by the mock
+const ruleStore = new Map<string, any>();
+
+const mockPrisma = {
+  rule: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+  },
+  actionLog: {
+    create: jest.fn().mockResolvedValue({}),
+    findMany: jest.fn().mockResolvedValue([]),
+  },
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+
 import {
   createPolicy,
   getPolicies,
@@ -11,6 +31,54 @@ import type { OrgPolicy } from '@/modules/admin/types';
 describe('OrgPolicyService', () => {
   beforeEach(() => {
     policyStore.clear();
+    ruleStore.clear();
+    jest.clearAllMocks();
+
+    mockPrisma.rule.create.mockImplementation(async ({ data }: any) => {
+      const id = uuidv4();
+      const now = new Date();
+      const rule = {
+        id,
+        name: data.name,
+        scope: data.scope,
+        entityId: data.entityId,
+        condition: data.condition,
+        action: data.action,
+        isActive: data.isActive,
+        createdAt: now,
+        updatedAt: now,
+      };
+      ruleStore.set(id, rule);
+      return rule;
+    });
+
+    mockPrisma.rule.findMany.mockImplementation(async ({ where }: any) => {
+      const results: any[] = [];
+      for (const [, rule] of ruleStore) {
+        if (where?.scope && rule.scope !== where.scope) continue;
+        if (where?.entityId && rule.entityId !== where.entityId) continue;
+        results.push(rule);
+      }
+      return results;
+    });
+
+    mockPrisma.rule.findUnique.mockImplementation(async ({ where }: any) => {
+      return ruleStore.get(where.id) ?? null;
+    });
+
+    mockPrisma.rule.update.mockImplementation(async ({ where, data }: any) => {
+      const existing = ruleStore.get(where.id);
+      if (!existing) throw new Error(`Rule ${where.id} not found`);
+      const updated = {
+        ...existing,
+        ...data,
+        updatedAt: new Date(),
+      };
+      if (data.condition !== undefined) updated.condition = data.condition;
+      if (data.action !== undefined) updated.action = data.action;
+      ruleStore.set(where.id, updated);
+      return updated;
+    });
   });
 
   describe('createPolicy', () => {

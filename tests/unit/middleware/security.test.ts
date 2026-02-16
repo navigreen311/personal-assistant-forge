@@ -38,7 +38,7 @@ function createMockRequest(
     if (!init.headers) init.headers = {};
     (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
   }
-  return new NextRequest(url, init);
+  return new NextRequest(url, init as any);
 }
 
 describe('security middleware', () => {

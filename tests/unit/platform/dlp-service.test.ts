@@ -1,7 +1,61 @@
+import { v4 as uuidv4 } from 'uuid';
+
+// Mock prisma before importing the service
+const mockPrisma = {
+  rule: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+  },
+  actionLog: {
+    create: jest.fn().mockResolvedValue({}),
+  },
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+
 import { createDLPRule, getDLPRules, checkContent, deleteDLPRule, dlpStore } from '@/modules/admin/services/dlp-service';
 
 beforeEach(() => {
   dlpStore.clear();
+  jest.clearAllMocks();
+
+  // Make prisma.rule.create return a proper rule object
+  mockPrisma.rule.create.mockImplementation(async ({ data }: any) => {
+    const id = uuidv4();
+    return {
+      id,
+      name: data.name,
+      scope: data.scope,
+      entityId: data.entityId,
+      condition: data.condition,
+      action: data.action,
+      isActive: data.isActive,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  });
+
+  // Make prisma.rule.findMany return rules from the dlpStore
+  mockPrisma.rule.findMany.mockImplementation(async ({ where }: any) => {
+    const rules: any[] = [];
+    for (const [, rule] of dlpStore) {
+      if (where?.entityId && rule.entityId !== where.entityId) continue;
+      rules.push({
+        id: rule.id,
+        name: rule.name,
+        scope: 'DLP',
+        entityId: rule.entityId,
+        condition: { type: 'regex', pattern: rule.pattern, dataType: 'CUSTOM', scope: rule.scope },
+        action: { action: rule.action, notify: [] },
+        isActive: rule.isActive,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+    return rules;
+  });
 });
 
 describe('checkContent', () => {

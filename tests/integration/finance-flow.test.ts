@@ -151,6 +151,7 @@ describe('Finance Flow Integration Tests', () => {
       const budget = await createBudget({
         entityId: 'entity-1',
         name: 'Q1 2026 Budget',
+        totalBudgeted: 10000,
         period: {
           start: new Date('2026-01-01'),
           end: new Date('2026-03-31'),

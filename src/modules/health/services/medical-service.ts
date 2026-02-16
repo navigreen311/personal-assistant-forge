@@ -60,7 +60,7 @@ export async function addRecord(
       type: 'MEDICAL',
       title: record.title,
       status: record.type,
-      citations: citations as unknown as Record<string, unknown>,
+      citations: citations as unknown as import('@prisma/client').Prisma.InputJsonValue,
     },
   });
 

@@ -1,5 +1,80 @@
+import { v4 as uuidv4 } from 'uuid';
+
+// In-memory store for tasks used by the mock
+const taskStore = new Map<string, any>();
+
+const mockPrisma = {
+  task: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+  },
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn(),
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI not available')),
+  chat: jest.fn(),
+  streamText: jest.fn(),
+}));
+
 import { generateAnnualSchedule, completeTask, createTask } from '@/modules/household/services/maintenance-service';
 import type { MaintenanceTask } from '@/modules/household/types';
+
+beforeEach(() => {
+  taskStore.clear();
+  jest.clearAllMocks();
+
+  // Re-set the AI mock to reject (so schedule generation falls through to templates)
+  const { generateJSON } = jest.requireMock('@/lib/ai');
+  (generateJSON as jest.Mock).mockRejectedValue(new Error('AI not available'));
+
+  mockPrisma.task.create.mockImplementation(async ({ data }: any) => {
+    const id = uuidv4();
+    const task = {
+      id,
+      title: data.title,
+      description: data.description ?? null,
+      entityId: data.entityId,
+      priority: data.priority,
+      status: data.status,
+      dueDate: data.dueDate,
+      tags: data.tags,
+      createdFrom: data.createdFrom,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
+    };
+    taskStore.set(id, task);
+    return task;
+  });
+
+  mockPrisma.task.findUnique.mockImplementation(async ({ where }: any) => {
+    return taskStore.get(where.id) ?? null;
+  });
+
+  mockPrisma.task.update.mockImplementation(async ({ where, data }: any) => {
+    const existing = taskStore.get(where.id);
+    if (!existing) throw new Error(`Task ${where.id} not found`);
+    const updated = { ...existing, ...data, updatedAt: new Date() };
+    if (data.createdFrom !== undefined) updated.createdFrom = data.createdFrom;
+    taskStore.set(where.id, updated);
+    return updated;
+  });
+
+  mockPrisma.task.findMany.mockImplementation(async ({ where }: any) => {
+    const results: any[] = [];
+    for (const [, task] of taskStore) {
+      if (where?.entityId && task.entityId !== where.entityId) continue;
+      if (where?.deletedAt === null && task.deletedAt !== null) continue;
+      if (where?.tags?.has && !task.tags.includes(where.tags.has)) continue;
+      results.push(task);
+    }
+    return results;
+  });
+});
 
 describe('generateAnnualSchedule', () => {
   it('should create quarterly HVAC filter tasks', async () => {

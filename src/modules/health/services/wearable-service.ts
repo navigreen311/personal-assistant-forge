@@ -157,7 +157,7 @@ export async function syncWearableData(
           value: m.value,
           unit: m.unit,
           source: m.source,
-          metadata: m.metadata ?? undefined,
+          metadata: (m.metadata ?? undefined) as import('@prisma/client').Prisma.InputJsonValue | undefined,
           recordedAt: m.recordedAt,
         })),
       });

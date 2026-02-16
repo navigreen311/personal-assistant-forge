@@ -82,9 +82,9 @@ export async function updatePreferences(
           dietary: updated.dietary,
           budgetPerDayUsd: updated.budgetPerDayUsd,
           preferredAirports: updated.preferredAirports,
-          travelDocuments: updated.travelDocuments,
+          travelDocuments: JSON.parse(JSON.stringify(updated.travelDocuments ?? [])),
         },
-      },
+      } as import('@prisma/client').Prisma.InputJsonValue,
     },
   });
 

@@ -1,3 +1,26 @@
+// In-memory store for calendar events used by the mock
+const calendarEventStore = new Map<string, any>();
+
+const mockPrisma = {
+  entity: {
+    findFirst: jest.fn().mockResolvedValue({ id: 'entity-test' }),
+  },
+  calendarEvent: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    delete: jest.fn(),
+    update: jest.fn(),
+  },
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn(),
+  generateJSON: jest.fn(),
+  chat: jest.fn(),
+  streamText: jest.fn(),
+}));
+
 import { createItinerary, addLeg, removeLeg, calculateTotalCost } from '@/modules/travel/services/itinerary-service';
 import type { ItineraryLeg, Itinerary } from '@/modules/travel/types';
 
@@ -12,6 +35,60 @@ const baseLeg: Omit<ItineraryLeg, 'id'> = {
   costUsd: 300,
   status: 'BOOKED',
 };
+
+beforeEach(() => {
+  calendarEventStore.clear();
+  jest.clearAllMocks();
+
+  mockPrisma.entity.findFirst.mockResolvedValue({ id: 'entity-test' });
+
+  mockPrisma.calendarEvent.create.mockImplementation(async ({ data }: any) => {
+    const event = {
+      id: data.id,
+      title: data.title,
+      entityId: data.entityId,
+      startTime: data.startTime,
+      endTime: data.endTime,
+      prepPacket: data.prepPacket,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    calendarEventStore.set(event.id, event);
+    return event;
+  });
+
+  mockPrisma.calendarEvent.findMany.mockImplementation(async ({ where }: any) => {
+    const results: any[] = [];
+    for (const [, event] of calendarEventStore) {
+      if (where?.prepPacket?.path && where?.prepPacket?.equals) {
+        const path = where.prepPacket.path;
+        const equals = where.prepPacket.equals;
+        const meta = event.prepPacket as Record<string, unknown>;
+        if (meta && meta[path[0]] === equals) {
+          results.push(event);
+        }
+      }
+    }
+    return results.sort((a: any, b: any) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+  });
+
+  mockPrisma.calendarEvent.delete.mockImplementation(async ({ where }: any) => {
+    const event = calendarEventStore.get(where.id);
+    calendarEventStore.delete(where.id);
+    return event;
+  });
+
+  mockPrisma.calendarEvent.update.mockImplementation(async ({ where, data }: any) => {
+    const existing = calendarEventStore.get(where.id);
+    if (!existing) throw new Error(`Event ${where.id} not found`);
+    const updated = { ...existing, ...data, updatedAt: new Date() };
+    if (data.prepPacket) {
+      updated.prepPacket = data.prepPacket;
+    }
+    calendarEventStore.set(where.id, updated);
+    return updated;
+  });
+});
 
 describe('createItinerary', () => {
   it('should calculate total cost from legs', async () => {

@@ -288,7 +288,7 @@ export async function addLeg(
       prepPacket: {
         itineraryId,
         itineraryName,
-        itineraryStatus: firstMeta.itineraryStatus,
+        itineraryStatus: (firstMeta.itineraryStatus as string) ?? 'DRAFT',
         userId,
         legId: newLegId,
         legOrder: newOrder,

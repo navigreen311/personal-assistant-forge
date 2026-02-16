@@ -27,7 +27,7 @@ class ScreenshotService {
         entityId: entityId ?? '',
         type: 'SCREENSHOT',
         content: extractedText.substring(0, 5000),
-        metadata: {
+        citations: {
           capturedAt: new Date().toISOString(),
           suggestedActions: suggestedActions.map(a => ({ type: a.type, confidence: a.confidence })),
         },
