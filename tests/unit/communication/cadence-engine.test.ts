@@ -1,4 +1,4 @@
-import { setCadence, getOverdueFollowUps, escalateFollowUp, getNextFollowUps } from '@/modules/communication/services/cadence-engine';
+import { setCadence, getOverdueFollowUps, escalateFollowUp, getNextFollowUps, triggerCadenceReminders, getCadenceStatus } from '@/modules/communication/services/cadence-engine';
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -6,6 +6,10 @@ jest.mock('@/lib/db', () => ({
       findUnique: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+    },
+    notification: {
+      create: jest.fn(),
+      findFirst: jest.fn(),
     },
   },
 }));
@@ -66,6 +70,34 @@ describe('cadence-engine', () => {
       expect(updatedPrefs.preferredTone).toBe('WARM');
       expect(updatedPrefs.cadenceFrequency).toBe('MONTHLY');
     });
+
+    it('should store cadence in contact preferences', async () => {
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        lastTouch: new Date(),
+        preferences: {},
+      });
+      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+
+      await setCadence('c-1', 'DAILY');
+
+      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      expect(updateCall.data.preferences.cadenceFrequency).toBe('DAILY');
+    });
+
+    it('should calculate next due date based on lastTouch', async () => {
+      const lastTouch = new Date('2026-01-01');
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        lastTouch,
+        preferences: {},
+      });
+      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+
+      const result = await setCadence('c-1', 'WEEKLY');
+      // Next due should be 7 days after lastTouch
+      expect(result.nextDue.getTime()).toBeGreaterThan(lastTouch.getTime());
+    });
   });
 
   describe('getOverdueFollowUps', () => {
@@ -102,6 +134,161 @@ describe('cadence-engine', () => {
       const overdue = await getOverdueFollowUps('entity-1');
       expect(overdue).toHaveLength(0);
     });
+
+    it('should mark as overdue when nextDue is in the past', async () => {
+      const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'c-1',
+          lastTouch: sixtyDaysAgo,
+          preferences: { cadenceFrequency: 'MONTHLY' },
+        },
+      ]);
+
+      const overdue = await getOverdueFollowUps('entity-1');
+      expect(overdue).toHaveLength(1);
+      expect(overdue[0].isOverdue).toBe(true);
+    });
+  });
+
+  describe('triggerCadenceReminders', () => {
+    it('should create Notifications for overdue contacts', async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'c-1',
+          lastTouch: thirtyDaysAgo,
+          preferences: { cadenceFrequency: 'WEEKLY' },
+        },
+      ]);
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        name: 'Alice',
+        entityId: 'entity-1',
+      });
+      (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
+
+      const triggered = await triggerCadenceReminders('entity-1');
+
+      expect(triggered).toBe(1);
+      expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+      const createCall = (mockPrisma.notification.create as jest.Mock).mock.calls[0][0];
+      expect(createCall.data.type).toBe('cadence_reminder');
+      expect(createCall.data.title).toContain('Alice');
+    });
+
+    it('should skip contacts already reminded', async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'c-1',
+          lastTouch: thirtyDaysAgo,
+          preferences: { cadenceFrequency: 'WEEKLY' },
+        },
+      ]);
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        name: 'Alice',
+        entityId: 'entity-1',
+      });
+      (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue({ id: 'existing-notif' });
+
+      const triggered = await triggerCadenceReminders('entity-1');
+
+      expect(triggered).toBe(0);
+      expect(mockPrisma.notification.create).not.toHaveBeenCalled();
+    });
+
+    it('should set high priority for overdue cadences', async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'c-1',
+          lastTouch: thirtyDaysAgo,
+          preferences: { cadenceFrequency: 'WEEKLY' },
+        },
+      ]);
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        name: 'Bob',
+        entityId: 'entity-1',
+      });
+      (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
+
+      await triggerCadenceReminders('entity-1');
+
+      const createCall = (mockPrisma.notification.create as jest.Mock).mock.calls[0][0];
+      expect(createCall.data.priority).toBe('high');
+    });
+
+    it('should return count of triggered reminders', async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([
+        { id: 'c-1', lastTouch: thirtyDaysAgo, preferences: { cadenceFrequency: 'WEEKLY' } },
+        { id: 'c-2', lastTouch: thirtyDaysAgo, preferences: { cadenceFrequency: 'DAILY' } },
+      ]);
+      (mockPrisma.contact.findUnique as jest.Mock)
+        .mockResolvedValueOnce({ name: 'Alice', entityId: 'entity-1' })
+        .mockResolvedValueOnce({ name: 'Bob', entityId: 'entity-1' });
+      (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
+
+      const triggered = await triggerCadenceReminders('entity-1');
+      expect(triggered).toBe(2);
+    });
+  });
+
+  describe('getCadenceStatus', () => {
+    it('should return cadence info for a contact', async () => {
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        lastTouch: new Date(),
+        preferences: { cadenceFrequency: 'WEEKLY', escalationAfterMisses: 5 },
+      });
+
+      const result = await getCadenceStatus('c-1');
+      expect(result).not.toBeNull();
+      expect(result!.contactId).toBe('c-1');
+      expect(result!.frequency).toBe('WEEKLY');
+      expect(result!.nextDue).toBeInstanceOf(Date);
+      expect(result!.escalationAfterMisses).toBe(5);
+    });
+
+    it('should return null for contacts without cadence', async () => {
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        lastTouch: new Date(),
+        preferences: {},
+      });
+
+      const result = await getCadenceStatus('c-1');
+      expect(result).toBeNull();
+    });
+
+    it('should return null for nonexistent contacts', async () => {
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+
+      const result = await getCadenceStatus('nonexistent');
+      expect(result).toBeNull();
+    });
+
+    it('should calculate isOverdue correctly', async () => {
+      const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        lastTouch: sixtyDaysAgo,
+        preferences: { cadenceFrequency: 'WEEKLY' },
+      });
+
+      const result = await getCadenceStatus('c-1');
+      expect(result).not.toBeNull();
+      expect(result!.isOverdue).toBe(true);
+    });
   });
 
   describe('escalateFollowUp', () => {
@@ -117,6 +304,19 @@ describe('cadence-engine', () => {
       const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
       expect(updateCall.data.preferences.escalated).toBe(true);
       expect(updateCall.data.preferences.escalationReason).toContain('human review');
+    });
+
+    it('should include escalation timestamp', async () => {
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'c-1',
+        preferences: {},
+      });
+      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+
+      await escalateFollowUp('c-1');
+
+      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      expect(updateCall.data.preferences.escalatedAt).toBeDefined();
     });
 
     it('should throw for nonexistent contact', async () => {
@@ -143,7 +343,6 @@ describe('cadence-engine', () => {
       ]);
 
       const upcoming = await getNextFollowUps('entity-1', 14);
-      // WEEKLY contact should be in the list (due in ~4 days from recentTouch)
       expect(upcoming.some((c) => c.contactId === 'c-1')).toBe(true);
     });
 
