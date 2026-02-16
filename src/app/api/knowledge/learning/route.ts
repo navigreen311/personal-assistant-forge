@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { addLearningItem } from '@/modules/knowledge/services/learning-tracker';
+import { withAuth } from '@/shared/middleware/auth';
 import type { StoredLearningData, LearningItem } from '@/modules/knowledge/types';
 
 const addLearningSchema = z.object({
@@ -43,54 +44,58 @@ function toLearningItem(entry: Record<string, unknown>): LearningItem {
 }
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = request.nextUrl;
-    const entityId = searchParams.get('entityId');
-    const status = searchParams.get('status');
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = req.nextUrl;
+      const entityId = searchParams.get('entityId');
+      const status = searchParams.get('status');
 
-    if (!entityId) {
-      return error('VALIDATION_ERROR', 'entityId is required', 400);
+      if (!entityId) {
+        return error('VALIDATION_ERROR', 'entityId is required', 400);
+      }
+
+      const entries = await prisma.knowledgeEntry.findMany({
+        where: {
+          entityId,
+          source: { startsWith: 'learning://' },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      let items = entries.map((e: unknown) => toLearningItem(e as unknown as Record<string, unknown>));
+
+      if (status) {
+        items = items.filter((item: LearningItem) => item.status === status);
+      }
+
+      return success(items);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to list learning items', 500);
     }
-
-    const entries = await prisma.knowledgeEntry.findMany({
-      where: {
-        entityId,
-        source: { startsWith: 'learning://' },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    let items = entries.map((e: unknown) => toLearningItem(e as unknown as Record<string, unknown>));
-
-    if (status) {
-      items = items.filter((item: LearningItem) => item.status === status);
-    }
-
-    return success(items);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to list learning items', 500);
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = addLearningSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = addLearningSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const data = {
+        ...parsed.data,
+        startedAt: parsed.data.startedAt ? new Date(parsed.data.startedAt) : undefined,
+        completedAt: parsed.data.completedAt ? new Date(parsed.data.completedAt) : undefined,
+        nextReviewDate: parsed.data.nextReviewDate ? new Date(parsed.data.nextReviewDate) : undefined,
+      };
+
+      const item = await addLearningItem(data);
+      return success(item, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to add learning item', 500);
     }
-
-    const data = {
-      ...parsed.data,
-      startedAt: parsed.data.startedAt ? new Date(parsed.data.startedAt) : undefined,
-      completedAt: parsed.data.completedAt ? new Date(parsed.data.completedAt) : undefined,
-      nextReviewDate: parsed.data.nextReviewDate ? new Date(parsed.data.nextReviewDate) : undefined,
-    };
-
-    const item = await addLearningItem(data);
-    return success(item, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to add learning item', 500);
-  }
+  });
 }

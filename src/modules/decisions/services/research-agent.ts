@@ -1,7 +1,8 @@
 // ============================================================================
-// Deep Research Agent Service (Placeholder / Stubs)
+// Deep Research Agent Service (AI-Powered with Fallback)
 // ============================================================================
 
+import { generateJSON, generateText } from '@/lib/ai';
 import type {
   ResearchRequest,
   ResearchReport,
@@ -12,30 +13,119 @@ import type {
 } from '@/modules/decisions/types';
 
 /**
- * Conduct research — placeholder that returns a structured skeleton.
- * In production, this would integrate with web search APIs, document stores,
- * and knowledge bases.
+ * Conduct research using AI to produce contextual findings and summary.
+ * Falls back to placeholder data on AI failure.
  */
 export async function conductResearch(
   request: ResearchRequest
 ): Promise<ResearchReport> {
-  const sources = generatePlaceholderSources(request);
-  const findings = generatePlaceholderFindings(request, sources);
+  try {
+    return await conductResearchWithAI(request);
+  } catch {
+    // Fall back to placeholder research on AI failure
+    const sources = generatePlaceholderSources(request);
+    const findings = generatePlaceholderFindings(request, sources);
+
+    return {
+      id: `research-${Date.now()}`,
+      query: request.query,
+      summary: `Research summary for: "${request.query}". ` +
+        `Depth: ${request.depth}. ${sources.length} sources consulted.`,
+      findings,
+      sources,
+      confidenceScore: getDepthConfidence(request.depth),
+      gaps: [
+        'Proprietary data not accessible',
+        'Historical trends beyond 5 years not analyzed',
+        'Competitor intelligence limited to public sources',
+      ],
+      createdAt: new Date(),
+    };
+  }
+}
+
+async function conductResearchWithAI(
+  request: ResearchRequest
+): Promise<ResearchReport> {
+  const maxSources = Math.min(request.maxSources, 10);
+
+  const result = await generateJSON<{
+    sources: Array<{
+      type: string;
+      title: string;
+      excerpt: string;
+      url?: string;
+    }>;
+    findings: Array<{
+      claim: string;
+      evidence: string;
+      confidence: number;
+      sourceIndices: number[];
+    }>;
+    gaps: string[];
+  }>(`Conduct research on the following topic and return structured findings.
+
+Query: "${request.query}"
+Research depth: ${request.depth}
+Source types to consider: ${request.sourceTypes.join(', ')}
+Entity: ${request.entityId}
+Maximum sources: ${maxSources}
+
+Generate:
+- sources: ${maxSources} relevant sources with type (${request.sourceTypes.join('/')}), title, excerpt, and optional url
+- findings: 2-5 key findings with claim, evidence, confidence (0-1), and sourceIndices (indices into sources array)
+- gaps: 2-4 research gaps or limitations`, {
+    maxTokens: 1536,
+    temperature: 0.4,
+    system: 'You are a research analyst. Generate realistic, well-structured research findings. Be specific and cite evidence. Findings should be actionable and relevant to business decisions.',
+  });
+
+  const now = new Date();
+  const sources: ResearchSource[] = result.sources.map((s, i) => ({
+    id: `source-${Date.now()}-${i}`,
+    type: (request.sourceTypes.includes(s.type as SourceType) ? s.type : request.sourceTypes[0] || 'WEB') as SourceType,
+    title: s.title,
+    url: s.url,
+    credibilityScore: evaluateSourceCredibility({
+      type: s.type as SourceType,
+      title: s.title,
+      excerpt: s.excerpt,
+      url: s.url,
+    }),
+    excerpt: s.excerpt,
+    accessedAt: now,
+  }));
+
+  const findings: ResearchFinding[] = result.findings.map((f) => ({
+    claim: f.claim,
+    evidence: f.evidence,
+    sourceIds: (f.sourceIndices || [])
+      .filter((idx) => idx < sources.length)
+      .map((idx) => sources[idx].id),
+    confidence: f.confidence ?? getDepthConfidence(request.depth),
+  }));
+
+  const summary = await generateText(
+    `Summarize these research findings in 2-3 sentences for a decision-maker.
+
+Query: "${request.query}"
+Findings:
+${findings.map((f) => `- ${f.claim}: ${f.evidence}`).join('\n')}`,
+    {
+      maxTokens: 256,
+      temperature: 0.3,
+    }
+  );
 
   return {
     id: `research-${Date.now()}`,
     query: request.query,
-    summary: `Research summary for: "${request.query}". ` +
-      `Depth: ${request.depth}. ${sources.length} sources consulted.`,
+    summary,
     findings,
     sources,
     confidenceScore: getDepthConfidence(request.depth),
-    gaps: [
-      'Proprietary data not accessible',
-      'Historical trends beyond 5 years not analyzed',
-      'Competitor intelligence limited to public sources',
-    ],
-    createdAt: new Date(),
+    gaps: result.gaps || [],
+    createdAt: now,
   };
 }
 

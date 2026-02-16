@@ -14,99 +14,162 @@ jest.mock('../../../src/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('../../../src/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
+import { generateJSON } from '../../../src/lib/ai';
+
+const mockGenerateJSON = generateJSON as jest.Mock;
+
 describe('NLPSchedulingService', () => {
   let service: NLPSchedulingService;
 
   beforeEach(() => {
     service = new NLPSchedulingService();
+    jest.clearAllMocks();
   });
 
-  describe('parseScheduleRequest', () => {
-    it('should parse "Set up a call with Dr. Martinez next week, prefer mornings"', async () => {
+  describe('parseScheduleRequest with AI', () => {
+    it('should call generateJSON for natural language parsing', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        title: 'Call with Dr. Martinez',
+        eventType: 'CALL',
+        startDate: '2026-02-20',
+        startTime: '09:00',
+        duration: 30,
+        participants: ['Dr. Martinez'],
+        location: null,
+        priority: 'MEDIUM',
+        recurrence: null,
+        notes: null,
+        confidence: 0.9,
+      });
+
       const result = await service.parseScheduleRequest({
-        text: 'Set up a call with Dr. Martinez next week, prefer mornings',
+        text: 'Set up a call with Dr. Martinez next week',
         entityId: 'e1',
         userId: 'u1',
       });
+
+      expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
       expect(result.type).toBe('CALL');
       expect(result.participantNames).toContain('Dr. Martinez');
-      expect(result.timeHints.some((h) => h.value === 'next week')).toBe(true);
-      expect(result.timeHints.some((h) => h.value === 'morning')).toBe(true);
+      expect(result.confidence).toBe(0.9);
     });
 
-    it('should parse "Schedule a 30-minute meeting with Bobby tomorrow at 2pm"', async () => {
+    it('should extract date, time, duration, and participants from AI response', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        title: 'Team Meeting',
+        eventType: 'MEETING',
+        startDate: '2026-02-16',
+        startTime: '14:00',
+        duration: 60,
+        participants: ['Bobby Johnson', 'Jennifer Smith'],
+        location: 'Conference Room A',
+        priority: 'HIGH',
+        recurrence: null,
+        notes: 'Quarterly review',
+        confidence: 0.85,
+      });
+
       const result = await service.parseScheduleRequest({
-        text: 'Schedule a 30-minute meeting with Bobby tomorrow at 2pm',
+        text: 'Schedule a meeting with Bobby and Jennifer tomorrow at 2pm in Conference Room A',
         entityId: 'e1',
         userId: 'u1',
       });
-      expect(result.type).toBe('MEETING');
-      expect(result.duration).toBe(30);
-      expect(result.timeHints.some((h) => h.value === 'tomorrow')).toBe(true);
+
+      expect(result.title).toBe('Team Meeting');
+      expect(result.duration).toBe(60);
+      expect(result.participantNames).toEqual(['Bobby Johnson', 'Jennifer Smith']);
+      expect(result.location).toBe('Conference Room A');
+      expect(result.priority).toBe('HIGH');
     });
 
-    it('should parse "Block 2 hours for focus time on Friday morning"', async () => {
-      const result = await service.parseScheduleRequest({
-        text: 'Block 2 hours for focus time on Friday morning',
-        entityId: 'e1',
-        userId: 'u1',
-      });
-      expect(result.type).toBe('FOCUS_BLOCK');
-      expect(result.duration).toBe(120);
-    });
+    it('should fall back to regex parsing when AI fails', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('API error'));
 
-    it('should parse "Quick call with Jennifer this afternoon"', async () => {
       const result = await service.parseScheduleRequest({
         text: 'Quick call with Jennifer this afternoon',
         entityId: 'e1',
         userId: 'u1',
       });
+
       expect(result.type).toBe('CALL');
       expect(result.duration).toBe(15);
       expect(result.participantNames).toContain('Jennifer');
       expect(result.timeHints.some((h) => h.value === 'this afternoon')).toBe(true);
     });
 
-    it('should parse "Workshop with the team next Wednesday, 2 hours"', async () => {
+    it('should fall back to regex parsing when AI confidence is below 0.5', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        title: 'Something',
+        eventType: 'MEETING',
+        startDate: '2026-02-15',
+        startTime: '10:00',
+        duration: 30,
+        participants: [],
+        priority: 'MEDIUM',
+        confidence: 0.3,
+      });
+
       const result = await service.parseScheduleRequest({
-        text: 'Workshop with the team next Wednesday, 2 hours',
+        text: 'Quick call with Jennifer this afternoon',
         entityId: 'e1',
         userId: 'u1',
       });
-      expect(result.type).toBe('MEETING'); // workshop is still a meeting type
-      expect(result.duration).toBe(120);
-      expect(result.timeHints.some((h) => h.value === 'next wednesday')).toBe(true);
+
+      // Should fall back to regex parsing
+      expect(result.type).toBe('CALL');
+      expect(result.duration).toBe(15);
     });
 
-    it('should parse "Lunch meeting with Carlos on Thursday"', async () => {
+    it('should handle ambiguous time references via AI', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        title: 'Weekly Sync',
+        eventType: 'MEETING',
+        startDate: '2026-02-20',
+        startTime: '10:00',
+        duration: 30,
+        participants: [],
+        priority: 'MEDIUM',
+        recurrence: 'WEEKLY',
+        confidence: 0.8,
+      });
+
       const result = await service.parseScheduleRequest({
-        text: 'Lunch meeting with Carlos on Thursday',
+        text: 'Set up a recurring weekly sync',
         entityId: 'e1',
         userId: 'u1',
       });
-      expect(result.type).toBe('BREAK'); // "lunch" triggers BREAK
-      expect(result.participantNames).toContain('Carlos');
+
+      expect(result.title).toBe('Weekly Sync');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.5);
     });
 
-    it('should parse "URGENT: meeting with legal team today"', async () => {
-      const result = await service.parseScheduleRequest({
-        text: 'URGENT: meeting with legal team today',
-        entityId: 'e1',
-        userId: 'u1',
+    it('should parse complex multi-person scheduling requests', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        title: 'Project Kickoff Meeting',
+        eventType: 'MEETING',
+        startDate: '2026-02-18',
+        startTime: '09:00',
+        duration: 90,
+        participants: ['Dr. Martinez', 'Bobby Johnson', 'Carlos Rivera'],
+        location: 'Board Room',
+        priority: 'HIGH',
+        confidence: 0.92,
       });
-      expect(result.type).toBe('MEETING');
-      expect(result.priority).toBe('CRITICAL');
-      expect(result.timeHints.some((h) => h.value === 'today')).toBe(true);
-    });
 
-    it('should handle ambiguous input with lower confidence', async () => {
       const result = await service.parseScheduleRequest({
-        text: 'something next week',
+        text: 'Schedule a 90 minute project kickoff with Dr. Martinez, Bobby, and Carlos next Wednesday at 9am in the Board Room',
         entityId: 'e1',
         userId: 'u1',
       });
-      expect(result.confidence).toBeLessThan(1);
-      expect(result.type).toBe('MEETING'); // defaults to MEETING
+
+      expect(result.participantNames).toHaveLength(3);
+      expect(result.duration).toBe(90);
+      expect(result.location).toBe('Board Room');
     });
   });
 

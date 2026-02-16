@@ -1,7 +1,8 @@
 // ============================================================================
-// Pre-Mortem Analysis Service
+// Pre-Mortem Analysis Service (AI-Powered with Fallback)
 // ============================================================================
 
+import { generateJSON } from '@/lib/ai';
 import type {
   PreMortemRequest,
   PreMortemResult,
@@ -25,17 +26,34 @@ const IMPACT_WEIGHT: Record<RiskLevel, number> = {
 
 /**
  * Run a pre-mortem analysis on a chosen decision option.
- *
- * ASSUMPTION: This is a placeholder that generates structured scenarios.
- * In production, this would call an LLM to produce domain-specific analysis.
+ * Uses AI to generate domain-specific failure scenarios and mitigations.
+ * Falls back to rule-based generation on AI failure.
  */
 export async function runPreMortem(
   request: PreMortemRequest
 ): Promise<PreMortemResult> {
-  const failureScenarios = generateFailureScenarios(request);
-  const mitigationPlan = generateMitigations(failureScenarios, request);
+  let failureScenarios: FailureScenario[];
+  try {
+    failureScenarios = await generateFailureScenariosWithAI(request);
+  } catch {
+    failureScenarios = generateFailureScenarios(request);
+  }
+
+  let mitigationPlan: MitigationStep[];
+  try {
+    mitigationPlan = await generateMitigationsWithAI(failureScenarios, request);
+  } catch {
+    mitigationPlan = generateMitigations(failureScenarios, request);
+  }
+
   const overallRiskScore = calculateRiskScore(failureScenarios);
-  const killSignals = generateKillSignals(request.timeHorizon);
+
+  let killSignals: string[];
+  try {
+    killSignals = await generateKillSignalsWithAI(request);
+  } catch {
+    killSignals = generateKillSignals(request.timeHorizon);
+  }
 
   return {
     failureScenarios,
@@ -63,7 +81,101 @@ export function calculateRiskScore(scenarios: FailureScenario[]): number {
   return Math.round(Math.min(100, Math.max(0, normalized)));
 }
 
-// --- Internal Generators ---
+// --- AI-Powered Generators ---
+
+async function generateFailureScenariosWithAI(
+  request: PreMortemRequest
+): Promise<FailureScenario[]> {
+  const result = await generateJSON<{
+    scenarios: Array<{
+      description: string;
+      probability: 'LOW' | 'MEDIUM' | 'HIGH';
+      impact: 'LOW' | 'MEDIUM' | 'HIGH';
+      category: 'FINANCIAL' | 'OPERATIONAL' | 'REPUTATIONAL' | 'LEGAL' | 'TECHNICAL';
+      rootCause: string;
+    }>;
+  }>(`Run a pre-mortem analysis. Assume this decision has already failed and analyze why.
+
+Decision ID: ${request.decisionId}
+Chosen option ID: ${request.chosenOptionId}
+Time horizon: ${request.timeHorizon}
+
+Generate 3-5 realistic failure scenarios. For each provide:
+- description: what went wrong
+- probability: LOW, MEDIUM, or HIGH
+- impact: LOW, MEDIUM, or HIGH
+- category: FINANCIAL, OPERATIONAL, REPUTATIONAL, LEGAL, or TECHNICAL
+- rootCause: underlying reason for the failure`, {
+    maxTokens: 1024,
+    temperature: 0.5,
+    system: 'You are a risk analyst performing a pre-mortem analysis. Generate realistic, specific failure scenarios. Be concrete and domain-relevant, not generic.',
+  });
+
+  return (result.scenarios || []).map((s, i) => ({
+    id: `scenario-${request.decisionId}-${i + 1}`,
+    description: s.description,
+    probability: s.probability || 'MEDIUM',
+    impact: s.impact || 'MEDIUM',
+    category: s.category || 'OPERATIONAL',
+    rootCause: s.rootCause,
+  }));
+}
+
+async function generateMitigationsWithAI(
+  scenarios: FailureScenario[],
+  request: PreMortemRequest
+): Promise<MitigationStep[]> {
+  const result = await generateJSON<{
+    mitigations: Array<{
+      scenarioId: string;
+      action: string;
+      owner: string;
+    }>;
+  }>(`Generate specific mitigation steps for these failure scenarios.
+
+Decision ID: ${request.decisionId}
+Chosen option ID: ${request.chosenOptionId}
+
+Failure scenarios:
+${scenarios.map((s) => `- [${s.id}] ${s.description} (${s.category}, ${s.probability} probability, ${s.impact} impact). Root cause: ${s.rootCause}`).join('\n')}
+
+For each scenario, provide a specific, actionable mitigation step with:
+- scenarioId: matching the scenario id
+- action: concrete mitigation step
+- owner: suggested role/team to own this mitigation`, {
+    maxTokens: 768,
+    temperature: 0.4,
+    system: 'You are a risk mitigation specialist. Provide concrete, actionable mitigation steps. Be specific about who should own each action.',
+  });
+
+  return (result.mitigations || []).map((m) => ({
+    scenarioId: m.scenarioId,
+    action: m.action,
+    owner: m.owner || 'TBD — assign during review',
+  }));
+}
+
+async function generateKillSignalsWithAI(
+  request: PreMortemRequest
+): Promise<string[]> {
+  const result = await generateJSON<{ signals: string[] }>(
+    `Generate kill signals (early warning indicators that should trigger abandoning this initiative).
+
+Decision ID: ${request.decisionId}
+Chosen option ID: ${request.chosenOptionId}
+Time horizon: ${request.timeHorizon}
+
+List 3-5 specific, measurable kill signals that would indicate this decision should be reversed or abandoned.`, {
+      maxTokens: 512,
+      temperature: 0.4,
+      system: 'You are a strategic advisor. Generate specific, measurable kill signals. Each signal should be objectively verifiable.',
+    }
+  );
+
+  return result.signals || [];
+}
+
+// --- Fallback Rule-Based Generators ---
 
 const CATEGORIES: FailureCategory[] = [
   'FINANCIAL',

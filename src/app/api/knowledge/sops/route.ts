@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createSOP, listSOPs } from '@/modules/knowledge/services/sop-service';
+import { withAuth } from '@/shared/middleware/auth';
 
 const sopStepSchema = z.object({
   order: z.number(),
@@ -23,44 +24,48 @@ const createSOPSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = request.nextUrl;
-    const entityId = searchParams.get('entityId');
-    const status = searchParams.get('status');
-    const tags = searchParams.get('tags');
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = req.nextUrl;
+      const entityId = searchParams.get('entityId');
+      const status = searchParams.get('status');
+      const tags = searchParams.get('tags');
 
-    if (!entityId) {
-      return error('VALIDATION_ERROR', 'entityId is required', 400);
+      if (!entityId) {
+        return error('VALIDATION_ERROR', 'entityId is required', 400);
+      }
+
+      const sops = await listSOPs(entityId, {
+        status: status || undefined,
+        tags: tags ? tags.split(',') : undefined,
+      });
+
+      return success(sops);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to list SOPs', 500);
     }
-
-    const sops = await listSOPs(entityId, {
-      status: status || undefined,
-      tags: tags ? tags.split(',') : undefined,
-    });
-
-    return success(sops);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to list SOPs', 500);
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = createSOPSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = createSOPSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const data = {
+        ...parsed.data,
+        lastUsed: parsed.data.lastUsed ? new Date(parsed.data.lastUsed) : undefined,
+      };
+
+      const sop = await createSOP(data);
+      return success(sop, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to create SOP', 500);
     }
-
-    const data = {
-      ...parsed.data,
-      lastUsed: parsed.data.lastUsed ? new Date(parsed.data.lastUsed) : undefined,
-    };
-
-    const sop = await createSOP(data);
-    return success(sop, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to create SOP', 500);
-  }
+  });
 }

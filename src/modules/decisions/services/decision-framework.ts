@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type {
   DecisionRequest,
   DecisionBrief,
@@ -17,10 +18,22 @@ import type {
 export async function createDecisionBrief(
   request: DecisionRequest
 ): Promise<DecisionBrief> {
-  const options = generateThreeOptions(request);
+  let options: DecisionOption[];
+  try {
+    options = await generateThreeOptionsWithAI(request);
+  } catch {
+    options = generateThreeOptions(request);
+  }
+
   const recommendation = deriveRecommendation(options, request);
   const confidenceScore = computeConfidence(request);
-  const blindSpots = identifyBlindSpots(request);
+
+  let blindSpots: string[];
+  try {
+    blindSpots = await identifyBlindSpotsWithAI(request);
+  } catch {
+    blindSpots = identifyBlindSpots(request);
+  }
 
   const brief: Omit<DecisionBrief, 'id' | 'createdAt'> = {
     title: request.title,
@@ -115,7 +128,104 @@ export async function listDecisionBriefs(
   return { briefs, total };
 }
 
-// --- Internal Generators ---
+// --- AI-Powered Generators ---
+
+async function generateThreeOptionsWithAI(
+  request: DecisionRequest
+): Promise<DecisionOption[]> {
+  const result = await generateJSON<{
+    options: Array<{
+      label: string;
+      stance: 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE';
+      description: string;
+      pros: string[];
+      cons: string[];
+      estimatedCost: number;
+      estimatedTimeline: string;
+      riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+      reversibility: 'EASY' | 'MODERATE' | 'DIFFICULT' | 'IRREVERSIBLE';
+      secondOrderEffects: Array<{
+        description: string;
+        probability: number;
+        impact: 'LOW' | 'MEDIUM' | 'HIGH';
+        sentiment: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE';
+        affectedAreas: string[];
+      }>;
+    }>;
+  }>(`Generate exactly 3 decision options for this business decision.
+
+Decision: ${request.title}
+Description: ${request.description}
+Context: ${request.context ?? 'No additional context'}
+Constraints: ${request.constraints?.join(', ') ?? 'None specified'}
+Stakeholders: ${request.stakeholders?.join(', ') ?? 'Not specified'}
+Deadline: ${request.deadline ?? 'No deadline'}
+Blast radius: ${request.blastRadius ?? 'Unknown'}
+
+Generate exactly 3 options:
+1. CONSERVATIVE - low risk, incremental approach
+2. MODERATE - balanced risk/reward
+3. AGGRESSIVE - high risk, high reward, bold action
+
+For each option provide: label, stance, description, pros (3-5), cons (2-4), estimatedCost (number), estimatedTimeline, riskLevel, reversibility (EASY/MODERATE/DIFFICULT/IRREVERSIBLE), and 2-3 secondOrderEffects with description, probability (0-1), impact (LOW/MEDIUM/HIGH), sentiment (POSITIVE/NEUTRAL/NEGATIVE), affectedAreas.`, {
+    maxTokens: 2048,
+    temperature: 0.6,
+    system: 'You are a strategic business advisor. Generate thoughtful, actionable decision options. Be specific and realistic. Consider second-order effects carefully.',
+  });
+
+  const stanceMap: Record<string, 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'> = {
+    CONSERVATIVE: 'CONSERVATIVE',
+    MODERATE: 'MODERATE',
+    AGGRESSIVE: 'AGGRESSIVE',
+  };
+
+  return result.options.map((o, i) => ({
+    id: `opt-${(o.stance || 'option').toLowerCase()}-${Date.now()}-${i}`,
+    label: o.label,
+    strategy: stanceMap[o.stance] || (['CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'][i] as 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'),
+    description: o.description,
+    pros: o.pros,
+    cons: o.cons,
+    estimatedCost: o.estimatedCost ?? 0,
+    estimatedTimeline: o.estimatedTimeline,
+    riskLevel: o.riskLevel || 'MEDIUM',
+    reversibility: o.reversibility || 'MODERATE',
+    secondOrderEffects: (o.secondOrderEffects || []).slice(0, 3).map((e, j) => ({
+      id: `effect-${(o.stance || 'option').toLowerCase()}-${j + 1}`,
+      description: e.description,
+      order: (j + 1) as 1 | 2 | 3,
+      sentiment: e.sentiment || 'NEUTRAL',
+      likelihood: e.probability ?? 0.5,
+      affectedAreas: e.affectedAreas || [],
+    })),
+  }));
+}
+
+async function identifyBlindSpotsWithAI(
+  request: DecisionRequest
+): Promise<string[]> {
+  const result = await generateJSON<{ blindSpots: string[] }>(
+    `Identify potential blind spots for this decision.
+
+Decision: ${request.title}
+Description: ${request.description}
+Context: ${request.context}
+Stakeholders: ${request.stakeholders?.join(', ') ?? 'None specified'}
+Constraints: ${request.constraints?.join(', ') ?? 'None specified'}
+Deadline: ${request.deadline ?? 'No deadline'}
+Blast radius: ${request.blastRadius ?? 'Unknown'}
+
+List 3-6 specific blind spots — things the decision-maker might be overlooking, biases at play, missing data points, or second-order risks.`, {
+      maxTokens: 512,
+      temperature: 0.5,
+      system: 'You are a critical thinking advisor. Identify specific, actionable blind spots that could derail this decision. Be concrete, not generic.',
+    }
+  );
+
+  return result.blindSpots || [];
+}
+
+// --- Fallback Rule-Based Generators ---
 
 function generateThreeOptions(request: DecisionRequest): DecisionOption[] {
   const conservative: DecisionOption = {

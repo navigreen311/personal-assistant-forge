@@ -1,3 +1,4 @@
+import { generateJSON, generateText } from '@/lib/ai';
 import type { IngestionRequest, IngestionResult, CapturedEntry } from '@/modules/knowledge/types';
 import { capture } from './capture-service';
 
@@ -106,11 +107,40 @@ export function generateSummary(content: string): string {
   return sentences.slice(0, 3).join(' ').trim();
 }
 
+async function classifyWithAI(content: string): Promise<{ tags: string[]; summary: string }> {
+  try {
+    const result = await generateJSON<{ tags: string[]; summary: string }>(
+      `Analyze this document content and extract relevant classification tags and a summary.
+
+Content (first 1000 chars): ${content.substring(0, 1000)}
+
+Return:
+- tags: 3-7 specific, descriptive tags for categorization (lowercase, single words or short phrases)
+- summary: 2-3 sentence summary of the content`, {
+        maxTokens: 256,
+        temperature: 0.3,
+        system: 'You are a document classifier. Extract precise, relevant tags and write concise summaries.',
+      }
+    );
+    return {
+      tags: result.tags || [],
+      summary: result.summary || '',
+    };
+  } catch {
+    return { tags: [], summary: '' };
+  }
+}
+
 export async function ingestDocument(request: IngestionRequest): Promise<IngestionResult> {
   const chunks = chunkContent(request.content);
-  const keywords = extractKeywords(request.content);
-  const summary = generateSummary(request.content);
   const wordCount = request.content.split(/\s+/).filter(Boolean).length;
+
+  // Use AI for classification and summarization, fall back to rule-based
+  const aiClassification = await classifyWithAI(request.content);
+  const keywords = aiClassification.tags.length > 0
+    ? aiClassification.tags
+    : extractKeywords(request.content);
+  const summary = aiClassification.summary || generateSummary(request.content);
 
   const entries: CapturedEntry[] = [];
   for (let i = 0; i < chunks.length; i++) {

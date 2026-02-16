@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { conductResearch } from '@/modules/decisions/services/research-agent';
 
 const ResearchRequestSchema = z.object({
@@ -12,19 +13,21 @@ const ResearchRequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = ResearchRequestSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = ResearchRequestSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const report = await conductResearch(parsed.data);
+      return success(report, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to conduct research', 500);
     }
-
-    const report = await conductResearch(parsed.data);
-    return success(report, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to conduct research', 500);
-  }
+  });
 }

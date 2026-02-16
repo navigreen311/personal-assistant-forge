@@ -1,5 +1,6 @@
 // TODO: Replace with embedding-based semantic search
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { KnowledgeEntry } from '@/shared/types';
 import type {
   SearchRequest,
@@ -148,9 +149,31 @@ function matchesFilters(entry: KnowledgeEntry, captured: CapturedEntry, filters?
   return true;
 }
 
+async function expandQueryWithAI(query: string): Promise<string> {
+  try {
+    const result = await generateJSON<{ expandedQuery: string }>(`Expand this search query with synonyms and related terms to improve search recall.
+
+Original query: "${query}"
+
+Return a single expanded query string that includes the original terms plus 2-4 relevant synonyms or related terms, separated by spaces. Do not add unrelated terms.`, {
+      maxTokens: 128,
+      temperature: 0.3,
+      system: 'You are a search query optimizer. Expand queries with relevant synonyms only.',
+    });
+    return result.expandedQuery || query;
+  } catch {
+    return query;
+  }
+}
+
 export async function search(request: SearchRequest): Promise<SearchResponse> {
   const page = request.page || 1;
   const pageSize = request.pageSize || 20;
+
+  // Use AI to expand the search query with synonyms and related terms
+  const effectiveQuery = request.query.trim()
+    ? await expandQueryWithAI(request.query)
+    : request.query;
 
   const entries = await prisma.knowledgeEntry.findMany({
     where: { entityId: request.entityId },
@@ -164,9 +187,14 @@ export async function search(request: SearchRequest): Promise<SearchResponse> {
 
     if (!matchesFilters(ke, captured, request.filters)) continue;
 
-    const relevanceScore = request.query.trim()
+    // Score using both original query and expanded query, take the higher score
+    const originalScore = request.query.trim()
       ? calculateRelevance(request.query, ke)
-      : 0.5; // Default score for empty query (return all)
+      : 0.5;
+    const expandedScore = effectiveQuery !== request.query && effectiveQuery.trim()
+      ? calculateRelevance(effectiveQuery, ke)
+      : 0;
+    const relevanceScore = Math.max(originalScore, expandedScore);
 
     if (relevanceScore > 0 || !request.query.trim()) {
       const stored = parseStoredData(ke.content);
