@@ -1,4 +1,5 @@
 import { generateText } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { TimezoneAdjustment } from '../types';
 
 // Simplified timezone offset map (UTC offset in hours)
@@ -30,19 +31,28 @@ export async function adjustScheduleForTravel(
   travelStartDate: Date,
   travelEndDate: Date
 ): Promise<TimezoneAdjustment[]> {
-  // Simulate calendar events during travel period
-  const mockEvents = [
-    { id: 'evt-1', title: 'Team Standup', time: new Date(travelStartDate.getTime() + 9 * 3600000), timezone: 'America/Chicago' },
-    { id: 'evt-2', title: 'Client Call', time: new Date(travelStartDate.getTime() + 14 * 3600000), timezone: 'America/Chicago' },
-    { id: 'evt-3', title: 'Board Meeting', time: new Date(travelStartDate.getTime() + 24 * 3600000 + 10 * 3600000), timezone: 'America/Chicago' },
-  ];
+  // Query real CalendarEvents for the user during the travel period
+  const entity = await prisma.entity.findFirst({ where: { userId } });
+  if (!entity) return [];
 
-  const adjustments: TimezoneAdjustment[] = mockEvents.map(event => {
-    const originalOffset = getOffset(event.timezone);
+  const calendarEvents = await prisma.calendarEvent.findMany({
+    where: {
+      entityId: entity.id,
+      startTime: { gte: travelStartDate },
+      endTime: { lte: travelEndDate },
+    },
+    orderBy: { startTime: 'asc' },
+  });
+
+  // Default to user's home timezone (America/Chicago) for events without explicit timezone info
+  const homeTimezone = 'America/Chicago';
+
+  const adjustments: TimezoneAdjustment[] = calendarEvents.map((event: { id: string; title: string; startTime: Date }) => {
+    const originalOffset = getOffset(homeTimezone);
     const travelOffset = getOffset(travelTimezone);
     const diffHours = travelOffset - originalOffset;
 
-    const adjustedTime = new Date(event.time.getTime() + diffHours * 3600000);
+    const adjustedTime = new Date(event.startTime.getTime() + diffHours * 3600000);
     const adjustedHour = adjustedTime.getHours();
 
     // Conflict: event falls outside 7 AM - 11 PM in travel timezone
@@ -51,9 +61,9 @@ export async function adjustScheduleForTravel(
     return {
       eventId: event.id,
       eventTitle: event.title,
-      originalTimezone: event.timezone,
+      originalTimezone: homeTimezone,
       travelTimezone,
-      originalTime: event.time,
+      originalTime: event.startTime,
       adjustedTime,
       conflictDetected,
     };
@@ -92,4 +102,62 @@ Provide brief, practical advice on how to handle these timezone conflicts (e.g.,
   } catch {
     return `${conflicts.length} timezone conflict(s) detected. Consider rescheduling events that fall outside reasonable hours in your travel timezone.`;
   }
+}
+
+export function estimateJetLag(
+  homeTimezone: string,
+  travelTimezone: string
+): { hoursDifference: number; adjustmentDays: number; severity: 'NONE' | 'MILD' | 'MODERATE' | 'SEVERE' } {
+  const homeOffset = getOffset(homeTimezone);
+  const travelOffset = getOffset(travelTimezone);
+  const hoursDifference = Math.abs(travelOffset - homeOffset);
+
+  // Roughly 1 day per hour of time change for full adjustment
+  const adjustmentDays = Math.ceil(hoursDifference);
+
+  let severity: 'NONE' | 'MILD' | 'MODERATE' | 'SEVERE';
+  if (hoursDifference === 0) {
+    severity = 'NONE';
+  } else if (hoursDifference <= 3) {
+    severity = 'MILD';
+  } else if (hoursDifference < 8) {
+    severity = 'MODERATE';
+  } else {
+    severity = 'SEVERE';
+  }
+
+  return { hoursDifference, adjustmentDays, severity };
+}
+
+export function findOptimalMeetingTime(
+  timezones: string[]
+): { utcHour: number; localTimes: Record<string, string> } {
+  const offsets = timezones.map(tz => ({ tz, offset: getOffset(tz) }));
+
+  let bestHour = 0;
+  let bestScore = -1;
+
+  // Try each UTC hour and count how many timezones fall within 9 AM - 5 PM
+  for (let utcHour = 0; utcHour < 24; utcHour++) {
+    let score = 0;
+    for (const { offset } of offsets) {
+      const localHour = ((utcHour + offset) % 24 + 24) % 24;
+      if (localHour >= 9 && localHour < 17) {
+        score++;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestHour = utcHour;
+    }
+  }
+
+  const localTimes: Record<string, string> = {};
+  for (const { tz, offset } of offsets) {
+    const localHour = ((bestHour + offset) % 24 + 24) % 24;
+    const h = localHour.toString().padStart(2, '0');
+    localTimes[tz] = `${h}:00`;
+  }
+
+  return { utcHour: bestHour, localTimes };
 }
