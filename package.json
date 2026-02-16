@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@prisma/client": "^7.4.0",
+    "bcryptjs": "^3.0.3",
     "bullmq": "^5.69.2",
     "date-fns": "^4.1.0",
     "ioredis": "^5.9.3",
@@ -31,6 +32,7 @@
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/bcryptjs": "^2.4.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
