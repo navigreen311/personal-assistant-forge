@@ -98,6 +98,7 @@ const demoCalls: CallAnalytics = {
     { callType: 'OUTBOUND', averageRevenue: 125, averageCost: 42, roi: 198 },
     { callType: 'INBOUND', averageRevenue: 85, averageCost: 35, roi: 143 },
   ],
+  insights: [],
 };
 
 export default function AnalyticsPage() {
