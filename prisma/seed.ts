@@ -29,6 +29,11 @@ async function main() {
 
   // -- Clear existing data (reverse dependency order) --
   log('Clearing existing data...');
+  await prisma.runbook.deleteMany();
+  await prisma.voicePersona.deleteMany();
+  await prisma.notification.deleteMany();
+  await prisma.budget.deleteMany();
+  await prisma.decision.deleteMany();
   await prisma.memoryEntry.deleteMany();
   await prisma.consentReceipt.deleteMany();
   await prisma.actionLog.deleteMany();
@@ -1168,6 +1173,393 @@ async function main() {
   log(`done (${createdMemories.length} created)`);
 
   // =========================================================================
+  // DECISIONS (5+)
+  // =========================================================================
+  log('Seeding decisions...');
+
+  const decisionsData = [
+    {
+      entityId: medlink.id,
+      title: 'EHR Vendor Selection',
+      type: 'strategic',
+      status: 'in_review',
+      options: [
+        { id: 'opt1', label: 'Epic Systems', description: 'Industry leader in EHR', pros: ['Market leader', 'Comprehensive features', 'Large support network'], cons: ['High cost', 'Long implementation'], score: 8 },
+        { id: 'opt2', label: 'Cerner', description: 'Strong mid-market EHR', pros: ['Lower cost', 'Faster deployment', 'Good interoperability'], cons: ['Smaller ecosystem', 'Fewer integrations'], score: 7 },
+        { id: 'opt3', label: 'Athenahealth', description: 'Cloud-native EHR platform', pros: ['Cloud-first', 'Modern UI', 'Quick updates'], cons: ['Less customizable', 'Newer platform'], score: 6 },
+      ],
+      matrix: {
+        criteria: ['cost', 'features', 'support', 'integration', 'compliance'],
+        weights: [0.25, 0.30, 0.15, 0.20, 0.10],
+        scores: { opt1: [5, 9, 9, 8, 9], opt2: [7, 7, 7, 7, 8], opt3: [8, 6, 6, 6, 7] },
+      },
+      deadline: daysFromNow(30),
+      stakeholders: [
+        { userId: marcus.id, role: 'decision_maker', vote: null },
+        { userId: sarah.id, role: 'advisor', vote: 'opt1' },
+      ],
+    },
+    {
+      entityId: creForge.id,
+      title: 'Office Lease Renewal',
+      type: 'financial',
+      status: 'open',
+      options: [
+        { id: 'opt1', label: 'Renew Current Lease', description: 'Stay at current location with updated terms', pros: ['No moving costs', 'Established location'], cons: ['Higher rent increase', 'Limited space'], score: 6 },
+        { id: 'opt2', label: 'Relocate Downtown', description: 'Move to new downtown office space', pros: ['More space', 'Better location', 'Modern amenities'], cons: ['Moving costs', 'Disruption'], score: 7 },
+      ],
+      matrix: {
+        criteria: ['cost', 'location', 'size', 'amenities'],
+        weights: [0.35, 0.25, 0.25, 0.15],
+        scores: { opt1: [7, 6, 4, 5], opt2: [5, 9, 8, 9] },
+      },
+    },
+    {
+      entityId: medlink.id,
+      title: 'Telehealth Platform Choice',
+      type: 'product',
+      status: 'decided',
+      options: [
+        { id: 'opt1', label: 'Vendor A - TeleDoc', description: 'Established telehealth provider', pros: ['Proven track record'], cons: ['Higher cost'], score: 7 },
+        { id: 'opt2', label: 'Vendor B - VirtualCare', description: 'Innovative telehealth startup', pros: ['Modern tech', 'Better pricing', 'HIPAA built-in'], cons: ['Newer company'], score: 9 },
+      ],
+      outcome: 'Selected Vendor B - VirtualCare',
+      rationale: 'VirtualCare offers better pricing, modern technology stack, and built-in HIPAA compliance which reduces our compliance burden. Their API-first approach aligns with our integration strategy.',
+      decidedAt: daysAgo(5),
+      decidedBy: marcus.id,
+      stakeholders: [
+        { userId: marcus.id, role: 'decision_maker', vote: 'opt2' },
+      ],
+    },
+    {
+      entityId: creForge.id,
+      title: 'Investment Property Bid',
+      type: 'financial',
+      status: 'open',
+      options: [
+        { id: 'opt1', label: 'Aggressive Bid ($4.5M)', description: 'Above asking to secure deal', pros: ['Higher chance of acceptance'], cons: ['Overpaying risk'], score: 5 },
+        { id: 'opt2', label: 'Market Value Bid ($4.0M)', description: 'At market value', pros: ['Fair price', 'Room for negotiation'], cons: ['May lose to higher bidder'], score: 7 },
+        { id: 'opt3', label: 'Conservative Bid ($3.7M)', description: 'Below asking with contingencies', pros: ['Best value if accepted'], cons: ['Likely rejected'], score: 4 },
+      ],
+      deadline: daysFromNow(14),
+    },
+    {
+      entityId: personal.id,
+      title: 'Personal Vehicle Purchase',
+      type: 'financial',
+      status: 'deferred',
+      options: [
+        { id: 'opt1', label: 'Tesla Model Y', description: 'Electric SUV', pros: ['Zero emissions', 'Low maintenance', 'Tech features'], cons: ['Higher upfront cost', 'Charging infrastructure'], score: 7 },
+        { id: 'opt2', label: 'Toyota RAV4 Hybrid', description: 'Hybrid SUV', pros: ['Reliable', 'Lower cost', 'No range anxiety'], cons: ['Less tech', 'Some emissions'], score: 8 },
+      ],
+      rationale: 'Deferring decision until Q3 when current lease expires.',
+    },
+  ];
+
+  const createdDecisions = [];
+  for (const d of decisionsData) {
+    const decision = await prisma.decision.create({ data: d });
+    createdDecisions.push(decision);
+  }
+
+  log(`done (${createdDecisions.length} created)`);
+
+  // =========================================================================
+  // BUDGETS (6+)
+  // =========================================================================
+  log('Seeding budgets...');
+
+  const budgetsData = [
+    {
+      entityId: medlink.id,
+      name: 'Marketing Q1',
+      amount: 50000,
+      spent: 12500,
+      period: 'quarterly',
+      category: 'marketing',
+      startDate: daysAgo(45),
+      endDate: daysFromNow(45),
+      alerts: [
+        { threshold: 75, type: 'percentage', notified: false },
+        { threshold: 90, type: 'percentage', notified: false },
+      ],
+      status: 'active',
+    },
+    {
+      entityId: medlink.id,
+      name: 'Engineering Salaries',
+      amount: 2500000,
+      spent: 2100000,
+      period: 'monthly',
+      category: 'engineering',
+      startDate: daysAgo(25),
+      endDate: daysFromNow(5),
+      alerts: [
+        { threshold: 90, type: 'percentage', notified: true },
+      ],
+      status: 'active',
+    },
+    {
+      entityId: creForge.id,
+      name: 'Property Maintenance',
+      amount: 100000,
+      spent: 45000,
+      period: 'monthly',
+      category: 'operations',
+      startDate: daysAgo(20),
+      endDate: daysFromNow(10),
+      status: 'active',
+    },
+    {
+      entityId: creForge.id,
+      name: 'Legal Fees',
+      amount: 200000,
+      spent: 87500,
+      period: 'yearly',
+      category: 'legal',
+      startDate: daysAgo(180),
+      endDate: daysFromNow(185),
+      alerts: [
+        { threshold: 50, type: 'percentage', notified: true },
+        { threshold: 75, type: 'percentage', notified: false },
+      ],
+      status: 'active',
+    },
+    {
+      entityId: medlink.id,
+      name: 'Travel Budget',
+      amount: 30000,
+      spent: 8000,
+      period: 'quarterly',
+      category: 'travel',
+      startDate: daysAgo(30),
+      endDate: daysFromNow(60),
+      status: 'active',
+    },
+    {
+      entityId: personal.id,
+      name: 'Personal Savings',
+      amount: 500000,
+      spent: 0,
+      period: 'monthly',
+      category: 'savings',
+      startDate: daysAgo(15),
+      endDate: daysFromNow(15),
+      notes: 'Monthly savings target',
+      status: 'active',
+    },
+  ];
+
+  const createdBudgets = [];
+  for (const b of budgetsData) {
+    const budget = await prisma.budget.create({ data: b });
+    createdBudgets.push(budget);
+  }
+
+  log(`done (${createdBudgets.length} created)`);
+
+  // =========================================================================
+  // NOTIFICATIONS (10+)
+  // =========================================================================
+  log('Seeding notifications...');
+
+  const notificationsData = [
+    { userId: marcus.id, entityId: medlink.id, type: 'task_due', title: 'Task Due Soon', body: 'Remediate SQL injection finding is due in 2 days', read: false, priority: 'urgent', actionUrl: '/tasks?filter=due-soon' },
+    { userId: marcus.id, entityId: medlink.id, type: 'message_received', title: 'New Message from Dr. O\'Brien', body: 'Board Meeting Agenda - Next Thursday. Please prepare a 10-minute update.', read: true, readAt: daysAgo(1), priority: 'high', actionUrl: '/messages?thread=board' },
+    { userId: marcus.id, entityId: creForge.id, type: 'alert', title: 'Competing Buyer Alert', body: 'Another buyer is interested in 400 Main St. Consider expediting the LOI.', read: false, priority: 'urgent', actionUrl: '/deals/400-main' },
+    { userId: marcus.id, entityId: medlink.id, type: 'workflow_completed', title: 'Morning Briefing Generated', body: 'Your daily briefing for MedLink Pro is ready to review.', read: true, readAt: daysAgo(0), priority: 'normal', actionUrl: '/briefings/today' },
+    { userId: marcus.id, entityId: creForge.id, type: 'payment', title: 'Invoice Payment Due', body: 'Property inspection invoice from Foster Inspections ($12,000) is due in 10 days.', read: false, priority: 'normal', actionUrl: '/financials?filter=pending' },
+    { userId: marcus.id, entityId: medlink.id, type: 'system', title: 'HIPAA Audit Finding', body: 'Three user accounts with admin privileges have not rotated passwords in 90+ days.', read: true, readAt: daysAgo(2), priority: 'high', actionUrl: '/compliance/audit' },
+    { userId: marcus.id, entityId: personal.id, type: 'task_due', title: 'Tax Payment Reminder', body: 'Q1 estimated tax payment of $12,500 is due in 15 days.', read: false, priority: 'high', actionUrl: '/tasks?filter=tax' },
+    { userId: marcus.id, entityId: medlink.id, type: 'message_received', title: 'Patient Portal Feedback', body: 'Nurse Owens shared clinical staff feedback on the current patient portal.', read: false, priority: 'normal', actionUrl: '/messages?from=owens' },
+    { userId: sarah.id, entityId: medlink.id, type: 'system', title: 'Welcome to PAF', body: 'Your Personal Assistant Forge account has been set up. Start by configuring your preferences.', read: true, readAt: daysAgo(10), priority: 'low', actionUrl: '/settings' },
+    { userId: sarah.id, entityId: null, type: 'system', title: 'Weekly Summary Available', body: 'Your weekly activity summary is ready for review.', read: false, priority: 'low', actionUrl: '/reports/weekly' },
+    { userId: marcus.id, entityId: creForge.id, type: 'alert', title: 'Budget Alert: Engineering', body: 'Engineering Salaries budget is at 84% utilization for this period.', read: false, priority: 'high', metadata: { budgetName: 'Engineering Salaries', utilization: 84 } },
+    { userId: marcus.id, entityId: medlink.id, type: 'workflow_completed', title: 'Contact Enrichment Complete', body: 'Contact data enrichment workflow completed for 3 new contacts.', read: true, readAt: daysAgo(3), priority: 'low' },
+  ];
+
+  const createdNotifications = [];
+  for (const n of notificationsData) {
+    const notification = await prisma.notification.create({ data: n });
+    createdNotifications.push(notification);
+  }
+
+  log(`done (${createdNotifications.length} created)`);
+
+  // =========================================================================
+  // VOICE PERSONAS (4+)
+  // =========================================================================
+  log('Seeding voice personas...');
+
+  const voicePersonasData = [
+    {
+      entityId: medlink.id,
+      name: 'Professional',
+      voiceId: 'EXAVITQu4vr4xnSDxMaL',
+      provider: 'elevenlabs',
+      settings: { speed: 1.0, pitch: 0, stability: 0.75, similarity: 0.85, style: 0.3, speakerBoost: true },
+      description: 'Default professional voice for patient and clinical communications',
+      isDefault: true,
+    },
+    {
+      entityId: medlink.id,
+      name: 'Friendly',
+      voiceId: '21m00Tcm4TlvDq8ikWAM',
+      provider: 'elevenlabs',
+      settings: { speed: 1.1, pitch: 0.05, stability: 0.65, similarity: 0.80, style: 0.5, speakerBoost: false },
+      description: 'Warmer tone for patient follow-ups and wellness check-ins',
+      isDefault: false,
+    },
+    {
+      entityId: creForge.id,
+      name: 'Executive',
+      voiceId: 'en-US-GuyNeural',
+      provider: 'azure',
+      settings: { speed: 0.9, pitch: -0.05, stability: 0.85, similarity: 0.90, style: 0.2, speakerBoost: true },
+      description: 'Authoritative tone for investor calls and executive presentations',
+      isDefault: true,
+    },
+    {
+      entityId: personal.id,
+      name: 'Casual',
+      voiceId: 'en-US-Wavenet-D',
+      provider: 'google',
+      settings: { speed: 1.0, pitch: 0, stability: 0.60, similarity: 0.75, style: 0.6, speakerBoost: false },
+      description: 'Relaxed tone for personal communications and reminders',
+      isDefault: true,
+    },
+  ];
+
+  const createdVoicePersonas = [];
+  for (const vp of voicePersonasData) {
+    const persona = await prisma.voicePersona.create({ data: vp });
+    createdVoicePersonas.push(persona);
+  }
+
+  log(`done (${createdVoicePersonas.length} created)`);
+
+  // =========================================================================
+  // RUNBOOKS (5+)
+  // =========================================================================
+  log('Seeding runbooks...');
+
+  const runbooksData = [
+    {
+      entityId: medlink.id,
+      name: 'Patient Data Breach Response',
+      description: 'Standard operating procedure for responding to potential patient data breaches per HIPAA requirements',
+      steps: [
+        { id: 'rb1s1', order: 1, action: 'detect_and_log', params: { log_level: 'critical', notify: ['security_team'] }, onSuccess: 'rb1s2', onFailure: 'rb1s6', timeout: 300 },
+        { id: 'rb1s2', order: 2, action: 'contain_breach', params: { isolate_systems: true, disable_accounts: true }, onSuccess: 'rb1s3', onFailure: 'rb1s6', timeout: 600 },
+        { id: 'rb1s3', order: 3, action: 'assess_impact', params: { check_records: true, identify_affected: true }, onSuccess: 'rb1s4', onFailure: 'rb1s6', timeout: 1800 },
+        { id: 'rb1s4', order: 4, action: 'notify_authorities', params: { hhs_notification: true, state_ag: true, deadline_days: 60 }, onSuccess: 'rb1s5', onFailure: 'rb1s6', timeout: 3600 },
+        { id: 'rb1s5', order: 5, action: 'remediate', params: { patch_vulnerabilities: true, update_policies: true }, onSuccess: 'rb1s6', onFailure: null, timeout: 86400 },
+        { id: 'rb1s6', order: 6, action: 'post_incident_review', params: { generate_report: true, update_runbook: true }, onSuccess: null, onFailure: null, timeout: 604800 },
+      ],
+      variables: [
+        { name: 'incident_id', type: 'string', defaultValue: null, required: true, description: 'Unique identifier for this incident' },
+        { name: 'severity', type: 'string', defaultValue: 'high', required: true, description: 'Severity level: low, medium, high, critical' },
+      ],
+      category: 'incident',
+      trigger: 'manual',
+      isActive: true,
+      version: 2,
+      createdBy: marcus.id,
+    },
+    {
+      entityId: creForge.id,
+      name: 'New Tenant Onboarding',
+      description: 'Onboarding process for new commercial tenants',
+      steps: [
+        { id: 'rb2s1', order: 1, action: 'send_welcome_package', params: { template: 'tenant_welcome', include_handbook: true }, onSuccess: 'rb2s2', onFailure: null, timeout: 86400 },
+        { id: 'rb2s2', order: 2, action: 'collect_documents', params: { required: ['insurance_cert', 'business_license', 'signed_lease'] }, onSuccess: 'rb2s3', onFailure: null, timeout: 604800 },
+        { id: 'rb2s3', order: 3, action: 'provision_access', params: { key_cards: true, parking: true, building_portal: true }, onSuccess: 'rb2s4', onFailure: null, timeout: 172800 },
+        { id: 'rb2s4', order: 4, action: 'schedule_orientation', params: { duration_minutes: 60, include_fire_safety: true }, onSuccess: 'rb2s5', onFailure: null, timeout: 604800 },
+        { id: 'rb2s5', order: 5, action: 'follow_up_survey', params: { send_after_days: 30, template: 'tenant_satisfaction' }, onSuccess: null, onFailure: null, timeout: 2592000 },
+      ],
+      variables: [
+        { name: 'tenant_name', type: 'string', defaultValue: null, required: true, description: 'Name of the new tenant' },
+        { name: 'unit_number', type: 'string', defaultValue: null, required: true, description: 'Unit or suite number' },
+        { name: 'lease_start_date', type: 'date', defaultValue: null, required: true, description: 'Lease commencement date' },
+      ],
+      category: 'onboarding',
+      trigger: 'manual',
+      isActive: true,
+      createdBy: marcus.id,
+    },
+    {
+      entityId: medlink.id,
+      name: 'Monthly Compliance Check',
+      description: 'Monthly HIPAA and regulatory compliance verification',
+      steps: [
+        { id: 'rb3s1', order: 1, action: 'audit_access_logs', params: { lookback_days: 30, flag_anomalies: true }, onSuccess: 'rb3s2', onFailure: null, timeout: 3600 },
+        { id: 'rb3s2', order: 2, action: 'verify_encryption', params: { check_at_rest: true, check_in_transit: true }, onSuccess: 'rb3s3', onFailure: null, timeout: 1800 },
+        { id: 'rb3s3', order: 3, action: 'review_user_permissions', params: { check_inactive: true, days_threshold: 90 }, onSuccess: 'rb3s4', onFailure: null, timeout: 3600 },
+        { id: 'rb3s4', order: 4, action: 'generate_compliance_report', params: { format: 'pdf', recipients: ['compliance_officer'] }, onSuccess: null, onFailure: null, timeout: 1800 },
+      ],
+      category: 'compliance',
+      trigger: 'scheduled',
+      schedule: '0 9 1 * *',
+      isActive: true,
+      lastRunAt: daysAgo(14),
+      runCount: 8,
+      createdBy: marcus.id,
+    },
+    {
+      entityId: medlink.id,
+      name: 'Server Deployment',
+      description: 'Production server deployment procedure with rollback capability',
+      steps: [
+        { id: 'rb4s1', order: 1, action: 'run_tests', params: { suite: 'full', environment: 'staging' }, onSuccess: 'rb4s2', onFailure: null, timeout: 1800 },
+        { id: 'rb4s2', order: 2, action: 'create_backup', params: { type: 'full', retention_days: 30 }, onSuccess: 'rb4s3', onFailure: null, timeout: 3600 },
+        { id: 'rb4s3', order: 3, action: 'deploy_to_staging', params: { environment: 'staging', canary: true }, onSuccess: 'rb4s4', onFailure: 'rb4s7', timeout: 1800 },
+        { id: 'rb4s4', order: 4, action: 'run_smoke_tests', params: { endpoints: ['health', 'api', 'auth'] }, onSuccess: 'rb4s5', onFailure: 'rb4s7', timeout: 600 },
+        { id: 'rb4s5', order: 5, action: 'deploy_to_production', params: { strategy: 'blue_green', health_check_interval: 30 }, onSuccess: 'rb4s6', onFailure: 'rb4s7', timeout: 3600 },
+        { id: 'rb4s6', order: 6, action: 'verify_production', params: { monitor_minutes: 15, alert_on_error_rate: 0.01 }, onSuccess: null, onFailure: 'rb4s7', timeout: 900 },
+        { id: 'rb4s7', order: 7, action: 'rollback', params: { restore_backup: true, notify_team: true }, onSuccess: null, onFailure: null, timeout: 1800 },
+      ],
+      variables: [
+        { name: 'version', type: 'string', defaultValue: null, required: true, description: 'Version tag to deploy' },
+        { name: 'deployer', type: 'string', defaultValue: null, required: true, description: 'Person initiating the deployment' },
+      ],
+      category: 'deployment',
+      trigger: 'manual',
+      isActive: true,
+      lastRunAt: daysAgo(7),
+      runCount: 23,
+      version: 3,
+      createdBy: marcus.id,
+    },
+    {
+      entityId: creForge.id,
+      name: 'Property Inspection Workflow',
+      description: 'Standard property inspection and reporting workflow',
+      steps: [
+        { id: 'rb5s1', order: 1, action: 'schedule_inspection', params: { advance_notice_days: 7, notify_tenant: true }, onSuccess: 'rb5s2', onFailure: null, timeout: 604800 },
+        { id: 'rb5s2', order: 2, action: 'conduct_inspection', params: { checklist: ['structural', 'electrical', 'plumbing', 'hvac', 'safety'] }, onSuccess: 'rb5s3', onFailure: null, timeout: 14400 },
+        { id: 'rb5s3', order: 3, action: 'document_findings', params: { photos_required: true, severity_rating: true }, onSuccess: 'rb5s4', onFailure: null, timeout: 86400 },
+        { id: 'rb5s4', order: 4, action: 'generate_report', params: { format: 'pdf', include_photos: true, distribute_to: ['owner', 'property_manager'] }, onSuccess: 'rb5s5', onFailure: null, timeout: 172800 },
+        { id: 'rb5s5', order: 5, action: 'create_maintenance_tasks', params: { auto_prioritize: true, assign_to: 'property_manager' }, onSuccess: null, onFailure: null, timeout: 86400 },
+      ],
+      category: 'maintenance',
+      trigger: 'scheduled',
+      schedule: '0 9 15 * *',
+      isActive: true,
+      lastRunAt: daysAgo(15),
+      runCount: 12,
+      createdBy: marcus.id,
+    },
+  ];
+
+  const createdRunbooks = [];
+  for (const rb of runbooksData) {
+    const runbook = await prisma.runbook.create({ data: rb });
+    createdRunbooks.push(runbook);
+  }
+
+  log(`done (${createdRunbooks.length} created)`);
+
+  // =========================================================================
   // Summary
   // =========================================================================
   console.log('\n✅ Seed complete! Summary:');
@@ -1184,6 +1576,11 @@ async function main() {
   console.log(`   Action Logs:       ${createdActionLogs.length}`);
   console.log(`   Consent Receipts:  ${createdConsents.length}`);
   console.log(`   Memory Entries:    ${createdMemories.length}`);
+  console.log(`   Decisions:         ${createdDecisions.length}`);
+  console.log(`   Budgets:           ${createdBudgets.length}`);
+  console.log(`   Notifications:     ${createdNotifications.length}`);
+  console.log(`   Voice Personas:    ${createdVoicePersonas.length}`);
+  console.log(`   Runbooks:          ${createdRunbooks.length}`);
 }
 
 // ---------------------------------------------------------------------------
