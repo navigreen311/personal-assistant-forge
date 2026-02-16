@@ -252,6 +252,141 @@ export async function detectOverdueInvoices(entityId: string): Promise<Invoice[]
   return records.map(parseInvoiceFromRecord);
 }
 
+// --- Phase 3: Additional Invoice Operations ---
+
+export async function updateInvoice(
+  invoiceId: string,
+  updates: Partial<Pick<Invoice, 'dueDate' | 'notes' | 'paymentTerms' | 'status'>>
+) {
+  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: invoiceId } });
+  const extended = record.description ? JSON.parse(record.description) : {};
+
+  const data: Record<string, unknown> = {};
+  if (updates.dueDate !== undefined) data.dueDate = updates.dueDate;
+  if (updates.notes !== undefined) extended.notes = updates.notes;
+  if (updates.paymentTerms !== undefined) extended.paymentTerms = updates.paymentTerms;
+  if (updates.status !== undefined) {
+    extended.invoiceStatus = updates.status;
+    data.status = updates.status === 'PAID' ? 'PAID' : updates.status === 'CANCELLED' ? 'CANCELLED' : updates.status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
+  }
+  data.description = JSON.stringify(extended);
+
+  const updated = await prisma.financialRecord.update({
+    where: { id: invoiceId },
+    data,
+  });
+
+  return parseInvoiceFromRecord(updated);
+}
+
+export async function markAsPaid(invoiceId: string, paidDate?: Date) {
+  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: invoiceId } });
+  const extended = record.description ? JSON.parse(record.description) : {};
+  extended.invoiceStatus = 'PAID';
+  extended.paidDate = (paidDate ?? new Date()).toISOString();
+
+  const updated = await prisma.financialRecord.update({
+    where: { id: invoiceId },
+    data: {
+      status: 'PAID',
+      description: JSON.stringify(extended),
+    },
+  });
+
+  return parseInvoiceFromRecord(updated);
+}
+
+export async function markAsOverdue(entityId: string) {
+  const now = new Date();
+  const pendingOverdue = await prisma.financialRecord.findMany({
+    where: {
+      entityId,
+      type: 'INVOICE',
+      status: 'PENDING',
+      dueDate: { lt: now },
+    },
+  });
+
+  let updatedCount = 0;
+  for (const record of pendingOverdue) {
+    const extended = record.description ? JSON.parse(record.description) : {};
+    extended.invoiceStatus = 'OVERDUE';
+    await prisma.financialRecord.update({
+      where: { id: record.id },
+      data: {
+        status: 'OVERDUE',
+        description: JSON.stringify(extended),
+      },
+    });
+    updatedCount++;
+  }
+
+  return { count: updatedCount };
+}
+
+export async function getAccountsReceivable(entityId: string) {
+  const records = await prisma.financialRecord.findMany({
+    where: {
+      entityId,
+      type: 'INVOICE',
+      status: { in: ['PENDING', 'OVERDUE'] },
+    },
+  });
+
+  return {
+    total: round2(records.reduce((s, r) => s + r.amount, 0)),
+    pendingCount: records.filter((r) => r.status === 'PENDING').length,
+    overdueCount: records.filter((r) => r.status === 'OVERDUE').length,
+    pendingTotal: round2(records.filter((r) => r.status === 'PENDING').reduce((s, r) => s + r.amount, 0)),
+    overdueTotal: round2(records.filter((r) => r.status === 'OVERDUE').reduce((s, r) => s + r.amount, 0)),
+  };
+}
+
+export async function getInvoiceSummary(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+) {
+  const where: Record<string, unknown> = {
+    entityId,
+    type: 'INVOICE',
+  };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.financialRecord.findMany({ where });
+
+  const totalInvoiced = round2(records.reduce((s, r) => s + r.amount, 0));
+  const paidRecords = records.filter((r) => r.status === 'PAID');
+  const totalPaid = round2(paidRecords.reduce((s, r) => s + r.amount, 0));
+  const overdueRecords = records.filter((r) => r.status === 'OVERDUE');
+  const totalOverdue = round2(overdueRecords.reduce((s, r) => s + r.amount, 0));
+
+  // Calculate average days to payment
+  let totalDaysToPayment = 0;
+  let paidWithDates = 0;
+  for (const r of paidRecords) {
+    const extended = r.description ? JSON.parse(r.description) : {};
+    if (extended.paidDate && extended.issuedDate) {
+      const issued = new Date(extended.issuedDate);
+      const paid = new Date(extended.paidDate);
+      totalDaysToPayment += Math.floor((paid.getTime() - issued.getTime()) / (1000 * 60 * 60 * 24));
+      paidWithDates++;
+    }
+  }
+
+  const avgDaysToPayment = paidWithDates > 0 ? round2(totalDaysToPayment / paidWithDates) : 0;
+
+  return {
+    totalInvoiced,
+    totalPaid,
+    totalOverdue,
+    totalPending: round2(totalInvoiced - totalPaid - totalOverdue),
+    invoiceCount: records.length,
+    avgDaysToPayment,
+  };
+}
+
 // --- AI-Enhanced Invoice Features ---
 
 export async function generateInvoiceDescription(
