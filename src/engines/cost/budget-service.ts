@@ -1,8 +1,35 @@
 import { generateText } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { BudgetConfig, BudgetAlert } from './types';
 
-// In-memory budget store (placeholder for database-backed storage)
-const budgets = new Map<string, BudgetConfig>();
+// Helper to map Prisma Budget row → BudgetConfig
+function toBudgetConfig(row: {
+  entityId: string;
+  amount: number;
+  spent: number;
+  startDate: Date | null;
+  endDate: Date | null;
+  alerts: unknown;
+}): BudgetConfig {
+  const alertsData = (row.alerts ?? {}) as {
+    alertThresholds?: number[];
+    overageBehavior?: string;
+  };
+
+  const now = new Date();
+  return {
+    entityId: row.entityId,
+    monthlyCapUsd: row.amount,
+    alertThresholds: alertsData.alertThresholds ?? [0.75, 0.90, 1.0],
+    overageBehavior:
+      (alertsData.overageBehavior as BudgetConfig['overageBehavior']) ?? 'WARN',
+    currentSpend: row.spent,
+    periodStart: row.startDate ?? new Date(now.getFullYear(), now.getMonth(), 1),
+    periodEnd:
+      row.endDate ??
+      new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59),
+  };
+}
 
 export async function setBudget(
   entityId: string,
@@ -14,30 +41,49 @@ export async function setBudget(
   const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-  const existing = budgets.get(entityId);
-  const config: BudgetConfig = {
-    entityId,
-    monthlyCapUsd,
-    alertThresholds: alertThresholds ?? [0.75, 0.90, 1.0],
-    overageBehavior: (overageBehavior as BudgetConfig['overageBehavior']) ?? 'WARN',
-    currentSpend: existing?.currentSpend ?? 0,
-    periodStart: existing?.periodStart ?? periodStart,
-    periodEnd: existing?.periodEnd ?? periodEnd,
-  };
+  const thresholds = alertThresholds ?? [0.75, 0.90, 1.0];
+  const behavior = overageBehavior ?? 'WARN';
 
-  budgets.set(entityId, config);
-  return config;
+  // Check for an existing active AI budget to preserve currentSpend
+  const existing = await prisma.budget.findFirst({
+    where: { entityId, category: 'ai', status: 'active' },
+  });
+
+  const row = await prisma.budget.upsert({
+    where: { id: existing?.id ?? '' },
+    create: {
+      entityId,
+      name: 'AI Budget',
+      amount: monthlyCapUsd,
+      spent: 0,
+      period: 'monthly',
+      category: 'ai',
+      startDate: periodStart,
+      endDate: periodEnd,
+      alerts: { alertThresholds: thresholds, overageBehavior: behavior },
+      status: 'active',
+    },
+    update: {
+      amount: monthlyCapUsd,
+      alerts: { alertThresholds: thresholds, overageBehavior: behavior },
+    },
+  });
+
+  return toBudgetConfig(row);
 }
 
 export async function getBudget(entityId: string): Promise<BudgetConfig | null> {
-  return budgets.get(entityId) ?? null;
+  const row = await prisma.budget.findFirst({
+    where: { entityId, category: 'ai', status: 'active' },
+  });
+  return row ? toBudgetConfig(row) : null;
 }
 
 export async function checkBudget(
   entityId: string,
   additionalCost: number
 ): Promise<{ allowed: boolean; alerts: BudgetAlert[]; remainingBudget: number }> {
-  const budget = budgets.get(entityId);
+  const budget = await getBudget(entityId);
   if (!budget) {
     return { allowed: true, alerts: [], remainingBudget: Infinity };
   }
@@ -73,7 +119,7 @@ export async function checkBudget(
 
 export async function getBudgetAlerts(entityId: string): Promise<BudgetAlert[]> {
   const result = await checkBudget(entityId, 0);
-  const budget = budgets.get(entityId);
+  const budget = await getBudget(entityId);
 
   // Enhance alert messages with AI-generated recommendations
   if (result.alerts.length > 0 && budget) {
@@ -104,29 +150,44 @@ Write a brief, actionable recommendation (1-2 sentences) on how to optimize spen
 }
 
 export async function resetBudgetPeriod(entityId: string): Promise<BudgetConfig> {
-  const budget = budgets.get(entityId);
-  if (!budget) {
+  const existing = await prisma.budget.findFirst({
+    where: { entityId, category: 'ai', status: 'active' },
+  });
+
+  if (!existing) {
     throw new Error(`No budget found for entity ${entityId}`);
   }
 
   const now = new Date();
-  budget.currentSpend = 0;
-  budget.periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  budget.periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+  const row = await prisma.budget.update({
+    where: { id: existing.id },
+    data: {
+      spent: 0,
+      startDate: new Date(now.getFullYear(), now.getMonth(), 1),
+      endDate: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59),
+    },
+  });
 
-  budgets.set(entityId, budget);
-  return budget;
+  return toBudgetConfig(row);
 }
 
 // Helper to add spend (used internally by metering integration)
-export function addSpend(entityId: string, amount: number): void {
-  const budget = budgets.get(entityId);
-  if (budget) {
-    budget.currentSpend += amount;
+export async function addSpend(entityId: string, amount: number): Promise<void> {
+  const existing = await prisma.budget.findFirst({
+    where: { entityId, category: 'ai', status: 'active' },
+  });
+
+  if (existing) {
+    await prisma.budget.update({
+      where: { id: existing.id },
+      data: { spent: existing.spent + amount },
+    });
   }
 }
 
-// For testing: reset the in-memory store
-export function _resetBudgetStore(): void {
-  budgets.clear();
+// For testing: reset the budget store
+export async function _resetBudgetStore(): Promise<void> {
+  if (process.env.NODE_ENV === 'test') {
+    await prisma.budget.deleteMany();
+  }
 }

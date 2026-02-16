@@ -1,7 +1,13 @@
 import type { ProviderHealth, ProviderFallback } from './types';
 
-// In-memory provider state
-const providerHealthCache = new Map<string, ProviderHealth>();
+// Configurable defaults
+const DEFAULT_LATENCY_MS = 50;
+const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 60_000;
+
+let healthCheckIntervalMs = DEFAULT_HEALTH_CHECK_INTERVAL_MS;
+
+// In-memory provider state (intentionally ephemeral -- health status is transient)
+const providerHealthCache = new Map<string, ProviderHealth & { lastErrorAt?: Date }>();
 const killSwitchActive = new Set<string>();
 
 const DEFAULT_FALLBACKS: ProviderFallback[] = [
@@ -30,6 +36,10 @@ const DEFAULT_FALLBACKS: ProviderFallback[] = [
 
 const fallbacks: ProviderFallback[] = [...DEFAULT_FALLBACKS];
 
+export function setHealthCheckInterval(intervalMs: number): void {
+  healthCheckIntervalMs = intervalMs;
+}
+
 export async function checkProviderHealth(providerId: string): Promise<ProviderHealth> {
   // If kill switch is active, the provider is DOWN
   if (killSwitchActive.has(providerId)) {
@@ -43,23 +53,27 @@ export async function checkProviderHealth(providerId: string): Promise<ProviderH
     };
   }
 
-  // Return cached health or simulate healthy
+  // Return cached health if still fresh
   const cached = providerHealthCache.get(providerId);
-  if (cached && (new Date().getTime() - cached.lastChecked.getTime()) < 60000) {
-    return cached;
+  if (cached && (new Date().getTime() - cached.lastChecked.getTime()) < healthCheckIntervalMs) {
+    const { lastErrorAt: _le, ...health } = cached;
+    return health;
   }
 
-  const health: ProviderHealth = {
+  const health: ProviderHealth & { lastErrorAt?: Date } = {
     providerId,
     providerName: providerId,
     status: 'HEALTHY',
-    latencyMs: Math.floor(Math.random() * 100 + 20),
-    errorRate: Math.random() * 0.02,
+    latencyMs: DEFAULT_LATENCY_MS,
+    errorRate: 0,
     lastChecked: new Date(),
+    lastErrorAt: cached?.lastErrorAt,
   };
 
   providerHealthCache.set(providerId, health);
-  return health;
+
+  const { lastErrorAt: _le, ...result } = health;
+  return result;
 }
 
 export async function getHealthyProvider(primaryId: string, fallbackId: string): Promise<string> {
@@ -108,6 +122,11 @@ export function setFallback(
 
 export async function activateKillSwitch(providerId: string): Promise<void> {
   killSwitchActive.add(providerId);
+  // Record error timestamp
+  const cached = providerHealthCache.get(providerId);
+  if (cached) {
+    cached.lastErrorAt = new Date();
+  }
   providerHealthCache.delete(providerId);
 
   // Activate the fallback for this provider
@@ -126,4 +145,13 @@ export async function deactivateKillSwitch(providerId: string): Promise<void> {
   if (fb) {
     fb.isActive = false;
   }
+}
+
+// For testing: reset all in-memory state
+export function _resetProviderStore(): void {
+  providerHealthCache.clear();
+  killSwitchActive.clear();
+  fallbacks.length = 0;
+  fallbacks.push(...DEFAULT_FALLBACKS.map(f => ({ ...f })));
+  healthCheckIntervalMs = DEFAULT_HEALTH_CHECK_INTERVAL_MS;
 }
