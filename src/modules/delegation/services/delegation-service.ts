@@ -82,13 +82,109 @@ export async function advanceApproval(
   return delegation;
 }
 
-export async function completeDelegation(delegationId: string): Promise<DelegationTask> {
+export async function completeDelegation(delegationId: string, completedBy?: string): Promise<DelegationTask> {
   const delegation = delegationStore.get(delegationId);
   if (!delegation) throw new Error(`Delegation ${delegationId} not found`);
 
   delegation.status = 'COMPLETED';
   delegation.completedAt = new Date();
   delegationStore.set(delegationId, delegation);
+
+  // Update the task status in the database
+  try {
+    await prisma.task.update({
+      where: { id: delegation.taskId },
+      data: { status: 'COMPLETED' },
+    });
+    await prisma.actionLog.create({
+      data: {
+        actor: completedBy || delegation.delegatedTo,
+        actorId: completedBy || delegation.delegatedTo,
+        actionType: 'DELEGATE_COMPLETE',
+        target: delegation.taskId,
+        reason: `Delegation ${delegationId} completed`,
+        blastRadius: 'LOW',
+        reversible: false,
+        status: 'COMPLETED',
+      },
+    });
+  } catch {
+    // DB logging is best-effort
+  }
+
+  return delegation;
+}
+
+export async function trackDelegation(taskId: string): Promise<{
+  delegation: DelegationTask | null;
+  assignedTo: string | null;
+  assignedAt: Date | null;
+  currentStatus: string;
+  blockers: string[];
+}> {
+  let found: DelegationTask | null = null;
+  for (const delegation of delegationStore.values()) {
+    if (delegation.taskId === taskId) {
+      found = delegation;
+      break;
+    }
+  }
+
+  if (!found) {
+    return {
+      delegation: null,
+      assignedTo: null,
+      assignedAt: null,
+      currentStatus: 'NOT_DELEGATED',
+      blockers: [],
+    };
+  }
+
+  const blockers: string[] = [];
+  for (const step of found.approvalChain) {
+    if (step.status === 'REJECTED') {
+      blockers.push(`${step.approverName} rejected at step ${step.order}: ${step.comments || 'no reason'}`);
+    }
+  }
+
+  return {
+    delegation: found,
+    assignedTo: found.delegatedTo,
+    assignedAt: found.delegatedAt,
+    currentStatus: found.status,
+    blockers,
+  };
+}
+
+export async function revokeDelegation(delegationId: string, reason: string): Promise<DelegationTask> {
+  const delegation = delegationStore.get(delegationId);
+  if (!delegation) throw new Error(`Delegation ${delegationId} not found`);
+
+  delegation.status = 'REJECTED';
+  delegationStore.set(delegationId, delegation);
+
+  // Reset the task in the database
+  try {
+    await prisma.task.update({
+      where: { id: delegation.taskId },
+      data: { assigneeId: null, status: 'TODO' },
+    });
+    await prisma.actionLog.create({
+      data: {
+        actor: delegation.delegatedBy,
+        actorId: delegation.delegatedBy,
+        actionType: 'DELEGATE_REVOKE',
+        target: delegation.taskId,
+        reason,
+        blastRadius: 'LOW',
+        reversible: true,
+        status: 'COMPLETED',
+      },
+    });
+  } catch {
+    // DB logging is best-effort
+  }
+
   return delegation;
 }
 

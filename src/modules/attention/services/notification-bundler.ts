@@ -79,3 +79,25 @@ export async function getWeeklyReview(userId: string): Promise<NotificationBundl
     .filter((b) => b.priority === 'P2')
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
+
+export async function bundleByPriority(userId: string): Promise<Record<string, NotificationBundle[]>> {
+  const bundles = await bundleNotifications(userId);
+  const byPriority: Record<string, NotificationBundle[]> = {
+    urgent: [],
+    high: [],
+    normal: [],
+    low: [],
+  };
+
+  for (const bundle of bundles) {
+    if (bundle.priority === 'P0') {
+      byPriority.urgent.push(bundle);
+    } else if (bundle.priority === 'P1') {
+      byPriority.high.push(bundle);
+    } else {
+      byPriority.low.push(bundle);
+    }
+  }
+
+  return byPriority;
+}

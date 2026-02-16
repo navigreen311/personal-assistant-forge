@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { generateJSON, generateText } from '@/lib/ai';
 import type { DelegationInboxItem } from '../types';
+import { scoreTask } from './delegation-scoring-service';
 
 export async function generateDelegationInbox(userId: string): Promise<DelegationInboxItem[]> {
   const tasks = await prisma.task.findMany({
@@ -93,4 +94,119 @@ export async function getDailySuggestions(userId: string): Promise<DelegationInb
   }
 
   return top;
+}
+
+export async function getDelegatableTasks(entityId: string): Promise<Array<{
+  id: string;
+  title: string;
+  priority: string;
+  status: string;
+  delegatabilityScore: number;
+}>> {
+  const tasks = await prisma.task.findMany({
+    where: {
+      entityId,
+      assigneeId: null,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+
+  const results = [];
+  for (const task of tasks) {
+    const delegatabilityScore = await scoreTask({
+      id: task.id,
+      title: task.title,
+      description: task.description,
+      priority: task.priority,
+      status: task.status,
+      tags: task.tags,
+    });
+
+    // Store score in createdFrom JSON field
+    const existingMeta = (task.createdFrom as Record<string, unknown>) || {};
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        createdFrom: { ...existingMeta, delegatabilityScore },
+      },
+    });
+
+    results.push({
+      id: task.id,
+      title: task.title,
+      priority: task.priority,
+      status: task.status,
+      delegatabilityScore,
+    });
+  }
+
+  return results.sort((a, b) => b.delegatabilityScore - a.delegatabilityScore);
+}
+
+export async function getInboxForDelegate(userId: string, entityId: string) {
+  const tasks = await prisma.task.findMany({
+    where: {
+      assigneeId: userId,
+      entityId,
+      status: { in: ['IN_PROGRESS', 'PENDING'] },
+    },
+    orderBy: [
+      { priority: 'asc' },
+      { dueDate: 'asc' },
+    ],
+  });
+
+  return tasks;
+}
+
+export async function assignTask(taskId: string, assigneeId: string, assignedBy: string) {
+  const task = await prisma.task.update({
+    where: { id: taskId },
+    data: {
+      assigneeId,
+      status: 'PENDING',
+    },
+  });
+
+  await prisma.actionLog.create({
+    data: {
+      actor: assignedBy,
+      actorId: assignedBy,
+      actionType: 'DELEGATE',
+      target: taskId,
+      reason: `Task "${task.title}" delegated to ${assigneeId}`,
+      blastRadius: 'LOW',
+      reversible: true,
+      status: 'COMPLETED',
+    },
+  });
+
+  return task;
+}
+
+export async function getDelegationStats(entityId: string) {
+  const tasks = await prisma.task.findMany({
+    where: { entityId, assigneeId: { not: null } },
+  });
+
+  const statusCounts: Record<string, number> = {};
+  for (const task of tasks) {
+    statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
+  }
+
+  const completedTasks = tasks.filter((t: { status: string }) => t.status === 'COMPLETED');
+  const totalCompletionMs = completedTasks.reduce((acc: number, t: { updatedAt: Date; createdAt: Date }) => {
+    return acc + (t.updatedAt.getTime() - t.createdAt.getTime());
+  }, 0);
+  const avgCompletionTimeMs = completedTasks.length > 0 ? totalCompletionMs / completedTasks.length : 0;
+
+  const successRate = tasks.length > 0 ? completedTasks.length / tasks.length : 0;
+
+  return {
+    totalDelegated: tasks.length,
+    byStatus: statusCounts,
+    avgCompletionTimeMs,
+    successRate: Math.round(successRate * 100) / 100,
+  };
 }
