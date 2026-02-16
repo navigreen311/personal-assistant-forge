@@ -2,6 +2,7 @@
 // Auto-Routing Engine
 // Evaluates capture items against routing rules in priority order.
 // First matching rule determines the routing target.
+// Includes routeAndStore for persisting captures to the correct Prisma model.
 // ============================================================================
 
 import { v4 as uuidv4 } from 'uuid';
@@ -13,6 +14,7 @@ import type {
   RoutingAction,
 } from '@/modules/capture/types';
 import { generateJSON } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 
 class RoutingService {
   private rules: RoutingRule[] = [];
@@ -126,6 +128,103 @@ Return JSON with: targetType, confidence (0-1), reasoning`, {
       confidence: 0.3,
       appliedRules: [],
     };
+  }
+
+  async routeAndStore(capture: CaptureItem): Promise<RoutingResult & { storedId?: string }> {
+    const result = await this.routeCapture(capture);
+
+    try {
+      let storedId: string | undefined;
+      const entityId = result.entityId || capture.entityId || '';
+
+      switch (result.targetType) {
+        case 'TASK': {
+          const task = await prisma.task.create({
+            data: {
+              title: (capture.processedContent ?? capture.rawContent).substring(0, 100),
+              description: capture.processedContent ?? capture.rawContent,
+              status: 'TODO',
+              priority: result.priority ?? 'P1',
+              entityId,
+              tags: ['from_capture'],
+              createdFrom: { captureId: capture.id, source: capture.source },
+            },
+          });
+          storedId = task.id;
+          break;
+        }
+        case 'NOTE': {
+          const entry = await prisma.knowledgeEntry.create({
+            data: {
+              content: capture.processedContent ?? capture.rawContent,
+              source: capture.source,
+              entityId,
+              tags: ['from_capture'],
+              linkedEntities: [],
+            },
+          });
+          storedId = entry.id;
+          break;
+        }
+        case 'CONTACT': {
+          const doc = await prisma.document.create({
+            data: {
+              title: 'Captured Contact Info',
+              entityId,
+              type: 'CONTACT_CAPTURE',
+              content: capture.processedContent ?? capture.rawContent,
+              status: 'DRAFT',
+            },
+          });
+          storedId = doc.id;
+          break;
+        }
+        case 'EVENT': {
+          const doc = await prisma.document.create({
+            data: {
+              title: 'Captured Event Info',
+              entityId,
+              type: 'EVENT_CAPTURE',
+              content: capture.processedContent ?? capture.rawContent,
+              status: 'DRAFT',
+            },
+          });
+          storedId = doc.id;
+          break;
+        }
+        case 'EXPENSE': {
+          const doc = await prisma.document.create({
+            data: {
+              title: 'Captured Expense',
+              entityId,
+              type: 'EXPENSE_CAPTURE',
+              content: capture.processedContent ?? capture.rawContent,
+              status: 'DRAFT',
+            },
+          });
+          storedId = doc.id;
+          break;
+        }
+        default: {
+          // Default: store as KnowledgeEntry
+          const entry = await prisma.knowledgeEntry.create({
+            data: {
+              content: capture.processedContent ?? capture.rawContent,
+              source: capture.source,
+              entityId,
+              tags: ['from_capture'],
+              linkedEntities: [],
+            },
+          });
+          storedId = entry.id;
+        }
+      }
+
+      return { ...result, storedId };
+    } catch {
+      // Storage failed but routing succeeded
+      return result;
+    }
   }
 
   evaluateConditions(capture: CaptureItem, conditions: RoutingCondition[]): boolean {
