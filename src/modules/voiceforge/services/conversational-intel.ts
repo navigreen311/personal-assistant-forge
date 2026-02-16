@@ -10,6 +10,7 @@ import type {
   ComplianceIssue,
   CallSummary,
 } from '@/modules/voiceforge/types';
+import { generateJSON } from '@/lib/ai';
 
 // Positive and negative word lists for basic sentiment analysis
 const POSITIVE_WORDS = [
@@ -70,6 +71,63 @@ export async function analyzeCall(
   };
 }
 
+export async function analyzeCallWithAI(
+  callId: string,
+  segments: TranscriptSegment[]
+): Promise<CallAnalysis> {
+  // First get rule-based analysis as baseline
+  const baseAnalysis = await analyzeCall(callId, segments);
+
+  // Enhance with AI
+  try {
+    const fullTranscript = segments.map(s => `[${s.speaker}] ${s.text}`).join('\n');
+
+    const aiResult = await generateJSON<{
+      sentimentScore: number;
+      topics: string[];
+      actionItems: string[];
+      keyInsights: string[];
+      overallTone: string;
+      followUpRecommendation: string;
+    }>(`Analyze this call transcript and provide insights.
+
+Transcript:
+${fullTranscript.substring(0, 3000)}
+
+Return JSON with:
+- sentimentScore: -1.0 to 1.0
+- topics: array of discussion topics
+- actionItems: array of action items identified
+- keyInsights: array of key observations
+- overallTone: one of POSITIVE, NEUTRAL, NEGATIVE, MIXED
+- followUpRecommendation: what should happen next`, {
+      maxTokens: 512,
+      temperature: 0.3,
+      system: 'You are a call analysis specialist. Extract actionable insights from call transcripts. Be concise and specific.',
+    });
+
+    // Merge AI insights into base analysis
+    baseAnalysis.overallSentiment = aiResult.sentimentScore ?? baseAnalysis.overallSentiment;
+    baseAnalysis.summary.actionItems = [
+      ...baseAnalysis.summary.actionItems,
+      ...aiResult.actionItems.filter(ai => !baseAnalysis.summary.actionItems.includes(ai)),
+    ];
+    baseAnalysis.summary.keyPoints = [
+      ...baseAnalysis.summary.keyPoints,
+      ...aiResult.keyInsights,
+    ];
+    if (aiResult.followUpRecommendation) {
+      baseAnalysis.summary.followUpNeeded = true;
+      baseAnalysis.summary.followUpReason = aiResult.followUpRecommendation;
+      baseAnalysis.summary.nextSteps = [aiResult.followUpRecommendation];
+    }
+
+    return baseAnalysis;
+  } catch {
+    return baseAnalysis; // Fallback to rule-based analysis
+  }
+}
+
 export function calculateSentiment(text: string): number {
   const words = text.toLowerCase().split(/\s+/);
   let score = 0;
@@ -82,6 +140,23 @@ export function calculateSentiment(text: string): number {
   // Clamp to [-1, 1]
   const maxMagnitude = Math.max(Math.abs(score), 1);
   return Math.max(-1, Math.min(1, score / maxMagnitude));
+}
+
+export async function calculateSentimentWithAI(text: string): Promise<number> {
+  if (text.split(/\s+/).length < 20) {
+    // Short text: use keyword approach
+    return calculateSentiment(text);
+  }
+
+  try {
+    const result = await generateJSON<{ sentiment: number }>(
+      `Rate the sentiment of this text on a scale of -1.0 (very negative) to 1.0 (very positive). Return JSON: { "sentiment": number }\n\nText: "${text.substring(0, 1000)}"`,
+      { maxTokens: 64, temperature: 0.1, system: 'You are a sentiment analysis expert. Return only the JSON.' }
+    );
+    return Math.max(-1, Math.min(1, result.sentiment));
+  } catch {
+    return calculateSentiment(text);
+  }
 }
 
 export function extractKeyInfo(segments: TranscriptSegment[]): ExtractedInfo[] {
