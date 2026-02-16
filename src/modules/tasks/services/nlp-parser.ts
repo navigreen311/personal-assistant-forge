@@ -14,6 +14,7 @@ import {
   startOfTomorrow,
 } from 'date-fns';
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { ParsedTaskInput, NLPEntity } from '../types';
 
 // --- Entity Extraction Patterns ---
@@ -262,7 +263,72 @@ export function extractEntities(text: string): NLPEntity[] {
   return entities;
 }
 
-export async function parseTaskFromText(input: string): Promise<ParsedTaskInput> {
+async function parseWithAI(
+  input: string,
+  referenceDate: Date = new Date()
+): Promise<ParsedTaskInput> {
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  const result = await generateJSON<{
+    title: string;
+    description?: string;
+    dueDate?: string;
+    dueTime?: string;
+    priority: 'P0' | 'P1' | 'P2';
+    assignee?: string;
+    project?: string;
+    tags: string[];
+    estimatedMinutes?: number;
+    recurrence?: string;
+    dependencies?: string[];
+    confidence: number;
+  }>(`Parse this natural language task input into structured task data.
+
+Input: "${input}"
+Reference date (today): ${referenceDate.toISOString().split('T')[0]}
+Day of week: ${dayNames[referenceDate.getDay()]}
+
+Return JSON with:
+- title: concise task title (action-oriented, starts with verb)
+- description: additional context if present, null otherwise
+- dueDate: ISO date string (YYYY-MM-DD), null if no date mentioned
+- dueTime: 24h time (HH:MM) if specific time mentioned, null otherwise
+- priority: P0 (urgent/critical), P1 (important), P2 (normal/low)
+- assignee: person name if someone is mentioned to do the task, null otherwise
+- project: project or category name if mentioned, null otherwise
+- tags: relevant tags extracted from context
+- estimatedMinutes: estimated time to complete, null if unclear
+- recurrence: DAILY, WEEKLY, MONTHLY if recurring, null otherwise
+- dependencies: names/descriptions of prerequisite tasks if mentioned
+- confidence: 0.0-1.0 parsing confidence`, {
+    maxTokens: 512,
+    temperature: 0.2,
+    system: 'You are a task parsing assistant. Convert natural language into structured task data. Be precise with dates and times. Default priority is P1 unless urgency is explicit.',
+  });
+
+  // Map AI output to ParsedTaskInput type
+  let dueDate: Date | undefined;
+  if (result.dueDate) {
+    const parsed = new Date(result.dueDate);
+    if (isValid(parsed)) {
+      dueDate = parsed;
+    }
+  }
+
+  return {
+    title: result.title,
+    description: result.description,
+    priority: result.priority,
+    dueDate,
+    projectName: result.project ?? undefined,
+    assigneeName: result.assignee ?? undefined,
+    tags: result.tags.length > 0 ? result.tags : undefined,
+    confidence: result.confidence,
+    rawInput: input,
+  };
+}
+
+function parseTaskFromTextRegex(input: string): ParsedTaskInput {
   const entities = extractEntities(input);
 
   const dateEntity = entities.find((e) => e.type === 'DATE');
@@ -303,6 +369,21 @@ export async function parseTaskFromText(input: string): Promise<ParsedTaskInput>
     confidence,
     rawInput: input,
   };
+}
+
+export async function parseTaskFromText(input: string): Promise<ParsedTaskInput> {
+  // Try AI-powered parsing first, fall back to regex on failure or low confidence
+  try {
+    const aiResult = await parseWithAI(input);
+    if (aiResult.confidence >= 0.4) {
+      return aiResult;
+    }
+    // Low confidence — fall back to regex
+    return parseTaskFromTextRegex(input);
+  } catch {
+    // AI call failed — fall back to regex
+    return parseTaskFromTextRegex(input);
+  }
 }
 
 export async function resolveEntityReferences(

@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { ActionType } from '@/modules/workflows/types';
 
 // --- Validation Schemas ---
@@ -267,19 +268,42 @@ export async function handleTriggerAIAnalysis(
 ): Promise<Record<string, unknown>> {
   const validated = triggerAiAnalysisSchema.parse(params);
 
-  // Placeholder: In production, this would call an LLM API (OpenAI, Anthropic, etc.)
-  // Example integration point:
-  // const response = await openai.chat.completions.create({
-  //   model: 'gpt-4',
-  //   messages: [{ role: 'user', content: validated.prompt }],
-  // });
+  let result: Record<string, unknown>;
 
-  const mockResult = {
-    analysis: `AI analysis of provided data based on prompt: "${validated.prompt}"`,
-    confidence: 0.85,
-    insights: ['Insight 1: Data patterns detected', 'Insight 2: Anomalies identified'],
-    recommendation: 'Continue monitoring with adjusted parameters',
-  };
+  try {
+    result = await generateJSON<{
+      analysis: string;
+      confidence: number;
+      insights: string[];
+      recommendation: string;
+    }>(
+      `Analyze the following data and provide insights.
+
+Prompt: ${validated.prompt}
+
+Data: ${JSON.stringify(validated.data)}
+
+Return JSON with:
+- analysis: a concise analysis summary
+- confidence: 0.0-1.0 confidence in the analysis
+- insights: array of 2-4 specific observations
+- recommendation: a single actionable recommendation`,
+      {
+        maxTokens: 1024,
+        temperature: 0.5,
+        system: 'You are a data analysis assistant. Analyze the provided data based on the prompt and return structured insights.',
+      }
+    );
+  } catch {
+    // Fallback mock when AI is unavailable
+    result = {
+      analysis: `AI analysis unavailable for prompt: "${validated.prompt}"`,
+      confidence: 0,
+      insights: ['AI service temporarily unavailable'],
+      recommendation: 'Retry analysis or review data manually.',
+      requiresHumanReview: true,
+    };
+  }
 
   await logAction(
     'TRIGGER_AI_ANALYSIS',
@@ -288,7 +312,7 @@ export async function handleTriggerAIAnalysis(
     'LOW'
   );
 
-  return mockResult;
+  return result;
 }
 
 export async function handleSendNotification(

@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createExpense, listExpenses } from '@/modules/finance/services/expense-service';
+import { withAuth } from '@/shared/middleware/auth';
 
 const listQuerySchema = z.object({
   entityId: z.string().min(1),
@@ -37,42 +38,46 @@ const createSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const params = Object.fromEntries(request.nextUrl.searchParams);
-    const parsed = listQuerySchema.safeParse(params);
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const params = Object.fromEntries(req.nextUrl.searchParams);
+      const parsed = listQuerySchema.safeParse(params);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const { entityId, category, vendor, startDate, endDate, page, pageSize } = parsed.data;
+      const dateRange =
+        startDate && endDate
+          ? { start: new Date(startDate), end: new Date(endDate) }
+          : undefined;
+
+      const result = await listExpenses(entityId, { category, vendor, dateRange }, page, pageSize);
+      return paginated(result.expenses, result.total, page, pageSize);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const { entityId, category, vendor, startDate, endDate, page, pageSize } = parsed.data;
-    const dateRange =
-      startDate && endDate
-        ? { start: new Date(startDate), end: new Date(endDate) }
-        : undefined;
-
-    const result = await listExpenses(entityId, { category, vendor, dateRange }, page, pageSize);
-    return paginated(result.expenses, result.total, page, pageSize);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = createSchema.safeParse(body);
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = createSchema.safeParse(body);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const data = parsed.data;
+      const expense = await createExpense({
+        ...data,
+        date: new Date(data.date),
+      });
+
+      return success(expense, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const data = parsed.data;
-    const expense = await createExpense({
-      ...data,
-      date: new Date(data.date),
-    });
-
-    return success(expense, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }

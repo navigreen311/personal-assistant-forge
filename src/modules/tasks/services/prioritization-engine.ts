@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import { differenceInDays, differenceInHours, isAfter, isBefore, addDays } from 'date-fns';
 import type { Task } from '@/shared/types';
 import type {
@@ -381,4 +382,53 @@ function generateDailyReasoning(
   });
 
   return `Today's top tasks selected based on urgency, impact, and momentum:\n${reasons.join('\n')}`;
+}
+
+// --- AI-Powered Priority Suggestion ---
+
+export async function suggestPriorityWithAI(
+  task: { title: string; description?: string; dueDate?: Date; dependencies?: string[] },
+  context: { openTaskCount: number; upcomingDeadlines: number; entityGoals?: string[] }
+): Promise<{ priority: 'P0' | 'P1' | 'P2'; reasoning: string }> {
+  try {
+    const result = await generateJSON<{ priority: 'P0' | 'P1' | 'P2'; reasoning: string }>(
+      `Suggest a priority level for this task based on context.
+
+Task: "${task.title}"
+${task.description ? `Description: ${task.description}` : ''}
+${task.dueDate ? `Due date: ${task.dueDate.toISOString().split('T')[0]}` : 'No due date'}
+${task.dependencies?.length ? `Dependencies: ${task.dependencies.join(', ')}` : 'No dependencies'}
+
+Context:
+- Open tasks: ${context.openTaskCount}
+- Upcoming deadlines this week: ${context.upcomingDeadlines}
+${context.entityGoals?.length ? `- Entity goals: ${context.entityGoals.join(', ')}` : ''}
+
+Priority levels:
+- P0: Urgent/critical — must be done immediately, blocking others or time-sensitive
+- P1: Important — should be done soon, has meaningful impact
+- P2: Normal/low — can wait, minor impact
+
+Return JSON with priority and reasoning.`,
+      {
+        maxTokens: 256,
+        temperature: 0.3,
+        system: 'You are a task prioritization assistant. Analyze the task and context to suggest the most appropriate priority level. Be concise in your reasoning.',
+      }
+    );
+    return result;
+  } catch {
+    // Fall back to algorithmic suggestion
+    const suggestedPriority = task.dueDate
+      ? differenceInDays(task.dueDate, new Date()) <= 2
+        ? 'P0'
+        : differenceInDays(task.dueDate, new Date()) <= 7
+        ? 'P1'
+        : 'P2'
+      : 'P1';
+    return {
+      priority: suggestedPriority,
+      reasoning: 'AI unavailable — priority suggested based on due date proximity.',
+    };
+  }
 }

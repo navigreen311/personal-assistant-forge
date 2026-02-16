@@ -2,6 +2,12 @@ import { scoreTask, getDailyTop3 } from '@/modules/tasks/services/prioritization
 import type { Task } from '@/shared/types';
 import { addDays, subDays } from 'date-fns';
 
+// Mock AI client — reject so we fall back to algorithmic scoring
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 // Mock prisma
 const mockFindMany = jest.fn();
 const mockFindUnique = jest.fn();

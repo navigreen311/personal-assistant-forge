@@ -11,6 +11,12 @@ import {
 
 // --- Mocks ---
 
+// Mock AI client — reject so we fall back to non-AI action handling
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     task: {

@@ -1,5 +1,11 @@
 import type { Invoice, AgingReport } from '@/modules/finance/types';
 
+// Mock AI client — reject so we fall back to template-based generation
+const mockGenerateText = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateText: (...args: unknown[]) => mockGenerateText(...args),
+}));
+
 // Mock prisma
 const mockPrisma = {
   financialRecord: {

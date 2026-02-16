@@ -1,3 +1,9 @@
+// Mock AI client — reject so we fall back to algorithmic cash flow forecasting
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 const mockPrisma = {
   financialRecord: {
     findMany: jest.fn(),

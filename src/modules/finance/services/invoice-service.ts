@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { Invoice, InvoiceLineItem, AgingReport } from '@/modules/finance/types';
 
 function round2(n: number): number {
@@ -249,4 +250,70 @@ export async function detectOverdueInvoices(entityId: string): Promise<Invoice[]
   });
 
   return records.map(parseInvoiceFromRecord);
+}
+
+// --- AI-Enhanced Invoice Features ---
+
+export async function generateInvoiceDescription(
+  lineItems: Array<{ description: string; quantity: number; unitPrice: number }>,
+  clientContext?: { name?: string; industry?: string }
+): Promise<string> {
+  try {
+    const itemsSummary = lineItems
+      .map((item) => `${item.quantity}x ${item.description} @ $${item.unitPrice}`)
+      .join(', ');
+
+    const description = await generateText(
+      `Generate a professional invoice description/memo based on these line items:
+${itemsSummary}
+${clientContext?.name ? `Client: ${clientContext.name}` : ''}
+${clientContext?.industry ? `Industry: ${clientContext.industry}` : ''}
+
+Write a concise, professional 1-2 sentence description suitable for an invoice memo field.`,
+      {
+        maxTokens: 256,
+        temperature: 0.5,
+        system: 'You are a professional invoicing assistant. Write clear, concise invoice descriptions.',
+      }
+    );
+
+    return description;
+  } catch {
+    // Fallback: template-based description
+    const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+    return `Invoice for ${lineItems.length} item(s) totaling $${total.toFixed(2)}.`;
+  }
+}
+
+export async function generatePaymentReminder(
+  invoice: Invoice,
+  clientName?: string
+): Promise<string> {
+  try {
+    const daysOverdue = invoice.dueDate
+      ? Math.max(0, Math.floor((Date.now() - invoice.dueDate.getTime()) / (1000 * 60 * 60 * 24)))
+      : 0;
+
+    const reminder = await generateText(
+      `Draft a professional payment reminder email for an overdue invoice.
+
+Invoice: ${invoice.invoiceNumber}
+Amount: $${invoice.total} ${invoice.currency}
+Due date: ${invoice.dueDate.toISOString().split('T')[0]}
+Days overdue: ${daysOverdue}
+${clientName ? `Client: ${clientName}` : ''}
+Payment terms: ${invoice.paymentTerms}
+
+Write a polite but firm reminder that maintains the business relationship. Keep it under 150 words.`,
+      {
+        maxTokens: 512,
+        temperature: 0.5,
+        system: 'You are a professional accounts receivable assistant. Write courteous but clear payment reminders.',
+      }
+    );
+
+    return reminder;
+  } catch {
+    return `Friendly reminder: Invoice ${invoice.invoiceNumber} for $${invoice.total} was due on ${invoice.dueDate.toISOString().split('T')[0]}. Please arrange payment at your earliest convenience.`;
+  }
 }

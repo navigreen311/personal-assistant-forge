@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { runScenario } from '@/modules/finance/services/cashflow-service';
+import { withAuth } from '@/shared/middleware/auth';
 
 const adjustmentSchema = z.object({
   type: z.enum(['REVENUE_LOSS', 'REVENUE_GAIN', 'EXPENSE_INCREASE', 'EXPENSE_DECREASE']),
@@ -18,25 +19,27 @@ const scenarioSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = scenarioSchema.safeParse(body);
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = scenarioSchema.safeParse(body);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const { entityId, name, adjustments } = parsed.data;
+      const result = await runScenario(entityId, {
+        name,
+        adjustments: adjustments.map((a) => ({
+          ...a,
+          startDate: new Date(a.startDate),
+          endDate: a.endDate ? new Date(a.endDate) : undefined,
+        })),
+      });
+
+      return success(result, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const { entityId, name, adjustments } = parsed.data;
-    const result = await runScenario(entityId, {
-      name,
-      adjustments: adjustments.map((a) => ({
-        ...a,
-        startDate: new Date(a.startDate),
-        endDate: a.endDate ? new Date(a.endDate) : undefined,
-      })),
-    });
-
-    return success(result, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }

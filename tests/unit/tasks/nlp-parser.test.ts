@@ -1,6 +1,12 @@
 import { extractEntities, parseTaskFromText, parseMultipleTasks } from '@/modules/tasks/services/nlp-parser';
 import { startOfTomorrow } from 'date-fns';
 
+// Mock AI client — make generateJSON reject so we fall back to regex parsing
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 // Mock prisma
 jest.mock('@/lib/db', () => ({
   prisma: {
