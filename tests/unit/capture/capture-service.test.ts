@@ -12,6 +12,11 @@ jest.mock('@/modules/capture/services/routing-service', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 describe('CaptureService', () => {
   let service: CaptureService;
 
@@ -185,6 +190,52 @@ describe('CaptureService', () => {
 
     it('should throw for non-existent capture', async () => {
       await expect(service.archiveCapture('fake-id')).rejects.toThrow();
+    });
+  });
+
+  describe('classifyCaptureWithAI', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+      generateJSON.mockRejectedValue(new Error('AI unavailable'));
+    });
+
+    it('should classify captures using AI', async () => {
+      generateJSON.mockResolvedValueOnce({
+        category: 'TASK',
+        confidence: 0.85,
+        suggestedActions: ['Create a task', 'Set deadline'],
+      });
+
+      const capture = await service.createCapture({
+        userId: 'user-1',
+        source: 'MANUAL',
+        contentType: 'TEXT',
+        rawContent: 'I need to follow up with the vendor by Friday',
+      });
+
+      const result = await service.classifyCaptureWithAI(capture.id);
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.category).toBe('TASK');
+      expect(result.confidence).toBe(0.85);
+    });
+
+    it('should fall back to NOTE on AI failure', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('AI error'));
+
+      const capture = await service.createCapture({
+        userId: 'user-1',
+        source: 'MANUAL',
+        contentType: 'TEXT',
+        rawContent: 'Some content',
+      });
+
+      const result = await service.classifyCaptureWithAI(capture.id);
+
+      expect(result.category).toBe('NOTE');
+      expect(result.confidence).toBe(0.3);
     });
   });
 });
