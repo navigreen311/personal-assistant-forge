@@ -1,25 +1,39 @@
-import { v4 as uuidv4 } from 'uuid';
 import { addMonths, isBefore } from 'date-fns';
+import { prisma } from '@/lib/db';
 import type { TravelPreferences, TravelDocument } from '../types';
 
-// In-memory store (placeholder for database)
-const preferencesStore = new Map<string, TravelPreferences>();
+const defaultPreferences: Omit<TravelPreferences, 'userId'> = {
+  airlines: [],
+  hotels: [],
+  dietary: [],
+  budgetPerDayUsd: 200,
+  preferredAirports: [],
+  travelDocuments: [],
+};
 
 export async function getPreferences(userId: string): Promise<TravelPreferences> {
-  const existing = preferencesStore.get(userId);
-  if (existing) return existing;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
 
-  const defaults: TravelPreferences = {
+  if (!user) {
+    return { userId, ...defaultPreferences };
+  }
+
+  const prefs = user.preferences as Record<string, unknown> | null;
+  const travel = prefs?.travel as Record<string, unknown> | undefined;
+
+  if (!travel) {
+    return { userId, ...defaultPreferences };
+  }
+
+  return {
     userId,
-    airlines: [],
-    hotels: [],
-    dietary: [],
-    budgetPerDayUsd: 200,
-    preferredAirports: [],
-    travelDocuments: [],
+    airlines: (travel.airlines as TravelPreferences['airlines']) ?? [],
+    hotels: (travel.hotels as TravelPreferences['hotels']) ?? [],
+    dietary: (travel.dietary as string[]) ?? [],
+    budgetPerDayUsd: (travel.budgetPerDayUsd as number) ?? 200,
+    preferredAirports: (travel.preferredAirports as string[]) ?? [],
+    travelDocuments: (travel.travelDocuments as TravelDocument[]) ?? [],
   };
-  preferencesStore.set(userId, defaults);
-  return defaults;
 }
 
 export async function updatePreferences(
@@ -53,7 +67,27 @@ export async function updatePreferences(
     }));
   }
 
-  preferencesStore.set(userId, updated);
+  // Read existing user preferences, merge travel-specific updates
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const existingPrefs = (user?.preferences as Record<string, unknown>) ?? {};
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      preferences: {
+        ...existingPrefs,
+        travel: {
+          airlines: updated.airlines,
+          hotels: updated.hotels,
+          dietary: updated.dietary,
+          budgetPerDayUsd: updated.budgetPerDayUsd,
+          preferredAirports: updated.preferredAirports,
+          travelDocuments: updated.travelDocuments,
+        },
+      },
+    },
+  });
+
   return updated;
 }
 
