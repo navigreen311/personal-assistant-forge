@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { ProductivityScore } from '../types';
 
 const WEIGHTS = {
@@ -70,7 +71,6 @@ export async function calculateProductivityScore(
       : 100;
 
   // Dimension 3: Goal Progress (weekly goal completion rate)
-  // Simplified: ratio of completed tasks to total tasks this week
   const weekStart = new Date(dayStart);
   weekStart.setDate(weekStart.getDate() - weekStart.getDay());
   const allWeekTasks = await prisma.task.findMany({
@@ -100,7 +100,6 @@ export async function calculateProductivityScore(
       createdAt: { gte: dayStart, lte: dayEnd },
     },
   });
-  // Simplified: score based on count handled vs total
   const communicationSpeed =
     p0Messages.length > 0
       ? Math.min(100, Math.round(100 - p0Messages.length * 5))
@@ -182,4 +181,80 @@ export function calculateTrend(
   if (changePercent > 5) return 'IMPROVING';
   if (changePercent < -5) return 'DECLINING';
   return 'STABLE';
+}
+
+// --- Phase 3: Team scores and AI insights ---
+
+export async function getTeamScores(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ userId: string; userName: string; score: number }[]> {
+  const entity = await prisma.entity.findUnique({
+    where: { id: entityId },
+    include: { user: { select: { id: true, name: true } } },
+  });
+
+  if (!entity) return [];
+
+  const date = dateRange?.end
+    ? dateRange.end.toISOString().split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  const score = await calculateProductivityScore(entity.user.id, date);
+
+  return [
+    {
+      userId: entity.user.id,
+      userName: entity.user.name,
+      score: score.overallScore,
+    },
+  ];
+}
+
+export async function getInsights(
+  entityId: string,
+  userId: string
+): Promise<{ insights: string[]; topStrength: string; topWeakness: string }> {
+  const today = new Date().toISOString().split('T')[0];
+  const score = await calculateProductivityScore(userId, today);
+
+  try {
+    const result = await generateJSON<{
+      insights: string[];
+      topStrength: string;
+      topWeakness: string;
+    }>(
+      `You are a productivity coach. Analyze this productivity profile and provide personalized improvement suggestions.
+
+Overall score: ${score.overallScore}/100
+Dimensions:
+- High Priority Completion: ${score.dimensions.highPriorityCompletion}%
+- Focus Time Achieved: ${score.dimensions.focusTimeAchieved}%
+- Goal Progress: ${score.dimensions.goalProgress}%
+- Meeting Efficiency: ${score.dimensions.meetingEfficiency}%
+- Communication Speed: ${score.dimensions.communicationSpeed}%
+Trend: ${score.trend}
+
+Respond with JSON: { "insights": ["insight1", "insight2", "insight3"], "topStrength": "<best dimension>", "topWeakness": "<weakest dimension>" }`,
+      { temperature: 0.5, maxTokens: 256 }
+    );
+    return result;
+  } catch {
+    // Find best and worst dimensions
+    const dims = score.dimensions;
+    const entries = Object.entries(dims) as [string, number][];
+    entries.sort((a, b) => b[1] - a[1]);
+    const topStrength = entries[0][0];
+    const topWeakness = entries[entries.length - 1][0];
+
+    return {
+      insights: [
+        `Your strongest area is ${topStrength} at ${entries[0][1]}%.`,
+        `Consider improving ${topWeakness}, currently at ${entries[entries.length - 1][1]}%.`,
+        `Overall trend is ${score.trend.toLowerCase()}.`,
+      ],
+      topStrength,
+      topWeakness,
+    };
+  }
 }
