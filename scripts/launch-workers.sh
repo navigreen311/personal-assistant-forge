@@ -45,8 +45,8 @@ echo ""
 PIDS=()
 
 for NUM in "${WORKER_NUMS[@]}"; do
-  # Pad to 2 digits
-  PADDED=$(printf "%02d" "$NUM")
+  # Pad to 2 digits (10# forces decimal interpretation to avoid octal issues with 08/09)
+  PADDED=$(printf "%02d" "$((10#$NUM))")
   WORKTREE="$WORKERS_DIR/worker-$PADDED"
 
   if [ ! -d "$WORKTREE" ]; then
@@ -60,14 +60,14 @@ for NUM in "${WORKER_NUMS[@]}"; do
     continue
   fi
 
-  PROMPT_CONTENT=$(cat "$PROMPT_FILE")
-
   if [ "$MODE" = "headless" ]; then
     LOG_FILE="$LOG_DIR/worker-$PADDED.log"
     echo "[LAUNCH] Worker $PADDED (headless) → log: $LOG_FILE"
 
     # Launch Claude Code in headless mode
-    (cd "$WORKTREE" && claude -p "$PROMPT_CONTENT" > "$LOG_FILE" 2>&1) &
+    # --dangerously-skip-permissions: auto-approve tool use in headless mode
+    # unset CLAUDECODE: allow launch from within another Claude session
+    (cd "$WORKTREE" && unset CLAUDECODE && cat "$PROMPT_FILE" | claude -p --output-format text --dangerously-skip-permissions > "$LOG_FILE" 2>&1) &
     PIDS+=($!)
 
   elif [ "$MODE" = "interactive" ]; then
