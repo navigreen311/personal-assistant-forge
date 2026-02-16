@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import MaintenanceCalendar from '@/modules/household/components/MaintenanceCalendar';
 import MaintenanceTaskCard from '@/modules/household/components/MaintenanceTaskCard';
 import ShoppingList from '@/modules/household/components/ShoppingList';
@@ -8,63 +9,99 @@ import SubscriptionManager from '@/modules/household/components/SubscriptionMana
 import VehicleDashboard from '@/modules/household/components/VehicleDashboard';
 import type { MaintenanceTask, ShoppingItem, WarrantyRecord, SubscriptionRecord, VehicleRecord } from '@/modules/household/types';
 
-const sampleTasks: MaintenanceTask[] = [
-  { id: 'mt-1', userId: 'user-1', category: 'HVAC', title: 'Replace HVAC filter', frequency: 'QUARTERLY', season: 'ANY', nextDueDate: new Date('2026-03-15'), estimatedCostUsd: 30, status: 'UPCOMING' },
-  { id: 'mt-2', userId: 'user-1', category: 'LAWN', title: 'Spring lawn treatment', frequency: 'ANNUAL', season: 'SPRING', nextDueDate: new Date('2026-03-01'), estimatedCostUsd: 75, status: 'OVERDUE' },
-  { id: 'mt-3', userId: 'user-1', category: 'PEST', title: 'Pest control treatment', frequency: 'QUARTERLY', season: 'ANY', nextDueDate: new Date('2026-04-01'), estimatedCostUsd: 100, status: 'UPCOMING' },
-];
-
-const sampleShoppingItems: ShoppingItem[] = [
-  { id: 'si-1', userId: 'user-1', name: 'Milk', category: 'Dairy', quantity: 1, unit: 'gallon', store: 'Kroger', estimatedPrice: 3.99, isPurchased: false, isRecurring: true, recurringFrequency: 'weekly', addedAt: new Date() },
-  { id: 'si-2', userId: 'user-1', name: 'HVAC Filter 20x25x1', category: 'Home', quantity: 4, store: 'Home Depot', estimatedPrice: 12.99, isPurchased: false, isRecurring: false, addedAt: new Date() },
-  { id: 'si-3', userId: 'user-1', name: 'Paper Towels', category: 'Household', quantity: 2, unit: 'pack', store: 'Costco', estimatedPrice: 18.99, isPurchased: false, isRecurring: true, recurringFrequency: 'monthly', addedAt: new Date() },
-];
-
-const sampleWarranties: WarrantyRecord[] = [
-  { id: 'wr-1', userId: 'user-1', itemName: 'Samsung TV 65"', purchaseDate: new Date('2024-11-25'), warrantyEndDate: new Date('2026-11-25'), provider: 'Samsung', claimPhone: '1-800-726-7864', isExpiring: false, isExpired: false },
-  { id: 'wr-2', userId: 'user-1', itemName: 'Dyson Vacuum V15', purchaseDate: new Date('2024-06-01'), warrantyEndDate: new Date('2026-06-01'), provider: 'Dyson', isExpiring: true, isExpired: false },
-];
-
-const sampleSubscriptions: SubscriptionRecord[] = [
-  { id: 'sr-1', userId: 'user-1', name: 'Netflix', costPerMonth: 15.99, billingCycle: 'MONTHLY', renewalDate: new Date('2026-03-01'), category: 'Entertainment', isActive: true, autoRenew: true },
-  { id: 'sr-2', userId: 'user-1', name: 'Adobe Creative Cloud', costPerMonth: 54.99, billingCycle: 'ANNUAL', renewalDate: new Date('2026-08-15'), category: 'Software', isActive: true, autoRenew: true },
-  { id: 'sr-3', userId: 'user-1', name: 'Gym Membership', costPerMonth: 49.00, billingCycle: 'MONTHLY', renewalDate: new Date('2026-03-10'), category: 'Health', isActive: true, autoRenew: false },
-];
-
-const sampleVehicles: VehicleRecord[] = [
-  { id: 'vr-1', userId: 'user-1', make: 'Tesla', model: 'Model 3', year: 2024, mileage: 15000, nextServiceDate: new Date('2026-04-01'), nextServiceType: 'Tire Rotation', insuranceExpiry: new Date('2026-09-15'), registrationExpiry: new Date('2026-12-31'), maintenanceHistory: [{ date: new Date('2025-10-01'), type: 'Annual Service', cost: 250, mileage: 12000, provider: 'Tesla Service' }] },
-];
-
 export default function HouseholdDashboard() {
+  const [tasks, setTasks] = useState<MaintenanceTask[]>([]);
+  const [shopping, setShopping] = useState<ShoppingItem[]>([]);
+  const [warranties, setWarranties] = useState<WarrantyRecord[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [vehicles, setVehicles] = useState<VehicleRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchData() {
+      try {
+        const [tasksRes, shoppingRes, warrantiesRes, subsRes, vehiclesRes] = await Promise.all([
+          fetch('/api/household/maintenance'),
+          fetch('/api/household/shopping'),
+          fetch('/api/household/warranties'),
+          fetch('/api/household/subscriptions'),
+          fetch('/api/household/vehicles'),
+        ]);
+
+        if (tasksRes.ok) setTasks(await tasksRes.json());
+        if (shoppingRes.ok) setShopping(await shoppingRes.json());
+        if (warrantiesRes.ok) setWarranties(await warrantiesRes.json());
+        if (subsRes.ok) setSubscriptions(await subsRes.json());
+        if (vehiclesRes.ok) setVehicles(await vehiclesRes.json());
+      } catch (err) {
+        console.error('Failed to fetch household data:', err);
+        setError('Failed to load household data. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchData();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-6">Household Management</h1>
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+          <span className="ml-3 text-gray-600">Loading household data...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-6">Household Management</h1>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-bold">Household Management</h1>
 
       <div className="bg-white rounded-lg shadow p-6">
-        <MaintenanceCalendar tasks={sampleTasks} />
+        <MaintenanceCalendar tasks={tasks} />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {sampleTasks.map(task => (
-          <MaintenanceTaskCard key={task.id} task={task} />
-        ))}
-      </div>
+      {tasks.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {tasks.map(task => (
+            <MaintenanceTaskCard key={task.id} task={task} />
+          ))}
+        </div>
+      ) : (
+        <div className="bg-gray-50 rounded-lg p-6 text-center text-gray-500">
+          No maintenance tasks scheduled.
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow p-6">
-          <ShoppingList items={sampleShoppingItems} />
+          <ShoppingList items={shopping} />
         </div>
         <div className="bg-white rounded-lg shadow p-6">
-          <SubscriptionManager subscriptions={sampleSubscriptions} />
+          <SubscriptionManager subscriptions={subscriptions} />
         </div>
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">
-        <WarrantyTracker warranties={sampleWarranties} />
+        <WarrantyTracker warranties={warranties} />
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">
-        <VehicleDashboard vehicles={sampleVehicles} />
+        <VehicleDashboard vehicles={vehicles} />
       </div>
     </div>
   );
