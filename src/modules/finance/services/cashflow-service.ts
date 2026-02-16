@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type {
   CashFlowProjection,
   CashFlowForecast,
@@ -293,4 +294,49 @@ export async function getRenewalRadar(
       cancelDeadline: extended.cancelDeadline ? new Date(extended.cancelDeadline) : undefined,
     };
   });
+}
+
+// --- AI-Enhanced Cash Flow Prediction ---
+
+export async function forecastCashFlowWithAI(
+  entityId: string,
+  startingBalance: number,
+  days: number
+): Promise<{ prediction: string; riskLevel: 'LOW' | 'MEDIUM' | 'HIGH'; suggestions: string[] }> {
+  try {
+    const forecast = await forecastCashFlow(entityId, startingBalance, days);
+    const summary = forecast.summary;
+
+    const result = await generateJSON<{
+      prediction: string;
+      riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+      suggestions: string[];
+    }>(
+      `Analyze this cash flow forecast and provide strategic insights.
+
+Starting balance: $${startingBalance}
+30-day net: $${summary.thirtyDay.net}, end balance: $${summary.thirtyDay.endBalance}
+60-day net: $${summary.sixtyDay.net}, end balance: $${summary.sixtyDay.endBalance}
+90-day net: $${summary.ninetyDay.net}, end balance: $${summary.ninetyDay.endBalance}
+Alerts: ${forecast.alerts.length > 0 ? forecast.alerts.join('; ') : 'None'}
+
+Return JSON with:
+- prediction: 1-2 sentence cashflow outlook
+- riskLevel: LOW, MEDIUM, or HIGH based on trajectory
+- suggestions: 2-3 actionable suggestions to optimize cash position`,
+      {
+        maxTokens: 512,
+        temperature: 0.3,
+        system: 'You are a financial analysis assistant. Provide practical, actionable cash flow insights.',
+      }
+    );
+
+    return result;
+  } catch {
+    return {
+      prediction: 'AI cash flow analysis unavailable.',
+      riskLevel: 'MEDIUM',
+      suggestions: ['Review cash flow projections manually.'],
+    };
+  }
 }
