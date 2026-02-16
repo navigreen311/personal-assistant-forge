@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { getCallAnalytics } from '@/modules/analytics/services/call-analytics-service';
 
 const querySchema = z.object({
@@ -10,21 +11,23 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const params = Object.fromEntries(request.nextUrl.searchParams);
-    const parsed = querySchema.safeParse(params);
+  return withAuth(request, async (req, session) => {
+    try {
+      const params = Object.fromEntries(req.nextUrl.searchParams);
+      const parsed = querySchema.safeParse(params);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const analytics = await getCallAnalytics(
+        parsed.data.entityId,
+        new Date(parsed.data.start),
+        new Date(parsed.data.end)
+      );
+      return success(analytics);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to get call analytics', 500);
     }
-
-    const analytics = await getCallAnalytics(
-      parsed.data.entityId,
-      new Date(parsed.data.start),
-      new Date(parsed.data.end)
-    );
-    return success(analytics);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to get call analytics', 500);
-  }
+  });
 }
