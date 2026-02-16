@@ -10,6 +10,7 @@ import type {
   VoiceCommandDefinition,
   ExtractedEntity,
 } from '@/modules/voice/types';
+import { generateJSON } from '@/lib/ai';
 
 // ---------------------------------------------------------------------------
 // Entity extraction patterns
@@ -198,6 +199,36 @@ function extractEntities(transcript: string): ExtractedEntity[] {
   }
 
   return entities;
+}
+
+// --- AI-Powered Intent Parsing ---
+
+async function parseIntentWithAI(
+  transcript: string
+): Promise<{
+  intent: VoiceIntent;
+  entities: ExtractedEntity[];
+  confidence: number;
+  action?: string;
+}> {
+  return generateJSON<{
+    intent: VoiceIntent;
+    entities: ExtractedEntity[];
+    confidence: number;
+    action?: string;
+  }>(`Parse this voice command transcript into a structured command.
+
+Transcript: "${transcript}"
+
+Return JSON with:
+- intent: the user's intent (one of: ADD_TASK, SCHEDULE_MEETING, DRAFT_EMAIL, WHATS_NEXT, ADD_NOTE, CALL_CONTACT, SET_REMINDER, SEARCH, CREATE_CONTACT, LOG_EXPENSE, DICTATE, UNKNOWN)
+- entities: array of extracted entities, each with {type, value, confidence} where type is one of: PERSON, DATE, TIME, DURATION, MONEY, PRIORITY, PROJECT, LOCATION, PHONE_NUMBER, EMAIL, STATUS
+- confidence: 0.0-1.0
+- action: specific action string if identifiable (e.g., "call John at 3pm")`, {
+    maxTokens: 512,
+    temperature: 0.2,
+    system: 'You are a voice command interpreter. Parse spoken language into structured commands. Be precise with entity extraction.',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +438,27 @@ class CommandParser {
     const normalizedText = transcript.trim().replace(/\s+/g, ' ');
     const lower = normalizedText.toLowerCase();
 
-    // Try each registered command's patterns
+    // Try AI parsing first
+    try {
+      const aiResult = await parseIntentWithAI(normalizedText);
+      if (aiResult && aiResult.confidence >= 0.5) {
+        // Merge AI entities with regex entities, preferring AI on conflict
+        const regexEntities = extractEntities(transcript);
+        const mergedEntities = this.mergeEntities(aiResult.entities ?? [], regexEntities);
+
+        return {
+          intent: aiResult.intent,
+          confidence: aiResult.confidence,
+          entities: mergedEntities,
+          rawTranscript: transcript,
+          normalizedText,
+        };
+      }
+    } catch {
+      // AI parsing failed — fall through to regex-based parsing
+    }
+
+    // Regex-based fallback: Try each registered command's patterns
     for (const command of this.commands) {
       for (const pattern of command.patterns) {
         const regex = new RegExp(pattern, 'i');
@@ -469,6 +520,27 @@ class CommandParser {
     }
 
     return null;
+  }
+
+  private mergeEntities(
+    aiEntities: ExtractedEntity[],
+    regexEntities: ExtractedEntity[],
+  ): ExtractedEntity[] {
+    const merged = new Map<string, ExtractedEntity>();
+
+    // Add regex entities first
+    for (const entity of regexEntities) {
+      const key = `${entity.type}:${entity.value}`;
+      merged.set(key, entity);
+    }
+
+    // Override with AI entities (AI takes precedence)
+    for (const entity of aiEntities) {
+      const key = `${entity.type}:${entity.value}`;
+      merged.set(key, entity);
+    }
+
+    return Array.from(merged.values());
   }
 
   registerCommand(definition: VoiceCommandDefinition): void {
