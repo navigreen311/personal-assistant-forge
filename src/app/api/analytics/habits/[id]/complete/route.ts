@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { recordCompletion } from '@/modules/analytics/services/habit-tracking-service';
 
 const bodySchema = z.object({
@@ -12,23 +13,25 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
-    const body = await request.json();
-    const parsed = bodySchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+      const body = await req.json();
+      const parsed = bodySchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const habit = await recordCompletion(
+        id,
+        parsed.data.date,
+        parsed.data.completed
+      );
+      return success(habit);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to record completion';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    const habit = await recordCompletion(
-      id,
-      parsed.data.date,
-      parsed.data.completed
-    );
-    return success(habit);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to record completion';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }

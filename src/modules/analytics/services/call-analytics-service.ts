@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { CallAnalytics } from '../types';
 
 export async function getCallAnalytics(
@@ -86,6 +87,34 @@ export async function getCallAnalytics(
 
   const period = `${startDate.toISOString().split('T')[0]}_${endDate.toISOString().split('T')[0]}`;
 
+  // Generate AI-powered call performance insights
+  let insights: string[] = [];
+  if (totalCalls > 0) {
+    try {
+      const insightText = await generateText(
+        `You are a call analytics advisor. Analyze this call performance data and provide 2-3 brief, actionable insights.
+
+Total calls: ${totalCalls}
+Connect rate: ${connectRate}%
+Average duration: ${averageDuration} seconds
+Sentiment average: ${sentimentAverage}
+Outcome distribution: ${JSON.stringify(outcomeDistribution)}
+ROI per call type: ${JSON.stringify(roiPerCallType)}
+
+Provide 2-3 insights, each one sentence. Separate them with newlines.`,
+        { temperature: 0.7, maxTokens: 256 }
+      );
+      insights = insightText.split('\n').filter((line) => line.trim().length > 0);
+    } catch {
+      if (connectRate < 50) {
+        insights.push(`Connect rate is low at ${connectRate}%. Consider reviewing call timing and lead quality.`);
+      }
+      if (sentimentAverage < 0.5 && sentimentAverage > 0) {
+        insights.push(`Sentiment is below average at ${sentimentAverage}. Review call scripts and agent training.`);
+      }
+    }
+  }
+
   return {
     entityId,
     period,
@@ -95,6 +124,7 @@ export async function getCallAnalytics(
     outcomeDistribution,
     sentimentAverage,
     roiPerCallType,
+    insights,
   };
 }
 

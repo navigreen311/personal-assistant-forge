@@ -17,12 +17,21 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockResolvedValue({
+    suggestion: 'Increase your daily pace to meet the deadline.',
+  }),
+  generateText: jest.fn().mockResolvedValue('AI-generated insight'),
+}));
+
 // Mock uuid
 jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('test-uuid-1'),
 }));
 
 const { prisma } = require('@/lib/db');
+const { generateJSON } = require('@/lib/ai');
 
 describe('updateGoalProgress', () => {
   beforeEach(() => {
@@ -171,13 +180,13 @@ describe('updateGoalProgress', () => {
   });
 });
 
-describe('suggestCourseCorrection', () => {
+describe('suggestCourseCorrection (AI-powered)', () => {
   beforeEach(() => {
     _getGoalStore().clear();
     jest.clearAllMocks();
   });
 
-  it('should suggest for AT_RISK goals', async () => {
+  it('should call generateJSON with goal context in prompt', async () => {
     const goal = await createGoal({
       userId: 'user1',
       title: 'At risk',
@@ -191,24 +200,23 @@ describe('suggestCourseCorrection', () => {
       linkedWorkflowIds: [],
     });
 
-    // Manually set status
     const store = _getGoalStore();
     const g = store.get(goal.id)!;
     g.status = 'AT_RISK';
     g.currentValue = 40;
     store.set(goal.id, g);
 
-    const suggestion = await suggestCourseCorrection(goal.id);
-    expect(suggestion.goalId).toBe(goal.id);
-    expect(suggestion.suggestion).toBeTruthy();
-    expect(suggestion.currentPace).toBeGreaterThanOrEqual(0);
-    expect(suggestion.requiredPace).toBeGreaterThanOrEqual(0);
+    await suggestCourseCorrection(goal.id);
+    expect(generateJSON).toHaveBeenCalledTimes(1);
+    const prompt = generateJSON.mock.calls[0][0] as string;
+    expect(prompt).toContain('At risk');
+    expect(prompt).toContain('AT_RISK');
   });
 
-  it('should suggest for BEHIND goals', async () => {
+  it('should include current pace and required pace in prompt', async () => {
     const goal = await createGoal({
       userId: 'user1',
-      title: 'Behind',
+      title: 'Pace test',
       framework: 'OKR',
       targetValue: 100,
       unit: 'tasks',
@@ -225,20 +233,21 @@ describe('suggestCourseCorrection', () => {
     g.currentValue = 10;
     store.set(goal.id, g);
 
-    const suggestion = await suggestCourseCorrection(goal.id);
-    expect(suggestion.suggestion).toContain('pace');
-    expect(suggestion.adjustedEndDate).toBeDefined();
+    await suggestCourseCorrection(goal.id);
+    const prompt = generateJSON.mock.calls[0][0] as string;
+    expect(prompt).toContain('Current pace');
+    expect(prompt).toContain('Required pace');
   });
 
-  it('should not suggest adjustments for ON_TRACK goals', async () => {
+  it('should return AI-generated suggestion', async () => {
     const goal = await createGoal({
       userId: 'user1',
-      title: 'On track',
+      title: 'AI suggestion',
       framework: 'OKR',
       targetValue: 100,
       unit: 'tasks',
       startDate: new Date('2026-01-01'),
-      endDate: new Date('2026-12-31'),
+      endDate: new Date('2026-03-31'),
       autoProgress: false,
       linkedTaskIds: [],
       linkedWorkflowIds: [],
@@ -246,16 +255,47 @@ describe('suggestCourseCorrection', () => {
 
     const store = _getGoalStore();
     const g = store.get(goal.id)!;
-    g.status = 'ON_TRACK';
-    g.currentValue = 50;
+    g.status = 'AT_RISK';
+    g.currentValue = 40;
     store.set(goal.id, g);
 
-    const suggestion = await suggestCourseCorrection(goal.id);
-    expect(suggestion.suggestion).toContain('on track');
-    expect(suggestion.adjustedEndDate).toBeUndefined();
+    const result = await suggestCourseCorrection(goal.id);
+    expect(result.suggestion).toBe('Increase your daily pace to meet the deadline.');
+    expect(result.goalId).toBe(goal.id);
+    expect(result.currentPace).toBeGreaterThanOrEqual(0);
+    expect(result.requiredPace).toBeGreaterThanOrEqual(0);
   });
 
-  it('should calculate adjusted end date', async () => {
+  it('should handle AI failure gracefully with fallback', async () => {
+    generateJSON.mockRejectedValueOnce(new Error('AI service unavailable'));
+
+    const goal = await createGoal({
+      userId: 'user1',
+      title: 'Fallback test',
+      framework: 'OKR',
+      targetValue: 100,
+      unit: 'tasks',
+      startDate: new Date('2026-01-01'),
+      endDate: new Date('2026-03-31'),
+      autoProgress: false,
+      linkedTaskIds: [],
+      linkedWorkflowIds: [],
+    });
+
+    const store = _getGoalStore();
+    const g = store.get(goal.id)!;
+    g.status = 'BEHIND';
+    g.currentValue = 10;
+    store.set(goal.id, g);
+
+    const result = await suggestCourseCorrection(goal.id);
+    // Should fall back to static suggestion
+    expect(result.suggestion).toBeTruthy();
+    expect(result.suggestion.length).toBeGreaterThan(0);
+    expect(result.adjustedEndDate).toBeDefined();
+  });
+
+  it('should calculate adjusted end date for BEHIND goals', async () => {
     const goal = await createGoal({
       userId: 'user1',
       title: 'Adjust date',

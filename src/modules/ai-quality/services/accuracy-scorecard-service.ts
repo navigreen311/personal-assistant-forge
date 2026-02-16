@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { AccuracyScorecard } from '../types';
 
 export async function generateScorecard(
@@ -111,39 +112,50 @@ export async function getScorecardHistory(
   return results;
 }
 
-export function getGradeBreakdown(
+const DEFAULT_SUGGESTIONS: Record<string, string> = {
+  'Triage Accuracy': 'Review triage rules and adjust priority thresholds.',
+  'Draft Approval Rate': 'Improve draft templates and incorporate user tone preferences.',
+  'Deadline Performance': 'Add buffer time to deadline estimates and improve task dependency tracking.',
+  'Automation Success': 'Review failed workflow steps and add error handling for edge cases.',
+};
+
+export async function getGradeBreakdown(
   scorecard: AccuracyScorecard
-): { dimension: string; score: number; grade: string; suggestion: string }[] {
+): Promise<{ dimension: string; score: number; grade: string; suggestion: string }[]> {
   const dimensions = [
-    {
-      dimension: 'Triage Accuracy',
-      score: scorecard.triageAccuracy,
-      suggestion: 'Review triage rules and adjust priority thresholds.',
-    },
-    {
-      dimension: 'Draft Approval Rate',
-      score: scorecard.draftApprovalRate,
-      suggestion:
-        'Improve draft templates and incorporate user tone preferences.',
-    },
-    {
-      dimension: 'Deadline Performance',
-      score: 100 - scorecard.missedDeadlineRate,
-      suggestion:
-        'Add buffer time to deadline estimates and improve task dependency tracking.',
-    },
-    {
-      dimension: 'Automation Success',
-      score: scorecard.automationSuccessRate,
-      suggestion:
-        'Review failed workflow steps and add error handling for edge cases.',
-    },
+    { dimension: 'Triage Accuracy', score: scorecard.triageAccuracy },
+    { dimension: 'Draft Approval Rate', score: scorecard.draftApprovalRate },
+    { dimension: 'Deadline Performance', score: 100 - scorecard.missedDeadlineRate },
+    { dimension: 'Automation Success', score: scorecard.automationSuccessRate },
   ];
 
-  return dimensions.map((d) => ({
-    ...d,
-    grade: scoreToGrade(d.score),
-  }));
+  try {
+    const aiSuggestions = await generateJSON<{ suggestions: Record<string, string> }>(
+      `You are an AI quality improvement advisor. Analyze these accuracy scorecard dimensions and provide specific improvement suggestions for each.
+
+Scorecard for period ${scorecard.period}:
+- Triage Accuracy: ${scorecard.triageAccuracy}% (Grade: ${scoreToGrade(scorecard.triageAccuracy)})
+- Draft Approval Rate: ${scorecard.draftApprovalRate}% (Grade: ${scoreToGrade(scorecard.draftApprovalRate)})
+- Deadline Performance: ${100 - scorecard.missedDeadlineRate}% (Grade: ${scoreToGrade(100 - scorecard.missedDeadlineRate)})
+- Automation Success: ${scorecard.automationSuccessRate}% (Grade: ${scoreToGrade(scorecard.automationSuccessRate)})
+
+Respond with JSON: { "suggestions": { "Triage Accuracy": "...", "Draft Approval Rate": "...", "Deadline Performance": "...", "Automation Success": "..." } }
+Each suggestion should be 1-2 sentences with specific, actionable advice.`,
+      { temperature: 0.4, maxTokens: 512 }
+    );
+
+    return dimensions.map((d) => ({
+      ...d,
+      grade: scoreToGrade(d.score),
+      suggestion: aiSuggestions.suggestions[d.dimension] ?? DEFAULT_SUGGESTIONS[d.dimension] ?? '',
+    }));
+  } catch {
+    return dimensions.map((d) => ({
+      ...d,
+      grade: scoreToGrade(d.score),
+      suggestion: DEFAULT_SUGGESTIONS[d.dimension] ?? '',
+    }));
+  }
 }
 
 export function scoreToGrade(score: number): 'A' | 'B' | 'C' | 'D' | 'F' {

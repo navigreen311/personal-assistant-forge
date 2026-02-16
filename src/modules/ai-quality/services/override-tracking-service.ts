@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { OverrideRecord, OverrideAnalysis } from '../types';
 
 // In-memory store for overrides
@@ -76,7 +77,7 @@ export async function analyzeOverrides(
     else trend = 'STABLE';
   }
 
-  const topPatterns = getOverridePatterns_internal(periodOverrides);
+  const topPatterns = groupByReason(periodOverrides);
 
   return {
     totalOverrides: periodOverrides.length,
@@ -87,53 +88,81 @@ export async function analyzeOverrides(
   };
 }
 
+function groupByReason(
+  overrides: OverrideRecord[]
+): { pattern: string; count: number; suggestedFix: string }[] {
+  const patternMap = new Map<string, number>();
+  for (const override of overrides) {
+    patternMap.set(override.reason, (patternMap.get(override.reason) ?? 0) + 1);
+  }
+  return Array.from(patternMap.entries())
+    .map(([pattern, count]) => ({
+      pattern,
+      count,
+      suggestedFix: DEFAULT_FIX_SUGGESTIONS[pattern] ?? 'Review and analyze pattern.',
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+const DEFAULT_FIX_SUGGESTIONS: Record<string, string> = {
+  INCORRECT: 'Review training data and model prompts for factual accuracy.',
+  INCOMPLETE: 'Expand prompt context and add more detailed instructions.',
+  WRONG_TONE: 'Update tone guidelines in the user/entity preferences.',
+  POLICY_VIOLATION: 'Strengthen compliance rules and add guardrails.',
+  PREFERENCE: 'Record user preference patterns for personalization.',
+  OTHER: 'Investigate override details for new pattern categories.',
+};
+
 export async function getOverridePatterns(
   entityId: string
 ): Promise<{ pattern: string; count: number; suggestedFix: string }[]> {
-  return getOverridePatterns_internal(overrideStore);
-}
+  // Group by reason first
+  const patternMap = new Map<string, { count: number; samples: { original: string; overridden: string }[] }>();
 
-function getOverridePatterns_internal(
-  overrides: OverrideRecord[]
-): { pattern: string; count: number; suggestedFix: string }[] {
-  // Group by reason and look for common patterns
-  const patternMap = new Map<
-    string,
-    { count: number; suggestedFix: string }
-  >();
-
-  const fixSuggestions: Record<string, string> = {
-    INCORRECT:
-      'Review training data and model prompts for factual accuracy.',
-    INCOMPLETE:
-      'Expand prompt context and add more detailed instructions.',
-    WRONG_TONE:
-      'Update tone guidelines in the user/entity preferences.',
-    POLICY_VIOLATION:
-      'Strengthen compliance rules and add guardrails.',
-    PREFERENCE:
-      'Record user preference patterns for personalization.',
-    OTHER:
-      'Investigate override details for new pattern categories.',
-  };
-
-  for (const override of overrides) {
+  for (const override of overrideStore) {
     const pattern = override.reason;
-    const existing = patternMap.get(pattern) ?? {
-      count: 0,
-      suggestedFix: fixSuggestions[pattern] ?? 'Review and analyze pattern.',
-    };
+    const existing = patternMap.get(pattern) ?? { count: 0, samples: [] };
     existing.count++;
+    if (existing.samples.length < 3) {
+      existing.samples.push({
+        original: override.originalOutput.substring(0, 100),
+        overridden: override.overriddenOutput.substring(0, 100),
+      });
+    }
     patternMap.set(pattern, existing);
   }
 
-  return Array.from(patternMap.entries())
-    .map(([pattern, data]) => ({
-      pattern,
-      count: data.count,
-      suggestedFix: data.suggestedFix,
-    }))
+  const patterns = Array.from(patternMap.entries())
+    .map(([pattern, data]) => ({ pattern, count: data.count, samples: data.samples }))
     .sort((a, b) => b.count - a.count);
+
+  if (patterns.length === 0) return [];
+
+  try {
+    const aiResult = await generateJSON<{ fixes: Record<string, string> }>(
+      `You are an AI quality improvement advisor. Analyze these override patterns and suggest specific fixes for each pattern.
+
+Override patterns found:
+${patterns.map(p => `- ${p.pattern} (${p.count} occurrences)
+  Sample overrides: ${p.samples.map(s => `Original: "${s.original}" -> Override: "${s.overridden}"`).join('; ')}`).join('\n')}
+
+Respond with JSON: { "fixes": { "${patterns.map(p => p.pattern).join('": "...", "')}": "..." } }
+Each fix should be 1-2 sentences with specific, actionable advice based on the patterns observed.`,
+      { temperature: 0.4, maxTokens: 512 }
+    );
+
+    return patterns.map(p => ({
+      pattern: p.pattern,
+      count: p.count,
+      suggestedFix: aiResult.fixes[p.pattern] ?? DEFAULT_FIX_SUGGESTIONS[p.pattern] ?? 'Review and analyze pattern.',
+    }));
+  } catch {
+    return patterns.map(p => ({
+      pattern: p.pattern,
+      count: p.count,
+      suggestedFix: DEFAULT_FIX_SUGGESTIONS[p.pattern] ?? 'Review and analyze pattern.',
+    }));
+  }
 }
 
 function parsePeriod(period: string): { startDate: Date; endDate: Date } {

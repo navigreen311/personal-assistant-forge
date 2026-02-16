@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { CitationRecord, ProvenanceChain } from '../types';
 
 // In-memory store for citations
@@ -63,6 +64,7 @@ export async function verifyCitation(
     try {
       let verified = false;
       let reason = '';
+      let sourceContent = '';
 
       switch (citation.sourceType) {
         case 'DOCUMENT': {
@@ -71,15 +73,14 @@ export async function verifyCitation(
           });
           if (!doc) {
             reason = 'Source document not found.';
-          } else if (
-            doc.content &&
-            doc.content.includes(citation.sourceExcerpt.substring(0, 50))
-          ) {
+            break;
+          }
+          sourceContent = doc.content ?? '';
+          if (sourceContent.includes(citation.sourceExcerpt.substring(0, 50))) {
             verified = true;
             reason = 'Source excerpt found in document.';
           } else {
-            reason =
-              'Source excerpt not found in document content.';
+            reason = 'Source excerpt not found in document content.';
           }
           break;
         }
@@ -89,9 +90,10 @@ export async function verifyCitation(
           });
           if (!msg) {
             reason = 'Source message not found.';
-          } else if (
-            msg.body.includes(citation.sourceExcerpt.substring(0, 50))
-          ) {
+            break;
+          }
+          sourceContent = msg.body;
+          if (sourceContent.includes(citation.sourceExcerpt.substring(0, 50))) {
             verified = true;
             reason = 'Source excerpt found in message body.';
           } else {
@@ -105,9 +107,10 @@ export async function verifyCitation(
           });
           if (!entry) {
             reason = 'Source knowledge entry not found.';
-          } else if (
-            entry.content.includes(citation.sourceExcerpt.substring(0, 50))
-          ) {
+            break;
+          }
+          sourceContent = entry.content;
+          if (sourceContent.includes(citation.sourceExcerpt.substring(0, 50))) {
             verified = true;
             reason = 'Source excerpt found in knowledge base.';
           } else {
@@ -116,11 +119,29 @@ export async function verifyCitation(
           break;
         }
         case 'WEB':
-          // Web sources cannot be verified offline
           reason = 'Web source verification not available offline.';
           break;
         default:
           reason = 'Unknown source type.';
+      }
+
+      // Use AI to cross-check the source excerpt against the claim
+      if (sourceContent && citation.claim) {
+        try {
+          const aiVerification = await generateText(
+            `You are a citation verification specialist. Cross-check whether the following source excerpt supports the given claim.
+
+Claim: "${citation.claim}"
+Source excerpt: "${citation.sourceExcerpt}"
+Source type: ${citation.sourceType}
+
+Does the source excerpt adequately support the claim? Respond with a brief assessment (1-2 sentences) including whether the citation is valid, partially valid, or unsupported.`,
+            { temperature: 0.3, maxTokens: 128 }
+          );
+          reason = aiVerification;
+        } catch {
+          // Keep the original reason from text matching
+        }
       }
 
       citation.verified = verified;
