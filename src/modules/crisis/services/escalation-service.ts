@@ -1,3 +1,4 @@
+import { generateText } from '@/lib/ai';
 import type { CrisisType, EscalationChainConfig, EscalationStep, CrisisEvent } from '../types';
 import { getCrisisById, updateCrisis } from './detection-service';
 
@@ -83,11 +84,34 @@ export async function executeEscalation(crisisId: string): Promise<EscalationSte
   const crisis = getCrisisById(crisisId);
   if (!crisis) throw new Error(`Crisis ${crisisId} not found`);
 
-  // Notify first pending contact
+  // Notify first pending contact with AI-generated personalized message
   const firstPending = crisis.escalationChain.find(s => s.status === 'PENDING');
   if (firstPending) {
     firstPending.status = 'NOTIFIED';
     firstPending.notifiedAt = new Date();
+
+    // Generate personalized notification message
+    try {
+      const message = await generateText(
+        `Draft a concise, urgent notification message for ${firstPending.contactName} about a ${crisis.type} crisis.
+Severity: ${crisis.severity}
+Title: ${crisis.title}
+Description: ${crisis.description}
+Contact method: ${firstPending.contactMethod}
+Escalation step: ${firstPending.order} of ${crisis.escalationChain.length}
+
+The message should be appropriate for the contact method (${firstPending.contactMethod === 'SMS' ? 'brief, under 160 chars' : firstPending.contactMethod === 'EMAIL' ? 'professional but concise' : 'spoken, clear and direct'}).`,
+        {
+          temperature: 0.5,
+          system: 'You are a crisis communication specialist. Draft clear, actionable notification messages appropriate for the urgency and communication channel.',
+        }
+      );
+      // Store the generated message on the step for reference
+      (firstPending as Record<string, unknown>).notificationMessage = message;
+    } catch {
+      // Continue without AI message
+    }
+
     updateCrisis(crisis);
   }
 
