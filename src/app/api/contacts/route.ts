@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
 
 const createContactSchema = z.object({
   entityId: z.string().min(1, 'entityId is required'),
@@ -22,68 +24,72 @@ const createContactSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const entityId = searchParams.get('entityId');
-    const tags = searchParams.get('tags');
-    const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10));
-    const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get('pageSize') ?? '20', 10)));
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = new URL(req.url);
+      const entityId = searchParams.get('entityId');
+      const tags = searchParams.get('tags');
+      const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10));
+      const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get('pageSize') ?? '20', 10)));
 
-    const where: Record<string, unknown> = {};
-    if (entityId) where.entityId = entityId;
-    if (tags) {
-      where.tags = { hasSome: tags.split(',').map((t) => t.trim()) };
+      const where: Record<string, unknown> = {};
+      if (entityId) where.entityId = entityId;
+      if (tags) {
+        where.tags = { hasSome: tags.split(',').map((t) => t.trim()) };
+      }
+
+      const [contacts, total] = await Promise.all([
+        prisma.contact.findMany({
+          where,
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          orderBy: { updatedAt: 'desc' },
+        }),
+        prisma.contact.count({ where }),
+      ]);
+
+      return paginated(contacts, total, page, pageSize);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to list contacts', 500);
     }
-
-    const [contacts, total] = await Promise.all([
-      prisma.contact.findMany({
-        where,
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        orderBy: { updatedAt: 'desc' },
-      }),
-      prisma.contact.count({ where }),
-    ]);
-
-    return paginated(contacts, total, page, pageSize);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to list contacts', 500);
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = createContactSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = createContactSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const data = parsed.data;
+
+      // Verify entity exists
+      const entity = await prisma.entity.findUnique({ where: { id: data.entityId } });
+      if (!entity) {
+        return error('NOT_FOUND', `Entity not found: ${data.entityId}`, 404);
+      }
+
+      const contact = await prisma.contact.create({
+        data: {
+          entityId: data.entityId,
+          name: data.name,
+          email: data.email,
+          phone: data.phone,
+          channels: data.channels,
+          preferences: data.preferences,
+          tags: data.tags,
+        },
       });
+
+      return success(contact, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create contact', 500);
     }
-
-    const data = parsed.data;
-
-    // Verify entity exists
-    const entity = await prisma.entity.findUnique({ where: { id: data.entityId } });
-    if (!entity) {
-      return error('NOT_FOUND', `Entity not found: ${data.entityId}`, 404);
-    }
-
-    const contact = await prisma.contact.create({
-      data: {
-        entityId: data.entityId,
-        name: data.name,
-        email: data.email,
-        phone: data.phone,
-        channels: data.channels,
-        preferences: data.preferences,
-        tags: data.tags,
-      },
-    });
-
-    return success(contact, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create contact', 500);
-  }
+  });
 }
