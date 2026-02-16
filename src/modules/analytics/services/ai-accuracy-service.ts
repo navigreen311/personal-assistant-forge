@@ -1,11 +1,12 @@
 import { prisma } from '@/lib/db';
 import type { AIAccuracyMetrics } from '../types';
 
+// --- Existing accuracy metrics (Phase 2) ---
+
 export async function calculateAccuracyMetrics(
   entityId: string,
   period: string
 ): Promise<AIAccuracyMetrics> {
-  // Parse period (e.g., "2026-02-W7") into date range
   const { startDate, endDate } = parsePeriod(period);
 
   // Triage accuracy: measure from ActionLog overrides
@@ -102,8 +103,156 @@ export async function getAccuracyTrend(
   return results;
 }
 
+// --- Prediction tracking (Phase 3) ---
+
+export async function trackPrediction(
+  entityId: string,
+  prediction: {
+    module: string;
+    predictionType: string;
+    predictedValue: unknown;
+    confidence: number;
+    timestamp: Date;
+  }
+): Promise<{ id: string }> {
+  const details = {
+    module: prediction.module,
+    predictionType: prediction.predictionType,
+    predictedValue: prediction.predictedValue,
+    confidence: prediction.confidence,
+    entityId,
+  };
+
+  const log = await prisma.actionLog.create({
+    data: {
+      actor: 'AI',
+      actionType: 'AI_PREDICTION',
+      target: entityId,
+      reason: JSON.stringify(details),
+      blastRadius: 'LOW',
+      reversible: false,
+      status: 'PENDING',
+      timestamp: prediction.timestamp,
+    },
+  });
+
+  return { id: log.id };
+}
+
+export async function recordOutcome(
+  predictionId: string,
+  actualValue: unknown
+): Promise<void> {
+  const log = await prisma.actionLog.findUnique({ where: { id: predictionId } });
+  if (!log) throw new Error(`Prediction not found: ${predictionId}`);
+
+  let details: Record<string, unknown> = {};
+  try {
+    details = JSON.parse(log.reason);
+  } catch {
+    details = {};
+  }
+
+  const predictedValue = details.predictedValue;
+  const accurate = JSON.stringify(predictedValue) === JSON.stringify(actualValue);
+
+  details.actualValue = actualValue;
+  details.accurate = accurate;
+
+  await prisma.actionLog.update({
+    where: { id: predictionId },
+    data: {
+      reason: JSON.stringify(details),
+      status: accurate ? 'COMPLETED' : 'ROLLED_BACK',
+    },
+  });
+}
+
+export async function getAccuracyByModule(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ module: string; accuracy: number; total: number }[]> {
+  const where: Record<string, unknown> = {
+    actionType: 'AI_PREDICTION',
+    target: entityId,
+  };
+  if (dateRange) {
+    where.timestamp = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const predictions = await prisma.actionLog.findMany({ where });
+
+  const moduleMap = new Map<string, { correct: number; total: number }>();
+  for (const pred of predictions) {
+    let details: Record<string, unknown> = {};
+    try {
+      details = JSON.parse(pred.reason);
+    } catch {
+      continue;
+    }
+
+    const module = (details.module as string) ?? 'unknown';
+    const existing = moduleMap.get(module) ?? { correct: 0, total: 0 };
+    existing.total++;
+    if (details.accurate === true) {
+      existing.correct++;
+    }
+    moduleMap.set(module, existing);
+  }
+
+  return Array.from(moduleMap.entries()).map(([module, data]) => ({
+    module,
+    accuracy: data.total > 0 ? Math.round((data.correct / data.total) * 100) : 0,
+    total: data.total,
+  }));
+}
+
+export async function getOverallAccuracy(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+): Promise<{ accuracy: number; total: number }> {
+  const byModule = await getAccuracyByModule(entityId, dateRange);
+  const total = byModule.reduce((sum, m) => sum + m.total, 0);
+  const correctTotal = byModule.reduce(
+    (sum, m) => sum + Math.round((m.accuracy / 100) * m.total),
+    0
+  );
+
+  return {
+    accuracy: total > 0 ? Math.round((correctTotal / total) * 100) : 0,
+    total,
+  };
+}
+
+export async function getAccuracyTrendByPredictions(
+  entityId: string,
+  periodDays: number
+): Promise<{ period: string; accuracy: number; total: number }[]> {
+  const now = new Date();
+  const results: { period: string; accuracy: number; total: number }[] = [];
+
+  // Calculate 4 rolling periods
+  const numPeriods = 4;
+  for (let i = numPeriods - 1; i >= 0; i--) {
+    const end = new Date(now);
+    end.setDate(end.getDate() - i * periodDays);
+    const start = new Date(end);
+    start.setDate(start.getDate() - periodDays);
+
+    const result = await getOverallAccuracy(entityId, { start, end });
+    results.push({
+      period: start.toISOString().split('T')[0],
+      accuracy: result.accuracy,
+      total: result.total,
+    });
+  }
+
+  return results;
+}
+
+// --- Helpers ---
+
 function parsePeriod(period: string): { startDate: Date; endDate: Date } {
-  // Parse formats like "2026-02-W7" or "2026-02"
   const weekMatch = period.match(/^(\d{4})-(\d{2})-W(\d+)$/);
   if (weekMatch) {
     const year = parseInt(weekMatch[1]);
@@ -116,7 +265,6 @@ function parsePeriod(period: string): { startDate: Date; endDate: Date } {
     return { startDate, endDate };
   }
 
-  // Monthly format "2026-02"
   const monthMatch = period.match(/^(\d{4})-(\d{2})$/);
   if (monthMatch) {
     const year = parseInt(monthMatch[1]);
