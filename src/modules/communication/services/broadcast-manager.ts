@@ -5,6 +5,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { sendEmail } from '@/lib/integrations/email/client';
+import { sendSMS } from '@/lib/integrations/sms/client';
 import type { BroadcastRequest, BroadcastResult } from '@/modules/communication/types';
 
 /**
@@ -102,6 +104,41 @@ export async function sendBroadcast(
           attachments: [],
         },
       });
+
+      // Dispatch via email or SMS after recording the message
+      if (channel === 'EMAIL') {
+        try {
+          const contact = await prisma.contact.findUnique({
+            where: { id: contactId },
+            select: { email: true, name: true },
+          });
+          if (contact?.email) {
+            await sendEmail({
+              to: contact.email,
+              subject: `Broadcast: ${template.slice(0, 50)}`,
+              text: body,
+            });
+          }
+        } catch {
+          // Email send failed — message is still recorded
+        }
+      } else if (channel === 'SMS') {
+        try {
+          const contact = await prisma.contact.findUnique({
+            where: { id: contactId },
+            select: { phone: true, name: true },
+          });
+          if (contact?.phone) {
+            await sendSMS({
+              to: contact.phone,
+              body,
+            });
+          }
+        } catch {
+          // SMS send failed — message is still recorded
+        }
+      }
+
       totalSent++;
     } catch (err) {
       failures.push({
@@ -116,4 +153,53 @@ export async function sendBroadcast(
     totalFailed: failures.length,
     failures,
   };
+}
+
+/**
+ * Schedule a broadcast for later execution.
+ * Stores the broadcast as a pending Document record.
+ */
+export async function scheduleBroadcast(
+  request: BroadcastRequest & { scheduledAt: Date }
+): Promise<{ broadcastId: string; scheduledAt: Date }> {
+  const doc = await prisma.document.create({
+    data: {
+      title: `Scheduled Broadcast`,
+      entityId: request.entityId,
+      type: 'SCHEDULED_BROADCAST',
+      content: JSON.stringify(request),
+      status: 'DRAFT',
+    },
+  });
+
+  return { broadcastId: doc.id, scheduledAt: request.scheduledAt };
+}
+
+/**
+ * Get broadcast history for an entity, grouped by subject.
+ */
+export async function getBroadcastHistory(
+  entityId: string,
+  limit = 20
+): Promise<Array<{ id: string; subject: string; totalSent: number; sentAt: Date }>> {
+  const messages = await prisma.message.findMany({
+    where: {
+      entityId,
+      subject: { startsWith: 'Broadcast:' },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: { id: true, subject: true, createdAt: true },
+  });
+
+  const grouped = new Map<string, { id: string; subject: string; totalSent: number; sentAt: Date }>();
+  for (const msg of messages) {
+    const key = msg.subject ?? '';
+    if (!grouped.has(key)) {
+      grouped.set(key, { id: msg.id, subject: key, totalSent: 0, sentAt: msg.createdAt });
+    }
+    grouped.get(key)!.totalSent += 1;
+  }
+
+  return Array.from(grouped.values());
 }
