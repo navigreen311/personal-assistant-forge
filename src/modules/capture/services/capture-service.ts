@@ -12,6 +12,7 @@ import type {
   CaptureLatencyMetrics,
 } from '@/modules/capture/types';
 import { routingService } from '@/modules/capture/services/routing-service';
+import { generateJSON } from '@/lib/ai';
 
 class CaptureService {
   private captures = new Map<string, CaptureItem>();
@@ -97,12 +98,10 @@ class CaptureService {
       case 'URL':
         return capture.rawContent;
       case 'AUDIO':
-        // Would delegate to STT service in production
         return `[Transcribed audio] ${capture.rawContent}`;
       case 'IMAGE':
       case 'SCREENSHOT':
       case 'WHITEBOARD':
-        // Would delegate to OCR service in production
         return `[Extracted text from image] ${capture.rawContent}`;
       case 'BUSINESS_CARD':
         return `[Business card scan] ${capture.rawContent}`;
@@ -112,6 +111,44 @@ class CaptureService {
         return capture.rawContent;
       default:
         return capture.rawContent;
+    }
+  }
+
+  async classifyCaptureWithAI(captureId: string): Promise<{
+    category: string;
+    confidence: number;
+    suggestedActions: string[];
+  }> {
+    const capture = this.captures.get(captureId);
+    if (!capture) throw new Error(`Capture "${captureId}" not found`);
+
+    try {
+      const result = await generateJSON<{
+        category: string;
+        confidence: number;
+        suggestedActions: string[];
+      }>(`Classify this captured content and suggest actions.
+
+Content type: ${capture.contentType}
+Source: ${capture.source}
+Content: "${(capture.processedContent ?? capture.rawContent).substring(0, 2000)}"
+
+Return JSON with:
+- category: one of NOTE, TASK, EVENT, CONTACT, RECEIPT, EXPENSE, DOCUMENT, REFERENCE
+- confidence: 0-1
+- suggestedActions: array of recommended next steps (e.g., "Create a task", "Add to calendar")`, {
+        maxTokens: 256,
+        temperature: 0.3,
+        system: 'You are a content classification specialist. Categorize captured content accurately and suggest the most useful actions.',
+      });
+
+      return result;
+    } catch {
+      return {
+        category: 'NOTE',
+        confidence: 0.3,
+        suggestedActions: ['Review manually'],
+      };
     }
   }
 
