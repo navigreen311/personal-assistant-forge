@@ -1,9 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateText } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { FlightAlert, Itinerary, ItineraryLeg, DisruptionResponse } from '../types';
 import { getItinerary, listItineraries } from './itinerary-service';
-
-const alertStore = new Map<string, FlightAlert[]>();
 
 export async function checkFlightStatus(itineraryId: string): Promise<FlightAlert[]> {
   const itinerary = await getItinerary(itineraryId);
@@ -12,21 +11,31 @@ export async function checkFlightStatus(itineraryId: string): Promise<FlightAler
   const alerts: FlightAlert[] = [];
   const flightLegs = itinerary.legs.filter(leg => leg.type === 'FLIGHT');
 
+  // Query CalendarEvent records that belong to this itinerary
+  const calendarEvents = await prisma.calendarEvent.findMany({
+    where: {
+      prepPacket: {
+        path: ['itineraryId'],
+        equals: itineraryId,
+      },
+    },
+  });
+
   for (const leg of flightLegs) {
-    // Simulate: 20% chance of delay, 5% chance of cancellation
-    const rand = Math.random();
-    if (rand < 0.05) {
-      alerts.push({
-        itineraryId,
-        legId: leg.id,
-        alertType: 'CANCELLATION',
-        severity: 'CRITICAL',
-        message: `Flight from ${leg.departureLocation} to ${leg.arrivalLocation} has been cancelled`,
-        timestamp: new Date(),
-      });
-    } else if (rand < 0.25) {
-      const delayMinutes = Math.floor(Math.random() * 180) + 15;
-      alerts.push({
+    // Find the matching calendar event for this leg
+    const event = calendarEvents.find((ce: { prepPacket: unknown }) => {
+      const meta = ce.prepPacket as Record<string, unknown> | null;
+      return meta?.legId === leg.id;
+    });
+
+    if (!event) continue;
+
+    const meta = event.prepPacket as Record<string, unknown> | null;
+    const flightStatus = meta?.flightStatus as string | undefined;
+
+    if (flightStatus === 'DELAYED') {
+      const delayMinutes = (meta?.delayMinutes as number) ?? 60;
+      const alert: FlightAlert = {
         itineraryId,
         legId: leg.id,
         alertType: 'DELAY',
@@ -35,13 +44,59 @@ export async function checkFlightStatus(itineraryId: string): Promise<FlightAler
         originalValue: leg.departureTime.toString(),
         newValue: new Date(new Date(leg.departureTime).getTime() + delayMinutes * 60000).toString(),
         timestamp: new Date(),
+      };
+      alerts.push(alert);
+
+      // Store alert as Notification
+      await prisma.notification.create({
+        data: {
+          id: uuidv4(),
+          userId: itinerary.userId,
+          type: 'flight_alert',
+          title: `Flight Delayed: ${leg.departureLocation} → ${leg.arrivalLocation}`,
+          body: alert.message,
+          priority: alert.severity === 'WARNING' ? 'high' : 'normal',
+          metadata: {
+            itineraryId: alert.itineraryId,
+            legId: alert.legId,
+            alertType: alert.alertType,
+            severity: alert.severity,
+            originalValue: alert.originalValue,
+            newValue: alert.newValue,
+            timestamp: alert.timestamp.toISOString(),
+          },
+        },
+      });
+    } else if (flightStatus === 'CANCELLED') {
+      const alert: FlightAlert = {
+        itineraryId,
+        legId: leg.id,
+        alertType: 'CANCELLATION',
+        severity: 'CRITICAL',
+        message: `Flight from ${leg.departureLocation} to ${leg.arrivalLocation} has been cancelled`,
+        timestamp: new Date(),
+      };
+      alerts.push(alert);
+
+      await prisma.notification.create({
+        data: {
+          id: uuidv4(),
+          userId: itinerary.userId,
+          type: 'flight_alert',
+          title: `Flight Cancelled: ${leg.departureLocation} → ${leg.arrivalLocation}`,
+          body: alert.message,
+          priority: 'urgent',
+          metadata: {
+            itineraryId: alert.itineraryId,
+            legId: alert.legId,
+            alertType: alert.alertType,
+            severity: alert.severity,
+            timestamp: alert.timestamp.toISOString(),
+          },
+        },
       });
     }
   }
-
-  // Store alerts
-  const existing = alertStore.get(itineraryId) ?? [];
-  alertStore.set(itineraryId, [...existing, ...alerts]);
 
   return alerts;
 }
@@ -105,13 +160,25 @@ Explain in 2-3 sentences why the recommended alternative is the best choice cons
 }
 
 export async function getActiveAlerts(userId: string): Promise<FlightAlert[]> {
-  const itineraries = await listItineraries(userId);
-  const alerts: FlightAlert[] = [];
+  const notifications = await prisma.notification.findMany({
+    where: {
+      userId,
+      type: 'flight_alert',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
-  for (const itin of itineraries) {
-    const itinAlerts = alertStore.get(itin.id) ?? [];
-    alerts.push(...itinAlerts);
-  }
-
-  return alerts;
+  return notifications.map((n: { body: string; createdAt: Date; metadata: unknown }) => {
+    const meta = n.metadata as Record<string, unknown> | null;
+    return {
+      itineraryId: (meta?.itineraryId as string) ?? '',
+      legId: (meta?.legId as string) ?? '',
+      alertType: (meta?.alertType as FlightAlert['alertType']) ?? 'DELAY',
+      severity: (meta?.severity as FlightAlert['severity']) ?? 'INFO',
+      message: n.body,
+      originalValue: meta?.originalValue as string | undefined,
+      newValue: meta?.newValue as string | undefined,
+      timestamp: meta?.timestamp ? new Date(meta.timestamp as string) : n.createdAt,
+    };
+  });
 }
