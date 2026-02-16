@@ -19,9 +19,16 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 
 const mockedPrisma = prisma as jest.Mocked<typeof prisma>;
+const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
@@ -567,6 +574,137 @@ describe('TriageService', () => {
       expect(result.processed).toBe(2);
       expect(result.summary.urgent).toBeGreaterThanOrEqual(0);
 
+      jest.restoreAllMocks();
+    });
+  });
+
+  describe('triageMessage with AI', () => {
+    const mockMsg = {
+      id: 'msg-1',
+      channel: 'EMAIL',
+      senderId: 'sender-1',
+      recipientId: 'recipient-1',
+      entityId: 'entity-1',
+      threadId: null,
+      subject: 'Test subject',
+      body: 'Please send the report by tomorrow.',
+      triageScore: 5,
+      intent: null,
+      sensitivity: 'INTERNAL',
+      draftStatus: null,
+      attachments: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    beforeEach(() => {
+      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMsg);
+      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
+        id: 'entity-1',
+        name: 'Test Entity',
+        type: 'LLC',
+        complianceProfile: [],
+      });
+      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+    });
+
+    it('should use AI result when generateJSON succeeds', async () => {
+      const aiResult = {
+        urgencyScore: 7,
+        intent: 'REQUEST',
+        sensitivity: 'INTERNAL',
+        category: 'OPERATIONS',
+        suggestedAction: 'RESPOND_TODAY',
+        reasoning: 'Request with deadline',
+        confidence: 0.9,
+        flags: [{ type: 'DEADLINE_MENTIONED', description: 'Tomorrow deadline', severity: 'MEDIUM' }],
+      };
+      mockedGenerateJSON.mockResolvedValue(aiResult);
+
+      const result = await service.triageMessage('msg-1', 'entity-1');
+
+      expect(mockedGenerateJSON).toHaveBeenCalled();
+      expect(result.urgencyScore).toBe(7);
+      expect(result.intent).toBe('REQUEST');
+      expect(result.confidence).toBe(0.9);
+      expect(result.reasoning).toBe('Request with deadline');
+    });
+
+    it('should call generateJSON with message context in prompt', async () => {
+      mockedGenerateJSON.mockResolvedValue({
+        urgencyScore: 5,
+        intent: 'REQUEST',
+        sensitivity: 'PUBLIC',
+        category: 'OPERATIONS',
+        suggestedAction: 'RESPOND_THIS_WEEK',
+        reasoning: 'Standard request',
+        confidence: 0.8,
+        flags: [],
+      });
+
+      await service.triageMessage('msg-1', 'entity-1');
+
+      const callArgs = mockedGenerateJSON.mock.calls[0];
+      const prompt = callArgs[0] as string;
+      expect(prompt).toContain('Test subject');
+      expect(prompt).toContain('Please send the report by tomorrow.');
+      expect(prompt).toContain('EMAIL');
+    });
+
+    it('should include sender VIP status in prompt', async () => {
+      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'sender-1',
+        name: 'VIP Client',
+        tags: ['VIP'],
+        channels: [],
+        relationshipScore: 90,
+        lastTouch: null,
+        commitments: [],
+        preferences: { preferredChannel: 'EMAIL', preferredTone: 'FORMAL' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      mockedGenerateJSON.mockResolvedValue({
+        urgencyScore: 8,
+        intent: 'REQUEST',
+        sensitivity: 'INTERNAL',
+        category: 'OPERATIONS',
+        suggestedAction: 'RESPOND_TODAY',
+        reasoning: 'VIP request',
+        confidence: 0.9,
+        flags: [],
+      });
+
+      await service.triageMessage('msg-1', 'entity-1');
+
+      const prompt = mockedGenerateJSON.mock.calls[0][0] as string;
+      expect(prompt).toContain('VIP');
+    });
+
+    it('should fall back to keyword scoring when AI call fails', async () => {
+      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
+      mockedGenerateJSON.mockRejectedValue(new Error('AI service unavailable'));
+
+      const result = await service.triageMessage('msg-1', 'entity-1');
+
+      expect(result.messageId).toBe('msg-1');
+      expect(result.urgencyScore).toBeGreaterThanOrEqual(1);
+      expect(result.urgencyScore).toBeLessThanOrEqual(10);
+      expect(result.intent).toBeDefined();
+      jest.restoreAllMocks();
+    });
+
+    it('should fall back to keyword scoring when JSON parse fails', async () => {
+      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
+      mockedGenerateJSON.mockRejectedValue(new SyntaxError('Unexpected token'));
+
+      const result = await service.triageMessage('msg-1', 'entity-1');
+
+      expect(result.messageId).toBe('msg-1');
+      expect(result.intent).toBeDefined();
+      expect(result.urgencyScore).toBeGreaterThanOrEqual(1);
       jest.restoreAllMocks();
     });
   });

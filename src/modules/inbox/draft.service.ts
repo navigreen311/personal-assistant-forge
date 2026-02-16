@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText, chat } from '@/lib/ai';
 import type { Tone } from '@/shared/types';
 import type { DraftRequest, DraftResponse, MessageIntent } from './inbox.types';
 
@@ -210,19 +211,10 @@ export class DraftService {
 
     // Determine tone
     const tone = request.tone ?? 'FORMAL';
+    const toneConfig = TONE_CONFIGS[tone];
 
     // Detect intent from original message
     const intent = this.detectIntent(message.body, message.subject ?? undefined);
-
-    // Generate main draft
-    const draftBody = this.buildDraft(
-      intent,
-      tone,
-      message.body,
-      request.intent,
-      request.constraints,
-      request.maxLength
-    );
 
     // Add disclaimers if needed
     const complianceNotes: string[] = [];
@@ -231,24 +223,87 @@ export class DraftService {
       complianceNotes.push(...disclaimers);
     }
 
-    const bodyWithDisclaimer =
-      complianceNotes.length > 0
-        ? `${draftBody}\n\n---\n${complianceNotes.join('\n')}`
-        : draftBody;
+    let draftBody: string;
+    let alternatives: { tone: Tone; body: string }[] = [];
+    let confidenceScore = 0.7;
 
-    // Generate alternatives
-    const altTones = ALTERNATIVE_TONES[tone] ?? ['FORMAL', 'CASUAL'];
-    const alternatives = altTones.slice(0, 2).map((altTone) => ({
-      tone: altTone,
-      body: this.buildDraft(
+    try {
+      // Build AI prompt with full context
+      const constraintsText = request.constraints?.length
+        ? `\nConstraints: ${request.constraints.join('; ')}`
+        : '';
+      const disclaimerText = complianceNotes.length > 0
+        ? `\nInclude this compliance disclaimer at the end: ${complianceNotes.join(' | ')}`
+        : '';
+      const maxLengthText = request.maxLength
+        ? `\nMaximum length: ${request.maxLength} characters.`
+        : '';
+
+      const prompt = `Write a reply to the following message.
+
+Original message subject: ${message.subject ?? '(none)'}
+Original message body: ${message.body}
+
+Tone: ${tone} (formality level: ${toneConfig.formalityLevel})
+Intent of reply: ${request.intent ?? 'Respond appropriately to the message'}${constraintsText}${disclaimerText}${maxLengthText}
+
+Write only the reply body text. Do not include subject lines or metadata.`;
+
+      draftBody = await generateText(prompt, {
+        maxTokens: 1024,
+        temperature: 0.7,
+        system: `You are a professional communication assistant. Write in a ${tone.toLowerCase()} tone. Be concise and appropriate.`,
+      });
+
+      // Generate alternative drafts with different tones
+      const altTones = ALTERNATIVE_TONES[tone] ?? ['FORMAL', 'CASUAL'];
+      const altPromises = altTones.slice(0, 2).map(async (altTone) => {
+        const altConfig = TONE_CONFIGS[altTone];
+        const altBody = await generateText(prompt.replace(
+          `Tone: ${tone} (formality level: ${toneConfig.formalityLevel})`,
+          `Tone: ${altTone} (formality level: ${altConfig.formalityLevel})`
+        ), {
+          maxTokens: 1024,
+          temperature: 0.7,
+          system: `You are a professional communication assistant. Write in a ${altTone.toLowerCase()} tone. Be concise and appropriate.`,
+        });
+        return { tone: altTone, body: altBody };
+      });
+      alternatives = await Promise.all(altPromises);
+      confidenceScore = 0.85;
+
+      console.log(`[DraftService] AI draft generated for message ${request.messageId}`);
+    } catch (aiError) {
+      console.warn(`[DraftService] AI draft generation failed, using template fallback:`, aiError);
+
+      // Fall back to template-based generation
+      draftBody = this.buildDraft(
         intent,
-        altTone,
+        tone,
         message.body,
         request.intent,
         request.constraints,
         request.maxLength
-      ),
-    }));
+      );
+
+      const altTones = ALTERNATIVE_TONES[tone] ?? ['FORMAL', 'CASUAL'];
+      alternatives = altTones.slice(0, 2).map((altTone) => ({
+        tone: altTone,
+        body: this.buildDraft(
+          intent,
+          altTone,
+          message.body,
+          request.intent,
+          request.constraints,
+          request.maxLength
+        ),
+      }));
+    }
+
+    const bodyWithDisclaimer =
+      complianceNotes.length > 0
+        ? `${draftBody}\n\n---\n${complianceNotes.join('\n')}`
+        : draftBody;
 
     // Suggest subject for reply
     const suggestedSubject = message.subject
@@ -259,7 +314,7 @@ export class DraftService {
       messageId: request.messageId,
       draftBody: bodyWithDisclaimer,
       tone,
-      confidenceScore: 0.7,
+      confidenceScore,
       complianceNotes,
       suggestedSubject,
       alternatives,
@@ -298,35 +353,42 @@ export class DraftService {
     tone?: Tone
   ): Promise<DraftResponse> {
     const targetTone = tone ?? 'FORMAL';
-    let refined = draftBody;
+    let refined: string;
 
-    // Apply tone adjustments
-    refined = this.applyTone(refined, targetTone);
+    try {
+      refined = await chat([
+        {
+          role: 'user',
+          content: `Here is a draft message I need you to refine:\n\n${draftBody}\n\nFeedback: ${feedback}`,
+        },
+      ], {
+        maxTokens: 1024,
+        temperature: 0.7,
+        system: `You are a professional communication assistant. Refine the draft based on the feedback. Use a ${targetTone.toLowerCase()} tone. Return only the refined message body, no explanations.`,
+      });
+      console.log('[DraftService] AI refinement completed');
+    } catch (aiError) {
+      console.warn('[DraftService] AI refinement failed, using heuristic fallback:', aiError);
 
-    // Apply feedback heuristics
-    const feedbackLower = feedback.toLowerCase();
-    if (feedbackLower.includes('shorter') || feedbackLower.includes('concise')) {
-      // Shorten by taking first 2/3
-      const sentences = refined.split(/\.\s+/);
-      const keep = Math.max(1, Math.ceil(sentences.length * 0.66));
-      refined = sentences.slice(0, keep).join('. ');
-      if (!refined.endsWith('.')) refined += '.';
-    }
-    if (feedbackLower.includes('longer') || feedbackLower.includes('elaborate')) {
-      refined +=
-        ' I would be happy to discuss this further at your convenience. Please do not hesitate to reach out if you have any additional questions.';
-    }
-    if (
-      feedbackLower.includes('friendlier') ||
-      feedbackLower.includes('warmer')
-    ) {
-      refined = this.applyTone(refined, 'WARM');
-    }
-    if (
-      feedbackLower.includes('more formal') ||
-      feedbackLower.includes('professional')
-    ) {
-      refined = this.applyTone(refined, 'FORMAL');
+      // Fall back to heuristic-based refinement
+      refined = this.applyTone(draftBody, targetTone);
+      const feedbackLower = feedback.toLowerCase();
+      if (feedbackLower.includes('shorter') || feedbackLower.includes('concise')) {
+        const sentences = refined.split(/\.\s+/);
+        const keep = Math.max(1, Math.ceil(sentences.length * 0.66));
+        refined = sentences.slice(0, keep).join('. ');
+        if (!refined.endsWith('.')) refined += '.';
+      }
+      if (feedbackLower.includes('longer') || feedbackLower.includes('elaborate')) {
+        refined +=
+          ' I would be happy to discuss this further at your convenience. Please do not hesitate to reach out if you have any additional questions.';
+      }
+      if (feedbackLower.includes('friendlier') || feedbackLower.includes('warmer')) {
+        refined = this.applyTone(refined, 'WARM');
+      }
+      if (feedbackLower.includes('more formal') || feedbackLower.includes('professional')) {
+        refined = this.applyTone(refined, 'FORMAL');
+      }
     }
 
     const altTones = ALTERNATIVE_TONES[targetTone] ?? ['FORMAL', 'CASUAL'];

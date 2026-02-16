@@ -1,4 +1,4 @@
-import { generateDrafts, scanCompliance, adaptToAudience, analyzePowerDynamics } from '@/modules/communication/services/drafting-engine';
+import { generateDrafts, scanCompliance, adaptToAudience, analyzePowerDynamics, analyzeToneWithAI } from '@/modules/communication/services/drafting-engine';
 import type { Contact, ComplianceProfile } from '@/shared/types';
 
 // Mock prisma
@@ -22,9 +22,18 @@ jest.mock('uuid', () => ({
   v4: jest.fn(() => 'test-uuid-123'),
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn(),
+  generateJSON: jest.fn(),
+}));
+
 import { prisma } from '@/lib/db';
+import { generateText, generateJSON } from '@/lib/ai';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+const mockedGenerateText = generateText as jest.MockedFunction<typeof generateText>;
+const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
 describe('drafting-engine', () => {
   beforeEach(() => {
@@ -32,6 +41,11 @@ describe('drafting-engine', () => {
   });
 
   describe('generateDrafts', () => {
+    beforeEach(() => {
+      // Default: AI generateText returns a reasonable draft body
+      mockedGenerateText.mockResolvedValue('I would like to discuss this matter with you at your earliest convenience.');
+    });
+
     it('should return 2-3 draft variants', async () => {
       (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
         id: 'contact-1',
@@ -153,6 +167,35 @@ describe('drafting-engine', () => {
       expect(result.powerDynamicNote).toBeDefined();
       expect(result.powerDynamicNote!.toLowerCase()).toContain('client');
     });
+
+    it('should fall back to template-based body when AI fails', async () => {
+      mockedGenerateText.mockRejectedValue(new Error('AI unavailable'));
+
+      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+        id: 'contact-1',
+        name: 'Test',
+        preferences: {},
+        tags: [],
+      });
+      (mockPrisma.message.findMany as jest.Mock).mockResolvedValue([]);
+      (mockPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
+        id: 'entity-1',
+        complianceProfile: [],
+      });
+
+      const result = await generateDrafts({
+        recipientId: 'contact-1',
+        entityId: 'entity-1',
+        channel: 'EMAIL',
+        intent: 'Test intent',
+        tone: 'DIRECT',
+      });
+
+      expect(result.variants.length).toBeGreaterThanOrEqual(2);
+      for (const variant of result.variants) {
+        expect(variant.body.length).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe('scanCompliance', () => {
@@ -252,6 +295,36 @@ describe('drafting-engine', () => {
 
       const result = await analyzePowerDynamics('entity-1', 'nonexistent');
       expect(result.dynamic).toBe('PEER');
+    });
+  });
+
+  describe('analyzeToneWithAI', () => {
+    it('should return AI-generated tone analysis when available', async () => {
+      const aiResult = {
+        detectedTone: 'WARM',
+        confidence: 0.85,
+        suggestions: ['Consider adding a call to action'],
+        formality: 4,
+        assertiveness: 3,
+        empathy: 8,
+      };
+      mockedGenerateJSON.mockResolvedValue(aiResult);
+
+      const result = await analyzeToneWithAI('I hope you are doing well! It was great talking with you.');
+
+      expect(result.detectedTone).toBe('WARM');
+      expect(result.confidence).toBe(0.85);
+      expect(result.empathy).toBe(8);
+    });
+
+    it('should fall back to rule-based analysis on AI failure', async () => {
+      mockedGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
+
+      const result = await analyzeToneWithAI('I must require this immediately. The deadline is non-negotiable.');
+
+      expect(result.detectedTone).toBeDefined();
+      expect(result.formality).toBeDefined();
+      expect(result.assertiveness).toBeDefined();
     });
   });
 });

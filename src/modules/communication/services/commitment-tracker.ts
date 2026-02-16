@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Prisma } from '@prisma/client';
 import type { Commitment } from '@/shared/types';
 
@@ -117,4 +118,65 @@ export async function getOverdueCommitments(entityId: string): Promise<Commitmen
   }
 
   return overdue;
+}
+
+/**
+ * Extract commitments from message text using AI.
+ */
+export async function extractCommitmentsFromText(
+  text: string,
+  contactId: string,
+  entityId: string
+): Promise<Commitment[]> {
+  const result = await generateJSON<{
+    commitments: Array<{
+      description: string;
+      direction: 'TO' | 'FROM';
+      dueDate?: string;
+      priority: 'LOW' | 'MEDIUM' | 'HIGH';
+    }>;
+  }>(`Analyze this message text and extract any commitments or promises made.
+
+Text: "${text}"
+
+Return JSON with a "commitments" array. Each commitment should have:
+- description: what was promised
+- direction: "TO" if the sender promised something to us, "FROM" if we promised something to them
+- dueDate: ISO date string if a deadline was mentioned, null otherwise
+- priority: LOW, MEDIUM, or HIGH based on importance`, {
+    maxTokens: 512,
+    temperature: 0.3,
+    system: 'You are an expert at identifying commitments and promises in business communications. Be precise and only extract clear commitments, not vague intentions.',
+  });
+
+  return result.commitments.map((c) => ({
+    id: uuidv4(),
+    description: c.description,
+    direction: c.direction,
+    dueDate: c.dueDate ? new Date(c.dueDate) : undefined,
+    status: 'OPEN' as const,
+    createdAt: new Date(),
+  }));
+}
+
+/**
+ * Extract commitments from text using AI and save them to the contact.
+ */
+export async function extractAndSaveCommitments(
+  text: string,
+  contactId: string,
+  entityId: string
+): Promise<Commitment[]> {
+  const commitments = await extractCommitmentsFromText(text, contactId, entityId);
+
+  for (const commitment of commitments) {
+    await addCommitment(contactId, {
+      description: commitment.description,
+      direction: commitment.direction,
+      dueDate: commitment.dueDate,
+      status: commitment.status,
+    });
+  }
+
+  return commitments;
 }

@@ -1,4 +1,4 @@
-import { addCommitment, getOpenCommitments, markFulfilled, getOverdueCommitments } from '@/modules/communication/services/commitment-tracker';
+import { addCommitment, getOpenCommitments, markFulfilled, getOverdueCommitments, extractCommitmentsFromText } from '@/modules/communication/services/commitment-tracker';
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -14,9 +14,16 @@ jest.mock('uuid', () => ({
   v4: jest.fn(() => 'commitment-uuid-123'),
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
 describe('commitment-tracker', () => {
   beforeEach(() => {
@@ -179,6 +186,70 @@ describe('commitment-tracker', () => {
 
       const result = await getOverdueCommitments('entity-1');
       expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('extractCommitmentsFromText', () => {
+    it('should call generateJSON with the message text', async () => {
+      mockedGenerateJSON.mockResolvedValue({
+        commitments: [
+          { description: 'Send report by Friday', direction: 'TO', dueDate: '2026-03-01', priority: 'HIGH' },
+        ],
+      });
+
+      await extractCommitmentsFromText('I will send you the report by Friday', 'contact-1', 'entity-1');
+
+      expect(mockedGenerateJSON).toHaveBeenCalled();
+      const prompt = mockedGenerateJSON.mock.calls[0][0] as string;
+      expect(prompt).toContain('I will send you the report by Friday');
+    });
+
+    it('should parse commitments from AI response', async () => {
+      mockedGenerateJSON.mockResolvedValue({
+        commitments: [
+          { description: 'Deliver proposal', direction: 'TO', dueDate: '2026-03-15', priority: 'HIGH' },
+          { description: 'Review contract', direction: 'FROM', priority: 'MEDIUM' },
+        ],
+      });
+
+      const result = await extractCommitmentsFromText('Test text', 'contact-1', 'entity-1');
+
+      expect(result).toHaveLength(2);
+      expect(result[0].description).toBe('Deliver proposal');
+      expect(result[0].direction).toBe('TO');
+      expect(result[0].dueDate).toBeInstanceOf(Date);
+      expect(result[1].description).toBe('Review contract');
+      expect(result[1].direction).toBe('FROM');
+      expect(result[1].dueDate).toBeUndefined();
+    });
+
+    it('should set status to OPEN for all extracted commitments', async () => {
+      mockedGenerateJSON.mockResolvedValue({
+        commitments: [
+          { description: 'Task 1', direction: 'TO', priority: 'LOW' },
+          { description: 'Task 2', direction: 'FROM', priority: 'HIGH' },
+        ],
+      });
+
+      const result = await extractCommitmentsFromText('Test', 'contact-1', 'entity-1');
+
+      expect(result.every((c) => c.status === 'OPEN')).toBe(true);
+    });
+
+    it('should handle AI response with empty commitments array', async () => {
+      mockedGenerateJSON.mockResolvedValue({ commitments: [] });
+
+      const result = await extractCommitmentsFromText('Just a casual hello', 'contact-1', 'entity-1');
+
+      expect(result).toHaveLength(0);
+    });
+
+    it('should handle AI API failure gracefully', async () => {
+      mockedGenerateJSON.mockRejectedValue(new Error('AI service unavailable'));
+
+      await expect(
+        extractCommitmentsFromText('Test text', 'contact-1', 'entity-1')
+      ).rejects.toThrow('AI service unavailable');
     });
   });
 });

@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import { generateText, generateJSON } from '@/lib/ai';
 import type { Contact, Tone, ComplianceProfile, MessageChannel } from '@/shared/types';
 import type {
   DraftRequest,
@@ -14,6 +15,7 @@ import type {
   PowerDynamicAnalysis,
   ComplianceScanResult,
   ComplianceFlag,
+  ToneAnalysis,
 } from '@/modules/communication/types';
 import { analyzeTone, shiftTone } from './tone-analyzer';
 
@@ -142,14 +144,36 @@ export async function generateDrafts(request: DraftRequest): Promise<DraftRespon
   // Select variant strategies: include requested tone + 1-2 alternatives
   const selectedStrategies = selectVariantStrategies(tone);
 
-  // Generate variants
-  const variants: DraftVariant[] = selectedStrategies.map((strategy) => {
-    const body = buildDraftBody(intent, strategy.toneShift, channel, context);
+  // Generate variants using AI with rule-based fallback
+  const variants: DraftVariant[] = [];
+  for (const strategy of selectedStrategies) {
+    let body: string;
+    try {
+      body = await generateText(
+        `Write a ${strategy.toneShift.toLowerCase()} message for the following communication.
+
+Recipient: ${contact.name}
+Channel: ${channel}
+Intent: ${intent}
+${context ? `Context: ${context}` : ''}
+
+Write only the message body. Be concise and appropriate for the channel.`,
+        {
+          maxTokens: 512,
+          temperature: 0.7,
+          system: `You are a professional communication assistant. Write in a ${strategy.toneShift.toLowerCase()} tone. ${strategy.description}.`,
+        }
+      );
+    } catch {
+      // Fall back to template-based body
+      body = buildDraftBody(intent, strategy.toneShift, channel, context);
+    }
+
     const complianceScan = scanCompliance(body, complianceProfiles);
     const wordCount = body.split(/\s+/).filter(Boolean).length;
     const sentenceCount = countSentences(body);
 
-    return {
+    variants.push({
       id: uuidv4(),
       label: strategy.label,
       subject: channel === 'EMAIL' ? `Re: ${intent.slice(0, 60)}` : undefined,
@@ -158,8 +182,8 @@ export async function generateDrafts(request: DraftRequest): Promise<DraftRespon
       wordCount,
       readingLevel: getReadingLevel(wordCount, sentenceCount),
       complianceFlags: complianceScan.flags.map((f) => `${f.severity}: ${f.rule}`),
-    };
-  });
+    });
+  }
 
   // Power dynamics
   const powerAnalysis = await analyzePowerDynamics(entityId, recipientId);
@@ -177,6 +201,37 @@ export async function generateDrafts(request: DraftRequest): Promise<DraftRespon
 export function adaptToAudience(draft: string, contact: Contact): string {
   const preferredTone = contact.preferences?.preferredTone ?? 'DIRECT';
   return shiftTone(draft, preferredTone);
+}
+
+/**
+ * AI-powered tone analysis. Falls back to rule-based analysis on failure.
+ */
+export async function analyzeToneWithAI(text: string): Promise<ToneAnalysis> {
+  try {
+    const result = await generateJSON<ToneAnalysis>(
+      `Analyze the tone of this text and return a JSON result.
+
+Text: "${text}"
+
+Return JSON with these exact fields:
+{
+  "detectedTone": <one of: FIRM, DIPLOMATIC, WARM, DIRECT, CASUAL, FORMAL, EMPATHETIC, AUTHORITATIVE>,
+  "confidence": <0.0-1.0 float>,
+  "suggestions": [<array of improvement suggestions>],
+  "formality": <1-10 integer>,
+  "assertiveness": <1-10 integer>,
+  "empathy": <1-10 integer>
+}`,
+      {
+        maxTokens: 256,
+        temperature: 0.3,
+        system: 'You are an expert communication tone analyst. Be precise in your analysis.',
+      }
+    );
+    return result;
+  } catch {
+    return analyzeTone(text);
+  }
 }
 
 /**
