@@ -87,3 +87,142 @@ export function recordConsent(userId: string, voiceCloneId: string): void {
   const key = `${userId}:${voiceCloneId}`;
   consentStore.set(key, { voiceCloneId, consentTimestamp: new Date() });
 }
+
+// --- Text-level impersonation checks ---
+
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+  }
+
+  return dp[m][n];
+}
+
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+[a-z]\.?\s+/g, ' ') // remove middle initials like "J." or "j"
+    .replace(/\s+/g, ' ');
+}
+
+export function checkNameSimilarity(
+  name1: string,
+  name2: string
+): { isSimilar: boolean; distance: number; method: string } {
+  const norm1 = normalizeName(name1);
+  const norm2 = normalizeName(name2);
+
+  if (norm1 === norm2) {
+    return { isSimilar: true, distance: 0, method: 'normalized_exact' };
+  }
+
+  const distance = levenshteinDistance(norm1, norm2);
+  if (distance <= 2) {
+    return { isSimilar: true, distance, method: 'levenshtein' };
+  }
+
+  return { isSimilar: false, distance, method: 'levenshtein' };
+}
+
+// Homoglyph map: Unicode confusable -> Latin lookalike
+const HOMOGLYPH_MAP = new Map<string, string>([
+  // Cyrillic
+  ['\u0430', 'a'], // а -> a
+  ['\u0435', 'e'], // е -> e
+  ['\u043E', 'o'], // о -> o
+  ['\u0440', 'p'], // р -> p
+  ['\u0441', 'c'], // с -> c
+  ['\u0443', 'y'], // у -> y
+  ['\u0445', 'x'], // х -> x
+  // Greek uppercase
+  ['\u0391', 'A'], // Α -> A
+  ['\u0392', 'B'], // Β -> B
+  ['\u0395', 'E'], // Ε -> E
+  ['\u0397', 'H'], // Η -> H
+  ['\u0399', 'I'], // Ι -> I
+  ['\u039A', 'K'], // Κ -> K
+  ['\u039C', 'M'], // Μ -> M
+  ['\u039D', 'N'], // Ν -> N
+  ['\u039F', 'O'], // Ο -> O
+  ['\u03A1', 'P'], // Ρ -> P
+  ['\u03A4', 'T'], // Τ -> T
+  ['\u03A7', 'X'], // Χ -> X
+  ['\u0396', 'Z'], // Ζ -> Z
+  // Greek lowercase
+  ['\u03BF', 'o'], // ο -> o
+]);
+
+export function detectHomoglyphs(
+  text: string
+): { hasHomoglyphs: boolean; suspiciousChars: { char: string; unicode: string; lookalike: string }[] } {
+  const suspiciousChars: { char: string; unicode: string; lookalike: string }[] = [];
+
+  for (const char of text) {
+    const lookalike = HOMOGLYPH_MAP.get(char);
+    if (lookalike) {
+      suspiciousChars.push({
+        char,
+        unicode: `U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`,
+        lookalike,
+      });
+    }
+  }
+
+  return {
+    hasHomoglyphs: suspiciousChars.length > 0,
+    suspiciousChars,
+  };
+}
+
+export function checkDomainSpoofing(
+  suspectDomain: string,
+  legitimateDomain: string
+): { isSpoofed: boolean; technique: string; confidence: number } {
+  const suspect = suspectDomain.toLowerCase();
+  const legit = legitimateDomain.toLowerCase();
+
+  if (suspect === legit) {
+    return { isSpoofed: false, technique: 'none', confidence: 0 };
+  }
+
+  // Check homoglyph domain
+  const homoglyphResult = detectHomoglyphs(suspectDomain);
+  if (homoglyphResult.hasHomoglyphs) {
+    return { isSpoofed: true, technique: 'homoglyph', confidence: 0.95 };
+  }
+
+  // Check subdomain trick: suspect contains legitimate domain as a subdomain part
+  // e.g., google.com.evil.com contains "google.com"
+  if (suspect.includes(legit + '.') || suspect.includes('.' + legit + '.')) {
+    return { isSpoofed: true, technique: 'subdomain', confidence: 0.9 };
+  }
+
+  // Check TLD swap: same name part, different TLD
+  const suspectName = suspect.slice(0, suspect.lastIndexOf('.'));
+  const legitName = legit.slice(0, legit.lastIndexOf('.'));
+  if (suspectName === legitName && suspect !== legit) {
+    return { isSpoofed: true, technique: 'tld_swap', confidence: 0.85 };
+  }
+
+  // Check typosquatting via Levenshtein distance
+  const distance = levenshteinDistance(suspect, legit);
+  if (distance > 0 && distance <= 2) {
+    return { isSpoofed: true, technique: 'typosquatting', confidence: 0.8 };
+  }
+
+  return { isSpoofed: false, technique: 'none', confidence: 0 };
+}
