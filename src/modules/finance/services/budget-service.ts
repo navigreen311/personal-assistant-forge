@@ -264,3 +264,198 @@ Return JSON with:
     };
   }
 }
+
+// --- Phase 3: Budget CRUD via Budget Prisma model ---
+
+export interface BudgetInput {
+  name: string;
+  amount: number;
+  period: string;
+  category: string;
+  startDate?: Date;
+  endDate?: Date;
+  alerts?: Array<{ threshold: number; type: 'percentage' | 'absolute'; notified: boolean }>;
+  notes?: string;
+}
+
+export async function createBudgetRecord(
+  entityId: string,
+  budget: BudgetInput
+) {
+  return prisma.budget.create({
+    data: {
+      entityId,
+      name: budget.name,
+      amount: budget.amount,
+      spent: 0,
+      period: budget.period,
+      category: budget.category,
+      startDate: budget.startDate,
+      endDate: budget.endDate,
+      alerts: budget.alerts ?? [],
+      notes: budget.notes,
+      status: 'active',
+    },
+  });
+}
+
+export async function getBudgets(
+  entityId: string,
+  filters?: { status?: string; category?: string; period?: string }
+) {
+  const where: Record<string, unknown> = { entityId };
+  if (filters?.status) where.status = filters.status;
+  if (filters?.category) where.category = filters.category;
+  if (filters?.period) where.period = filters.period;
+
+  return prisma.budget.findMany({ where, orderBy: { createdAt: 'desc' } });
+}
+
+export async function getBudget(budgetId: string) {
+  return prisma.budget.findUnique({ where: { id: budgetId } });
+}
+
+export async function updateBudget(
+  budgetId: string,
+  updates: Partial<BudgetInput>
+) {
+  const data: Record<string, unknown> = {};
+  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.amount !== undefined) data.amount = updates.amount;
+  if (updates.period !== undefined) data.period = updates.period;
+  if (updates.category !== undefined) data.category = updates.category;
+  if (updates.startDate !== undefined) data.startDate = updates.startDate;
+  if (updates.endDate !== undefined) data.endDate = updates.endDate;
+  if (updates.alerts !== undefined) data.alerts = updates.alerts;
+  if (updates.notes !== undefined) data.notes = updates.notes;
+
+  return prisma.budget.update({ where: { id: budgetId }, data });
+}
+
+export async function deleteBudget(budgetId: string) {
+  return prisma.budget.update({
+    where: { id: budgetId },
+    data: { status: 'closed' },
+  });
+}
+
+export async function recordSpending(
+  budgetId: string,
+  amount: number,
+  description?: string
+) {
+  const budget = await prisma.budget.findUniqueOrThrow({ where: { id: budgetId } });
+  const newSpent = round2(budget.spent + amount);
+  const alerts = (budget.alerts as Array<{ threshold: number; type: string; notified: boolean }>) ?? [];
+  const triggeredAlerts: Array<{ threshold: number; type: string; triggered: boolean; message: string }> = [];
+
+  for (const alert of alerts) {
+    const thresholdValue = alert.type === 'percentage'
+      ? (alert.threshold / 100) * budget.amount
+      : alert.threshold;
+
+    if (newSpent >= thresholdValue && budget.spent < thresholdValue && !alert.notified) {
+      alert.notified = true;
+      triggeredAlerts.push({
+        threshold: alert.threshold,
+        type: alert.type,
+        triggered: true,
+        message: `Budget "${budget.name}" crossed ${alert.threshold}${alert.type === 'percentage' ? '%' : ''} threshold${description ? ` — ${description}` : ''}`,
+      });
+    }
+  }
+
+  const newStatus = newSpent >= budget.amount ? 'exhausted' : budget.status;
+
+  await prisma.budget.update({
+    where: { id: budgetId },
+    data: { spent: newSpent, alerts, status: newStatus },
+  });
+
+  return { spent: newSpent, status: newStatus, triggeredAlerts };
+}
+
+export async function checkThresholds(budgetId: string) {
+  const budget = await prisma.budget.findUniqueOrThrow({ where: { id: budgetId } });
+  const alerts = (budget.alerts as Array<{ threshold: number; type: string; notified: boolean }>) ?? [];
+  const utilization = budget.amount === 0 ? 0 : round2((budget.spent / budget.amount) * 100);
+
+  return {
+    alerts: alerts.map((alert) => {
+      const thresholdValue = alert.type === 'percentage'
+        ? (alert.threshold / 100) * budget.amount
+        : alert.threshold;
+      const triggered = budget.spent >= thresholdValue;
+
+      return {
+        threshold: alert.threshold,
+        type: alert.type,
+        triggered,
+        message: triggered
+          ? `Spending ($${budget.spent}) has reached ${alert.threshold}${alert.type === 'percentage' ? '%' : ''} threshold`
+          : `Spending ($${budget.spent}) is below ${alert.threshold}${alert.type === 'percentage' ? '%' : ''} threshold`,
+      };
+    }),
+    utilization,
+  };
+}
+
+export async function getBudgetUtilization(entityId: string) {
+  const budgets = await prisma.budget.findMany({
+    where: { entityId, status: 'active' },
+  });
+
+  return budgets
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      category: b.category,
+      amount: b.amount,
+      spent: b.spent,
+      utilization: b.amount === 0 ? 0 : round2((b.spent / b.amount) * 100),
+    }))
+    .sort((a, b) => b.utilization - a.utilization);
+}
+
+export async function suggestBudgetAdjustments(entityId: string) {
+  try {
+    const budgets = await prisma.budget.findMany({
+      where: { entityId, status: 'active' },
+    });
+
+    const summary = budgets
+      .map((b) => {
+        const util = b.amount === 0 ? 0 : round2((b.spent / b.amount) * 100);
+        return `${b.name} (${b.category}): $${b.spent}/$${b.amount} (${util}% used, period: ${b.period})`;
+      })
+      .join('\n');
+
+    const result = await generateJSON<{
+      suggestions: Array<{
+        budgetName: string;
+        action: 'increase' | 'decrease' | 'create' | 'merge';
+        reason: string;
+        suggestedAmount?: number;
+      }>;
+    }>(
+      `Analyze these budget spending patterns and suggest adjustments.
+
+Budgets:
+${summary}
+
+Return JSON with:
+- suggestions: array of objects with { budgetName, action (increase/decrease/create/merge), reason, suggestedAmount? }`,
+      {
+        maxTokens: 512,
+        temperature: 0.3,
+        system: 'You are a financial planning assistant. Suggest practical budget adjustments based on spending data.',
+      }
+    );
+
+    return result;
+  } catch {
+    return {
+      suggestions: [{ budgetName: 'General', action: 'increase' as const, reason: 'AI analysis unavailable. Review budgets manually.' }],
+    };
+  }
+}
