@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { routingService } from '@/modules/capture/services/routing-service';
 
 const ConditionSchema = z.object({
@@ -38,64 +39,72 @@ const DeleteRuleSchema = z.object({
   id: z.string().min(1),
 });
 
-export async function GET() {
-  try {
-    const rules = routingService.getRoutingRules();
-    return success(rules);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to get rules';
-    return error('GET_RULES_FAILED', message, 500);
-  }
+export async function GET(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const rules = routingService.getRoutingRules();
+      return success(rules);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to get rules';
+      return error('GET_RULES_FAILED', message, 500);
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = CreateRuleSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = CreateRuleSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const rule = routingService.addRoutingRule(parsed.data);
+      return success(rule, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create rule';
+      return error('CREATE_RULE_FAILED', message, 500);
     }
-
-    const rule = routingService.addRoutingRule(parsed.data);
-    return success(rule, 201);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to create rule';
-    return error('CREATE_RULE_FAILED', message, 500);
-  }
+  });
 }
 
 export async function PUT(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = UpdateRuleSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = UpdateRuleSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const { id, ...updates } = parsed.data;
+      const rule = routingService.updateRoutingRule(id, updates);
+      return success(rule);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update rule';
+      return error('UPDATE_RULE_FAILED', message, 500);
     }
-
-    const { id, ...updates } = parsed.data;
-    const rule = routingService.updateRoutingRule(id, updates);
-    return success(rule);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to update rule';
-    return error('UPDATE_RULE_FAILED', message, 500);
-  }
+  });
 }
 
 export async function DELETE(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = DeleteRuleSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = DeleteRuleSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      routingService.deleteRoutingRule(parsed.data.id);
+      return success({ deleted: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete rule';
+      return error('DELETE_RULE_FAILED', message, 500);
     }
-
-    routingService.deleteRoutingRule(parsed.data.id);
-    return success({ deleted: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to delete rule';
-    return error('DELETE_RULE_FAILED', message, 500);
-  }
+  });
 }
