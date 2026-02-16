@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateJSON } from '@/lib/ai';
 import type { GoldenTestSuite, GoldenTestCase, GoldenTestResult } from '../types';
 
 // In-memory store for test suites
@@ -52,9 +53,23 @@ export async function runTestSuite(
   for (const testCase of suite.testCases) {
     const startTime = Date.now();
 
-    // Simulate running the test case against the model
-    // In production, this would call the actual AI model
-    const actualOutput = simulateModelOutput(testCase);
+    // Call AI model with the test case input
+    let actualOutput: Record<string, unknown>;
+    try {
+      actualOutput = await generateJSON<Record<string, unknown>>(
+        `You are being evaluated on a ${testCase.category} task. Process the following input and produce a structured JSON response matching the expected output format.
+
+Category: ${testCase.category}
+Input: ${JSON.stringify(testCase.input)}
+Expected output keys: ${Object.keys(testCase.expectedOutput).join(', ')}
+
+Respond with a JSON object containing the same keys as the expected output.`,
+        { temperature: 0.3, maxTokens: 512 }
+      );
+    } catch {
+      // If AI fails, use a fallback that will likely fail the test
+      actualOutput = {};
+    }
     const runDuration = Date.now() - startTime;
 
     const { passed, deviation } = compareOutputs(
@@ -125,23 +140,6 @@ export async function getRegressionReport(
     previousPassRate,
     regressions: failedResults,
   };
-}
-
-function simulateModelOutput(
-  testCase: GoldenTestCase
-): Record<string, unknown> {
-  // In production, this would call the actual AI model with testCase.input
-  // For now, return the expected output with small variations
-  const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(testCase.expectedOutput)) {
-    if (typeof value === 'number') {
-      // Add small random deviation
-      output[key] = value + (Math.random() - 0.5) * (testCase.tolerance ?? 0.1);
-    } else {
-      output[key] = value;
-    }
-  }
-  return output;
 }
 
 export function compareOutputs(

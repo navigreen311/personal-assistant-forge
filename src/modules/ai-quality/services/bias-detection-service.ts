@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { BiasReport, BiasDimension } from '../types';
 
 export async function detectBias(
@@ -34,22 +35,58 @@ export async function detectBias(
         ) / 100
       : 0;
 
-  const alerts: string[] = [];
-  for (const dim of dimensions) {
-    if (dim.score > 0.5) {
-      alerts.push(
-        `High bias detected in ${dim.name}: score ${dim.score.toFixed(2)}`
-      );
-    }
-  }
+  // Use AI to analyze distribution data and produce bias assessments
+  try {
+    const aiResult = await generateJSON<{ dimensions: { name: string; description: string }[]; alerts: string[] }>(
+      `You are a fairness and bias analyst for an AI system. Analyze these bias dimensions and provide descriptions and alerts.
 
-  return {
-    entityId,
-    period,
-    dimensions,
-    overallBiasScore,
-    alerts,
-  };
+Dimensions detected:
+${dimensions.map(d => `- ${d.name}: score ${d.score.toFixed(2)}, affected groups: ${d.affectedGroups.map(g => `${g.group} (deviation: ${g.deviation})`).join(', ')}`).join('\n')}
+
+Overall bias score: ${overallBiasScore}
+
+Respond with JSON:
+{
+  "dimensions": [${dimensions.map(d => `{ "name": "${d.name}", "description": "<1-sentence analysis of this dimension>" }`).join(', ')}],
+  "alerts": ["<alert for any dimension with score > 0.5, include specific remediation advice>"]
+}`,
+      { temperature: 0.4, maxTokens: 512 }
+    );
+
+    // Update dimension descriptions with AI-generated ones
+    for (const aiDim of aiResult.dimensions) {
+      const dim = dimensions.find(d => d.name === aiDim.name);
+      if (dim) {
+        dim.description = aiDim.description;
+      }
+    }
+
+    return {
+      entityId,
+      period,
+      dimensions,
+      overallBiasScore,
+      alerts: aiResult.alerts.length > 0 ? aiResult.alerts : [],
+    };
+  } catch {
+    // Fallback to static alerts
+    const alerts: string[] = [];
+    for (const dim of dimensions) {
+      if (dim.score > 0.5) {
+        alerts.push(
+          `High bias detected in ${dim.name}: score ${dim.score.toFixed(2)}`
+        );
+      }
+    }
+
+    return {
+      entityId,
+      period,
+      dimensions,
+      overallBiasScore,
+      alerts,
+    };
+  }
 }
 
 export function getAffectedGroups(
