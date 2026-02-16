@@ -175,3 +175,44 @@ export async function getTrends(
 
   return trends;
 }
+
+// --- Phase 3: Additional P&L Operations ---
+
+export async function getMargins(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+) {
+  const now = new Date();
+  const period = dateRange ?? {
+    start: new Date(now.getFullYear(), now.getMonth(), 1),
+    end: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999),
+  };
+
+  const pnl = await generatePnL(entityId, period);
+
+  return {
+    grossMargin: pnl.grossMargin,
+    operatingMargin: pnl.totalRevenue === 0
+      ? 0
+      : round2((pnl.grossProfit / pnl.totalRevenue) * 100),
+    totalRevenue: pnl.totalRevenue,
+    totalExpenses: pnl.totalExpenses,
+    grossProfit: pnl.grossProfit,
+    period,
+  };
+}
+
+export async function getPnLTrend(
+  entityId: string,
+  periods: number
+) {
+  return getTrends(entityId, periods);
+}
+
+export async function comparePnL(
+  entityId: string,
+  period1: { start: Date; end: Date },
+  period2: { start: Date; end: Date }
+) {
+  return comparePeriods(entityId, period1, period2);
+}

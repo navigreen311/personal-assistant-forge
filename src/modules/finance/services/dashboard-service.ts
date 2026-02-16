@@ -169,6 +169,101 @@ export async function generateAlerts(entityId: string): Promise<FinancialAlert[]
   return alerts;
 }
 
+// --- Phase 3: Dashboard Aggregation ---
+
+export async function getDashboardData(entityId: string) {
+  const now = new Date();
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+  const [currentRecords, prevRecords, pendingInvoices, budgets, recentTransactions] = await Promise.all([
+    prisma.financialRecord.findMany({
+      where: { entityId, createdAt: { gte: currentMonthStart, lte: currentMonthEnd }, status: { not: 'CANCELLED' } },
+    }),
+    prisma.financialRecord.findMany({
+      where: { entityId, createdAt: { gte: prevMonthStart, lte: prevMonthEnd }, status: { not: 'CANCELLED' } },
+    }),
+    prisma.financialRecord.findMany({
+      where: { entityId, type: 'INVOICE', status: { in: ['PENDING', 'OVERDUE'] } },
+    }),
+    prisma.budget.findMany({
+      where: { entityId, status: 'active' },
+    }),
+    prisma.financialRecord.findMany({
+      where: { entityId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    }),
+  ]);
+
+  const revenueTypes = new Set(['INCOME', 'REVENUE', 'INVOICE', 'PAYMENT']);
+  const expenseTypes = new Set(['EXPENSE', 'BILL']);
+
+  const totalIncome = round2(currentRecords.filter((r) => revenueTypes.has(r.type)).reduce((s, r) => s + r.amount, 0));
+  const totalExpenses = round2(currentRecords.filter((r) => expenseTypes.has(r.type)).reduce((s, r) => s + r.amount, 0));
+  const netCashFlow = round2(totalIncome - totalExpenses);
+
+  const prevIncome = round2(prevRecords.filter((r) => revenueTypes.has(r.type)).reduce((s, r) => s + r.amount, 0));
+  const prevExpenses = round2(prevRecords.filter((r) => expenseTypes.has(r.type)).reduce((s, r) => s + r.amount, 0));
+  const prevNet = round2(prevIncome - prevExpenses);
+
+  const pendingAR = round2(pendingInvoices.reduce((s, r) => s + r.amount, 0));
+  const overdueExpenses = currentRecords.filter(
+    (r) => expenseTypes.has(r.type) && r.status === 'OVERDUE'
+  );
+  const overdueAP = round2(overdueExpenses.reduce((s, r) => s + r.amount, 0));
+
+  const budgetUtilization = budgets.length === 0
+    ? 0
+    : round2(
+        budgets.reduce((s, b) => s + (b.amount === 0 ? 0 : (b.spent / b.amount) * 100), 0) / budgets.length
+      );
+
+  const monthOverMonth = prevNet === 0
+    ? (netCashFlow === 0 ? 0 : 100)
+    : round2(((netCashFlow - prevNet) / Math.abs(prevNet)) * 100);
+
+  return {
+    totalIncome,
+    totalExpenses,
+    netCashFlow,
+    pendingAR,
+    overdueAP,
+    budgetUtilization,
+    recentTransactions,
+    monthOverMonth,
+  };
+}
+
+export async function getQuickStats(entityId: string) {
+  const now = new Date();
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+  const records = await prisma.financialRecord.findMany({
+    where: { entityId, createdAt: { gte: currentMonthStart, lte: currentMonthEnd }, status: { not: 'CANCELLED' } },
+  });
+
+  const revenueTypes = new Set(['INCOME', 'REVENUE', 'INVOICE', 'PAYMENT']);
+  const expenseTypes = new Set(['EXPENSE', 'BILL']);
+
+  return {
+    totalIncome: round2(records.filter((r) => revenueTypes.has(r.type)).reduce((s, r) => s + r.amount, 0)),
+    totalExpenses: round2(records.filter((r) => expenseTypes.has(r.type)).reduce((s, r) => s + r.amount, 0)),
+    netCashFlow: round2(
+      records.filter((r) => revenueTypes.has(r.type)).reduce((s, r) => s + r.amount, 0) -
+      records.filter((r) => expenseTypes.has(r.type)).reduce((s, r) => s + r.amount, 0)
+    ),
+    transactionCount: records.length,
+  };
+}
+
+export async function getAlerts(entityId: string) {
+  return generateAlerts(entityId);
+}
+
 export async function getUnifiedDashboard(
   userId: string,
   period: { start: Date; end: Date }
