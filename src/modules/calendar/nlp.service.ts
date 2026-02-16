@@ -16,6 +16,7 @@ import {
   isBefore,
 } from 'date-fns';
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type {
   NaturalLanguageScheduleInput,
   ParsedScheduleIntent,
@@ -38,7 +39,95 @@ export class NLPSchedulingService {
   async parseScheduleRequest(
     input: NaturalLanguageScheduleInput
   ): Promise<ParsedScheduleIntent> {
-    const text = input.text;
+    // Try AI-powered parsing first
+    try {
+      const aiResult = await this.parseWithAI(input.text);
+      if (aiResult.confidence >= 0.5) {
+        return aiResult;
+      }
+      // AI confidence too low, fall back to regex
+    } catch {
+      // AI call failed, fall back to regex parsing
+    }
+
+    return this.parseWithRegex(input.text);
+  }
+
+  private async parseWithAI(
+    text: string,
+    referenceDate: Date = new Date()
+  ): Promise<ParsedScheduleIntent> {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const result = await generateJSON<{
+      title: string;
+      eventType: string;
+      startDate: string;
+      startTime: string;
+      duration: number;
+      participants: string[];
+      location?: string;
+      priority: 'LOW' | 'MEDIUM' | 'HIGH';
+      recurrence?: string;
+      notes?: string;
+      confidence: number;
+    }>(`Parse this natural language scheduling request into structured event data.
+
+Input text: "${text}"
+Reference date (today): ${referenceDate.toISOString().split('T')[0]}
+Day of week: ${dayNames[referenceDate.getDay()]}
+
+Return JSON with:
+- title: descriptive event title
+- eventType: one of MEETING, CALL, FOCUS_BLOCK, BREAK, DEADLINE, REMINDER, TRAVEL, PREP, DEBRIEF
+- startDate: ISO date string (YYYY-MM-DD)
+- startTime: 24h time string (HH:MM)
+- duration: duration in minutes
+- participants: array of participant names extracted from text
+- location: location if mentioned, null otherwise
+- priority: LOW, MEDIUM, or HIGH
+- recurrence: DAILY, WEEKLY, MONTHLY, or null
+- notes: any additional context
+- confidence: 0.0-1.0 how confident you are in the parsing`, {
+      maxTokens: 512,
+      temperature: 0.2,
+      system: 'You are a calendar scheduling assistant. Parse natural language into precise event data. Always resolve relative dates against the reference date provided. Default meeting duration is 30 minutes, call duration is 15 minutes.',
+    });
+
+    // Map AI priority to internal type (AI returns LOW/MEDIUM/HIGH, we also support CRITICAL)
+    const priorityMap: Record<string, 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'> = {
+      LOW: 'LOW',
+      MEDIUM: 'MEDIUM',
+      HIGH: 'HIGH',
+    };
+
+    // Build time hints from AI response
+    const timeHints: TimeHint[] = [];
+    if (result.startDate && result.startTime) {
+      timeHints.push({
+        type: 'ABSOLUTE',
+        value: result.startTime,
+      });
+    }
+
+    const eventType = (
+      ['MEETING', 'CALL', 'FOCUS_BLOCK', 'TRAVEL', 'BREAK', 'PREP', 'DEBRIEF', 'DEADLINE', 'REMINDER'].includes(result.eventType)
+        ? result.eventType
+        : 'MEETING'
+    ) as EventType;
+
+    return {
+      title: result.title || text.substring(0, 60),
+      participantNames: result.participants || [],
+      timeHints,
+      duration: result.duration || 30,
+      type: eventType,
+      priority: priorityMap[result.priority] || 'MEDIUM',
+      location: result.location || undefined,
+      confidence: result.confidence ?? 0.7,
+    };
+  }
+
+  private parseWithRegex(text: string): ParsedScheduleIntent {
     const lower = text.toLowerCase();
 
     const type = this.inferEventType(lower);
