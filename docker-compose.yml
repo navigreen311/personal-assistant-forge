@@ -16,6 +16,8 @@ services:
       - NEXTAUTH_URL=http://localhost:3000
       - NODE_ENV=production
     depends_on:
+      init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -29,6 +31,21 @@ services:
       retries: 3
     networks:
       - paf-network
+
+  init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paf-init
+    command: npx prisma migrate deploy
+    environment:
+      - DATABASE_URL=postgresql://paf_user:paf_password@postgres:5432/paf_dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - paf-network
+    restart: "no"
 
   postgres:
     image: postgres:16-alpine
