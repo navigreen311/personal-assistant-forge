@@ -5,6 +5,7 @@ import {
   createCampaign,
   listCampaigns,
 } from '@/modules/voiceforge/services/campaign-service';
+import { withAuth } from '@/shared/middleware/auth';
 
 const CampaignSchema = z.object({
   entityId: z.string().min(1),
@@ -33,33 +34,37 @@ const CampaignSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const entityId = request.nextUrl.searchParams.get('entityId');
-    if (!entityId) {
-      return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
-    }
+  return withAuth(request, async (req, session) => {
+    try {
+      const entityId = req.nextUrl.searchParams.get('entityId');
+      if (!entityId) {
+        return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
+      }
 
-    const campaigns = await listCampaigns(entityId);
-    return success(campaigns);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const campaigns = await listCampaigns(entityId);
+      return success(campaigns);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = CampaignSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = CampaignSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const campaign = await createCampaign(parsed.data);
+      return success(campaign, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const campaign = await createCampaign(parsed.data);
-    return success(campaign, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }

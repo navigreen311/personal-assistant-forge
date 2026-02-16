@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { getScript, updateScript } from '@/modules/voiceforge/services/script-engine';
+import { withAuth } from '@/shared/middleware/auth';
 
 const UpdateScriptSchema = z.object({
   name: z.string().min(1).optional(),
@@ -31,44 +32,48 @@ const UpdateScriptSchema = z.object({
 });
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
-    const script = await getScript(id);
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+      const script = await getScript(id);
 
-    if (!script) {
-      return error('NOT_FOUND', `Script ${id} not found`, 404);
+      if (!script) {
+        return error('NOT_FOUND', `Script ${id} not found`, 404);
+      }
+
+      return success(script);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    return success(script);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
-    const body = await request.json();
-    const parsed = UpdateScriptSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+      const body = await req.json();
+      const parsed = UpdateScriptSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
-    }
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
 
-    const script = await updateScript(id, parsed.data);
-    return success(script);
-  } catch (err) {
-    if (err instanceof Error && err.message.includes('not found')) {
-      return error('NOT_FOUND', err.message, 404);
+      const script = await updateScript(id, parsed.data);
+      return success(script);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('not found')) {
+        return error('NOT_FOUND', err.message, 404);
+      }
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }
