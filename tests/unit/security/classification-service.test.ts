@@ -24,6 +24,11 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const prisma = require('@/lib/db').default;
 
@@ -340,6 +345,99 @@ describe('ClassificationService', () => {
 
       expect(result.classification).toBe('INTERNAL');
       expect(result.reasons.join(' ')).toMatch(/no sensitive patterns/i);
+      expect(result.confidence).toBe(0.4);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // AI-enhanced classification
+  // -----------------------------------------------------------------------
+  describe('classifyContent — AI-enhanced classification', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+      generateJSON.mockRejectedValue(new Error('AI unavailable in test'));
+    });
+
+    it('should run regex classification first', async () => {
+      const svc = freshService();
+      const result = await svc.classifyContent('My SSN is 123-45-6789');
+
+      // Even with AI mocked to fail, regex should detect SSN
+      expect(result.classification).toBe('RESTRICTED');
+    });
+
+    it('should NOT call AI for RESTRICTED regex results', async () => {
+      const svc = freshService();
+      await svc.classifyContent('My SSN is 123-45-6789');
+
+      expect(generateJSON).not.toHaveBeenCalled();
+    });
+
+    it('should NOT call AI for REGULATED regex results', async () => {
+      prisma.entity.findUnique.mockResolvedValue({
+        complianceProfile: ['HIPAA'],
+      });
+
+      const svc = freshService();
+      await svc.classifyContent('Patient diagnosis shows treatment for chronic condition', { entityId: 'entity-hipaa' });
+
+      expect(generateJSON).not.toHaveBeenCalled();
+    });
+
+    it('should call AI only for INTERNAL/PUBLIC regex results', async () => {
+      generateJSON.mockResolvedValueOnce({
+        classification: 'CONFIDENTIAL',
+        confidence: 0.8,
+        reasoning: 'Contains trade secret references',
+        additionalFlags: [],
+      });
+
+      const svc = freshService();
+      await svc.classifyContent('absolutely nothing sensitive here just random words');
+
+      expect(generateJSON).toHaveBeenCalled();
+    });
+
+    it('should only escalate classification, never downgrade', async () => {
+      generateJSON.mockResolvedValueOnce({
+        classification: 'PUBLIC',
+        confidence: 0.9,
+        reasoning: 'Looks public',
+        additionalFlags: [],
+      });
+
+      const svc = freshService();
+      const result = await svc.classifyContent("Let's discuss the project deadline in our meeting");
+
+      // Regex says INTERNAL (business terms), AI says PUBLIC — should keep INTERNAL
+      expect(result.classification).toBe('INTERNAL');
+    });
+
+    it('should require AI confidence > 0.7 to escalate', async () => {
+      generateJSON.mockResolvedValueOnce({
+        classification: 'RESTRICTED',
+        confidence: 0.5, // Too low
+        reasoning: 'Might contain PII',
+        additionalFlags: [],
+      });
+
+      const svc = freshService();
+      const result = await svc.classifyContent('absolutely nothing sensitive here just random words');
+
+      // AI confidence too low — should keep INTERNAL default
+      expect(result.classification).toBe('INTERNAL');
+    });
+
+    it('should handle AI failure gracefully', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('Network error'));
+
+      const svc = freshService();
+      const result = await svc.classifyContent('absolutely nothing sensitive here just random words');
+
+      // Should still return regex-based result
+      expect(result.classification).toBe('INTERNAL');
       expect(result.confidence).toBe(0.4);
     });
   });

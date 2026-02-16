@@ -15,6 +15,8 @@ import {
   listRunbookExecutions,
   createFromTemplate,
   describeCronExpression,
+  suggestRunbookSteps,
+  validateRunbookWithAI,
   BUILTIN_TEMPLATES,
   _clearRunbookStores,
 } from '../../../src/modules/execution/services/runbook-service';
@@ -33,6 +35,12 @@ jest.mock('../../../src/lib/db', () => ({
       create: jest.fn().mockResolvedValue({ id: 'consent-receipt-mock-id' }),
     },
   },
+}));
+
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+  generateText: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
 }));
 
 describe('RunbookService', () => {
@@ -444,6 +452,80 @@ describe('RunbookService', () => {
           );
         }
       }
+    });
+  });
+
+  describe('suggestRunbookSteps with AI', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+    });
+
+    it('should use AI for step suggestions', async () => {
+      generateJSON.mockResolvedValueOnce({
+        steps: [
+          { name: 'Pre-check', description: 'Validate inputs', actionType: 'AI_ANALYSIS', requiresApproval: false, maxBlastRadius: 'LOW' },
+          { name: 'Execute', description: 'Run the action', actionType: 'CREATE_TASK', requiresApproval: true, maxBlastRadius: 'MEDIUM' },
+        ],
+      });
+
+      const steps = await suggestRunbookSteps({
+        actionType: 'CREATE_TASK',
+        description: 'Create a new task',
+        entityId: 'entity-1',
+      });
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(steps.length).toBe(2);
+      expect(steps[0].name).toBe('Pre-check');
+      expect(steps[0].order).toBe(1);
+      expect(steps[1].order).toBe(2);
+    });
+
+    it('should fall back to existing logic on AI failure', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
+
+      const steps = await suggestRunbookSteps({
+        actionType: 'CREATE_TASK',
+        description: 'Create a new task',
+        entityId: 'entity-1',
+      });
+
+      expect(steps.length).toBe(1);
+      expect(steps[0].requiresApproval).toBe(true);
+    });
+  });
+
+  describe('validateRunbookWithAI', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+    });
+
+    it('should validate a runbook with AI suggestions', async () => {
+      generateJSON.mockResolvedValueOnce({
+        valid: false,
+        suggestions: ['Add a pre-validation step', 'Enable approval for step 2'],
+      });
+
+      const runbook = await createRunbook(defaultRunbookParams);
+      const validation = await validateRunbookWithAI(runbook);
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(validation.valid).toBe(false);
+      expect(validation.suggestions.length).toBe(2);
+    });
+
+    it('should return valid with no suggestions on AI failure', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
+
+      const runbook = await createRunbook(defaultRunbookParams);
+      const validation = await validateRunbookWithAI(runbook);
+
+      expect(validation.valid).toBe(true);
+      expect(validation.suggestions).toEqual([]);
     });
   });
 });

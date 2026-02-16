@@ -18,6 +18,8 @@
 //   const result = await client.read(imageUrl);
 // ============================================================================
 
+import { generateJSON, generateText } from '@/lib/ai';
+
 interface OCRResult {
   text: string;
   confidence: number;
@@ -159,6 +161,49 @@ class OCRService {
     }
 
     return result;
+  }
+
+  /**
+   * AI-enhanced text extraction that structures OCR output.
+   * Falls back to raw OCR text on AI failure.
+   */
+  async enhanceOCRWithAI(
+    rawText: string,
+    documentType: 'BUSINESS_CARD' | 'RECEIPT' | 'WHITEBOARD' | 'GENERAL',
+  ): Promise<OCRResult> {
+    try {
+      const result = await generateJSON<{
+        cleanedText: string;
+        confidence: number;
+        structuredData: Record<string, string>;
+      }>(`Enhance and structure this OCR-extracted text.
+
+Document type: ${documentType}
+Raw OCR text: "${rawText}"
+
+Fix OCR errors, correct formatting, and extract structured data.
+For BUSINESS_CARD: extract name, email, phone, company, title
+For RECEIPT: extract vendor, date, items, total
+For WHITEBOARD: clean up and organize the content
+For GENERAL: fix formatting and identify key information
+
+Return JSON with: cleanedText (corrected text), confidence (0-1), structuredData (key-value pairs of extracted fields)`, {
+        maxTokens: 512,
+        temperature: 0.2,
+        system: 'You are an OCR post-processing specialist. Clean up OCR output and extract structured data accurately.',
+      });
+
+      return {
+        text: result.cleanedText,
+        confidence: result.confidence,
+        structuredData: result.structuredData,
+      };
+    } catch {
+      return {
+        text: rawText,
+        confidence: 0.5,
+      };
+    }
   }
 }
 

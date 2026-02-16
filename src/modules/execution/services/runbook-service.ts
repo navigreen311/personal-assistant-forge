@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import { enqueueAction } from './action-queue';
 import { scoreAction } from './blast-radius-scorer';
+import { generateJSON, generateText } from '@/lib/ai';
 
 // --- In-Memory Stores ---
 
@@ -467,6 +468,103 @@ export function describeCronExpression(cron: string): string {
   }
 
   return cron;
+}
+
+// --- AI-Powered Helpers ---
+
+export async function suggestRunbookSteps(
+  params: {
+    actionType: string;
+    description: string;
+    entityId: string;
+    blastRadius?: string;
+  }
+): Promise<RunbookStep[]> {
+  try {
+    const result = await generateJSON<{
+      steps: Array<{
+        name: string;
+        description: string;
+        actionType: string;
+        requiresApproval: boolean;
+        maxBlastRadius: string;
+      }>;
+    }>(`Generate runbook steps for the following automation scenario.
+
+Action type: ${params.actionType}
+Description: ${params.description}
+Entity: ${params.entityId}
+Blast radius: ${params.blastRadius ?? 'MEDIUM'}
+
+Generate a sequence of steps including:
+- Pre-checks and validation steps
+- The main execution step(s)
+- Verification steps to confirm success
+- Rollback procedures if needed
+
+Return JSON with steps array, each having: name, description, actionType, requiresApproval (boolean), maxBlastRadius (LOW/MEDIUM/HIGH/CRITICAL)`, {
+      maxTokens: 1024,
+      temperature: 0.4,
+      system: 'You are an operations automation expert. Generate safe, well-ordered runbook steps with appropriate approval gates for risky operations.',
+    });
+
+    return result.steps.map((step, index) => ({
+      order: index + 1,
+      name: step.name,
+      description: step.description,
+      actionType: step.actionType,
+      parameters: {},
+      requiresApproval: step.requiresApproval,
+      maxBlastRadius: (step.maxBlastRadius as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL') ?? 'MEDIUM',
+      continueOnFailure: false,
+    }));
+  } catch {
+    // Fallback: return a single generic step
+    return [
+      {
+        order: 1,
+        name: params.description,
+        description: params.description,
+        actionType: params.actionType,
+        parameters: {},
+        requiresApproval: true,
+        maxBlastRadius: 'MEDIUM',
+        continueOnFailure: false,
+      },
+    ];
+  }
+}
+
+export async function validateRunbookWithAI(
+  runbook: Runbook
+): Promise<{ valid: boolean; suggestions: string[] }> {
+  try {
+    const result = await generateJSON<{
+      valid: boolean;
+      suggestions: string[];
+    }>(`Validate this automation runbook for safety and completeness.
+
+Runbook: "${runbook.name}"
+Description: ${runbook.description}
+Steps: ${JSON.stringify(runbook.steps.map(s => ({ order: s.order, name: s.name, actionType: s.actionType, requiresApproval: s.requiresApproval, maxBlastRadius: s.maxBlastRadius, continueOnFailure: s.continueOnFailure })))}
+
+Check for:
+- Missing pre-validation steps
+- Steps that should require approval but don't
+- Missing rollback or verification steps
+- Dangerous continueOnFailure settings on destructive steps
+- Proper blast radius limits
+
+Return JSON with valid (boolean) and suggestions (array of improvement suggestions).`, {
+      maxTokens: 512,
+      temperature: 0.3,
+      system: 'You are a runbook safety reviewer. Identify potential issues with automation runbooks that could lead to data loss or service disruption.',
+    });
+
+    return result;
+  } catch {
+    return { valid: true, suggestions: [] };
+  }
 }
 
 // --- Testing Helpers ---

@@ -1,3 +1,9 @@
+// Mock AI client — must be before imports
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+  generateText: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 import { STTService } from '@/modules/voice/services/stt-service';
 
 describe('STTService', () => {

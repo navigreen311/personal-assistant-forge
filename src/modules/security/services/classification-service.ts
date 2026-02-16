@@ -13,6 +13,7 @@ import type {
 } from '@/modules/security/types';
 import prisma from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
+import { generateJSON } from '@/lib/ai';
 
 // ---------------------------------------------------------------------------
 // Pattern constants
@@ -467,13 +468,16 @@ export class ClassificationService {
     // Deduplicate regulatory flags
     const uniqueFlags = this.deduplicateFlags(regulatoryFlags);
 
-    return {
+    const regexResult: ClassificationResult = {
       classification: highestClassification,
       confidence: Math.min(confidence, 1),
       reasons,
       regulatoryFlags: uniqueFlags,
       autoApplied: true,
     };
+
+    // AI-enhanced classification for ambiguous content
+    return this.classifyAmbiguousContent(content, regexResult);
   }
 
   /**
@@ -988,6 +992,72 @@ export class ClassificationService {
     }
 
     return unique;
+  }
+
+  /**
+   * Use AI to classify ambiguous content that passed regex checks without
+   * triggering high-confidence deterministic patterns. AI can only ESCALATE
+   * classification, never downgrade.
+   */
+  private async classifyAmbiguousContent(
+    content: string,
+    regexClassification: ClassificationResult,
+  ): Promise<ClassificationResult> {
+    // Only call AI if regex classification returned INTERNAL or PUBLIC
+    if (['RESTRICTED', 'REGULATED'].includes(regexClassification.classification)) {
+      return regexClassification;
+    }
+
+    try {
+      const aiResult = await generateJSON<{
+        classification: string;
+        confidence: number;
+        reasoning: string;
+        additionalFlags: Array<{ regulation: string; category: string; description: string; requiredActions: string[] }>;
+      }>(`Analyze this content for sensitive information that pattern matching might miss.
+
+Content: "${content.substring(0, 2000)}"
+Pattern-based classification: ${regexClassification.classification}
+
+Check for:
+- Implicit references to protected health information
+- Contextual financial data (not just dollar amounts)
+- Trade secrets or competitive intelligence
+- Personal information in narrative form
+- Regulatory compliance implications
+
+Return JSON with classification (PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED, REGULATED), confidence 0-1, reasoning, and additionalFlags array (each with regulation, category, description, requiredActions).`, {
+        maxTokens: 512,
+        temperature: 0.2,
+        system: 'You are a data classification specialist focused on regulatory compliance. Only escalate classification when you have high confidence. Never downgrade from a higher regex-based classification.',
+      });
+
+      const classificationRank: Record<string, number> = { PUBLIC: 0, INTERNAL: 1, CONFIDENTIAL: 2, RESTRICTED: 3, REGULATED: 4 };
+      const regexRank = classificationRank[regexClassification.classification] ?? 0;
+      const aiRank = classificationRank[aiResult.classification] ?? 0;
+
+      if (aiRank > regexRank && aiResult.confidence > 0.7) {
+        return {
+          ...regexClassification,
+          classification: aiResult.classification as DataClassification,
+          reasons: [...regexClassification.reasons, `AI classification: ${aiResult.reasoning}`],
+          regulatoryFlags: [
+            ...regexClassification.regulatoryFlags,
+            ...aiResult.additionalFlags.map((f) => ({
+              regulation: f.regulation as ComplianceFlag['regulation'],
+              category: f.category,
+              description: f.description,
+              requiredActions: f.requiredActions,
+            })),
+          ],
+        };
+      }
+
+      return regexClassification;
+    } catch {
+      // AI classification failed — return regex-based result
+      return regexClassification;
+    }
   }
 }
 

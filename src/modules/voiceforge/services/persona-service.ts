@@ -9,6 +9,7 @@ import type {
   VoicePersona,
   ConsentChainEntry,
 } from '@/modules/voiceforge/types';
+import { generateJSON } from '@/lib/ai';
 
 const DOC_TYPE = 'VOICE_PERSONA';
 
@@ -165,4 +166,60 @@ export async function validateConsentChain(
 
 export function generateWatermarkId(): string {
   return `WM-${uuidv4()}`;
+}
+
+export async function suggestPersonaTraits(
+  brandDescription: string,
+  targetAudience: string,
+  campaignContext?: string,
+): Promise<{
+  personality: {
+    tone: string;
+    formality: number;
+    empathy: number;
+    assertiveness: number;
+    humor: number;
+    vocabularyLevel: string;
+  };
+  reasoning: string;
+}> {
+  try {
+    const result = await generateJSON<{
+      personality: {
+        tone: string;
+        formality: number;
+        empathy: number;
+        assertiveness: number;
+        humor: number;
+        vocabularyLevel: string;
+      };
+      reasoning: string;
+    }>(`Suggest voice persona personality traits for the following context.
+
+Brand description: ${brandDescription}
+Target audience: ${targetAudience}
+Campaign context: ${campaignContext ?? 'General outreach'}
+
+Return JSON with:
+- personality: { tone (WARM/PROFESSIONAL/FRIENDLY/AUTHORITATIVE), formality (0-1), empathy (0-1), assertiveness (0-1), humor (0-1), vocabularyLevel (SIMPLE/MODERATE/ADVANCED) }
+- reasoning: brief explanation of why these traits fit`, {
+      maxTokens: 512,
+      temperature: 0.5,
+      system: 'You are a brand voice strategist. Recommend persona traits that align with brand identity and resonate with the target audience.',
+    });
+
+    return result;
+  } catch {
+    return {
+      personality: {
+        tone: 'PROFESSIONAL',
+        formality: 0.6,
+        empathy: 0.7,
+        assertiveness: 0.5,
+        humor: 0.3,
+        vocabularyLevel: 'MODERATE',
+      },
+      reasoning: 'Default professional persona (AI suggestion unavailable)',
+    };
+  }
 }

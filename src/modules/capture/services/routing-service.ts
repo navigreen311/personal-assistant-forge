@@ -12,6 +12,7 @@ import type {
   RoutingCondition,
   RoutingAction,
 } from '@/modules/capture/types';
+import { generateJSON } from '@/lib/ai';
 
 class RoutingService {
   private rules: RoutingRule[] = [];
@@ -86,7 +87,39 @@ class RoutingService {
       }
     }
 
-    // No matching rule — default to NOTE
+    // No rule matched — try AI-based routing
+    try {
+      const aiResult = await generateJSON<{
+        targetType: string;
+        confidence: number;
+        reasoning: string;
+      }>(`Determine where to route this captured content.
+
+Content type: ${capture.contentType}
+Source: ${capture.source}
+Content: "${(capture.processedContent ?? capture.rawContent).substring(0, 1000)}"
+
+Route to one of: TASK, CONTACT, NOTE, EVENT, MESSAGE, EXPENSE
+
+Return JSON with: targetType, confidence (0-1), reasoning`, {
+        maxTokens: 256,
+        temperature: 0.3,
+        system: 'You are a content routing specialist. Determine the best destination for captured content based on its nature and context.',
+      });
+
+      if (aiResult.confidence > 0.5) {
+        return {
+          targetType: aiResult.targetType as RoutingResult['targetType'],
+          entityId: capture.entityId ?? '',
+          confidence: aiResult.confidence,
+          appliedRules: [],
+        };
+      }
+    } catch {
+      // AI routing failed — fall through to default
+    }
+
+    // Default to NOTE
     return {
       targetType: 'NOTE',
       entityId: capture.entityId ?? '',

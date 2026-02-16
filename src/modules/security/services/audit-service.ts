@@ -9,6 +9,7 @@ import type {
   AuditLogEntry,
   DataClassification,
 } from '@/modules/security/types';
+import { generateJSON } from '@/lib/ai';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -224,6 +225,78 @@ export class AuditService {
     );
 
     return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * AI-powered anomaly detection for audit trail analysis.
+   * Analyzes recent audit entries for unusual patterns.
+   */
+  async analyzeAuditTrail(
+    entityId: string,
+    timeWindow: { from: Date; to: Date },
+  ): Promise<{
+    anomalies: Array<{ description: string; severity: 'LOW' | 'MEDIUM' | 'HIGH'; events: string[] }>;
+    summary: string;
+    riskScore: number;
+  }> {
+    const filtered = this.entries.filter(
+      (entry) =>
+        entry.entityId === entityId &&
+        entry.timestamp >= timeWindow.from &&
+        entry.timestamp <= timeWindow.to,
+    );
+
+    if (filtered.length === 0) {
+      return { anomalies: [], summary: 'No audit entries in the specified time window.', riskScore: 0 };
+    }
+
+    try {
+      const entrySummaries = filtered.slice(0, 100).map((e) => ({
+        timestamp: e.timestamp.toISOString(),
+        actor: e.actor,
+        action: e.action,
+        resource: e.resource,
+        statusCode: e.statusCode,
+        ipAddress: e.ipAddress,
+      }));
+
+      const result = await generateJSON<{
+        anomalies: Array<{ description: string; severity: 'LOW' | 'MEDIUM' | 'HIGH'; eventIndices: number[] }>;
+        summary: string;
+        riskScore: number;
+      }>(`Analyze these audit log entries for anomalous patterns.
+
+Entries: ${JSON.stringify(entrySummaries)}
+
+Look for:
+- Unusual access patterns (off-hours access, rapid successive actions)
+- Privilege escalation attempts
+- Bulk data operations (mass reads, deletes, exports)
+- Failed access attempts followed by successful ones
+- Actions from unusual IP addresses
+- Sensitive resource access patterns
+
+Return JSON with:
+- anomalies: array of {description, severity (LOW/MEDIUM/HIGH), eventIndices (indices of related entries)}
+- summary: brief overall assessment
+- riskScore: 0-100 overall risk score`, {
+        maxTokens: 1024,
+        temperature: 0.3,
+        system: 'You are a security operations analyst specializing in audit log analysis. Identify genuine security anomalies while minimizing false positives.',
+      });
+
+      return {
+        anomalies: result.anomalies.map((a) => ({
+          description: a.description,
+          severity: a.severity,
+          events: (a.eventIndices ?? []).map((i) => filtered[i]?.id).filter(Boolean) as string[],
+        })),
+        summary: result.summary,
+        riskScore: Math.min(Math.max(result.riskScore, 0), 100),
+      };
+    } catch {
+      return { anomalies: [], summary: 'AI analysis unavailable.', riskScore: 0 };
+    }
   }
 
   // -------------------------------------------------------------------------

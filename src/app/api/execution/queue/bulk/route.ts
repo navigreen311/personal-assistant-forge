@@ -2,8 +2,10 @@
 // POST /api/execution/queue/bulk  - Bulk approve or reject queued actions
 // ============================================================================
 
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withRole } from '@/shared/middleware/auth';
 import {
   bulkApprove,
   bulkReject,
@@ -26,34 +28,36 @@ const bulkActionSchema = z.discriminatedUnion('action', [
 
 // --- Handler ---
 
-export async function POST(request: Request) {
-  try {
-    const body: unknown = await request.json();
+export async function POST(request: NextRequest) {
+  return withRole(request, ['admin', 'owner'], async (req, session) => {
+    try {
+      const body: unknown = await req.json();
 
-    const parsed = bulkActionSchema.safeParse(body);
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
-    }
-
-    const payload = parsed.data;
-
-    switch (payload.action) {
-      case 'APPROVE': {
-        const result = await bulkApprove(payload.actionIds, payload.approverId);
-        return success(result);
+      const parsed = bulkActionSchema.safeParse(body);
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
       }
-      case 'REJECT': {
-        const result = await bulkReject(payload.actionIds, payload.reason);
-        return success(result);
+
+      const payload = parsed.data;
+
+      switch (payload.action) {
+        case 'APPROVE': {
+          const result = await bulkApprove(payload.actionIds, payload.approverId);
+          return success(result);
+        }
+        case 'REJECT': {
+          const result = await bulkReject(payload.actionIds, payload.reason);
+          return success(result);
+        }
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }

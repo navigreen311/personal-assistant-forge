@@ -4,8 +4,10 @@
 // DELETE /api/execution/queue/:id  - Cancel a queued action
 // ============================================================================
 
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import {
   getActionById,
   approveAction,
@@ -38,98 +40,104 @@ const patchSchema = z.discriminatedUnion('action', [
 // --- Handlers ---
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
 
-    const action = await getActionById(id);
-    if (!action) {
-      return error('NOT_FOUND', `Action ${id} not found`, 404);
+      const action = await getActionById(id);
+      if (!action) {
+        return error('NOT_FOUND', `Action ${id} not found`, 404);
+      }
+
+      return success(action);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    return success(action);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
 
 export async function PATCH(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
-    const body: unknown = await request.json();
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+      const body: unknown = await req.json();
 
-    const parsed = patchSchema.safeParse(body);
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
-    }
-
-    const payload = parsed.data;
-
-    switch (payload.action) {
-      case 'APPROVE': {
-        const result = await approveAction(id, payload.approverId);
-        return success(result);
+      const parsed = patchSchema.safeParse(body);
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
       }
-      case 'REJECT': {
-        const result = await rejectAction(id, payload.reason);
-        return success(result);
-      }
-      case 'EXECUTE': {
-        const result = await executeAction(id);
-        return success(result);
-      }
-      case 'SCHEDULE': {
-        const result = await scheduleAction(id, payload.scheduledFor);
-        return success(result);
-      }
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
 
-    if (message.includes('not found')) {
-      return error('NOT_FOUND', message, 404);
-    }
-    if (message.includes('Cannot')) {
-      return error('INVALID_STATE', message, 409);
-    }
-    if (message.includes('Execution blocked')) {
-      return error('GATE_BLOCKED', message, 403);
-    }
+      const payload = parsed.data;
 
-    return error('INTERNAL_ERROR', message, 500);
-  }
+      switch (payload.action) {
+        case 'APPROVE': {
+          const result = await approveAction(id, payload.approverId);
+          return success(result);
+        }
+        case 'REJECT': {
+          const result = await rejectAction(id, payload.reason);
+          return success(result);
+        }
+        case 'EXECUTE': {
+          const result = await executeAction(id);
+          return success(result);
+        }
+        case 'SCHEDULE': {
+          const result = await scheduleAction(id, payload.scheduledFor);
+          return success(result);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+
+      if (message.includes('not found')) {
+        return error('NOT_FOUND', message, 404);
+      }
+      if (message.includes('Cannot')) {
+        return error('INVALID_STATE', message, 409);
+      }
+      if (message.includes('Execution blocked')) {
+        return error('GATE_BLOCKED', message, 403);
+      }
+
+      return error('INTERNAL_ERROR', message, 500);
+    }
+  });
 }
 
 export async function DELETE(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
+  return withRole(request, ['admin', 'owner'], async (req, session) => {
+    try {
+      const { id } = await params;
 
-    const result = await cancelAction(id);
-    return success(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
+      const result = await cancelAction(id);
+      return success(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
 
-    if (message.includes('not found')) {
-      return error('NOT_FOUND', message, 404);
+      if (message.includes('not found')) {
+        return error('NOT_FOUND', message, 404);
+      }
+      if (message.includes('Cannot cancel')) {
+        return error('INVALID_STATE', message, 409);
+      }
+
+      return error('INTERNAL_ERROR', message, 500);
     }
-    if (message.includes('Cannot cancel')) {
-      return error('INVALID_STATE', message, 409);
-    }
-
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }

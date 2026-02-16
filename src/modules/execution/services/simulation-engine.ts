@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import { scoreAction } from './blast-radius-scorer';
 import { estimateActionCost } from './cost-estimator';
+import { generateJSON } from '@/lib/ai';
 
 // --- Action Simulators ---
 
@@ -399,6 +400,37 @@ function simulateGeneric(request: SimulationRequest) {
   };
 }
 
+// --- AI-Powered Side Effect Prediction ---
+
+async function predictSideEffectsWithAI(
+  request: SimulationRequest,
+  ruleBasedEffects: SimulatedEffect[]
+): Promise<{
+  additionalEffects: SimulatedEffect[];
+  riskAssessment: string;
+  recommendations: string[];
+}> {
+  return generateJSON<{
+    additionalEffects: SimulatedEffect[];
+    riskAssessment: string;
+    recommendations: string[];
+  }>(`Analyze this planned action and predict additional side effects.
+
+Action: ${request.actionType}
+Entity: ${request.entityId}
+Parameters: ${JSON.stringify(request.parameters)}
+Already-identified effects: ${JSON.stringify(ruleBasedEffects)}
+
+Return JSON with:
+- additionalEffects: array of {type, model, description, reversible} for effects not yet identified
+- riskAssessment: brief assessment of overall risk
+- recommendations: array of suggestions to reduce blast radius`, {
+    maxTokens: 512,
+    temperature: 0.3,
+    system: 'You are a system operations risk analyst. Identify side effects of actions. Be thorough but realistic. Focus on non-obvious cascading effects.',
+  });
+}
+
 // --- Public API ---
 
 export async function simulateAction(
@@ -406,6 +438,22 @@ export async function simulateAction(
 ): Promise<SimulationResult> {
   const simulator = simulators[request.actionType] ?? simulateGeneric;
   const { effects, sideEffects, warnings } = simulator(request);
+
+  // AI-powered side effect prediction (non-blocking, fallback to rule-based)
+  let aiRiskAssessment: string | undefined;
+  let allSideEffects = sideEffects;
+  try {
+    const aiPrediction = await predictSideEffectsWithAI(request, [...effects, ...sideEffects]);
+    if (aiPrediction.additionalEffects?.length > 0) {
+      allSideEffects = [...sideEffects, ...aiPrediction.additionalEffects];
+    }
+    if (aiPrediction.recommendations?.length > 0) {
+      warnings.push(...aiPrediction.recommendations);
+    }
+    aiRiskAssessment = aiPrediction.riskAssessment;
+  } catch {
+    // AI prediction failed — proceed with rule-based results only
+  }
 
   const blastRadiusScore = await scoreAction(
     request.actionType,
@@ -433,13 +481,14 @@ export async function simulateAction(
     id: uuidv4(),
     request,
     wouldDo: effects,
-    sideEffects,
+    sideEffects: allSideEffects,
     blastRadius: blastRadiusScore.overall,
     reversible: allEffectsReversible,
     estimatedCost: costEstimate.estimatedCost,
     warnings,
     recommendation,
     simulatedAt: new Date(),
+    ...(aiRiskAssessment ? { aiRiskAssessment } : {}),
   };
 }
 

@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createPersona, listPersonas } from '@/modules/voiceforge/services/persona-service';
+import { withAuth } from '@/shared/middleware/auth';
 
 const PersonaSchema = z.object({
   entityId: z.string().min(1),
@@ -40,33 +41,37 @@ const PersonaSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const entityId = request.nextUrl.searchParams.get('entityId');
-    if (!entityId) {
-      return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
-    }
+  return withAuth(request, async (req, session) => {
+    try {
+      const entityId = req.nextUrl.searchParams.get('entityId');
+      if (!entityId) {
+        return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
+      }
 
-    const personas = await listPersonas(entityId);
-    return success(personas);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const personas = await listPersonas(entityId);
+      return success(personas);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = PersonaSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = PersonaSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const persona = await createPersona(parsed.data);
+      return success(persona, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const persona = await createPersona(parsed.data);
-    return success(persona, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }

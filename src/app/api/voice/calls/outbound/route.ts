@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { initiateOutboundCall } from '@/modules/voiceforge/services/outbound-agent';
+import { withAuth } from '@/shared/middleware/auth';
 
 const OutboundCallSchema = z.object({
   entityId: z.string().min(1),
@@ -21,19 +22,21 @@ const OutboundCallSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = OutboundCallSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = OutboundCallSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
-      });
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const result = await initiateOutboundCall(parsed.data);
+      return success(result, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-
-    const result = await initiateOutboundCall(parsed.data);
-    return success(result, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+  });
 }

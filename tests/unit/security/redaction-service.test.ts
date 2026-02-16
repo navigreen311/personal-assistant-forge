@@ -4,6 +4,11 @@
 
 import { RedactionService } from '@/modules/security/services/redaction-service';
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

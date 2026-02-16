@@ -3,6 +3,8 @@ import {
   startExecution,
   advanceNode,
   evaluateBranch,
+  generateScriptWithAI,
+  optimizeScript,
 } from '@/modules/voiceforge/services/script-engine';
 import type { CallScript, ScriptNode, ScriptBranch } from '@/modules/voiceforge/types';
 
@@ -16,6 +18,12 @@ jest.mock('@/lib/db', () => ({
       update: jest.fn(),
     },
   },
+}));
+
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+  generateText: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
 }));
 
 describe('Script Engine', () => {
@@ -232,6 +240,111 @@ describe('Script Engine', () => {
       const branch: ScriptBranch = { condition: 'department=sales', targetNodeId: 'n2', label: 'Sales' };
       expect(evaluateBranch(branch, '', { department: 'sales' })).toBe(true);
       expect(evaluateBranch(branch, '', { department: 'support' })).toBe(false);
+    });
+  });
+
+  describe('generateScriptWithAI', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+    });
+
+    it('should call generateJSON with script parameters', async () => {
+      generateJSON.mockResolvedValueOnce({
+        name: 'Sales Follow-up',
+        description: 'A follow-up call script',
+        nodes: [
+          { id: 'greeting', type: 'GREETING', content: 'Hello!', branches: [] },
+          { id: 'closing', type: 'CLOSING', content: 'Thank you', branches: [] },
+        ],
+        startNodeId: 'greeting',
+      });
+
+      const result = await generateScriptWithAI('entity-1', {
+        purpose: 'sales follow-up',
+        targetAudience: 'existing customers',
+        tone: 'friendly',
+        maxDuration: 5,
+        keyPoints: ['check satisfaction', 'upsell'],
+      });
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.name).toBe('Sales Follow-up');
+      expect(result.entityId).toBe('entity-1');
+      expect(result.status).toBe('DRAFT');
+    });
+
+    it('should return a valid CallScript structure', async () => {
+      generateJSON.mockResolvedValueOnce({
+        name: 'Test Script',
+        description: 'Test',
+        nodes: [
+          { id: 'n1', type: 'GREETING', content: 'Hi', branches: [{ condition: 'keyword=yes', targetNodeId: 'n2' }] },
+          { id: 'n2', type: 'CLOSING', content: 'Bye', branches: [] },
+        ],
+        startNodeId: 'n1',
+      });
+
+      const result = await generateScriptWithAI('entity-1', {
+        purpose: 'test',
+        targetAudience: 'test',
+        tone: 'professional',
+        maxDuration: 3,
+        keyPoints: ['test'],
+      });
+
+      expect(result.nodes.length).toBe(2);
+      expect(result.startNodeId).toBe('n1');
+      expect(result.nodes[0].branches.length).toBe(1);
+    });
+
+    it('should include branching nodes in generated script', async () => {
+      generateJSON.mockResolvedValueOnce({
+        name: 'Branching Script',
+        description: 'Script with branches',
+        nodes: [
+          { id: 'start', type: 'GREETING', content: 'Welcome', branches: [
+            { condition: 'interested', targetNodeId: 'pitch' },
+            { condition: 'not interested', targetNodeId: 'end' },
+          ] },
+          { id: 'pitch', type: 'STATEMENT', content: 'Our offer...', branches: [] },
+          { id: 'end', type: 'CLOSING', content: 'Thank you', branches: [] },
+        ],
+        startNodeId: 'start',
+      });
+
+      const result = await generateScriptWithAI('entity-1', {
+        purpose: 'sales',
+        targetAudience: 'prospects',
+        tone: 'professional',
+        maxDuration: 5,
+        keyPoints: ['pitch product'],
+      });
+
+      expect(result.nodes[0].branches.length).toBe(2);
+    });
+
+    it('should respect compliance requirements in prompts', async () => {
+      generateJSON.mockResolvedValueOnce({
+        name: 'HIPAA Script',
+        description: 'HIPAA compliant',
+        nodes: [{ id: 'n1', type: 'GREETING', content: 'Hello', branches: [] }],
+        startNodeId: 'n1',
+      });
+
+      await generateScriptWithAI('entity-1', {
+        purpose: 'healthcare follow-up',
+        targetAudience: 'patients',
+        tone: 'empathetic',
+        maxDuration: 5,
+        keyPoints: ['follow-up'],
+        complianceRequirements: ['HIPAA', 'patient consent'],
+      });
+
+      const callArgs = generateJSON.mock.calls[0][0] as string;
+      expect(callArgs).toContain('HIPAA');
+      expect(callArgs).toContain('patient consent');
     });
   });
 });

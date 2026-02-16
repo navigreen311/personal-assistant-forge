@@ -10,6 +10,7 @@ import type {
   STTConfig,
   STTProvider,
 } from '@/modules/voice/types';
+import { generateText } from '@/lib/ai';
 
 const DEFAULT_STT_CONFIG: STTConfig = {
   provider: 'browser',
@@ -139,6 +140,26 @@ class STTService {
     session.endedAt = new Date();
     session.transcript = provider?.getTranscript() ?? session.transcript ?? '';
     session.confidence = session.transcript ? 0.85 : 0;
+
+    // AI-enhanced transcription post-processing
+    if (session.transcript) {
+      try {
+        const enhanced = await generateText(
+          `Clean up this voice transcription. Fix grammar, add proper punctuation, and correct obvious speech-to-text errors. Do NOT change the meaning or add content. Return ONLY the corrected text, nothing else.\n\nTranscription: "${session.transcript}"`,
+          {
+            maxTokens: 1024,
+            temperature: 0.1,
+            system: 'You are a transcription editor. Fix grammar and punctuation in speech-to-text output. Preserve the original meaning exactly.',
+          },
+        );
+        if (enhanced && enhanced.length > 0) {
+          session.transcript = enhanced;
+          session.confidence = Math.min((session.confidence ?? 0.85) + 0.05, 1);
+        }
+      } catch {
+        // AI enhancement failed — use raw transcript
+      }
+    }
 
     // Clean up provider state
     provider?.reset();

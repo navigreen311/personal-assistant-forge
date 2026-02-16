@@ -1,3 +1,8 @@
+// Mock AI client — must be before imports
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 import { RoutingService } from '@/modules/capture/services/routing-service';
 import type { CaptureItem } from '@/modules/capture/types';
 
@@ -207,6 +212,62 @@ describe('RoutingService', () => {
 
     it('should throw for non-existent rule', () => {
       expect(() => service.deleteRoutingRule('fake-id')).toThrow();
+    });
+  });
+
+  describe('AI-powered routing', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      service = new RoutingService();
+      generateJSON.mockReset();
+      generateJSON.mockRejectedValue(new Error('AI unavailable'));
+    });
+
+    it('should route captures based on AI classification when no rules match', async () => {
+      service.clearRules();
+
+      generateJSON.mockResolvedValueOnce({
+        targetType: 'TASK',
+        confidence: 0.8,
+        reasoning: 'Contains action items',
+      });
+
+      const capture = makeCaptureItem({
+        rawContent: 'Please review and approve the budget proposal',
+      });
+
+      const result = await service.routeCapture(capture);
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.targetType).toBe('TASK');
+    });
+
+    it('should fall back to rule-based routing on AI failure', async () => {
+      // Keep default rules — this should match the action verb rule
+      const capture = makeCaptureItem({
+        rawContent: 'I need to follow up with the vendor',
+      });
+
+      const result = await service.routeCapture(capture);
+
+      // Default rule should match "need to" / "follow up"
+      expect(result.targetType).toBe('TASK');
+      expect(result.appliedRules.length).toBe(1);
+    });
+
+    it('should fall back to NOTE on AI failure with no rules', async () => {
+      service.clearRules();
+      generateJSON.mockRejectedValueOnce(new Error('AI error'));
+
+      const capture = makeCaptureItem({
+        rawContent: 'Random content that matches nothing',
+      });
+
+      const result = await service.routeCapture(capture);
+
+      expect(result.targetType).toBe('NOTE');
+      expect(result.confidence).toBeLessThan(0.5);
     });
   });
 });

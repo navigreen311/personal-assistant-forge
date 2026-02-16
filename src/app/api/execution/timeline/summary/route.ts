@@ -1,5 +1,7 @@
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { getActivitySummary } from '@/modules/execution/services/operator-console';
 
 function defaultFrom(): string {
@@ -26,36 +28,38 @@ const SummaryQuerySchema = z.object({
     .default(defaultTo),
 });
 
-export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const rawQuery: Record<string, string> = {};
-    searchParams.forEach((value, key) => {
-      rawQuery[key] = value;
-    });
+export async function GET(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = new URL(req.url);
+      const rawQuery: Record<string, string> = {};
+      searchParams.forEach((value, key) => {
+        rawQuery[key] = value;
+      });
 
-    const parsed = SummaryQuerySchema.safeParse(rawQuery);
+      const parsed = SummaryQuerySchema.safeParse(rawQuery);
 
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid query parameters',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid query parameters',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const { entityId, from, to } = parsed.data;
+
+      const summary = await getActivitySummary(entityId, {
+        from: new Date(from),
+        to: new Date(to),
+      });
+
+      return success(summary);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to retrieve activity summary';
+      return error('SUMMARY_ERROR', message, 500);
     }
-
-    const { entityId, from, to } = parsed.data;
-
-    const summary = await getActivitySummary(entityId, {
-      from: new Date(from),
-      to: new Date(to),
-    });
-
-    return success(summary);
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : 'Failed to retrieve activity summary';
-    return error('SUMMARY_ERROR', message, 500);
-  }
+  });
 }

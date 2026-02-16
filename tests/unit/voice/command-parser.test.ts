@@ -1,3 +1,8 @@
+// Mock AI client — must be before imports
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 import { CommandParser } from '@/modules/voice/services/command-parser';
 import type { VoiceCommandDefinition } from '@/modules/voice/types';
 
@@ -184,6 +189,98 @@ describe('CommandParser', () => {
       const beforeCount = parser.getAvailableCommands().length;
       parser.registerCommand(custom);
       expect(parser.getAvailableCommands().length).toBe(beforeCount + 1);
+    });
+  });
+
+  describe('AI-powered intent parsing', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      parser = new CommandParser();
+      generateJSON.mockReset();
+      generateJSON.mockRejectedValue(new Error('AI unavailable'));
+    });
+
+    it('should call generateJSON for intent parsing', async () => {
+      generateJSON.mockResolvedValueOnce({
+        intent: 'CALL_CONTACT',
+        entities: [{ type: 'PERSON', value: 'John', confidence: 0.9 }],
+        confidence: 0.9,
+        action: 'call John at 3pm',
+      });
+
+      const result = await parser.parseCommand('Call John at 3pm');
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.intent).toBe('CALL_CONTACT');
+    });
+
+    it('should extract entities from AI response', async () => {
+      generateJSON.mockResolvedValueOnce({
+        intent: 'ADD_TASK',
+        entities: [
+          { type: 'DATE', value: 'tomorrow', confidence: 0.9 },
+          { type: 'PERSON', value: 'Sarah', confidence: 0.85 },
+        ],
+        confidence: 0.85,
+      });
+
+      const result = await parser.parseCommand('Create a task for Sarah by tomorrow');
+
+      const dates = result.entities.filter((e) => e.type === 'DATE');
+      expect(dates.length).toBeGreaterThan(0);
+    });
+
+    it('should fall back to regex parsing when AI fails', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('Network error'));
+
+      const result = await parser.parseCommand('Add task review financials');
+
+      expect(result.intent).toBe('ADD_TASK');
+      expect(result.confidence).toBeGreaterThan(0.5);
+    });
+
+    it('should fall back to regex parsing when AI confidence is low', async () => {
+      generateJSON.mockResolvedValueOnce({
+        intent: 'UNKNOWN',
+        entities: [],
+        confidence: 0.3,
+      });
+
+      const result = await parser.parseCommand('Add task review financials');
+
+      // Should fall through to regex which matches ADD_TASK
+      expect(result.intent).toBe('ADD_TASK');
+      expect(result.confidence).toBe(0.85);
+    });
+
+    it('should handle "Call John at 3pm" correctly via AI', async () => {
+      generateJSON.mockResolvedValueOnce({
+        intent: 'CALL_CONTACT',
+        entities: [
+          { type: 'PERSON', value: 'John', confidence: 0.9 },
+          { type: 'TIME', value: '3pm', confidence: 0.9 },
+        ],
+        confidence: 0.92,
+      });
+
+      const result = await parser.parseCommand('Call John at 3pm');
+
+      expect(result.intent).toBe('CALL_CONTACT');
+      expect(result.entities.some((e) => e.type === 'PERSON')).toBe(true);
+    });
+
+    it('should handle "Create a task for tomorrow" correctly via AI', async () => {
+      generateJSON.mockResolvedValueOnce({
+        intent: 'ADD_TASK',
+        entities: [{ type: 'DATE', value: 'tomorrow', confidence: 0.9 }],
+        confidence: 0.88,
+      });
+
+      const result = await parser.parseCommand('Create a task for tomorrow');
+
+      expect(result.intent).toBe('ADD_TASK');
+      expect(result.entities.some((e) => e.type === 'DATE')).toBe(true);
     });
   });
 });

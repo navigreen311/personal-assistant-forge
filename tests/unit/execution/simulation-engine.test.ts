@@ -20,6 +20,12 @@ jest.mock('date-fns', () => ({
   endOfDay: (d: Date) => d,
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+  generateText: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 import {
   simulateAction,
   simulateMultipleActions,
@@ -523,6 +529,88 @@ describe('SimulationEngine', () => {
 
       const report = generateImpactReport(result);
       expect(report).not.toContain('--- Side Effects');
+    });
+  });
+
+  describe('AI-powered side effect prediction', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    beforeEach(() => {
+      generateJSON.mockReset();
+    });
+
+    it('should call generateJSON for side effect prediction', async () => {
+      generateJSON.mockResolvedValueOnce({
+        additionalEffects: [
+          { type: 'UPDATE', model: 'AuditLog', description: 'AI-predicted audit trail update', reversible: true },
+        ],
+        riskAssessment: 'Low risk action',
+        recommendations: ['Consider batching similar tasks'],
+      });
+
+      const result = await simulateAction({
+        actionType: 'CREATE_TASK',
+        target: 'tasks',
+        parameters: { title: 'AI test' },
+        entityId: 'entity-test-001',
+      });
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.sideEffects.some((e) => e.model === 'AuditLog')).toBe(true);
+    });
+
+    it('should merge AI effects with rule-based effects', async () => {
+      generateJSON.mockResolvedValueOnce({
+        additionalEffects: [
+          { type: 'NOTIFY', model: 'Slack', description: 'Slack notification predicted', reversible: false },
+        ],
+        riskAssessment: 'Medium risk',
+        recommendations: [],
+      });
+
+      const result = await simulateAction({
+        actionType: 'CREATE_TASK',
+        target: 'tasks',
+        parameters: { title: 'Test', projectId: 'proj-1', assigneeId: 'user-1' },
+        entityId: 'entity-test-001',
+      });
+
+      // Rule-based: 2 side effects (project update + assignee notification)
+      // AI: 1 additional (Slack)
+      expect(result.sideEffects.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should proceed with rule-based results only when AI fails', async () => {
+      generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
+
+      const result = await simulateAction({
+        actionType: 'CREATE_TASK',
+        target: 'tasks',
+        parameters: { title: 'Fallback test', projectId: 'proj-1' },
+        entityId: 'entity-test-001',
+      });
+
+      expect(result.wouldDo).toHaveLength(1);
+      expect(result.wouldDo[0].model).toBe('Task');
+      // Rule-based side effects should still be present
+      expect(result.sideEffects.some((e) => e.model === 'Project')).toBe(true);
+    });
+
+    it('should include AI risk assessment in result', async () => {
+      generateJSON.mockResolvedValueOnce({
+        additionalEffects: [],
+        riskAssessment: 'This is a low-risk operation',
+        recommendations: [],
+      });
+
+      const result = await simulateAction({
+        actionType: 'CREATE_CONTACT',
+        target: 'contacts',
+        parameters: { name: 'Test' },
+        entityId: 'entity-test-001',
+      });
+
+      expect((result as Record<string, unknown>).aiRiskAssessment).toBe('This is a low-risk operation');
     });
   });
 });

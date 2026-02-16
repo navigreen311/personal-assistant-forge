@@ -4,6 +4,11 @@
 
 import { AuditService } from '@/modules/security/services/audit-service';
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -212,6 +217,88 @@ describe('AuditService', () => {
       const page4 = await service.getAuditLog({}, 4, 3);
       expect(page4.data).toHaveLength(1);
       expect(page4.total).toBe(10);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // analyzeAuditTrail — AI-powered anomaly detection
+  // -----------------------------------------------------------------------
+  describe('analyzeAuditTrail', () => {
+    const { generateJSON } = jest.requireMock('@/lib/ai') as { generateJSON: jest.Mock };
+
+    let service: AuditService;
+
+    beforeEach(() => {
+      service = new AuditService();
+      generateJSON.mockReset();
+      generateJSON.mockRejectedValue(new Error('AI unavailable in test'));
+    });
+
+    it('should analyze audit trail for anomalies', async () => {
+      const from = new Date(Date.now() - 60_000);
+
+      await service.logAuditEntry(baseEntryParams({ action: 'CREATE' }));
+      await service.logAuditEntry(baseEntryParams({ action: 'DELETE' }));
+      await service.logAuditEntry(baseEntryParams({ action: 'BULK_DELETE' }));
+
+      const to = new Date(Date.now() + 60_000);
+
+      generateJSON.mockResolvedValueOnce({
+        anomalies: [{ description: 'Bulk delete detected', severity: 'HIGH', eventIndices: [2] }],
+        summary: 'Suspicious bulk operation detected',
+        riskScore: 75,
+      });
+
+      const result = await service.analyzeAuditTrail('entity-1', { from, to });
+
+      expect(generateJSON).toHaveBeenCalled();
+      expect(result.anomalies.length).toBe(1);
+      expect(result.anomalies[0].severity).toBe('HIGH');
+      expect(result.riskScore).toBe(75);
+    });
+
+    it('should return structured anomaly alerts', async () => {
+      const from = new Date(Date.now() - 60_000);
+      await service.logAuditEntry(baseEntryParams());
+      const to = new Date(Date.now() + 60_000);
+
+      generateJSON.mockResolvedValueOnce({
+        anomalies: [
+          { description: 'Off-hours access', severity: 'MEDIUM', eventIndices: [0] },
+        ],
+        summary: 'Minor anomaly detected',
+        riskScore: 30,
+      });
+
+      const result = await service.analyzeAuditTrail('entity-1', { from, to });
+
+      expect(result.anomalies[0].description).toBe('Off-hours access');
+      expect(result.summary).toBe('Minor anomaly detected');
+      expect(result.riskScore).toBe(30);
+    });
+
+    it('should handle AI failure with empty result', async () => {
+      const from = new Date(Date.now() - 60_000);
+      await service.logAuditEntry(baseEntryParams());
+      const to = new Date(Date.now() + 60_000);
+
+      generateJSON.mockRejectedValueOnce(new Error('AI error'));
+
+      const result = await service.analyzeAuditTrail('entity-1', { from, to });
+
+      expect(result.anomalies).toEqual([]);
+      expect(result.riskScore).toBe(0);
+    });
+
+    it('should return empty result for empty time window', async () => {
+      const from = new Date('2000-01-01');
+      const to = new Date('2000-01-02');
+
+      const result = await service.analyzeAuditTrail('entity-1', { from, to });
+
+      expect(result.anomalies).toEqual([]);
+      expect(result.riskScore).toBe(0);
+      expect(generateJSON).not.toHaveBeenCalled();
     });
   });
 });

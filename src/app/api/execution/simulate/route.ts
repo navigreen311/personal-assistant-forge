@@ -1,5 +1,7 @@
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { simulateAction } from '@/modules/execution/services/simulation-engine';
 
 const SimulateRequestSchema = z.object({
@@ -9,25 +11,27 @@ const SimulateRequestSchema = z.object({
   entityId: z.string().min(1, 'entityId is required'),
 });
 
-export async function POST(request: Request) {
-  try {
-    const body: unknown = await request.json();
-    const parsed = SimulateRequestSchema.safeParse(body);
+export async function POST(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const body: unknown = await req.json();
+      const parsed = SimulateRequestSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const result = await simulateAction(parsed.data);
+
+      return success(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Simulation failed';
+      return error('SIMULATION_ERROR', message, 500);
     }
-
-    const result = await simulateAction(parsed.data);
-
-    return success(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Simulation failed';
-    return error('SIMULATION_ERROR', message, 500);
-  }
+  });
 }
