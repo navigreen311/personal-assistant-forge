@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { WorkflowGraph, TriggerNodeConfig } from '@/modules/workflows/types';
 import type { Workflow } from '@/shared/types';
 
@@ -84,8 +85,8 @@ export async function createWorkflow(params: CreateWorkflowParams): Promise<Work
     data: {
       name,
       entityId,
-      triggers: triggerData,
-      steps: graph as unknown as Record<string, unknown>,
+      triggers: triggerData as unknown as Prisma.InputJsonValue,
+      steps: graph as unknown as Prisma.InputJsonValue,
       status: 'DRAFT',
     },
   });
@@ -111,13 +112,13 @@ export async function updateWorkflow(
   if (updates.name !== undefined) data.name = updates.name;
   if (updates.status !== undefined) data.status = updates.status;
   if (updates.graph !== undefined) {
-    data.steps = updates.graph as unknown as Record<string, unknown>;
+    data.steps = updates.graph as unknown as Prisma.InputJsonValue;
   }
   if (updates.triggers !== undefined) {
     data.triggers = updates.triggers.map((t) => ({
       type: t.triggerType,
       config: t as unknown as Record<string, unknown>,
-    }));
+    })) as unknown as Prisma.InputJsonValue;
   }
 
   const record = await prisma.workflow.update({
@@ -178,8 +179,8 @@ export async function duplicateWorkflow(
     data: {
       name: newName,
       entityId: original.entityId,
-      triggers: original.triggers as Record<string, unknown>[],
-      steps: original.steps as Record<string, unknown>,
+      triggers: original.triggers as unknown as Prisma.InputJsonValue,
+      steps: original.steps as unknown as Prisma.InputJsonValue,
       status: 'DRAFT',
     },
   });

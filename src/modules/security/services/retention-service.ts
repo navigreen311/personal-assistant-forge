@@ -30,8 +30,9 @@ type PrismaModelName =
  * Returns the Prisma delegate for a given model name so we can call
  * findMany / deleteMany / updateMany dynamically.
  */
-function getPrismaDelegate(modelName: PrismaModelName) {
-  const mapping: Record<PrismaModelName, typeof prisma.message> = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getPrismaDelegate(modelName: PrismaModelName): any {
+  const mapping: Record<PrismaModelName, unknown> = {
     Message: prisma.message,
     ActionLog: prisma.actionLog,
     Document: prisma.document,
@@ -177,8 +178,7 @@ export class RetentionService {
       }
 
       // Fetch candidate records
-      const records: Array<{ id: string }> = await (delegate as typeof prisma.message)
-        .findMany({
+      const records: Array<{ id: string }> = await delegate.findMany({
           where,
           select: { id: true },
         });
@@ -280,9 +280,7 @@ export class RetentionService {
       where['sensitivity'] = policy.classification;
     }
 
-    const records: Array<{ id: string; createdAt: Date }> = await (
-      delegate as typeof prisma.message
-    ).findMany({
+    const records: Array<{ id: string; createdAt: Date }> = await delegate.findMany({
       where,
       select: { id: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
@@ -381,12 +379,12 @@ export class RetentionService {
    * Hard-delete eligible records.
    */
   private async applyDelete(
-    delegate: ReturnType<typeof getPrismaDelegate>,
+    delegate: any,
     ids: string[],
     result: RetentionExecutionResult,
   ): Promise<void> {
     try {
-      const { count } = await (delegate as typeof prisma.message).deleteMany({
+      const { count } = await delegate.deleteMany({
         where: { id: { in: ids } },
       });
       result.recordsDeleted = count;
@@ -402,12 +400,12 @@ export class RetentionService {
    * with a note.
    */
   private async applyArchive(
-    delegate: ReturnType<typeof getPrismaDelegate>,
+    delegate: any,
     ids: string[],
     result: RetentionExecutionResult,
   ): Promise<void> {
     try {
-      const { count } = await (delegate as typeof prisma.message).updateMany({
+      const { count } = await delegate.updateMany({
         where: { id: { in: ids } },
         data: { status: 'ARCHIVED' } as Record<string, unknown>,
       });
@@ -422,7 +420,7 @@ export class RetentionService {
    * Replace PII-bearing text fields with '[ANONYMIZED]'.
    */
   private async applyAnonymize(
-    delegate: ReturnType<typeof getPrismaDelegate>,
+    delegate: any,
     modelName: PrismaModelName,
     ids: string[],
     result: RetentionExecutionResult,
@@ -439,7 +437,7 @@ export class RetentionService {
     }
 
     try {
-      const { count } = await (delegate as typeof prisma.message).updateMany({
+      const { count } = await delegate.updateMany({
         where: { id: { in: ids } },
         data: data as Record<string, unknown>,
       });

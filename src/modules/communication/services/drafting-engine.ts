@@ -132,7 +132,7 @@ export async function generateDrafts(request: DraftRequest): Promise<DraftRespon
     preferredChannel: (preferences.preferredChannel as MessageChannel) ?? 'EMAIL',
     responseRate: messages.length > 0 ? Math.min(messages.length / 50, 1) : 0,
     averageResponseTime: messages.length > 0 ? '24 hours' : 'Unknown',
-    topTopics: extractTopTopics(messages.map((m: { intent?: string }) => m.intent).filter(Boolean) as string[]),
+    topTopics: extractTopTopics(messages.map((m) => m.intent).filter(Boolean) as string[]),
   };
 
   // Fetch entity for compliance profile

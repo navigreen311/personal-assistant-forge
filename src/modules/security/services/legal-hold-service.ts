@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import prisma from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { LegalHold, LegalHoldScope } from '@/modules/security/types';
 
 // ---------------------------------------------------------------------------
@@ -351,15 +352,15 @@ export class LegalHoldService {
       case 'Message':
         return prisma.message.findUnique({ where: { id: recordId } });
       case 'Task':
-        return prisma.task.findUnique({ where: { id: recordId } });
+        return prisma.task.findUnique({ where: { id: recordId } }) as unknown as PrismaRecord | null;
       case 'Document':
-        return prisma.document.findUnique({ where: { id: recordId } });
+        return prisma.document.findUnique({ where: { id: recordId } }) as unknown as PrismaRecord | null;
       case 'Call':
-        return prisma.call.findUnique({ where: { id: recordId } });
+        return prisma.call.findUnique({ where: { id: recordId } }) as unknown as PrismaRecord | null;
       case 'Contact':
-        return prisma.contact.findUnique({ where: { id: recordId } });
+        return prisma.contact.findUnique({ where: { id: recordId } }) as unknown as PrismaRecord | null;
       case 'ActionLog':
-        return prisma.actionLog.findUnique({ where: { id: recordId } }) as Promise<PrismaRecord | null>;
+        return prisma.actionLog.findUnique({ where: { id: recordId } }) as unknown as PrismaRecord | null;
       case 'KnowledgeEntry':
         return prisma.knowledgeEntry.findUnique({ where: { id: recordId } });
       default:
@@ -393,27 +394,27 @@ export class LegalHoldService {
       case 'Task':
         return prisma.task.findMany({
           where: { entityId, ...dateFilter },
-        });
+        }) as unknown as PrismaRecord[];
       case 'Document':
         return prisma.document.findMany({
           where: { entityId, ...dateFilter },
-        });
+        }) as unknown as PrismaRecord[];
       case 'Call':
         return prisma.call.findMany({
           where: { entityId, ...dateFilter },
-        });
+        }) as unknown as PrismaRecord[];
       case 'Contact':
         return prisma.contact.findMany({
           where: { entityId, ...dateFilter },
-        });
+        }) as unknown as PrismaRecord[];
       case 'ActionLog':
         return prisma.actionLog.findMany({
-          where: dateFilter,
-        }) as Promise<PrismaRecord[]>;
+          where: dateFilter as Prisma.ActionLogWhereInput,
+        }) as unknown as PrismaRecord[];
       case 'KnowledgeEntry':
         return prisma.knowledgeEntry.findMany({
           where: { entityId, ...dateFilter },
-        });
+        }) as unknown as PrismaRecord[];
       default:
         return [];
     }

@@ -114,7 +114,7 @@ export async function calculateProjectHealth(projectId: string): Promise<Project
 
   // Retrieve milestones from project
   const project = await prisma.project.findUnique({ where: { id: projectId } });
-  const milestones = (project?.milestones as Milestone[]) ?? [];
+  const milestones = (project?.milestones as unknown as Milestone[]) ?? [];
   const overdueMilestones = milestones.filter(
     (m) => new Date(m.dueDate) < now && m.status !== 'DONE'
   ).length;
@@ -166,7 +166,7 @@ export async function getProjectSummary(projectId: string): Promise<{
 
   const health = await calculateProjectHealth(projectId);
 
-  const milestones = (project.milestones as Milestone[]) ?? [];
+  const milestones = ((project.milestones as unknown as Milestone[]) ?? []);
   const now = new Date();
   const upcomingMilestones = milestones
     .filter((m) => m.status !== 'DONE' && new Date(m.dueDate) >= now)
@@ -199,7 +199,7 @@ function mapPrismaProject(project: {
     name: project.name,
     entityId: project.entityId,
     description: project.description ?? undefined,
-    milestones: (project.milestones as Milestone[]) ?? [],
+    milestones: ((project.milestones as unknown as Milestone[]) ?? []),
     status: project.status as TaskStatus,
     health: project.health as ProjectHealth,
     createdAt: project.createdAt,

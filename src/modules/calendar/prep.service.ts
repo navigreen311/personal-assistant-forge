@@ -26,7 +26,7 @@ export class PrepPacketService {
       endTime: event.endTime,
       bufferBefore: event.bufferBefore ?? undefined,
       bufferAfter: event.bufferAfter ?? undefined,
-      prepPacket: event.prepPacket as PrepPacket | undefined,
+      prepPacket: event.prepPacket as unknown as PrepPacket | undefined,
       meetingNotes: event.meetingNotes ?? undefined,
       recurrence: event.recurrence ?? undefined,
       createdAt: event.createdAt,
@@ -54,7 +54,7 @@ export class PrepPacketService {
     // Save to event
     await prisma.calendarEvent.update({
       where: { id: request.eventId },
-      data: { prepPacket: prepPacket as unknown as Record<string, unknown> },
+      data: { prepPacket: JSON.parse(JSON.stringify(prepPacket)) },
     });
 
     return prepPacket;

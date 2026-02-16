@@ -121,7 +121,7 @@ describe('ProcrastinationDetector', () => {
       };
 
       const suggestion = getSuggestion(alert);
-      expect(suggestion).toContain('Break');
+      expect(suggestion).toContain('breaking');
       expect(suggestion).toContain('Big Task');
     });
 

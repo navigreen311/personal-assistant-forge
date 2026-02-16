@@ -97,7 +97,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const action = await enqueueAction(parsed.data);
+    const action = await enqueueAction({
+      ...parsed.data,
+      actionLogId: '',
+      requiresApproval: true,
+    });
     return success(action, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal server error';

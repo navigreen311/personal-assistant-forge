@@ -158,24 +158,39 @@ describe('Dashboard Service', () => {
         .mockResolvedValueOnce({ name: 'Entity 1' })
         .mockResolvedValueOnce({ name: 'Entity 2' });
 
-      // Entity 1 records
+      // Mock ordering matches interleaved async execution:
+      // getEntitySummary and generateAlerts run in parallel for both entities.
+      // generateAlerts hits findMany first (getEntitySummary awaits findUniqueOrThrow first).
       mockPrisma.financialRecord.findMany
+        // 1. generateAlerts('entity-1') - overdue invoices
+        .mockResolvedValueOnce([])
+        // 2. generateAlerts('entity-2') - overdue invoices
+        .mockResolvedValueOnce([])
+        // 3. getEntitySummary('entity-1') - records
         .mockResolvedValueOnce([
           { type: 'INVOICE', amount: 10000, status: 'PAID' },
           { type: 'EXPENSE', amount: 3000, status: 'PAID' },
         ])
-        // Entity 1 alert checks (5 calls)
-        .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ type: 'INVOICE', amount: 10000, status: 'PAID' }])
+        // 4. generateAlerts('entity-1') - overdue bills
         .mockResolvedValueOnce([])
-        // Entity 2 records
+        // 5. getEntitySummary('entity-2') - records
         .mockResolvedValueOnce([
           { type: 'INVOICE', amount: 5000, status: 'PAID' },
           { type: 'EXPENSE', amount: 2000, status: 'PAID' },
         ])
-        // Entity 2 alert checks (5 calls)
-        .mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([])
+        // 6. generateAlerts('entity-2') - overdue bills
+        .mockResolvedValueOnce([])
+        // 7. generateAlerts('entity-1') - recent records (burn rate)
+        .mockResolvedValueOnce([])
+        // 8. generateAlerts('entity-2') - recent records (burn rate)
+        .mockResolvedValueOnce([])
+        // 9. generateAlerts('entity-1') - all records (low cash)
+        .mockResolvedValueOnce([{ type: 'INVOICE', amount: 10000, status: 'PAID' }])
+        // 10. generateAlerts('entity-2') - all records (low cash)
         .mockResolvedValueOnce([{ type: 'INVOICE', amount: 5000, status: 'PAID' }])
+        // 11. generateAlerts('entity-1') - upcoming renewals
+        .mockResolvedValueOnce([])
+        // 12. generateAlerts('entity-2') - upcoming renewals
         .mockResolvedValueOnce([]);
 
       const dashboard = await getUnifiedDashboard('user-1', {

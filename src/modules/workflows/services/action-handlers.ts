@@ -172,7 +172,7 @@ export async function handleUpdateRecord(
     throw new Error(`Model ${validated.model} is not allowed for generic update`);
   }
 
-  const modelDelegate = prisma[validated.model as AllowedModel] as {
+  const modelDelegate = prisma[validated.model as AllowedModel] as unknown as {
     update: (args: { where: { id: string }; data: Record<string, unknown> }) => Promise<{ id: string }>;
   };
 

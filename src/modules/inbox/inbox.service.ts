@@ -273,7 +273,7 @@ export class InboxService {
       intent: updated.intent ?? undefined,
       sensitivity: updated.sensitivity as Message['sensitivity'],
       draftStatus: updated.draftStatus as Message['draftStatus'],
-      attachments: updated.attachments as Message['attachments'],
+      attachments: updated.attachments as unknown as Message['attachments'],
       createdAt: updated.createdAt,
       updatedAt: updated.updatedAt,
     };

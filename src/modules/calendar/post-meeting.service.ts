@@ -47,7 +47,7 @@ export class PostMeetingService {
         endTime: event.endTime,
         bufferBefore: event.bufferBefore ?? undefined,
         bufferAfter: event.bufferAfter ?? undefined,
-        prepPacket: event.prepPacket as CalendarEvent['prepPacket'],
+        prepPacket: event.prepPacket as unknown as CalendarEvent['prepPacket'],
         meetingNotes: event.meetingNotes ?? undefined,
         recurrence: event.recurrence ?? undefined,
         createdAt: event.createdAt,

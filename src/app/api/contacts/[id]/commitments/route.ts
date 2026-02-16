@@ -23,7 +23,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       return error('NOT_FOUND', `Contact not found: ${id}`, 404);
     }
 
-    const commitments = (contact.commitments as Commitment[]) ?? [];
+    const commitments = (contact.commitments as unknown as Commitment[]) ?? [];
     return success(commitments);
   } catch (err) {
     return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to get commitments', 500);

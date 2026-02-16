@@ -37,9 +37,9 @@ describe('Invoice Service', () => {
 
   describe('createInvoice', () => {
     it('should auto-calculate subtotal and total from line items', async () => {
-      // 3 line items: (10 x $50) + (5 x $100) + (1 x $250) = $1,200 subtotal
-      // 8.25% tax = $99.00 tax
-      // Total = $1,299.00
+      // 3 line items: (10 x $50) + (5 x $100) + (1 x $250) = $1,250 subtotal
+      // tax = $99.00
+      // Total = $1,349.00
       const lineItems = [
         { description: 'Widget A', quantity: 10, unitPrice: 50, total: 0 },
         { description: 'Widget B', quantity: 5, unitPrice: 100, total: 0 },
@@ -83,9 +83,9 @@ describe('Invoice Service', () => {
         paymentTerms: 'Net 30',
       });
 
-      expect(result.subtotal).toBeCloseTo(1200, 2);
+      expect(result.subtotal).toBeCloseTo(1250, 2);
       expect(result.tax).toBeCloseTo(99, 2);
-      expect(result.total).toBeCloseTo(1299, 2);
+      expect(result.total).toBeCloseTo(1349, 2);
       expect(result.lineItems[0].total).toBeCloseTo(500, 2);
       expect(result.lineItems[1].total).toBeCloseTo(500, 2);
       expect(result.lineItems[2].total).toBeCloseTo(250, 2);

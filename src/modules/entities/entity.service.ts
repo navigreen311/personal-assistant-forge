@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { Entity, ComplianceProfile } from '@/shared/types';
 import type {
   CreateEntityInput,
@@ -23,7 +24,7 @@ interface EntityRow {
   name: string;
   type: string;
   complianceProfile: string[];
-  brandKit: Record<string, unknown> | null;
+  brandKit: Prisma.JsonValue;
   voicePersonaId: string | null;
   phoneNumbers: string[];
   createdAt: Date;
@@ -120,7 +121,7 @@ export class EntityService {
         name: data.name,
         type: data.type,
         complianceProfile: data.complianceProfile ?? ['GENERAL'],
-        brandKit: data.brandKit ?? undefined,
+        brandKit: (data.brandKit ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
         voicePersonaId: data.voicePersonaId,
         phoneNumbers: data.phoneNumbers ?? [],
       },
@@ -154,18 +155,17 @@ export class EntityService {
       brandKit = { ...(existing.brandKit as Record<string, unknown>), ...brandKit };
     }
 
+    const updateData: Prisma.EntityUpdateInput = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.type !== undefined) updateData.type = data.type;
+    if (data.complianceProfile !== undefined) updateData.complianceProfile = data.complianceProfile;
+    if (brandKit !== undefined) updateData.brandKit = brandKit as unknown as Prisma.InputJsonValue;
+    if (data.voicePersonaId !== undefined) updateData.voicePersonaId = data.voicePersonaId;
+    if (data.phoneNumbers !== undefined) updateData.phoneNumbers = data.phoneNumbers;
+
     const updated = await prisma.entity.update({
       where: { id: entityId },
-      data: {
-        ...(data.name !== undefined && { name: data.name }),
-        ...(data.type !== undefined && { type: data.type }),
-        ...(data.complianceProfile !== undefined && {
-          complianceProfile: data.complianceProfile,
-        }),
-        ...(brandKit !== undefined && { brandKit: brandKit as Record<string, unknown> }),
-        ...(data.voicePersonaId !== undefined && { voicePersonaId: data.voicePersonaId }),
-        ...(data.phoneNumbers !== undefined && { phoneNumbers: data.phoneNumbers }),
-      },
+      data: updateData,
     });
     return this.toEntity(updated);
   }

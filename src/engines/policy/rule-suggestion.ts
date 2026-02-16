@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { Rule } from '@/shared/types';
 import type { RuleCondition, RuleAction, RuleSuggestion } from './types';
 
@@ -84,8 +85,8 @@ export async function createRuleFromSuggestion(
     data: {
       name: suggestion.suggestedName,
       scope: suggestion.suggestedScope,
-      condition: suggestion.suggestedCondition as unknown as Record<string, unknown>,
-      action: suggestion.suggestedAction as unknown as Record<string, unknown>,
+      condition: suggestion.suggestedCondition as unknown as Prisma.InputJsonValue,
+      action: suggestion.suggestedAction as unknown as Prisma.InputJsonValue,
       precedence: 50,
       createdBy: 'AI',
       version: 1,

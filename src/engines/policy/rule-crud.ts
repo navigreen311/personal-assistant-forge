@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { Rule } from '@/shared/types';
 import type { RuleScope } from './types';
 
@@ -10,8 +11,8 @@ export async function createRule(
       name: data.name,
       scope: data.scope,
       entityId: data.entityId,
-      condition: data.condition as Record<string, unknown>,
-      action: data.action as Record<string, unknown>,
+      condition: data.condition as unknown as Prisma.InputJsonValue,
+      action: data.action as unknown as Prisma.InputJsonValue,
       precedence: data.precedence,
       createdBy: data.createdBy,
       isActive: data.isActive,
@@ -26,18 +27,20 @@ export async function updateRule(id: string, data: Partial<Rule>): Promise<Rule>
   const existing = await prisma.rule.findUnique({ where: { id } });
   if (!existing) throw new Error(`Rule not found: ${id}`);
 
+  const updateData: Prisma.RuleUncheckedUpdateInput = {
+    version: existing.version + 1,
+  };
+  if (data.name !== undefined) updateData.name = data.name;
+  if (data.scope !== undefined) updateData.scope = data.scope;
+  if (data.entityId !== undefined) updateData.entityId = data.entityId;
+  if (data.condition !== undefined) updateData.condition = data.condition as unknown as Prisma.InputJsonValue;
+  if (data.action !== undefined) updateData.action = data.action as unknown as Prisma.InputJsonValue;
+  if (data.precedence !== undefined) updateData.precedence = data.precedence;
+  if (data.isActive !== undefined) updateData.isActive = data.isActive;
+
   const rule = await prisma.rule.update({
     where: { id },
-    data: {
-      ...(data.name !== undefined && { name: data.name }),
-      ...(data.scope !== undefined && { scope: data.scope }),
-      ...(data.entityId !== undefined && { entityId: data.entityId }),
-      ...(data.condition !== undefined && { condition: data.condition as Record<string, unknown> }),
-      ...(data.action !== undefined && { action: data.action as Record<string, unknown> }),
-      ...(data.precedence !== undefined && { precedence: data.precedence }),
-      ...(data.isActive !== undefined && { isActive: data.isActive }),
-      version: existing.version + 1,
-    },
+    data: updateData,
   });
 
   return mapPrismaRule(rule);
@@ -90,8 +93,8 @@ export async function duplicateRule(
       name: overrides?.name ?? `${existing.name} (copy)`,
       scope: overrides?.scope ?? existing.scope,
       entityId: overrides?.entityId ?? existing.entityId,
-      condition: (overrides?.condition ?? existing.condition) as Record<string, unknown>,
-      action: (overrides?.action ?? existing.action) as Record<string, unknown>,
+      condition: (overrides?.condition ?? existing.condition) as unknown as Prisma.InputJsonValue,
+      action: (overrides?.action ?? existing.action) as unknown as Prisma.InputJsonValue,
       precedence: overrides?.precedence ?? existing.precedence,
       createdBy: overrides?.createdBy ?? existing.createdBy,
       isActive: overrides?.isActive ?? true,

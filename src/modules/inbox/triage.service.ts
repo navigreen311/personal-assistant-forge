@@ -227,9 +227,12 @@ export class TriageService {
       if (contactRecord) {
         sender = {
           ...contactRecord,
-          channels: contactRecord.channels as Contact['channels'],
-          commitments: contactRecord.commitments as Contact['commitments'],
-          preferences: contactRecord.preferences as Contact['preferences'],
+          email: contactRecord.email ?? undefined,
+          phone: contactRecord.phone ?? undefined,
+          lastTouch: contactRecord.lastTouch,
+          channels: contactRecord.channels as unknown as Contact['channels'],
+          commitments: contactRecord.commitments as unknown as Contact['commitments'],
+          preferences: contactRecord.preferences as unknown as Contact['preferences'],
         };
       }
     } catch {

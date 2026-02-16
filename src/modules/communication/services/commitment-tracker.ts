@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type { Commitment } from '@/shared/types';
 
 /**
@@ -17,7 +18,7 @@ export async function addCommitment(
   const contact = await prisma.contact.findUnique({ where: { id: contactId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
-  const existingCommitments = (contact.commitments as Commitment[]) ?? [];
+  const existingCommitments = (contact.commitments as unknown as Commitment[]) ?? [];
 
   const newCommitment: Commitment = {
     id: uuidv4(),
@@ -28,7 +29,7 @@ export async function addCommitment(
   await prisma.contact.update({
     where: { id: contactId },
     data: {
-      commitments: [...existingCommitments, newCommitment] as unknown as Record<string, unknown>[],
+      commitments: [...existingCommitments, newCommitment] as unknown as Prisma.InputJsonValue,
     },
   });
 
@@ -50,7 +51,7 @@ export async function getOpenCommitments(
   const allCommitments: Commitment[] = [];
 
   for (const contact of contacts) {
-    const commitments = (contact.commitments as Commitment[]) ?? [];
+    const commitments = (contact.commitments as unknown as Commitment[]) ?? [];
     for (const c of commitments) {
       if (c.status === 'OPEN') {
         if (!direction || c.direction === direction) {
@@ -73,7 +74,7 @@ export async function markFulfilled(commitmentId: string): Promise<void> {
   });
 
   for (const contact of contacts) {
-    const commitments = (contact.commitments as Commitment[]) ?? [];
+    const commitments = (contact.commitments as unknown as Commitment[]) ?? [];
     const index = commitments.findIndex((c) => c.id === commitmentId);
 
     if (index >= 0) {
@@ -82,7 +83,7 @@ export async function markFulfilled(commitmentId: string): Promise<void> {
       await prisma.contact.update({
         where: { id: contact.id },
         data: {
-          commitments: commitments as unknown as Record<string, unknown>[],
+          commitments: commitments as unknown as Prisma.InputJsonValue,
         },
       });
 
@@ -107,7 +108,7 @@ export async function getOverdueCommitments(entityId: string): Promise<Commitmen
   const overdue: Commitment[] = [];
 
   for (const contact of contacts) {
-    const commitments = (contact.commitments as Commitment[]) ?? [];
+    const commitments = (contact.commitments as unknown as Commitment[]) ?? [];
     for (const c of commitments) {
       if (c.status === 'OPEN' && c.dueDate && new Date(c.dueDate) < now) {
         overdue.push(c);

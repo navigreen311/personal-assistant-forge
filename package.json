@@ -15,14 +15,14 @@
     "db:generate": "npx prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^7.4.0",
+    "@prisma/client": "^6.19.2",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.69.2",
     "date-fns": "^4.1.0",
     "ioredis": "^5.9.3",
     "next": "16.1.6",
     "next-auth": "^4.24.13",
-    "prisma": "^7.4.0",
+    "prisma": "^6.19.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",

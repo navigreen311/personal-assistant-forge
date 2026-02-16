@@ -25,7 +25,7 @@ export async function forecastTaskCompletion(taskId: string): Promise<Completion
       confidence: 0.3,
       velocity: 0,
       remainingTasks: 1,
-      historicalData: velocity.weeklyData,
+      historicalData: velocity.weeklyData.map((w) => ({ period: w.week, completed: w.completed })),
       risks: ['Zero velocity detected — no tasks completed recently'],
     };
   }
@@ -53,7 +53,7 @@ export async function forecastTaskCompletion(taskId: string): Promise<Completion
     confidence,
     velocity: velocity.currentVelocity,
     remainingTasks: 1,
-    historicalData: velocity.weeklyData,
+    historicalData: velocity.weeklyData.map((w) => ({ period: w.week, completed: w.completed })),
     risks,
   };
 }
@@ -117,7 +117,7 @@ export async function forecastProjectCompletion(projectId: string): Promise<Comp
     confidence,
     velocity: velocity.currentVelocity,
     remainingTasks,
-    historicalData: velocity.weeklyData,
+    historicalData: velocity.weeklyData.map((w) => ({ period: w.week, completed: w.completed })),
     risks,
   };
 }

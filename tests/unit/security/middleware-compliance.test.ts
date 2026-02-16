@@ -81,15 +81,15 @@ function createMockRequest(options: {
   headers?: Record<string, string>;
 }): NextRequest {
   const url = options.url || 'http://localhost/api/test';
-  const init: RequestInit = {
-    method: options.method || 'GET',
-    headers: new Headers(options.headers || {}),
-  };
+  const headers = new Headers(options.headers || {});
   if (options.body) {
-    init.body = JSON.stringify(options.body);
-    (init.headers as Headers).set('content-type', 'application/json');
+    headers.set('content-type', 'application/json');
   }
-  return new NextRequest(url, init);
+  return new NextRequest(url, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  } as any);
 }
 
 /** Default mock handler that returns a JSON response */

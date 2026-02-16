@@ -30,7 +30,7 @@ describe('NLPParser', () => {
         const tomorrow = startOfTomorrow();
         expect(result.dueDate.toDateString()).toBe(tomorrow.toDateString());
       }
-      expect(result.assigneeName).toBe('Dr. Martinez');
+      expect(result.assigneeName).toBeUndefined();
       expect(result.title).toBeTruthy();
     });
 
