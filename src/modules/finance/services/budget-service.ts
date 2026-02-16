@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Budget, BudgetCategory, BudgetForecast } from '@/modules/finance/types';
 
 function round2(n: number): number {
@@ -213,4 +214,53 @@ export async function checkBudgetAlerts(budgetId: string): Promise<BudgetCategor
   return budget.categories.filter(
     (cat) => cat.percentUsed >= 80
   );
+}
+
+// --- AI-Enhanced Budget Analysis ---
+
+export async function analyzeBudgetWithAI(
+  budgetId: string
+): Promise<{ analysis: string; recommendations: string[]; riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' }> {
+  try {
+    const budget = await getBudgetWithActuals(budgetId);
+
+    const categorySummary = budget.categories
+      .map((c) => `${c.category}: $${c.spent}/$${c.budgeted} (${c.percentUsed}% used, ${c.alert})`)
+      .join('\n');
+
+    const result = await generateJSON<{
+      analysis: string;
+      recommendations: string[];
+      riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    }>(
+      `Analyze this budget and provide strategic insights.
+
+Budget: ${budget.name}
+Period: ${budget.period.start.toISOString().split('T')[0]} to ${budget.period.end.toISOString().split('T')[0]}
+Total budgeted: $${budget.totalBudgeted}
+Total spent: $${budget.totalSpent}
+Remaining: $${budget.remainingBudget}
+
+Categories:
+${categorySummary}
+
+Return JSON with:
+- analysis: 2-3 sentence budget health assessment
+- recommendations: array of 2-3 actionable suggestions
+- riskLevel: LOW, MEDIUM, or HIGH based on spending patterns`,
+      {
+        maxTokens: 512,
+        temperature: 0.3,
+        system: 'You are a financial planning assistant. Provide practical, data-driven budget analysis.',
+      }
+    );
+
+    return result;
+  } catch {
+    return {
+      analysis: 'AI budget analysis unavailable.',
+      recommendations: ['Review budget categories manually for overspending.'],
+      riskLevel: 'MEDIUM',
+    };
+  }
 }
