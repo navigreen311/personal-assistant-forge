@@ -221,3 +221,67 @@ export async function search(request: SearchRequest): Promise<SearchResponse> {
     suggestedQueries: suggestRelatedQueries(request.query, scored),
   };
 }
+
+export async function semanticSearch(request: SearchRequest): Promise<SearchResponse> {
+  // 1. Run existing keyword search
+  const keywordResults = await search(request);
+
+  // If no query or no results, return keyword results as-is
+  if (!request.query.trim() || keywordResults.results.length === 0) {
+    return keywordResults;
+  }
+
+  // 2. Take top 20 results for AI re-ranking
+  const topResults = keywordResults.results.slice(0, 20);
+
+  try {
+    const reRankInput = topResults.map((r, idx) => ({
+      id: idx,
+      title: r.entry.title,
+      excerpt: r.highlightedExcerpt.substring(0, 200),
+    }));
+
+    const aiResult = await generateJSON<{ rankedIds: number[] }>(
+      `Re-rank these search results by semantic relevance to the query.
+
+Query: "${request.query}"
+
+Results:
+${reRankInput.map((r) => `[${r.id}] "${r.title}" — ${r.excerpt}`).join('\n')}
+
+Return a JSON object with "rankedIds": an array of the result IDs (numbers) ordered from most to least semantically relevant to the query. Include all IDs.`,
+      {
+        maxTokens: 256,
+        temperature: 0.1,
+        system: 'You are a search relevance ranker. Re-order results by semantic relevance to the query.',
+      }
+    );
+
+    if (aiResult.rankedIds && Array.isArray(aiResult.rankedIds)) {
+      // Build re-ranked results from AI ordering
+      const reRanked: SearchResult[] = [];
+      for (const id of aiResult.rankedIds) {
+        if (id >= 0 && id < topResults.length) {
+          reRanked.push(topResults[id]);
+        }
+      }
+      // Add any results the AI missed
+      for (let i = 0; i < topResults.length; i++) {
+        if (!aiResult.rankedIds.includes(i)) {
+          reRanked.push(topResults[i]);
+        }
+      }
+      // Append remaining results beyond top 20
+      const remaining = keywordResults.results.slice(20);
+
+      return {
+        ...keywordResults,
+        results: [...reRanked, ...remaining],
+      };
+    }
+  } catch {
+    // Fall back to keyword results on AI failure
+  }
+
+  return keywordResults;
+}
