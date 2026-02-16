@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { LLMCostDashboard } from '../types';
 
 const DEFAULT_BUDGET_CAP = 500; // $500/month default
@@ -63,7 +64,7 @@ export async function getCostDashboard(
   const percentUsed =
     Math.round((totalCostUsd / DEFAULT_BUDGET_CAP) * 10000) / 100;
 
-  const alerts = getCostAlerts_internal(
+  const alerts = await getCostAlerts_internal(
     totalCostUsd,
     DEFAULT_BUDGET_CAP,
     projectedMonthEnd,
@@ -89,12 +90,12 @@ export async function getCostAlerts(entityId: string): Promise<string[]> {
   return dashboard.alerts;
 }
 
-function getCostAlerts_internal(
+async function getCostAlerts_internal(
   totalCost: number,
   budgetCap: number,
   projected: number,
   byFeature: { feature: string; cost: number; tokenCount: number }[]
-): string[] {
+): Promise<string[]> {
   const alerts: string[] = [];
 
   if (totalCost >= budgetCap) {
@@ -117,6 +118,26 @@ function getCostAlerts_internal(
       alerts.push(
         `Feature "${feature.feature}" consuming ${Math.round((feature.cost / totalCost) * 100)}% of total spend`
       );
+    }
+  }
+
+  // Generate AI-powered cost optimization recommendations
+  if (alerts.length > 0) {
+    try {
+      const recommendation = await generateText(
+        `You are a cloud cost optimization advisor. Analyze these LLM cost alerts and provide a brief optimization recommendation.
+
+Current spend: $${totalCost} of $${budgetCap} budget cap
+Projected month-end: $${projected}
+Feature breakdown: ${byFeature.map(f => `${f.feature}: $${f.cost}`).join(', ')}
+Current alerts: ${alerts.join('; ')}
+
+Provide one specific, actionable cost optimization recommendation in 1-2 sentences.`,
+        { temperature: 0.5, maxTokens: 128 }
+      );
+      alerts.push(`Recommendation: ${recommendation}`);
+    } catch {
+      // Static alerts are sufficient if AI fails
     }
   }
 

@@ -122,6 +122,7 @@ export interface CallAnalytics {
   outcomeDistribution: Record<string, number>;  // CallOutcome -> count
   sentimentAverage: number;
   roiPerCallType: { callType: string; averageRevenue: number; averageCost: number; roi: number }[];
+  insights: string[];
 }
 
 export interface TimeSavedAggregate {

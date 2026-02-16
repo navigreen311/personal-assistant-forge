@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import { v4 as uuidv4 } from 'uuid';
 import type { GoalDefinition, GoalMilestone, GoalCorrectionSuggestion } from '../types';
 
@@ -127,18 +128,43 @@ export async function suggestCourseCorrection(
     daysElapsed > 0 ? goal.currentValue / daysElapsed : 0;
   const requiredPace = daysRemaining > 0 ? remaining / daysRemaining : remaining;
 
-  let suggestion: string;
   let adjustedEndDate: Date | undefined;
 
   if (goal.status === 'BEHIND') {
     const projectedDaysNeeded =
       currentPace > 0 ? remaining / currentPace : totalDays * 2;
     adjustedEndDate = new Date(now.getTime() + projectedDaysNeeded * 86400000);
-    suggestion = `At current pace (${currentPace.toFixed(1)} ${goal.unit}/day), you need ${Math.ceil(projectedDaysNeeded)} more days. Consider extending the deadline to ${adjustedEndDate.toISOString().split('T')[0]} or increasing daily effort to ${requiredPace.toFixed(1)} ${goal.unit}/day.`;
-  } else if (goal.status === 'AT_RISK') {
-    suggestion = `You need to increase pace from ${currentPace.toFixed(1)} to ${requiredPace.toFixed(1)} ${goal.unit}/day. Consider prioritizing linked tasks or removing blockers.`;
-  } else {
-    suggestion = `Goal is on track. Maintain current pace of ${currentPace.toFixed(1)} ${goal.unit}/day.`;
+  }
+
+  // Use AI to generate context-aware course correction suggestion
+  let suggestion: string;
+  try {
+    const aiResult = await generateJSON<{ suggestion: string; adjustedEndDate?: string }>(
+      `You are a productivity coach. Analyze this goal and provide a course correction suggestion.
+
+Goal: "${goal.title}" (${goal.framework} framework)
+Status: ${goal.status}
+Current progress: ${goal.currentValue} / ${goal.targetValue} ${goal.unit}
+Current pace: ${currentPace.toFixed(1)} ${goal.unit}/day
+Required pace: ${requiredPace.toFixed(1)} ${goal.unit}/day
+Days elapsed: ${Math.round(daysElapsed)}
+Days remaining: ${Math.round(daysRemaining)}
+Linked tasks: ${goal.linkedTaskIds.length}
+Linked workflows: ${goal.linkedWorkflowIds.length}
+
+Respond with JSON: { "suggestion": "<actionable advice in 1-2 sentences>" }`,
+      { temperature: 0.4, maxTokens: 256 }
+    );
+    suggestion = aiResult.suggestion;
+  } catch {
+    // Fallback to static suggestion if AI fails
+    if (goal.status === 'BEHIND') {
+      suggestion = `At current pace (${currentPace.toFixed(1)} ${goal.unit}/day), consider increasing daily effort to ${requiredPace.toFixed(1)} ${goal.unit}/day or extending the deadline.`;
+    } else if (goal.status === 'AT_RISK') {
+      suggestion = `You need to increase pace from ${currentPace.toFixed(1)} to ${requiredPace.toFixed(1)} ${goal.unit}/day. Consider prioritizing linked tasks or removing blockers.`;
+    } else {
+      suggestion = `Goal is on track. Maintain current pace of ${currentPace.toFixed(1)} ${goal.unit}/day.`;
+    }
   }
 
   return {

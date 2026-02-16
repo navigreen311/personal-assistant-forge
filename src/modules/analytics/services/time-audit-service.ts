@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { TimeAuditReport, TimeAuditEntry, DriftAlert } from '../types';
 
 const DEFAULT_ALLOCATION: Record<string, number> = {
@@ -110,7 +111,7 @@ export async function generateTimeAudit(
     };
   });
 
-  const alerts = detectDriftAlerts(entries);
+  const alerts = await detectDriftAlerts(entries);
   const totalDriftMinutes = entries.reduce(
     (sum, e) => sum + Math.abs(e.driftMinutes),
     0
@@ -131,26 +132,50 @@ export async function generateTimeAudit(
   };
 }
 
-export function detectDriftAlerts(
+export async function detectDriftAlerts(
   entries: TimeAuditEntry[],
   threshold = 20
-): DriftAlert[] {
+): Promise<DriftAlert[]> {
   const alerts: DriftAlert[] = [];
 
   for (const entry of entries) {
     if (entry.driftPercent > 50) {
+      const defaultAction = `Review and restructure ${entry.category} time allocation. Consider blocking calendar or delegating.`;
+      let suggestedAction = defaultAction;
+
+      try {
+        suggestedAction = await generateText(
+          `You are a time management coach. A user has a critical time drift in "${entry.category}": ${entry.driftPercent}% deviation from plan. They intended ${entry.intendedMinutes} minutes but spent ${entry.actualMinutes} minutes (drift: ${entry.driftMinutes} min). Provide one specific, actionable suggestion to fix this in 1-2 sentences.`,
+          { temperature: 0.7, maxTokens: 128 }
+        );
+      } catch {
+        suggestedAction = defaultAction;
+      }
+
       alerts.push({
         category: entry.category,
         message: `Critical drift in ${entry.category}: ${entry.driftPercent}% deviation from plan`,
         severity: 'CRITICAL',
-        suggestedAction: `Review and restructure ${entry.category} time allocation. Consider blocking calendar or delegating.`,
+        suggestedAction,
       });
     } else if (entry.driftPercent > threshold) {
+      const defaultAction = `Monitor ${entry.category} time more closely and set reminders for time boundaries.`;
+      let suggestedAction = defaultAction;
+
+      try {
+        suggestedAction = await generateText(
+          `You are a time management coach. A user has a warning-level time drift in "${entry.category}": ${entry.driftPercent}% deviation from plan. They intended ${entry.intendedMinutes} minutes but spent ${entry.actualMinutes} minutes (drift: ${entry.driftMinutes} min). Provide one specific, actionable suggestion in 1-2 sentences.`,
+          { temperature: 0.7, maxTokens: 128 }
+        );
+      } catch {
+        suggestedAction = defaultAction;
+      }
+
       alerts.push({
         category: entry.category,
         message: `Warning: ${entry.category} drifted ${entry.driftPercent}% from intended allocation`,
         severity: 'WARNING',
-        suggestedAction: `Monitor ${entry.category} time more closely and set reminders for time boundaries.`,
+        suggestedAction,
       });
     }
   }

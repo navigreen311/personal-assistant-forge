@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateText } from '@/lib/ai';
 import type { HabitDefinition, HabitCorrelation } from '../types';
 import { calculateProductivityScore } from './productivity-scoring';
 
@@ -108,11 +109,21 @@ export async function calculateCorrelations(
     const direction = coefficient > 0 ? 'higher' : 'lower';
     const impact = Math.abs(Math.round(coefficient * 100));
 
+    let description = `${habit.name} correlates with ${impact}% ${direction} productivity`;
+    try {
+      description = await generateText(
+        `You are a habit coach. The habit "${habit.name}" (${habit.frequency}) has a Pearson correlation of ${coefficient.toFixed(3)} with productivity scores. The correlation is ${direction} at ${impact}% strength. Current streak: ${habit.streak} days, success rate: ${habit.successRate}%. Provide a one-sentence insight about this correlation and its practical implications.`,
+        { temperature: 0.7, maxTokens: 128 }
+      );
+    } catch {
+      // Keep default description
+    }
+
     correlations.push({
       habitName: habit.name,
       metric: 'productivity_score',
       correlationCoefficient: Math.round(coefficient * 1000) / 1000,
-      description: `${habit.name} correlates with ${impact}% ${direction} productivity`,
+      description,
     });
   }
 
