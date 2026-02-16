@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateText } from '@/lib/ai';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { SurfacingContext, SurfacedKnowledge } from '@/modules/knowledge/types';
 import { knowledgeEntryToCaptured, parseStoredData } from './capture-service';
@@ -93,9 +94,31 @@ export async function surfaceRelevant(context: SurfacingContext): Promise<Surfac
     }
   }
 
-  return scored
+  const topResults = scored
     .sort((a, b) => b.relevanceScore - a.relevanceScore)
     .slice(0, 5);
+
+  // Use AI to generate contextual summaries for top results
+  for (const result of topResults) {
+    try {
+      const stored = parseStoredData((entries.find(
+        (e: unknown) => (e as KnowledgeEntry).id === result.entry.id
+      ) as unknown as KnowledgeEntry)?.content || '');
+      if (stored.body && stored.body.length > 100) {
+        const summary = await generateText(
+          `Summarize this knowledge entry in 1-2 sentences, focusing on why it's relevant to: "${context.currentActivity}"
+
+Content: ${stored.body.substring(0, 500)}`,
+          { maxTokens: 100, temperature: 0.3 }
+        );
+        result.reason = summary || result.reason;
+      }
+    } catch {
+      // Keep the original reason on AI failure
+    }
+  }
+
+  return topResults;
 }
 
 export async function dismissSuggestion(entryId: string, contextHash: string): Promise<void> {
