@@ -28,8 +28,13 @@ class WakeWordService {
   private config: WakeWordConfig = DEFAULT_WAKE_WORD_CONFIG;
   private isListening = false;
   private callbacks: Array<() => void> = [];
+  private configHistory: Array<{ config: WakeWordConfig; setAt: Date }> = [];
 
   async initialize(config: WakeWordConfig): Promise<void> {
+    if (config.sensitivity < 0 || config.sensitivity > 1) {
+      throw new Error('Sensitivity must be between 0 and 1');
+    }
+
     this.config = config;
 
     // Placeholder: In production, this would:
@@ -87,6 +92,17 @@ class WakeWordService {
     console.log('[WakeWord] Stopped listening');
   }
 
+  async updateConfig(updates: Partial<WakeWordConfig>): Promise<WakeWordConfig> {
+    const wasListening = this.isListening;
+    if (wasListening) await this.stopListening();
+
+    this.config = { ...this.config, ...updates };
+    this.configHistory.push({ config: { ...this.config }, setAt: new Date() });
+
+    if (wasListening) await this.startListening();
+    return this.config;
+  }
+
   onWakeWordDetected(callback: () => void): void {
     this.callbacks.push(callback);
   }
@@ -103,12 +119,30 @@ class WakeWordService {
     }
   }
 
+  /**
+   * Process an audio frame for wake word detection.
+   * In production, this would feed the frame to the detection model.
+   */
+  processAudioFrame(_frame: Float32Array): boolean {
+    if (!this.isListening || !this.config.enabled) return false;
+
+    // Placeholder: In production, this would feed the audio frame to the
+    // wake word detection model and return true if the wake phrase is detected.
+    // For now, this is a no-op that returns false.
+    // Production: return this.detector.process(frame);
+    return false;
+  }
+
   getConfig(): WakeWordConfig {
     return { ...this.config };
   }
 
   getIsListening(): boolean {
     return this.isListening;
+  }
+
+  getConfigHistory(): Array<{ config: WakeWordConfig; setAt: Date }> {
+    return [...this.configHistory];
   }
 }
 

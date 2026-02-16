@@ -534,8 +534,9 @@ class CommandParser {
       merged.set(key, entity);
     }
 
-    // Override with AI entities (AI takes precedence)
+    // Override with AI entities (AI takes precedence), drop low-confidence ones
     for (const entity of aiEntities) {
+      if (entity.confidence < 0.3) continue; // Drop low-confidence AI entities
       const key = `${entity.type}:${entity.value}`;
       merged.set(key, entity);
     }

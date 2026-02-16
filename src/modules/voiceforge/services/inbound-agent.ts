@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Contact } from '@/shared/types';
 import type {
   InboundConfig,
@@ -63,6 +64,38 @@ export async function saveInboundConfig(config: InboundConfig): Promise<InboundC
   return config;
 }
 
+export async function detectCallerIntent(
+  contactId: string | null,
+  entityId: string
+): Promise<string | undefined> {
+  if (!contactId) return undefined;
+
+  try {
+    const recentCalls = await prisma.call.findMany({
+      where: { contactId, entityId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: { outcome: true, actionItems: true, transcript: true },
+    });
+
+    if (recentCalls.length === 0) return undefined;
+
+    const result = await generateJSON<{ intent: string }>(
+      `Based on this caller's recent call history, predict the likely intent of their new call.
+
+Recent calls:
+${recentCalls.map((c: { outcome: string | null; transcript: string | null }) => `- Outcome: ${c.outcome}, Transcript: ${(c.transcript ?? '').substring(0, 200)}`).join('\n')}
+
+Return JSON with "intent": one of INQUIRY, FOLLOW_UP, COMPLAINT, SCHEDULING, SUPPORT, SALES, UNKNOWN`,
+      { maxTokens: 128, temperature: 0.3, system: 'Predict call intent from historical patterns.' }
+    );
+
+    return result.intent;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function handleInboundCall(
   phoneNumber: string,
   callerNumber: string
@@ -74,9 +107,14 @@ export async function handleInboundCall(
 
   const callerInfo = await screenCaller(callerNumber, config.entityId);
   const afterHours = isAfterHours(config.afterHoursConfig);
+
+  // Detect caller intent using AI if we have a known contact
+  const intent = await detectCallerIntent(callerInfo.contact?.id ?? null, config.entityId);
+
   const routedTo = routeCall(config, {
     isVIP: callerInfo.isVIP,
     isSpam: callerInfo.isSpam,
+    intent,
   });
 
   // Create call record

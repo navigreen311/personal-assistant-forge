@@ -65,6 +65,7 @@ class STTService {
   private activeSessions = new Map<string, VoiceSession>();
   private providers = new Map<string, STTProvider>();
   private sessionProviders = new Map<string, STTProvider>();
+  private readonly SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     // Register the default browser provider
@@ -108,6 +109,11 @@ class STTService {
     return session;
   }
 
+  private checkSessionTimeout(session: VoiceSession): boolean {
+    const elapsed = Date.now() - session.startedAt.getTime();
+    return elapsed > this.SESSION_TIMEOUT_MS;
+  }
+
   async processAudioChunk(
     sessionId: string,
     chunk: ArrayBuffer,
@@ -115,6 +121,12 @@ class STTService {
     const session = this.activeSessions.get(sessionId);
     if (!session) {
       throw new Error(`Voice session "${sessionId}" not found`);
+    }
+
+    // Auto-end session if it has exceeded the timeout
+    if (this.checkSessionTimeout(session)) {
+      const ended = await this.endSession(sessionId);
+      return { interim: ended.transcript ?? '', isFinal: true };
     }
 
     const provider = this.sessionProviders.get(sessionId);

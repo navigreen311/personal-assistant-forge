@@ -76,3 +76,61 @@ export class MockVoiceProvider implements VoiceProvider {
     this.callStatuses.set(callSid, status);
   }
 }
+
+// ============================================================================
+// Twilio Voice Provider Stub
+// Production implementation would use @twilio-sdk/voice.
+// This stub provides the correct interface shape for type-checking
+// and development without requiring Twilio credentials.
+// ============================================================================
+
+export class TwilioProviderStub implements VoiceProvider {
+  name = 'twilio';
+
+  async provisionNumber(_areaCode: string): Promise<ProvisionedNumber> {
+    throw new Error('Twilio provider not configured. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.');
+  }
+
+  async releaseNumber(_phoneNumber: string): Promise<void> {
+    throw new Error('Twilio provider not configured.');
+  }
+
+  async initiateCall(_config: OutboundCallConfig): Promise<CallSession> {
+    throw new Error('Twilio provider not configured.');
+  }
+
+  async getCallStatus(_callSid: string): Promise<CallStatus> {
+    throw new Error('Twilio provider not configured.');
+  }
+}
+
+// ============================================================================
+// ElevenLabs TTS Provider Stub
+// Production implementation would use @elevenlabs/api.
+// ============================================================================
+
+export class ElevenLabsProviderStub {
+  name = 'elevenlabs';
+
+  async generateSpeech(_text: string, _voiceId: string): Promise<ArrayBuffer> {
+    throw new Error('ElevenLabs provider not configured. Set ELEVENLABS_API_KEY.');
+  }
+
+  async listVoices(): Promise<Array<{ id: string; name: string }>> {
+    throw new Error('ElevenLabs provider not configured.');
+  }
+}
+
+// ============================================================================
+// Factory Function
+// ============================================================================
+
+export function createVoiceProvider(type: 'mock' | 'twilio' = 'mock'): VoiceProvider {
+  switch (type) {
+    case 'twilio':
+      return new TwilioProviderStub();
+    case 'mock':
+    default:
+      return new MockVoiceProvider();
+  }
+}

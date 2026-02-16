@@ -6,6 +6,7 @@
 // ============================================================================
 
 import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
 import type { VoiceForgeHandoff } from '@/modules/voice/types';
 
 interface InitiateHandoffParams {
@@ -34,13 +35,22 @@ class VoiceForgeHandoffService {
 
     this.handoffs.set(handoff.id, handoff);
 
-    // In production, this would emit an event to the VoiceForge telephony system:
-    // await eventBus.emit('voiceforge:handoff:initiated', handoff);
-    // The telephony system would then:
-    // 1. Look up the entity's brand kit and voice persona
-    // 2. Initialize the call with the contact's phone number
-    // 3. Feed the context and script hints to the AI voice agent
-    // 4. Update handoff status to CONNECTING -> ACTIVE -> COMPLETED
+    // Create a Call record to track the telephony handoff
+    try {
+      await prisma.call.create({
+        data: {
+          entityId: params.entityId,
+          contactId: params.contactId,
+          direction: 'OUTBOUND',
+          outcome: 'CONNECTED',
+          duration: 0,
+          actionItems: [],
+          transcript: `Handoff context: ${params.context}`,
+        },
+      });
+    } catch {
+      // Call record creation failed -- handoff can still proceed
+    }
 
     return handoff;
   }
@@ -60,12 +70,11 @@ class VoiceForgeHandoffService {
     }
 
     if (handoff.status === 'ACTIVE') {
-      throw new Error('Cannot cancel an active handoff — the call is in progress');
+      throw new Error('Cannot cancel an active handoff');
     }
 
     handoff.status = 'FAILED';
-
-    // In production: await eventBus.emit('voiceforge:handoff:cancelled', handoff);
+    // No Call update needed -- the call was never connected
   }
 
   // For testing and internal use

@@ -1,3 +1,7 @@
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+}));
+
 import {
   routeCall,
   isAfterHours,
@@ -16,6 +20,7 @@ jest.mock('@/lib/db', () => ({
     },
     call: {
       create: jest.fn().mockResolvedValue({ id: 'call-1' }),
+      findMany: jest.fn().mockResolvedValue([]),
     },
   },
 }));
