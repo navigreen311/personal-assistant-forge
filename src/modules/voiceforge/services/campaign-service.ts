@@ -11,6 +11,7 @@ import type {
   StopCondition,
   OutboundCallResult,
 } from '@/modules/voiceforge/types';
+import { generateJSON } from '@/lib/ai';
 
 const DOC_TYPE = 'VOICE_CAMPAIGN';
 
@@ -253,4 +254,54 @@ export async function getNextContacts(
   return campaign.targetContactIds
     .filter((id) => !calledContactIds.has(id))
     .slice(0, limit);
+}
+
+export async function analyzeCampaignPerformance(
+  campaignId: string,
+): Promise<{
+  insights: string[];
+  recommendations: string[];
+  predictedOutcome: string;
+}> {
+  const campaign = await getCampaign(campaignId);
+  if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
+
+  try {
+    const result = await generateJSON<{
+      insights: string[];
+      recommendations: string[];
+      predictedOutcome: string;
+    }>(`Analyze this outbound calling campaign's performance.
+
+Campaign: ${campaign.name}
+Status: ${campaign.status}
+Stats:
+- Total targeted: ${campaign.stats.totalTargeted}
+- Total called: ${campaign.stats.totalCalled}
+- Total connected: ${campaign.stats.totalConnected}
+- Interested: ${campaign.stats.totalInterested}
+- Not interested: ${campaign.stats.totalNotInterested}
+- Voicemail: ${campaign.stats.totalVoicemail}
+- No answer: ${campaign.stats.totalNoAnswer}
+- Average sentiment: ${campaign.stats.averageSentiment.toFixed(2)}
+- Average duration: ${campaign.stats.averageDuration.toFixed(0)}s
+- Conversion rate: ${(campaign.stats.conversionRate * 100).toFixed(1)}%
+
+Return JSON with:
+- insights: array of data-driven observations about performance
+- recommendations: array of actionable improvements
+- predictedOutcome: projected final result if current trends continue`, {
+      maxTokens: 512,
+      temperature: 0.4,
+      system: 'You are a sales campaign analyst. Provide data-driven insights and actionable recommendations based on campaign performance metrics.',
+    });
+
+    return result;
+  } catch {
+    return {
+      insights: ['Campaign analysis unavailable'],
+      recommendations: ['Review campaign metrics manually'],
+      predictedOutcome: 'Unable to predict',
+    };
+  }
 }
