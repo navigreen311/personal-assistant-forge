@@ -2,6 +2,12 @@ import { getBudget, consumeBudget, setBudget, resetBudget, budgetStore } from '@
 import { isDNDActive, checkVIPBreakthrough, setDND, dndStore } from '@/modules/attention/services/dnd-service';
 import { routeNotification, notificationStore } from '@/modules/attention/services/priority-router';
 
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn().mockResolvedValue('AI-generated content'),
+  generateJSON: jest.fn().mockResolvedValue({ priority: 'P1' }),
+  chat: jest.fn().mockResolvedValue('AI response'),
+}));
+
 // Mock dnd-service for priority-router tests
 jest.mock('@/modules/attention/services/dnd-service', () => {
   const actual = jest.requireActual('@/modules/attention/services/dnd-service');
