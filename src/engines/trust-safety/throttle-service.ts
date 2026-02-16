@@ -3,6 +3,7 @@ import type { ThrottleConfig, ThrottleStatus } from './types';
 // In-memory store for throttle counters (per-user, per-action)
 const hourlyCounters = new Map<string, { count: number; resetAt: Date }>();
 const dailyCounters = new Map<string, { count: number; resetAt: Date }>();
+const lastActionTimestamps = new Map<string, Date>();
 
 function getHourlyKey(userId: string, actionType: string): string {
   return `${userId}:${actionType}:hourly`;
@@ -10,6 +11,10 @@ function getHourlyKey(userId: string, actionType: string): string {
 
 function getDailyKey(userId: string, actionType: string): string {
   return `${userId}:${actionType}:daily`;
+}
+
+function getLastActionKey(userId: string, actionType: string): string {
+  return `${userId}:${actionType}:lastAction`;
 }
 
 function getOrResetCounter(
@@ -69,10 +74,24 @@ export async function checkThrottle(userId: string, actionType: string): Promise
 
   const hourlyExceeded = hourly.count >= config.maxPerHour;
   const dailyExceeded = daily.count >= config.maxPerDay;
-  const isThrottled = hourlyExceeded || dailyExceeded;
+  let isThrottled = hourlyExceeded || dailyExceeded;
 
   let nextAllowedAt: Date | undefined;
-  if (isThrottled) {
+
+  // Cooldown enforcement
+  if (config.cooldownMinutes && config.cooldownMinutes > 0) {
+    const lastActionKey = getLastActionKey(userId, actionType);
+    const lastAction = lastActionTimestamps.get(lastActionKey);
+    if (lastAction) {
+      const cooldownEnd = new Date(lastAction.getTime() + config.cooldownMinutes * 60 * 1000);
+      if (cooldownEnd > new Date()) {
+        isThrottled = true;
+        nextAllowedAt = cooldownEnd;
+      }
+    }
+  }
+
+  if (isThrottled && !nextAllowedAt) {
     if (hourlyExceeded && dailyExceeded) {
       nextAllowedAt = hourly.resetAt < daily.resetAt ? hourly.resetAt : daily.resetAt;
     } else if (hourlyExceeded) {
@@ -106,11 +125,39 @@ export async function recordAction(userId: string, actionType: string): Promise<
 
   hourly.count += 1;
   daily.count += 1;
+
+  // Track last action timestamp for cooldown
+  const lastActionKey = getLastActionKey(userId, actionType);
+  lastActionTimestamps.set(lastActionKey, new Date());
 }
 
 export async function resetThrottle(userId: string, actionType: string): Promise<void> {
   const hourlyKey = getHourlyKey(userId, actionType);
   const dailyKey = getDailyKey(userId, actionType);
+  const lastActionKey = getLastActionKey(userId, actionType);
   hourlyCounters.delete(hourlyKey);
   dailyCounters.delete(dailyKey);
+  lastActionTimestamps.delete(lastActionKey);
+}
+
+export function _resetAllThrottles(): void {
+  hourlyCounters.clear();
+  dailyCounters.clear();
+  customConfigs.clear();
+  lastActionTimestamps.clear();
+}
+
+export async function getThrottleStatus(userId: string): Promise<ThrottleStatus[]> {
+  const allConfigs = [
+    ...DEFAULT_CONFIGS,
+    ...Array.from(customConfigs.values()).filter(
+      c => !DEFAULT_CONFIGS.some(d => d.actionType === c.actionType)
+    ),
+  ];
+
+  const results: ThrottleStatus[] = [];
+  for (const config of allConfigs) {
+    results.push(await checkThrottle(userId, config.actionType));
+  }
+  return results;
 }

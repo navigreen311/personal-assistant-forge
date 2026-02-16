@@ -1,34 +1,240 @@
 import type { ReputationStatus, EmailHeaderAnalysis, ThreatLevel } from './types';
 
+// --- Phone reputation constants ---
+
+const HIGH_RISK_PREFIXES: [string, number][] = [
+  ['+0', 95],        // Invalid country code
+  ['+1555', 85],     // US fictional
+  ['+1900', 80],     // US premium rate
+  ['+44070', 75],    // UK personal numbering
+  ['+234', 60],      // Nigeria, high fraud
+  ['+86', 55],       // China, high spam
+];
+
+const LOW_RISK_COUNTRY_CODES = ['+1', '+44', '+61', '+49'];
+const HIGH_RISK_COUNTRY_CODES = ['+234', '+86', '+233', '+225', '+228', '+92', '+880'];
+
+// --- Email reputation constants ---
+
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'tempmail.com', 'throwaway.email', 'yopmail.com',
+  'sharklasers.com', 'guerrillamailblock.com', 'grr.la', 'dispostable.com', 'mailnesia.com',
+  'trashmail.com', 'maildrop.cc', 'fakeinbox.com', 'tempail.com', 'tempr.email',
+  'mailcatch.com', 'trash-mail.com', 'mytemp.email', 'mohmal.com', 'getnada.com',
+  'emailondeck.com', 'temp-mail.org', '10minutemail.com', 'minutemail.com', 'email-fake.com',
+  'crazymailing.com', 'filzmail.com', 'inboxbear.com', 'mailforspam.com', 'harakirimail.com',
+  'spamgourmet.com', 'mailexpire.com', 'discard.email', 'deadaddress.com', 'sogetthis.com',
+  'mailsac.com', 'burpcollaborator.net', 'mailnull.com', 'jetable.org', 'trashmail.net',
+  'spamfree24.org', 'binkmail.com', 'spaml.com', 'uggsrock.com', 'mailzilla.org',
+  'bobmail.info', 'nomail.xl.cx', 'rmqkr.net', 'spam4.me',
+]);
+
+const TRUSTED_DOMAINS = new Set([
+  'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com',
+  'protonmail.com', 'icloud.com', 'aol.com',
+]);
+
+const SUSPICIOUS_TLDS = new Set(['.xyz', '.top', '.click', '.gq', '.cf', '.tk', '.ml', '.ga']);
+
+// --- Phone reputation ---
+
+function isValidE164(phone: string): boolean {
+  return /^\+\d{7,15}$/.test(phone);
+}
+
+function getPhonePrefixScore(phone: string): number | null {
+  for (const [prefix, score] of HIGH_RISK_PREFIXES) {
+    if (phone.startsWith(prefix)) return score;
+  }
+  return null;
+}
+
+function getCountryCodeRiskTier(phone: string): 'low' | 'medium' | 'high' {
+  for (const code of HIGH_RISK_COUNTRY_CODES) {
+    if (phone.startsWith(code)) return 'high';
+  }
+  for (const code of LOW_RISK_COUNTRY_CODES) {
+    if (phone.startsWith(code)) return 'low';
+  }
+  return 'medium';
+}
+
+function isUsOrCaNumber(phone: string): boolean {
+  return phone.startsWith('+1');
+}
+
 export async function checkPhoneReputation(phoneNumber: string): Promise<ReputationStatus> {
-  // Simulated reputation data for placeholder implementation
-  const isClean = !phoneNumber.startsWith('+1555'); // 555 numbers are "dirty" in simulation
+  if (!isValidE164(phoneNumber)) {
+    return {
+      channel: 'PHONE',
+      identifier: phoneNumber,
+      spamScore: 90,
+      warmingProgress: 0,
+      stirShakenCompliant: false,
+      lastChecked: new Date(),
+    };
+  }
+
+  const prefixScore = getPhonePrefixScore(phoneNumber);
+  if (prefixScore !== null) {
+    const tier = getCountryCodeRiskTier(phoneNumber);
+    return {
+      channel: 'PHONE',
+      identifier: phoneNumber,
+      spamScore: prefixScore,
+      warmingProgress: tier === 'low' ? 30 : tier === 'medium' ? 20 : 10,
+      stirShakenCompliant: isUsOrCaNumber(phoneNumber),
+      lastChecked: new Date(),
+    };
+  }
+
+  const tier = getCountryCodeRiskTier(phoneNumber);
+  let spamScore: number;
+  let warmingProgress: number;
+
+  switch (tier) {
+    case 'low':
+      spamScore = 10;
+      warmingProgress = 90;
+      break;
+    case 'high':
+      spamScore = 55;
+      warmingProgress = 30;
+      break;
+    default:
+      spamScore = 30;
+      warmingProgress = 60;
+      break;
+  }
 
   return {
     channel: 'PHONE',
     identifier: phoneNumber,
-    spamScore: isClean ? Math.floor(Math.random() * 15) : Math.floor(Math.random() * 40 + 60),
-    warmingProgress: isClean ? Math.floor(Math.random() * 40 + 60) : Math.floor(Math.random() * 30),
-    stirShakenCompliant: isClean,
+    spamScore,
+    warmingProgress,
+    stirShakenCompliant: isUsOrCaNumber(phoneNumber),
     lastChecked: new Date(),
   };
 }
 
+// --- Email reputation ---
+
+function isValidDomain(domain: string): boolean {
+  if (!domain || domain.includes(' ') || domain.length > 253) return false;
+  return domain.includes('.');
+}
+
+function getTld(domain: string): string {
+  const lastDot = domain.lastIndexOf('.');
+  if (lastDot === -1) return '';
+  return domain.slice(lastDot).toLowerCase();
+}
+
+function getDomainNameBeforeTld(domain: string): string {
+  const lastDot = domain.lastIndexOf('.');
+  if (lastDot === -1) return domain;
+  return domain.slice(0, lastDot);
+}
+
+function countDigits(str: string): number {
+  return (str.match(/\d/g) || []).length;
+}
+
 export async function checkEmailReputation(domain: string): Promise<ReputationStatus> {
-  // Simulated reputation data
-  const trustedDomains = ['gmail.com', 'outlook.com', 'yahoo.com', 'protonmail.com'];
-  const isTrusted = trustedDomains.includes(domain.toLowerCase());
+  const lowerDomain = domain.toLowerCase();
+
+  if (!isValidDomain(lowerDomain)) {
+    return {
+      channel: 'EMAIL',
+      identifier: domain,
+      spamScore: 90,
+      dkimValid: undefined,
+      spfValid: undefined,
+      dmarcValid: undefined,
+      lastChecked: new Date(),
+    };
+  }
+
+  if (TRUSTED_DOMAINS.has(lowerDomain)) {
+    return {
+      channel: 'EMAIL',
+      identifier: domain,
+      spamScore: 5,
+      dkimValid: true,
+      spfValid: true,
+      dmarcValid: true,
+      lastChecked: new Date(),
+    };
+  }
+
+  if (DISPOSABLE_DOMAINS.has(lowerDomain)) {
+    return {
+      channel: 'EMAIL',
+      identifier: domain,
+      spamScore: 80,
+      dkimValid: false,
+      spfValid: false,
+      dmarcValid: false,
+      lastChecked: new Date(),
+    };
+  }
+
+  const tld = getTld(lowerDomain);
+
+  if (tld === '.edu') {
+    return {
+      channel: 'EMAIL',
+      identifier: domain,
+      spamScore: 10,
+      dkimValid: undefined,
+      spfValid: undefined,
+      dmarcValid: undefined,
+      lastChecked: new Date(),
+    };
+  }
+
+  if (tld === '.gov') {
+    return {
+      channel: 'EMAIL',
+      identifier: domain,
+      spamScore: 5,
+      dkimValid: undefined,
+      spfValid: undefined,
+      dmarcValid: undefined,
+      lastChecked: new Date(),
+    };
+  }
+
+  // Heuristic scoring for unknown domains
+  let spamScore = 25; // base score for unknown domains
+
+  const nameBeforeTld = getDomainNameBeforeTld(lowerDomain);
+
+  if (nameBeforeTld.length < 4) {
+    spamScore += 10;
+  }
+  if (nameBeforeTld.length > 30) {
+    spamScore += 15;
+  }
+  if (countDigits(nameBeforeTld) >= 4) {
+    spamScore += 10;
+  }
+  if (SUSPICIOUS_TLDS.has(tld)) {
+    spamScore += 20;
+  }
 
   return {
     channel: 'EMAIL',
     identifier: domain,
-    spamScore: isTrusted ? Math.floor(Math.random() * 10) : Math.floor(Math.random() * 50 + 20),
-    dkimValid: isTrusted,
-    spfValid: isTrusted,
-    dmarcValid: isTrusted,
+    spamScore: Math.min(spamScore, 100),
+    dkimValid: undefined,
+    spfValid: undefined,
+    dmarcValid: undefined,
     lastChecked: new Date(),
   };
 }
+
+// --- Email header analysis (preserved as-is) ---
 
 export function analyzeEmailHeaders(headers: Record<string, string>): EmailHeaderAnalysis {
   const from = headers['from'] ?? headers['From'] ?? '';
@@ -85,10 +291,21 @@ export function analyzeEmailHeaders(headers: Record<string, string>): EmailHeade
   };
 }
 
-export async function getReputationDashboard(entityId: string): Promise<ReputationStatus[]> {
-  // Placeholder: returns simulated data for demo entity
-  const phoneRep = await checkPhoneReputation(`+1${entityId.slice(0, 10)}`);
-  const emailRep = await checkEmailReputation(`entity-${entityId.slice(0, 8)}.com`);
+// --- Reputation dashboard ---
 
-  return [phoneRep, emailRep];
+export async function getReputationDashboard(entityId: string): Promise<ReputationStatus[]> {
+  const results: ReputationStatus[] = [];
+
+  // Determine if entityId looks like a phone number or email domain and check accordingly
+  if (entityId.startsWith('+')) {
+    results.push(await checkPhoneReputation(entityId));
+  } else if (entityId.includes('.')) {
+    results.push(await checkEmailReputation(entityId));
+  } else {
+    // Treat as both phone (with +1 prefix) and email domain
+    results.push(await checkPhoneReputation(`+1${entityId}`));
+    results.push(await checkEmailReputation(entityId));
+  }
+
+  return results;
 }
