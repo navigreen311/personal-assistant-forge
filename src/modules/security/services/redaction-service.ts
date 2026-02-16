@@ -9,6 +9,7 @@ import type {
   SensitiveDataType,
   RedactionResult,
 } from '@/modules/security/types';
+import { generateJSON } from '@/lib/ai';
 
 // ---------------------------------------------------------------------------
 // Category mappings
@@ -409,6 +410,75 @@ export class RedactionService {
       byCategory: { ...this.stats.byCategory },
       byType: { ...this.stats.byType },
     };
+  }
+
+  /**
+   * AI-powered contextual redaction that identifies sensitive entities and
+   * implicit references that pattern-based scanning might miss.
+   * Falls back to pattern-only redaction on AI failure.
+   */
+  async redactWithContext(content: string, options?: RedactionOptions): Promise<RedactionResult> {
+    // Always run pattern-based redaction first
+    const patternResult = this.redactContent(content, options);
+
+    try {
+      const aiResult = await generateJSON<{
+        additionalRedactions: Array<{
+          text: string;
+          type: string;
+          reason: string;
+        }>;
+      }>(`Identify additional sensitive information in this text that pattern matching might miss.
+
+Text: "${content.substring(0, 2000)}"
+
+Look for:
+- Named individuals mentioned in sensitive contexts (e.g., "Dr. Smith discussed the patient's condition")
+- Implicit health information (e.g., references to treatments without explicit medical terms)
+- Indirect personal identifiers (e.g., "the CEO of Acme Corp" identifies a specific person)
+- Location references that could identify individuals
+- Contextual financial information
+
+Return JSON with additionalRedactions array, each having: text (the exact text to redact), type (PERSON, HEALTH_CONTEXT, INDIRECT_PII, LOCATION, FINANCIAL_CONTEXT), reason (why it should be redacted).`, {
+        maxTokens: 512,
+        temperature: 0.2,
+        system: 'You are a privacy protection specialist. Identify sensitive information that automated pattern matching cannot detect. Be thorough but avoid false positives.',
+      });
+
+      if (aiResult.additionalRedactions?.length > 0) {
+        let redactedText = patternResult.redactedText;
+        const additionalMatches: SensitiveDataMatch[] = [];
+
+        for (const redaction of aiResult.additionalRedactions) {
+          const index = redactedText.indexOf(redaction.text);
+          if (index !== -1) {
+            const replacement = `[REDACTED_${redaction.type}]`;
+            redactedText = redactedText.replace(redaction.text, replacement);
+            additionalMatches.push({
+              type: 'ADDRESS' as SensitiveDataType, // Use closest matching type
+              category: 'PII',
+              value: redaction.text,
+              redactedValue: replacement,
+              startIndex: index,
+              endIndex: index + redaction.text.length,
+              confidence: 0.7,
+            });
+          }
+        }
+
+        return {
+          ...patternResult,
+          redactedText,
+          matches: [...patternResult.matches, ...additionalMatches],
+          matchCount: patternResult.matchCount + additionalMatches.length,
+        };
+      }
+
+      return patternResult;
+    } catch {
+      // AI failed — return pattern-based results only
+      return patternResult;
+    }
   }
 
   // -------------------------------------------------------------------------
