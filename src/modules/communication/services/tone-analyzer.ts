@@ -5,6 +5,7 @@
 
 import type { Tone } from '@/shared/types';
 import type { ToneAnalysis } from '@/modules/communication/types';
+import { generateJSON, generateText } from '@/lib/ai';
 
 // --- Keyword dictionaries for tone detection ---
 
@@ -154,6 +155,87 @@ export function shiftTone(text: string, targetTone: Tone): string {
   }
 
   return shifted;
+}
+
+/**
+ * Analyze tone using AI with keyword-based fallback.
+ */
+export async function analyzeToneWithAI(text: string): Promise<ToneAnalysis> {
+  if (!text || text.trim().length === 0) {
+    return analyzeTone(text);
+  }
+
+  try {
+    const result = await generateJSON<{
+      detectedTone: string;
+      confidence: number;
+      formality: number;
+      assertiveness: number;
+      empathy: number;
+      suggestions: string[];
+    }>(`Analyze the tone of this text.
+
+Text: "${text.substring(0, 2000)}"
+
+Return JSON with:
+- detectedTone: one of FIRM, DIPLOMATIC, WARM, DIRECT, CASUAL, FORMAL, EMPATHETIC, AUTHORITATIVE
+- confidence: 0-1
+- formality: 1-10
+- assertiveness: 1-10
+- empathy: 1-10
+- suggestions: array of tone improvement suggestions`, {
+      maxTokens: 256,
+      temperature: 0.2,
+      system: 'You are a communication tone analyst. Analyze text tone accurately with precise metrics.',
+    });
+
+    return {
+      detectedTone: result.detectedTone as Tone,
+      confidence: result.confidence,
+      formality: result.formality,
+      assertiveness: result.assertiveness,
+      empathy: result.empathy,
+      suggestions: result.suggestions,
+    };
+  } catch {
+    return analyzeTone(text);
+  }
+}
+
+/**
+ * Rewrite text to match a target tone using AI, with rule-based fallback.
+ */
+export async function shiftToneWithAI(text: string, targetTone: Tone): Promise<string> {
+  if (!text || text.trim().length === 0) {
+    return text;
+  }
+
+  try {
+    const result = await generateText(
+      `Rewrite the following text to match the ${targetTone} tone. Preserve the original meaning and key information.
+
+Original text: "${text}"
+
+Return ONLY the rewritten text, nothing else.`,
+      {
+        maxTokens: 1024,
+        temperature: 0.6,
+        system: `You are a professional writing assistant. Rewrite text to match the specified tone:
+- FIRM: Clear expectations, direct language
+- DIPLOMATIC: Balanced, considerate, seeking mutual ground
+- WARM: Friendly, appreciative, positive
+- DIRECT: Concise, no filler, action-oriented
+- CASUAL: Relaxed, conversational
+- FORMAL: Professional, structured, proper
+- EMPATHETIC: Understanding, supportive, compassionate
+- AUTHORITATIVE: Commanding, decisive, policy-like`,
+      }
+    );
+
+    return result || shiftTone(text, targetTone);
+  } catch {
+    return shiftTone(text, targetTone);
+  }
 }
 
 function generateSuggestions(detectedTone: Tone, scores: Record<string, number>): string[] {
