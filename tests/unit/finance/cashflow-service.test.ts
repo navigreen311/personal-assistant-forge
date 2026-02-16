@@ -21,6 +21,11 @@ jest.mock('@/lib/db', () => ({
 import {
   forecastCashFlow,
   calculateBurnRate,
+  getCashFlow,
+  getRunningBalance,
+  projectCashFlow,
+  identifyTrends,
+  getCashFlowSummary,
 } from '@/modules/finance/services/cashflow-service';
 
 describe('Cash Flow Service', () => {
@@ -162,6 +167,146 @@ describe('Cash Flow Service', () => {
       const result = await calculateBurnRate('entity-1', 3);
       expect(result.monthlyBurn).toBe(0);
       expect(result.runwayMonths).toBe(Infinity);
+    });
+  });
+
+  // --- Phase 3: Cash Flow Calculation Tests ---
+
+  describe('getCashFlow', () => {
+    it('should calculate income minus expenses per period', async () => {
+      const jan15 = new Date('2026-01-15T12:00:00.000Z');
+      const jan20 = new Date('2026-01-20T12:00:00.000Z');
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { type: 'INCOME', amount: 5000, status: 'PAID', createdAt: jan15 },
+        { type: 'EXPENSE', amount: 2000, status: 'PAID', createdAt: jan15 },
+        { type: 'REVENUE', amount: 3000, status: 'PAID', createdAt: jan20 },
+        { type: 'EXPENSE', amount: 1000, status: 'PAID', createdAt: jan20 },
+      ]);
+
+      const result = await getCashFlow('entity-1', 'month', {
+        start: new Date('2026-01-01'),
+        end: new Date('2026-01-31'),
+      });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].period).toBe('2026-01');
+      expect(result[0].income).toBeCloseTo(8000, 2);
+      expect(result[0].expenses).toBeCloseTo(3000, 2);
+      expect(result[0].net).toBeCloseTo(5000, 2);
+    });
+
+    it('should handle periods with no transactions', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([]);
+
+      const result = await getCashFlow('entity-1', 'month', {
+        start: new Date('2026-01-01'),
+        end: new Date('2026-01-31'),
+      });
+
+      expect(result).toHaveLength(0);
+    });
+
+    it('should filter by date range', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { type: 'INCOME', amount: 1000, status: 'PAID', createdAt: new Date('2026-01-15') },
+      ]);
+
+      const result = await getCashFlow('entity-1', 'day', {
+        start: new Date('2026-01-01'),
+        end: new Date('2026-01-31'),
+      });
+
+      expect(mockPrisma.financialRecord.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            entityId: 'entity-1',
+            createdAt: { gte: new Date('2026-01-01'), lte: new Date('2026-01-31') },
+          }),
+        })
+      );
+    });
+  });
+
+  describe('projectCashFlow', () => {
+    it('should project based on historical averages', async () => {
+      const now = new Date();
+      const records = [];
+      // Create records across 3 months
+      for (let i = 3; i >= 1; i--) {
+        const date = new Date(now.getFullYear(), now.getMonth() - i, 15);
+        records.push({ type: 'INCOME', amount: 10000, status: 'PAID', createdAt: date });
+        records.push({ type: 'EXPENSE', amount: 6000, status: 'PAID', createdAt: date });
+      }
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue(records);
+
+      const result = await projectCashFlow('entity-1', 3);
+
+      expect(result).toHaveLength(3);
+      expect(result[0].projectedIncome).toBeCloseTo(10000, 0);
+      expect(result[0].projectedExpenses).toBeCloseTo(6000, 0);
+      expect(result[0].projectedNet).toBeCloseTo(4000, 0);
+    });
+
+    it('should handle insufficient data gracefully', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([]);
+
+      const result = await projectCashFlow('entity-1', 3);
+
+      expect(result).toHaveLength(3);
+      expect(result[0].projectedIncome).toBe(0);
+      expect(result[0].projectedExpenses).toBe(0);
+      expect(result[0].confidence).toBe(0);
+    });
+  });
+
+  describe('getCashFlowSummary', () => {
+    it('should return current month summary', async () => {
+      mockPrisma.financialRecord.findMany
+        .mockResolvedValueOnce([
+          { type: 'INCOME', amount: 15000, status: 'PAID' },
+          { type: 'EXPENSE', amount: 8000, status: 'PAID' },
+        ])
+        .mockResolvedValueOnce([
+          { type: 'INCOME', amount: 12000, status: 'PAID' },
+          { type: 'EXPENSE', amount: 7000, status: 'PAID' },
+        ]);
+
+      const result = await getCashFlowSummary('entity-1');
+
+      expect(result.income).toBeCloseTo(15000, 2);
+      expect(result.expenses).toBeCloseTo(8000, 2);
+      expect(result.netCashFlow).toBeCloseTo(7000, 2);
+    });
+
+    it('should calculate month-over-month change', async () => {
+      mockPrisma.financialRecord.findMany
+        .mockResolvedValueOnce([
+          { type: 'INCOME', amount: 20000, status: 'PAID' },
+          { type: 'EXPENSE', amount: 10000, status: 'PAID' },
+        ])
+        .mockResolvedValueOnce([
+          { type: 'INCOME', amount: 10000, status: 'PAID' },
+          { type: 'EXPENSE', amount: 5000, status: 'PAID' },
+        ]);
+
+      const result = await getCashFlowSummary('entity-1');
+
+      // Current net: 10000, Prev net: 5000, change = 100%
+      expect(result.changes.netChange).toBeCloseTo(100, 2);
+    });
+  });
+
+  describe('identifyTrends', () => {
+    it('should return fallback when AI fails', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([]);
+      mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
+
+      const result = await identifyTrends('entity-1');
+
+      expect(result.insights).toContain('unavailable');
+      expect(result.trends).toHaveLength(1);
     });
   });
 });
