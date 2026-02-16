@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import * as detectionService from '@/modules/crisis/services/detection-service';
 
 const detectSchema = z.object({
@@ -14,14 +15,16 @@ const detectSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = detectSchema.safeParse(body);
-    if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = detectSchema.safeParse(body);
+      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-    const result = await detectionService.analyzeSignals(parsed.data.signals);
-    return success(result);
-  } catch (err) {
-    return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-  }
+      const result = await detectionService.analyzeSignals(parsed.data.signals);
+      return success(result);
+    } catch (err) {
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+    }
+  });
 }
