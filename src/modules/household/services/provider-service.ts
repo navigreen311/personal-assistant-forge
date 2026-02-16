@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateText } from '@/lib/ai';
 import type { ServiceProvider } from '../types';
 
 const providerStore = new Map<string, ServiceProvider>();
@@ -53,7 +54,7 @@ export async function logServiceCall(
 export async function getRecommendedProvider(
   userId: string,
   category: string
-): Promise<ServiceProvider | null> {
+): Promise<{ provider: ServiceProvider; rationale: string } | null> {
   const providers = await getProviders(userId, category);
   if (providers.length === 0) return null;
 
@@ -64,5 +65,32 @@ export async function getRecommendedProvider(
     return 0;
   });
 
-  return providers[0];
+  const recommended = providers[0];
+
+  // Use AI to generate recommendation rationale
+  let rationale: string;
+  try {
+    const avgCost = recommended.costHistory.length > 0
+      ? recommended.costHistory.reduce((sum, c) => sum + c.amount, 0) / recommended.costHistory.length
+      : 0;
+
+    rationale = await generateText(
+      `Recommend the service provider "${recommended.name}" for ${category} services.
+Rating: ${recommended.rating}/5
+Last used: ${recommended.lastUsed ? new Date(recommended.lastUsed).toLocaleDateString() : 'Never'}
+Average cost: $${avgCost.toFixed(2)}
+Service history count: ${recommended.costHistory.length}
+${providers.length > 1 ? `Compared against ${providers.length - 1} other provider(s) in the same category.` : 'Only provider in this category.'}
+
+Provide a 1-2 sentence rationale for why this provider is recommended.`,
+      {
+        temperature: 0.7,
+        system: 'You are a household services advisor. Provide concise, helpful rationale for provider recommendations based on their track record.',
+      }
+    );
+  } catch {
+    rationale = `Recommended based on ${recommended.rating}/5 rating${recommended.lastUsed ? ' and recent usage' : ''}.`;
+  }
+
+  return { provider: recommended, rationale };
 }
