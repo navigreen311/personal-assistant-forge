@@ -17,6 +17,7 @@ model User {
   id           String   @id @default(cuid())
   name         String
   email        String   @unique
+  hashedPassword String?   // bcrypt hash for credentials auth, null for OAuth-only users
   preferences  Json     @default("{}")
   timezone     String   @default("America/Chicago")
   chronotype   String?
@@ -27,6 +28,7 @@ model User {
   tasks        Task[]     @relation("TaskAssignee")
   actionLogs   ActionLog[]
   memories     MemoryEntry[]
+  notifications Notification[]
 }
 
 model Entity {
@@ -53,6 +55,11 @@ model Entity {
   calls             Call[]
   rules             Rule[]
   financialRecords  FinancialRecord[]
+  decisions         Decision[]
+  budgets           Budget[]
+  notifications     Notification[]
+  voicePersonas     VoicePersona[]
+  runbooks          Runbook[]
 
   @@index([userId])
 }
@@ -69,6 +76,7 @@ model Contact {
   commitments       Json     @default("[]")
   preferences       Json     @default("{}")
   tags              String[] @default([])
+  deletedAt         DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -78,6 +86,7 @@ model Contact {
 
   @@index([entityId])
   @@index([email])
+  @@index([deletedAt])
 }
 
 model Task {
@@ -93,6 +102,7 @@ model Task {
   assigneeId   String?
   createdFrom  Json?
   tags         String[] @default([])
+  deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -104,6 +114,8 @@ model Task {
   @@index([projectId])
   @@index([status])
   @@index([priority])
+  @@index([title])
+  @@index([deletedAt])
 }
 
 model Project {
@@ -158,6 +170,7 @@ model Message {
   sensitivity  String   @default("INTERNAL")
   draftStatus  String?
   attachments  Json     @default("[]")
+  deletedAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -167,6 +180,9 @@ model Message {
   @@index([entityId])
   @@index([threadId])
   @@index([triageScore])
+  @@index([subject])
+  @@index([body])
+  @@index([deletedAt])
 }
 
 model Document {
@@ -179,6 +195,7 @@ model Document {
   citations  Json     @default("[]")
   content    String?
   status     String   @default("DRAFT")
+  deletedAt  DateTime?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -186,6 +203,8 @@ model Document {
 
   @@index([entityId])
   @@index([type])
+  @@index([title])
+  @@index([deletedAt])
 }
 
 model KnowledgeEntry {
@@ -201,6 +220,7 @@ model KnowledgeEntry {
   entity         Entity   @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
+  @@index([content])
 }
 
 model Workflow {
@@ -334,4 +354,116 @@ model MemoryEntry {
 
   @@index([userId])
   @@index([type])
+}
+
+// === PHASE 2 MODELS ===
+
+model Decision {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  title       String
+  type        String   // e.g., "strategic", "operational", "financial", "hiring", "product"
+  status      String   @default("open") // "open", "in_review", "decided", "deferred", "cancelled"
+  options     Json     // Array of option objects: [{ id, label, description, pros, cons, score }]
+  matrix      Json?    // Decision matrix: { criteria: [...], weights: [...], scores: {...} }
+  outcome     String?  // Selected option or final decision text
+  rationale   String?  // Why this decision was made
+  deadline    DateTime?
+  decidedAt   DateTime?
+  decidedBy   String?
+  stakeholders Json?   // Array of { userId, role, vote }
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([status])
+  @@index([deadline])
+}
+
+model Budget {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name        String
+  amount      Float    // total budget amount in cents
+  spent       Float    @default(0) // amount spent so far
+  period      String   // "monthly", "quarterly", "yearly", "project"
+  category    String   // e.g., "marketing", "engineering", "operations", "travel"
+  startDate   DateTime?
+  endDate     DateTime?
+  alerts      Json?    // Array of { threshold: number, type: "percentage"|"absolute", notified: boolean }
+  notes       String?
+  status      String   @default("active") // "active", "paused", "exhausted", "closed"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([category])
+  @@index([status])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId    String?
+  entity      Entity?  @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  type        String   // "task_due", "message_received", "workflow_completed", "alert", "payment", "system"
+  title       String
+  body        String
+  read        Boolean  @default(false)
+  readAt      DateTime?
+  actionUrl   String?  // URL to navigate to when notification is clicked
+  metadata    Json?    // Additional context data
+  priority    String   @default("normal") // "low", "normal", "high", "urgent"
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityId])
+  @@index([read])
+  @@index([createdAt])
+}
+
+model VoicePersona {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name        String   // Display name (e.g., "Professional", "Casual", "Executive")
+  voiceId     String   // External TTS voice ID (e.g., ElevenLabs voice ID)
+  provider    String   @default("elevenlabs") // "elevenlabs", "azure", "google", "amazon"
+  settings    Json     // { speed, pitch, stability, similarity, style, speakerBoost }
+  description String?  // When to use this persona
+  isDefault   Boolean  @default(false)
+  sampleUrl   String?  // URL to a sample audio clip
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([entityId])
+  @@unique([entityId, name])
+}
+
+model Runbook {
+  id          String   @id @default(cuid())
+  entityId    String
+  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  steps       Json     // Array of { id, order, action, params, onSuccess, onFailure, timeout }
+  variables   Json?    // Array of { name, type, defaultValue, required, description }
+  category    String   // "incident", "onboarding", "deployment", "maintenance", "compliance"
+  trigger     String?  // "manual", "scheduled", "event", "condition"
+  schedule    String?  // Cron expression if trigger is "scheduled"
+  isActive    Boolean  @default(true)
+  lastRunAt   DateTime?
+  runCount    Int      @default(0)
+  version     Int      @default(1)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([category])
+  @@index([isActive])
 }
