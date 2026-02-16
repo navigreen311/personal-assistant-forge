@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import {
   getPendingApprovals,
   submitApproval,
@@ -14,47 +15,51 @@ const submitApprovalSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get('userId');
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = new URL(req.url);
+      const userId = searchParams.get('userId');
 
-    if (!userId) {
-      return error('VALIDATION_ERROR', 'userId is required', 400);
+      if (!userId) {
+        return error('VALIDATION_ERROR', 'userId is required', 400);
+      }
+
+      const approvals = await getPendingApprovals(userId);
+      return success(approvals);
+    } catch (err) {
+      return error(
+        'FETCH_FAILED',
+        err instanceof Error ? err.message : 'Failed to fetch approvals',
+        500
+      );
     }
-
-    const approvals = await getPendingApprovals(userId);
-    return success(approvals);
-  } catch (err) {
-    return error(
-      'FETCH_FAILED',
-      err instanceof Error ? err.message : 'Failed to fetch approvals',
-      500
-    );
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = submitApprovalSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = submitApprovalSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const result = await submitApproval(
+        parsed.data.approvalId,
+        parsed.data.approverId,
+        parsed.data.approved,
+        parsed.data.comment
+      );
+
+      return success(result);
+    } catch (err) {
+      return error(
+        'APPROVAL_FAILED',
+        err instanceof Error ? err.message : 'Failed to process approval',
+        500
+      );
     }
-
-    const result = await submitApproval(
-      parsed.data.approvalId,
-      parsed.data.approverId,
-      parsed.data.approved,
-      parsed.data.comment
-    );
-
-    return success(result);
-  } catch (err) {
-    return error(
-      'APPROVAL_FAILED',
-      err instanceof Error ? err.message : 'Failed to process approval',
-      500
-    );
-  }
+  });
 }
