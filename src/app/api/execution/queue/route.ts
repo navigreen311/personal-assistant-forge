@@ -3,8 +3,10 @@
 // POST /api/execution/queue  - Enqueue a new action
 // ============================================================================
 
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import {
   getQueuedActions,
   enqueueAction,
@@ -44,67 +46,71 @@ const enqueueSchema = z.object({
 
 // --- Handlers ---
 
-export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
+export async function GET(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = new URL(req.url);
 
-    const parsed = queueFiltersSchema.safeParse({
-      status: searchParams.get('status') ?? undefined,
-      actor: searchParams.get('actor') ?? undefined,
-      blastRadius: searchParams.get('blastRadius') ?? undefined,
-      entityId: searchParams.get('entityId') ?? undefined,
-      page: searchParams.get('page') ?? undefined,
-      pageSize: searchParams.get('pageSize') ?? undefined,
-    });
+      const parsed = queueFiltersSchema.safeParse({
+        status: searchParams.get('status') ?? undefined,
+        actor: searchParams.get('actor') ?? undefined,
+        blastRadius: searchParams.get('blastRadius') ?? undefined,
+        entityId: searchParams.get('entityId') ?? undefined,
+        page: searchParams.get('page') ?? undefined,
+        pageSize: searchParams.get('pageSize') ?? undefined,
+      });
 
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid query parameters',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid query parameters',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const { page, pageSize, ...filterParams } = parsed.data;
+
+      const filters: ActionQueueFilters = {
+        status: filterParams.status,
+        actor: filterParams.actor as ActionActor | undefined,
+        blastRadius: filterParams.blastRadius as BlastRadius | undefined,
+        entityId: filterParams.entityId,
+      };
+
+      const result = await getQueuedActions(filters, page, pageSize);
+      return paginated(result.data, result.total, page, pageSize);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    const { page, pageSize, ...filterParams } = parsed.data;
-
-    const filters: ActionQueueFilters = {
-      status: filterParams.status,
-      actor: filterParams.actor as ActionActor | undefined,
-      blastRadius: filterParams.blastRadius as BlastRadius | undefined,
-      entityId: filterParams.entityId,
-    };
-
-    const result = await getQueuedActions(filters, page, pageSize);
-    return paginated(result.data, result.total, page, pageSize);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
 
-export async function POST(request: Request) {
-  try {
-    const body: unknown = await request.json();
+export async function POST(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const body: unknown = await req.json();
 
-    const parsed = enqueueSchema.safeParse(body);
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      const parsed = enqueueSchema.safeParse(body);
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const action = await enqueueAction({
+        ...parsed.data,
+        actionLogId: '',
+        requiresApproval: true,
+      });
+      return success(action, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    const action = await enqueueAction({
-      ...parsed.data,
-      actionLogId: '',
-      requiresApproval: true,
-    });
-    return success(action, 201);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }

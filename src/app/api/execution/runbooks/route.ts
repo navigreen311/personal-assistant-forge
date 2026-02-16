@@ -3,8 +3,10 @@
 // POST /api/execution/runbooks  - Create a new runbook
 // ============================================================================
 
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import {
   listRunbooks,
   createRunbook,
@@ -46,53 +48,57 @@ const createRunbookSchema = z.object({
 
 // --- Handlers ---
 
-export async function GET(request: Request) {
-  try {
-    const { searchParams } = new URL(request.url);
+export async function GET(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = new URL(req.url);
 
-    const parsed = listFiltersSchema.safeParse({
-      entityId: searchParams.get('entityId') ?? undefined,
-      isActive: searchParams.get('isActive') ?? undefined,
-      tag: searchParams.get('tag') ?? undefined,
-    });
+      const parsed = listFiltersSchema.safeParse({
+        entityId: searchParams.get('entityId') ?? undefined,
+        isActive: searchParams.get('isActive') ?? undefined,
+        tag: searchParams.get('tag') ?? undefined,
+      });
 
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid query parameters',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid query parameters',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const { entityId, isActive, tag } = parsed.data;
+
+      const runbooks = await listRunbooks(entityId, { isActive, tag });
+      return success(runbooks);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    const { entityId, isActive, tag } = parsed.data;
-
-    const runbooks = await listRunbooks(entityId, { isActive, tag });
-    return success(runbooks);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
 
-export async function POST(request: Request) {
-  try {
-    const body: unknown = await request.json();
+export async function POST(request: NextRequest) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const body: unknown = await req.json();
 
-    const parsed = createRunbookSchema.safeParse(body);
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
+      const parsed = createRunbookSchema.safeParse(body);
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
+
+      const runbook = await createRunbook(parsed.data);
+      return success(runbook, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    const runbook = await createRunbook(parsed.data);
-    return success(runbook, 201);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }

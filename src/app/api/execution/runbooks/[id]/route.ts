@@ -4,8 +4,10 @@
 // DELETE /api/execution/runbooks/:id - Delete a runbook
 // ============================================================================
 
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import {
   getRunbook,
   updateRunbook,
@@ -38,67 +40,73 @@ const updateRunbookSchema = z.object({
 // --- Handlers ---
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
 
-    const runbook = await getRunbook(id);
-    if (!runbook) {
-      return error('NOT_FOUND', `Runbook ${id} not found`, 404);
+      const runbook = await getRunbook(id);
+      if (!runbook) {
+        return error('NOT_FOUND', `Runbook ${id} not found`, 404);
+      }
+
+      return success(runbook);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      return error('INTERNAL_ERROR', message, 500);
     }
-
-    return success(runbook);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
 
 export async function PUT(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
-    const body: unknown = await request.json();
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+      const body: unknown = await req.json();
 
-    const parsed = updateRunbookSchema.safeParse(body);
-    if (!parsed.success) {
-      return error(
-        'VALIDATION_ERROR',
-        'Invalid request body',
-        400,
-        { issues: parsed.error.flatten().fieldErrors }
-      );
-    }
+      const parsed = updateRunbookSchema.safeParse(body);
+      if (!parsed.success) {
+        return error(
+          'VALIDATION_ERROR',
+          'Invalid request body',
+          400,
+          { issues: parsed.error.flatten().fieldErrors }
+        );
+      }
 
-    const runbook = await updateRunbook(id, parsed.data);
-    return success(runbook);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    if (message.includes('not found')) {
-      return error('NOT_FOUND', message, 404);
+      const runbook = await updateRunbook(id, parsed.data);
+      return success(runbook);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      if (message.includes('not found')) {
+        return error('NOT_FOUND', message, 404);
+      }
+      return error('INTERNAL_ERROR', message, 500);
     }
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
 
 export async function DELETE(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  try {
-    const { id } = await params;
+  return withRole(request, ['admin', 'owner'], async (req, session) => {
+    try {
+      const { id } = await params;
 
-    await deleteRunbook(id);
-    return success({ deleted: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    if (message.includes('not found')) {
-      return error('NOT_FOUND', message, 404);
+      await deleteRunbook(id);
+      return success({ deleted: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Internal server error';
+      if (message.includes('not found')) {
+        return error('NOT_FOUND', message, 404);
+      }
+      return error('INTERNAL_ERROR', message, 500);
     }
-    return error('INTERNAL_ERROR', message, 500);
-  }
+  });
 }
