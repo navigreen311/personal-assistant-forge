@@ -1,3 +1,4 @@
+import { generateText } from '@/lib/ai';
 import type { TimezoneAdjustment } from '../types';
 
 // Simplified timezone offset map (UTC offset in hours)
@@ -65,4 +66,30 @@ export function detectTimezoneConflicts(
   adjustments: TimezoneAdjustment[]
 ): TimezoneAdjustment[] {
   return adjustments.filter(adj => adj.conflictDetected);
+}
+
+export async function getTimezoneAdvice(
+  adjustments: TimezoneAdjustment[]
+): Promise<string> {
+  const conflicts = detectTimezoneConflicts(adjustments);
+  if (conflicts.length === 0) {
+    return 'No timezone conflicts detected. Your schedule is compatible with your travel timezone.';
+  }
+
+  try {
+    const advice = await generateText(
+      `I'm traveling and have the following calendar conflicts due to timezone differences:
+
+${conflicts.map(c => `- "${c.eventTitle}" originally at ${c.originalTime.toISOString()} (${c.originalTimezone}) would be at ${c.adjustedTime.toISOString()} in ${c.travelTimezone}`).join('\n')}
+
+Provide brief, practical advice on how to handle these timezone conflicts (e.g., reschedule, attend virtually, decline).`,
+      {
+        temperature: 0.7,
+        system: 'You are a productivity assistant helping travelers manage timezone-related scheduling conflicts. Be concise and practical.',
+      }
+    );
+    return advice;
+  } catch {
+    return `${conflicts.length} timezone conflict(s) detected. Consider rescheduling events that fall outside reasonable hours in your travel timezone.`;
+  }
 }

@@ -1,10 +1,46 @@
 import { v4 as uuidv4 } from 'uuid';
+import { generateJSON } from '@/lib/ai';
 import type { Itinerary, ItineraryLeg } from '../types';
 
 const itineraryStore = new Map<string, Itinerary>();
 
 export function calculateTotalCost(itinerary: Itinerary): number {
   return itinerary.legs.reduce((sum, leg) => sum + leg.costUsd, 0);
+}
+
+export async function optimizeItinerary(
+  itinerary: Itinerary
+): Promise<{ suggestions: string[]; optimizedOrder?: number[] }> {
+  try {
+    const legSummaries = itinerary.legs.map(leg => ({
+      order: leg.order,
+      type: leg.type,
+      from: leg.departureLocation,
+      to: leg.arrivalLocation,
+      depart: leg.departureTime,
+      arrive: leg.arrivalTime,
+      cost: leg.costUsd,
+    }));
+
+    const result = await generateJSON<{ suggestions: string[]; optimizedOrder?: number[] }>(
+      `Analyze this travel itinerary and suggest optimizations for routing, timing, and cost.
+
+Itinerary: "${itinerary.name}"
+Legs: ${JSON.stringify(legSummaries, null, 2)}
+
+Return a JSON object with:
+- "suggestions": array of specific improvement suggestions (e.g. reordering legs, adjusting timing, cost savings)
+- "optimizedOrder": optional array of leg order numbers in the suggested optimized sequence`,
+      {
+        temperature: 0.7,
+        system: 'You are a travel planning assistant. Provide practical, actionable suggestions to optimize travel itineraries for cost, time, and convenience.',
+      }
+    );
+
+    return result;
+  } catch {
+    return { suggestions: ['Unable to generate AI optimization suggestions. Review itinerary manually.'] };
+  }
 }
 
 export async function createItinerary(

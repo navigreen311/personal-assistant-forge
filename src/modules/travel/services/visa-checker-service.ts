@@ -1,4 +1,5 @@
 import type { TravelDocument, VisaRequirement } from '../types';
+import { generateJSON } from '@/lib/ai';
 import { getPreferences } from './preferences-service';
 import { addMonths, isBefore } from 'date-fns';
 
@@ -24,16 +25,46 @@ export async function checkVisaRequirements(
 
   if (result) return result;
 
-  // Generic fallback
-  return {
-    destinationCountry,
-    citizenshipCountry,
-    visaRequired: true,
-    visaType: 'Tourist Visa',
-    processingDays: 14,
-    documentRequired: ['PASSPORT', 'PHOTO', 'PROOF_OF_TRAVEL'],
-    notes: `Visa requirements for ${citizenshipCountry} citizens traveling to ${destinationCountry} vary. Check with the destination country's embassy for current requirements.`,
-  };
+  // AI-powered fallback for unknown country pairs
+  try {
+    const aiResult = await generateJSON<VisaRequirement>(
+      `What are the visa requirements for a citizen of ${citizenshipCountry} traveling to ${destinationCountry}?
+
+Return a JSON object with these exact fields:
+- "destinationCountry": "${destinationCountry}"
+- "citizenshipCountry": "${citizenshipCountry}"
+- "visaRequired": boolean (when unsure, default to true)
+- "visaType": string or null (e.g. "Tourist Visa", "e-Visa")
+- "processingDays": number or null (estimated processing time)
+- "documentRequired": string[] (e.g. ["PASSPORT", "PHOTO", "PROOF_OF_TRAVEL"])
+- "notes": string (brief summary of requirements and any important caveats)`,
+      {
+        temperature: 0.3,
+        system: 'You are a travel visa requirements expert. Be conservative: when unsure whether a visa is required, say it IS required. Always recommend checking with the official embassy or consulate for the most current information. Include this caveat in the notes field.',
+      }
+    );
+
+    return {
+      destinationCountry,
+      citizenshipCountry,
+      visaRequired: aiResult.visaRequired ?? true,
+      visaType: aiResult.visaType ?? 'Tourist Visa',
+      processingDays: aiResult.processingDays ?? 14,
+      documentRequired: aiResult.documentRequired ?? ['PASSPORT', 'PHOTO', 'PROOF_OF_TRAVEL'],
+      notes: aiResult.notes ?? `AI-generated: Visa requirements for ${citizenshipCountry} citizens traveling to ${destinationCountry}. Verify with the embassy.`,
+    };
+  } catch {
+    // Fallback if AI fails
+    return {
+      destinationCountry,
+      citizenshipCountry,
+      visaRequired: true,
+      visaType: 'Tourist Visa',
+      processingDays: 14,
+      documentRequired: ['PASSPORT', 'PHOTO', 'PROOF_OF_TRAVEL'],
+      notes: `Visa requirements for ${citizenshipCountry} citizens traveling to ${destinationCountry} vary. Check with the destination country's embassy for current requirements.`,
+    };
+  }
 }
 
 export async function validateTravelDocuments(
