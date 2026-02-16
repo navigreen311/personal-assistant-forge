@@ -7,74 +7,106 @@ import FlightAlertBanner from '@/modules/travel/components/FlightAlertBanner';
 import VisaRequirementCard from '@/modules/travel/components/VisaRequirementCard';
 import type { Itinerary, TravelDocument, FlightAlert, VisaRequirement } from '@/modules/travel/types';
 
-const sampleItinerary: Itinerary = {
-  id: 'itin-1',
-  userId: 'user-1',
-  name: 'Tokyo Business Trip',
-  status: 'CONFIRMED',
-  legs: [
-    {
-      id: 'leg-1', order: 1, type: 'FLIGHT',
-      departureLocation: 'DFW', arrivalLocation: 'NRT',
-      departureTime: new Date('2026-03-15T08:00:00'), arrivalTime: new Date('2026-03-16T14:00:00'),
-      timezone: 'America/Chicago', provider: 'American Airlines', costUsd: 1200, status: 'BOOKED',
-    },
-    {
-      id: 'leg-2', order: 2, type: 'HOTEL',
-      departureLocation: 'NRT', arrivalLocation: 'Tokyo Marriott',
-      departureTime: new Date('2026-03-16T15:00:00'), arrivalTime: new Date('2026-03-20T11:00:00'),
-      timezone: 'Asia/Tokyo', provider: 'Marriott', costUsd: 800, status: 'BOOKED',
-    },
-    {
-      id: 'leg-3', order: 3, type: 'FLIGHT',
-      departureLocation: 'NRT', arrivalLocation: 'DFW',
-      departureTime: new Date('2026-03-20T16:00:00'), arrivalTime: new Date('2026-03-20T14:00:00'),
-      timezone: 'Asia/Tokyo', provider: 'JAL', costUsd: 1100, status: 'BOOKED',
-    },
-  ],
-  totalCostEstimate: 3100,
-  currency: 'USD',
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
-const sampleDocuments: TravelDocument[] = [
-  { type: 'PASSPORT', number: 'US12345678', expirationDate: new Date('2028-06-15'), issuingCountry: 'US', isExpiringSoon: false },
-  { type: 'GLOBAL_ENTRY', number: 'GE98765', expirationDate: new Date('2026-08-01'), issuingCountry: 'US', isExpiringSoon: true },
-];
-
-const sampleAlert: FlightAlert = {
-  itineraryId: 'itin-1', legId: 'leg-1',
-  alertType: 'DELAY', severity: 'WARNING',
-  message: 'Flight AA 175 DFW→NRT delayed by 45 minutes',
-  originalValue: '08:00', newValue: '08:45',
-  timestamp: new Date(),
-};
-
-const sampleVisaReq: VisaRequirement = {
-  destinationCountry: 'JP', citizenshipCountry: 'US',
-  visaRequired: false, documentRequired: ['PASSPORT'],
-  notes: 'US citizens can visit Japan for up to 90 days without a visa for tourism.',
-};
-
 export default function TravelDashboard() {
+  const [itineraries, setItineraries] = useState<Itinerary[]>([]);
+  const [alerts, setAlerts] = useState<FlightAlert[]>([]);
+  const [visaReqs, setVisaReqs] = useState<VisaRequirement[]>([]);
+  const [documents, setDocuments] = useState<TravelDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchData() {
+      try {
+        const [itinRes, prefsRes] = await Promise.all([
+          fetch('/api/travel/itineraries'),
+          fetch('/api/travel/preferences'),
+        ]);
+
+        if (itinRes.ok) {
+          const itinData = await itinRes.json();
+          const itinList: Itinerary[] = itinData.data ?? [];
+          setItineraries(itinList);
+
+          // Collect flight alerts from all itineraries
+          const allAlerts: FlightAlert[] = [];
+          for (const itin of itinList) {
+            try {
+              const alertRes = await fetch(`/api/travel/itineraries/${itin.id}/alerts`);
+              if (alertRes.ok) {
+                const alertData = await alertRes.json();
+                allAlerts.push(...(alertData.data ?? []));
+              }
+            } catch {
+              // Ignore per-itinerary alert fetch errors
+            }
+          }
+          setAlerts(allAlerts);
+        }
+
+        if (prefsRes.ok) {
+          const prefsData = await prefsRes.json();
+          setDocuments(prefsData.data?.travelDocuments ?? []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch travel data:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchData();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-6">Travel Management</h1>
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+          <span className="ml-3 text-gray-500">Loading travel data...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const hasData = itineraries.length > 0 || alerts.length > 0;
+
+  if (!hasData) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <h1 className="text-2xl font-bold mb-6">Travel Management</h1>
+        <div className="bg-white rounded-lg shadow p-8 text-center">
+          <p className="text-gray-500 text-lg">No travel itineraries found.</p>
+          <p className="text-gray-400 mt-2">Create a new itinerary to get started.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-bold">Travel Management</h1>
 
-      <FlightAlertBanner alert={sampleAlert} />
+      {alerts.map((alert, i) => (
+        <FlightAlertBanner key={`${alert.itineraryId}-${alert.legId}-${i}`} alert={alert} />
+      ))}
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <ItineraryTimeline itinerary={sampleItinerary} />
-      </div>
+      {itineraries.map(itin => (
+        <div key={itin.id} className="bg-white rounded-lg shadow p-6">
+          <ItineraryTimeline itinerary={itin} />
+        </div>
+      ))}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-6">
-          <DocumentChecklist documents={sampleDocuments} />
-        </div>
-        <div className="bg-white rounded-lg shadow p-6">
-          <VisaRequirementCard requirement={sampleVisaReq} />
-        </div>
+        {documents.length > 0 && (
+          <div className="bg-white rounded-lg shadow p-6">
+            <DocumentChecklist documents={documents} />
+          </div>
+        )}
+        {visaReqs.map((req, i) => (
+          <div key={`${req.citizenshipCountry}-${req.destinationCountry}-${i}`} className="bg-white rounded-lg shadow p-6">
+            <VisaRequirementCard requirement={req} />
+          </div>
+        ))}
       </div>
     </div>
   );
