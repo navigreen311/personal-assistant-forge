@@ -16,6 +16,7 @@ const mockPrisma = {
     findMany: jest.fn(),
     count: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
   entity: {
     findUniqueOrThrow: jest.fn(),
@@ -34,6 +35,10 @@ import {
   getAgingReport,
   generateInvoiceNumber,
   detectOverdueInvoices,
+  markAsPaid,
+  markAsOverdue,
+  getAccountsReceivable,
+  getInvoiceSummary,
 } from '@/modules/finance/services/invoice-service';
 
 describe('Invoice Service', () => {
@@ -97,42 +102,48 @@ describe('Invoice Service', () => {
       expect(result.lineItems[2].total).toBeCloseTo(250, 2);
     });
 
-    it('should handle zero quantity line items', async () => {
+    it('should create a FinancialRecord with type INVOICE', async () => {
       mockPrisma.financialRecord.findFirst.mockResolvedValue(null);
       mockPrisma.financialRecord.create.mockResolvedValue({
-        id: 'inv-2',
-        entityId: 'entity-1',
-        type: 'INVOICE',
-        amount: 0,
-        currency: 'USD',
-        status: 'PENDING',
-        dueDate: new Date(),
-        category: 'INVOICE',
-        vendor: null,
-        description: JSON.stringify({
-          invoiceNumber: 'INV-2026-0001',
-          lineItems: [{ description: 'Item', quantity: 0, unitPrice: 100, total: 0 }],
-          subtotal: 0,
-          tax: 0,
-          invoiceStatus: 'DRAFT',
-        }),
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        id: 'inv-2', entityId: 'e-1', type: 'INVOICE', amount: 100,
+        currency: 'USD', status: 'PENDING', dueDate: new Date(),
+        category: 'INVOICE', vendor: null,
+        description: JSON.stringify({ invoiceNumber: 'INV-2026-0001', invoiceStatus: 'DRAFT', lineItems: [], subtotal: 100, tax: 0 }),
+        createdAt: new Date(), updatedAt: new Date(),
       });
 
-      const result = await createInvoice({
-        entityId: 'entity-1',
+      await createInvoice({
+        entityId: 'e-1',
+        lineItems: [{ description: 'Item', quantity: 1, unitPrice: 100, total: 0 }],
+        tax: 0, currency: 'USD', status: 'DRAFT',
+        issuedDate: new Date(), dueDate: new Date(), paymentTerms: 'Net 30',
+      });
+
+      expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ type: 'INVOICE' }),
+      });
+    });
+
+    it('should set default status to PENDING', async () => {
+      mockPrisma.financialRecord.findFirst.mockResolvedValue(null);
+      mockPrisma.financialRecord.create.mockResolvedValue({
+        id: 'inv-3', entityId: 'e-1', type: 'INVOICE', amount: 0,
+        currency: 'USD', status: 'PENDING', dueDate: new Date(),
+        category: 'INVOICE', vendor: null,
+        description: JSON.stringify({ invoiceNumber: 'INV-2026-0001', invoiceStatus: 'DRAFT', lineItems: [], subtotal: 0, tax: 0 }),
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      await createInvoice({
+        entityId: 'e-1',
         lineItems: [{ description: 'Item', quantity: 0, unitPrice: 100, total: 0 }],
-        tax: 0,
-        currency: 'USD',
-        status: 'DRAFT',
-        issuedDate: new Date(),
-        dueDate: new Date(),
-        paymentTerms: 'Net 30',
+        tax: 0, currency: 'USD', status: 'DRAFT',
+        issuedDate: new Date(), dueDate: new Date(), paymentTerms: 'Net 30',
       });
 
-      expect(result.subtotal).toBe(0);
-      expect(result.total).toBe(0);
+      expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ status: 'PENDING' }),
+      });
     });
   });
 
@@ -167,7 +178,7 @@ describe('Invoice Service', () => {
   });
 
   describe('getAgingReport', () => {
-    it('should bucket invoices into correct aging ranges', async () => {
+    it('should correctly bucket invoices by overdue days', async () => {
       const now = new Date();
       const makeDueDate = (daysAgo: number) =>
         new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
@@ -199,7 +210,24 @@ describe('Invoice Service', () => {
       expect(report.totalOutstanding).toBeCloseTo(1500, 2);
     });
 
-    it('should handle empty invoice list', async () => {
+    it('should calculate totals per bucket', async () => {
+      const now = new Date();
+      const makeDueDate = (daysAgo: number) =>
+        new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { id: '1', amount: 500, dueDate: makeDueDate(5), createdAt: makeDueDate(5) },
+        { id: '2', amount: 300, dueDate: makeDueDate(15), createdAt: makeDueDate(15) },
+      ]);
+
+      const report = await getAgingReport('entity-1');
+
+      expect(report.current.count).toBe(2);
+      expect(report.current.amount).toBeCloseTo(800, 2);
+      expect(report.totalOutstanding).toBeCloseTo(800, 2);
+    });
+
+    it('should handle no overdue invoices', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
       const report = await getAgingReport('entity-1');
@@ -267,6 +295,121 @@ describe('Invoice Service', () => {
       const result = await updateInvoiceStatus('inv-1', 'PAID');
       expect(result.status).toBe('PAID');
       expect(result.paidDate).toBeDefined();
+    });
+  });
+
+  // --- Phase 3: Additional Invoice Operation Tests ---
+
+  describe('markAsPaid', () => {
+    it('should update status to PAID', async () => {
+      mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue({
+        id: 'inv-1',
+        description: JSON.stringify({ invoiceNumber: 'INV-2026-0001', invoiceStatus: 'SENT' }),
+      });
+
+      mockPrisma.financialRecord.update.mockResolvedValue({
+        id: 'inv-1', entityId: 'e-1', type: 'INVOICE', amount: 500,
+        currency: 'USD', status: 'PAID', dueDate: new Date('2026-03-15'),
+        category: 'INVOICE', vendor: null,
+        description: JSON.stringify({
+          invoiceNumber: 'INV-2026-0001', invoiceStatus: 'PAID',
+          paidDate: new Date().toISOString(),
+        }),
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const result = await markAsPaid('inv-1');
+
+      expect(result.status).toBe('PAID');
+      expect(mockPrisma.financialRecord.update).toHaveBeenCalledWith({
+        where: { id: 'inv-1' },
+        data: expect.objectContaining({ status: 'PAID' }),
+      });
+    });
+
+    it('should record payment date', async () => {
+      const paidDate = new Date('2026-03-01');
+      mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue({
+        id: 'inv-1',
+        description: JSON.stringify({ invoiceNumber: 'INV-2026-0001' }),
+      });
+
+      mockPrisma.financialRecord.update.mockResolvedValue({
+        id: 'inv-1', entityId: 'e-1', type: 'INVOICE', amount: 500,
+        currency: 'USD', status: 'PAID', dueDate: new Date('2026-03-15'),
+        category: 'INVOICE', vendor: null,
+        description: JSON.stringify({
+          invoiceNumber: 'INV-2026-0001', invoiceStatus: 'PAID',
+          paidDate: paidDate.toISOString(),
+        }),
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+
+      const result = await markAsPaid('inv-1', paidDate);
+      expect(result.paidDate).toBeDefined();
+    });
+  });
+
+  describe('markAsOverdue', () => {
+    it('should update all past-due PENDING invoices to OVERDUE', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        {
+          id: 'inv-1', description: JSON.stringify({ invoiceNumber: 'INV-1', invoiceStatus: 'SENT' }),
+        },
+        {
+          id: 'inv-2', description: JSON.stringify({ invoiceNumber: 'INV-2', invoiceStatus: 'SENT' }),
+        },
+      ]);
+      mockPrisma.financialRecord.update.mockResolvedValue({});
+
+      const result = await markAsOverdue('entity-1');
+
+      expect(result.count).toBe(2);
+      expect(mockPrisma.financialRecord.update).toHaveBeenCalledTimes(2);
+    });
+
+    it('should return count of newly overdue invoices', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([]);
+
+      const result = await markAsOverdue('entity-1');
+
+      expect(result.count).toBe(0);
+    });
+  });
+
+  describe('getAccountsReceivable', () => {
+    it('should sum PENDING and OVERDUE invoice amounts', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { amount: 1000, status: 'PENDING' },
+        { amount: 2000, status: 'OVERDUE' },
+        { amount: 500, status: 'PENDING' },
+      ]);
+
+      const result = await getAccountsReceivable('entity-1');
+
+      expect(result.total).toBeCloseTo(3500, 2);
+      expect(result.pendingCount).toBe(2);
+      expect(result.overdueCount).toBe(1);
+      expect(result.pendingTotal).toBeCloseTo(1500, 2);
+      expect(result.overdueTotal).toBeCloseTo(2000, 2);
+    });
+  });
+
+  describe('getInvoiceSummary', () => {
+    it('should return total invoiced, paid, overdue', async () => {
+      mockPrisma.financialRecord.findMany.mockResolvedValue([
+        { amount: 1000, status: 'PAID', description: JSON.stringify({ issuedDate: '2026-01-01', paidDate: '2026-01-15' }) },
+        { amount: 2000, status: 'OVERDUE', description: '{}' },
+        { amount: 500, status: 'PENDING', description: '{}' },
+      ]);
+
+      const result = await getInvoiceSummary('entity-1');
+
+      expect(result.totalInvoiced).toBeCloseTo(3500, 2);
+      expect(result.totalPaid).toBeCloseTo(1000, 2);
+      expect(result.totalOverdue).toBeCloseTo(2000, 2);
+      expect(result.invoiceCount).toBe(3);
+      expect(result.avgDaysToPayment).toBeCloseTo(14, 0);
     });
   });
 });

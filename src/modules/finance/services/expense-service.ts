@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import type { Expense, ExpenseByCategory } from '@/modules/finance/types';
 
 function round2(n: number): number {
@@ -207,4 +208,166 @@ export async function detectDuplicates(expense: Partial<Expense>): Promise<Expen
   });
 
   return records.map(parseExpenseFromRecord);
+}
+
+// --- Phase 3: Additional Expense Operations ---
+
+export async function getExpense(expenseId: string): Promise<Expense | null> {
+  const record = await prisma.financialRecord.findUnique({ where: { id: expenseId } });
+  if (!record || record.type !== 'EXPENSE') return null;
+  return parseExpenseFromRecord(record);
+}
+
+export async function updateExpense(
+  expenseId: string,
+  updates: Partial<Pick<Expense, 'amount' | 'category' | 'vendor' | 'description' | 'date' | 'currency'>>
+) {
+  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: expenseId } });
+  const extended = record.description ? JSON.parse(record.description) : {};
+
+  const data: Record<string, unknown> = {};
+  if (updates.amount !== undefined) data.amount = round2(updates.amount);
+  if (updates.category !== undefined) data.category = updates.category;
+  if (updates.vendor !== undefined) data.vendor = updates.vendor;
+  if (updates.currency !== undefined) data.currency = updates.currency;
+  if (updates.date !== undefined) data.dueDate = updates.date;
+  if (updates.description !== undefined) {
+    extended.expenseDescription = updates.description;
+    data.description = JSON.stringify(extended);
+  }
+
+  const updated = await prisma.financialRecord.update({
+    where: { id: expenseId },
+    data,
+  });
+
+  return parseExpenseFromRecord(updated);
+}
+
+export async function deleteExpense(expenseId: string) {
+  return prisma.financialRecord.update({
+    where: { id: expenseId },
+    data: { status: 'CANCELLED' },
+  });
+}
+
+export async function categorizeExpenseWithAI(expenseId: string) {
+  try {
+    const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: expenseId } });
+    const extended = record.description ? JSON.parse(record.description) : {};
+
+    const result = await generateJSON<{ suggestedCategory: string; confidence: number }>(
+      `Categorize this expense:
+Vendor: ${record.vendor ?? 'Unknown'}
+Description: ${extended.expenseDescription ?? 'None'}
+Amount: $${record.amount}
+Current category: ${record.category}
+
+Return JSON with:
+- suggestedCategory: the best category for this expense
+- confidence: 0-1 confidence score`,
+      {
+        maxTokens: 128,
+        temperature: 0.2,
+        system: 'You are an expense categorization assistant. Suggest a single category.',
+      }
+    );
+
+    return result;
+  } catch {
+    return { suggestedCategory: 'General', confidence: 0 };
+  }
+}
+
+export async function getRecurringExpenses(entityId: string) {
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+  const records = await prisma.financialRecord.findMany({
+    where: {
+      entityId,
+      type: 'EXPENSE',
+      createdAt: { gte: sixMonthsAgo },
+      status: { not: 'CANCELLED' },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  // Group by vendor
+  const vendorGroups = new Map<string, Array<{ amount: number; date: Date }>>();
+  for (const r of records) {
+    if (!r.vendor) continue;
+    const group = vendorGroups.get(r.vendor) ?? [];
+    group.push({ amount: r.amount, date: r.createdAt });
+    vendorGroups.set(r.vendor, group);
+  }
+
+  const recurring: Array<{
+    vendor: string;
+    averageAmount: number;
+    frequency: string;
+    occurrences: number;
+  }> = [];
+
+  for (const [vendor, entries] of vendorGroups) {
+    if (entries.length < 2) continue;
+
+    // Check if amounts are similar (within 20% tolerance)
+    const amounts = entries.map((e) => e.amount);
+    const avgAmount = round2(amounts.reduce((s, a) => s + a, 0) / amounts.length);
+    const allSimilar = amounts.every((a) => Math.abs(a - avgAmount) / avgAmount < 0.2);
+
+    if (!allSimilar) continue;
+
+    // Check frequency by looking at intervals between entries
+    const intervals: number[] = [];
+    for (let i = 1; i < entries.length; i++) {
+      const daysBetween = Math.round(
+        (entries[i].date.getTime() - entries[i - 1].date.getTime()) / (1000 * 60 * 60 * 24)
+      );
+      intervals.push(daysBetween);
+    }
+
+    const avgInterval = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+    let frequency = 'irregular';
+    if (avgInterval >= 25 && avgInterval <= 35) frequency = 'monthly';
+    else if (avgInterval >= 6 && avgInterval <= 8) frequency = 'weekly';
+    else if (avgInterval >= 85 && avgInterval <= 95) frequency = 'quarterly';
+    else if (avgInterval >= 355 && avgInterval <= 375) frequency = 'annual';
+
+    if (frequency !== 'irregular') {
+      recurring.push({ vendor, averageAmount: avgAmount, frequency, occurrences: entries.length });
+    }
+  }
+
+  return recurring;
+}
+
+export async function getExpenseTotals(
+  entityId: string,
+  dateRange?: { start: Date; end: Date }
+) {
+  const where: Record<string, unknown> = {
+    entityId,
+    type: 'EXPENSE',
+    status: { not: 'CANCELLED' },
+  };
+  if (dateRange) {
+    where.createdAt = { gte: dateRange.start, lte: dateRange.end };
+  }
+
+  const records = await prisma.financialRecord.findMany({ where });
+  const amounts = records.map((r) => r.amount);
+
+  if (amounts.length === 0) {
+    return { total: 0, average: 0, largest: 0, smallest: 0, count: 0 };
+  }
+
+  return {
+    total: round2(amounts.reduce((s, a) => s + a, 0)),
+    average: round2(amounts.reduce((s, a) => s + a, 0) / amounts.length),
+    largest: round2(Math.max(...amounts)),
+    smallest: round2(Math.min(...amounts)),
+    count: amounts.length,
+  };
 }
