@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 import {
   addDays,
   addWeeks,
@@ -305,4 +306,56 @@ function getProjectTargetDate(
 
   // Default: 12 weeks from creation
   return addWeeks(project.createdAt, 12);
+}
+
+// --- AI-Enhanced Forecasting ---
+
+export async function forecastWithAI(
+  entityId: string,
+  projectId?: string,
+  taskContext?: { title: string; status: string; priority: string; daysOld: number }[]
+): Promise<{ predictedWeeks: number; confidence: number; insights: string[] }> {
+  try {
+    const velocity = await calculateVelocity(entityId, projectId, 8);
+    const weeklyCompletions = velocity.weeklyData.map((w) => `${w.week}: ${w.completed}`).join(', ');
+
+    const result = await generateJSON<{
+      predictedWeeks: number;
+      confidence: number;
+      insights: string[];
+    }>(
+      `Analyze task completion velocity and predict project timeline.
+
+Weekly completions (last 8 weeks): ${weeklyCompletions}
+Current velocity: ${velocity.currentVelocity} tasks/week
+Average velocity: ${velocity.averageVelocity} tasks/week
+Trend: ${velocity.trend}
+${taskContext?.length ? `Active tasks (${taskContext.length}): ${JSON.stringify(taskContext.slice(0, 10))}` : ''}
+
+Predict:
+- predictedWeeks: estimated weeks to complete remaining work
+- confidence: 0.0-1.0 confidence in prediction
+- insights: array of 2-3 actionable observations about the team's velocity pattern`,
+      {
+        maxTokens: 512,
+        temperature: 0.3,
+        system: 'You are a project forecasting assistant. Analyze velocity data to make realistic predictions. Account for trends and anomalies.',
+      }
+    );
+
+    return result;
+  } catch {
+    // Fall back to statistical calculation
+    const velocity = await calculateVelocity(entityId, projectId, 8);
+    const remainingTasks = taskContext?.length ?? 0;
+    const predictedWeeks = velocity.averageVelocity > 0
+      ? Math.ceil(remainingTasks / velocity.averageVelocity)
+      : remainingTasks;
+
+    return {
+      predictedWeeks,
+      confidence: 0.3,
+      insights: ['AI forecasting unavailable — using statistical velocity projection.'],
+    };
+  }
 }
