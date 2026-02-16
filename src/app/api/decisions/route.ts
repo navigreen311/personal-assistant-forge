@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import {
   createDecisionBrief,
   listDecisionBriefs,
@@ -18,41 +19,45 @@ const CreateDecisionSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = request.nextUrl;
-    const entityId = searchParams.get('entityId');
-    const page = Math.max(1, Number(searchParams.get('page') ?? '1'));
-    const pageSize = Math.min(100, Math.max(1, Number(searchParams.get('pageSize') ?? '20')));
+  return withAuth(request, async (req, session) => {
+    try {
+      const { searchParams } = req.nextUrl;
+      const entityId = searchParams.get('entityId');
+      const page = Math.max(1, Number(searchParams.get('page') ?? '1'));
+      const pageSize = Math.min(100, Math.max(1, Number(searchParams.get('pageSize') ?? '20')));
 
-    if (!entityId) {
-      return error('VALIDATION_ERROR', 'entityId query parameter is required', 400);
+      if (!entityId) {
+        return error('VALIDATION_ERROR', 'entityId query parameter is required', 400);
+      }
+
+      const result = await listDecisionBriefs(entityId, page, pageSize);
+      return paginated(result.briefs, result.total, page, pageSize);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to list decision briefs', 500);
     }
-
-    const result = await listDecisionBriefs(entityId, page, pageSize);
-    return paginated(result.briefs, result.total, page, pageSize);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to list decision briefs', 500);
-  }
+  });
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = CreateDecisionSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = CreateDecisionSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-        issues: parsed.error.issues,
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+          issues: parsed.error.issues,
+        });
+      }
+
+      const brief = await createDecisionBrief({
+        ...parsed.data,
+        deadline: parsed.data.deadline ? new Date(parsed.data.deadline) : undefined,
       });
+
+      return success(brief, 201);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to create decision brief', 500);
     }
-
-    const brief = await createDecisionBrief({
-      ...parsed.data,
-      deadline: parsed.data.deadline ? new Date(parsed.data.deadline) : undefined,
-    });
-
-    return success(brief, 201);
-  } catch (err) {
-    return error('INTERNAL_ERROR', 'Failed to create decision brief', 500);
-  }
+  });
 }
