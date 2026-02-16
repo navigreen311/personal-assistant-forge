@@ -45,6 +45,10 @@ jest.mock('@/lib/voice/consent-manager', () => ({
   verifyConsent: jest.fn().mockResolvedValue({ valid: false, receipt: null }),
 }));
 
+jest.mock('@/modules/voiceforge/services/campaign-service', () => ({
+  updateStats: jest.fn().mockResolvedValue({}),
+}));
+
 describe('Outbound Agent', () => {
   describe('checkGuardrails', () => {
     const baseGuardrails: CallGuardrails = {

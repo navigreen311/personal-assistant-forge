@@ -1,14 +1,27 @@
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn(),
+}));
+
 import {
   extractKeyInfo,
   calculateSentiment,
+  calculateSentimentWithAI,
   calculateTalkRatio,
   checkCompliance,
   generateSummary,
   analyzeCall,
+  analyzeCallWithAI,
 } from '@/modules/voiceforge/services/conversational-intel';
 import type { TranscriptSegment } from '@/modules/voiceforge/types';
+import { generateJSON } from '@/lib/ai';
+
+const mockGenerateJSON = generateJSON as jest.Mock;
 
 describe('Conversational Intelligence', () => {
+  beforeEach(() => {
+    mockGenerateJSON.mockReset();
+  });
+
   describe('extractKeyInfo', () => {
     it('should extract email addresses', () => {
       const segments: TranscriptSegment[] = [
@@ -200,6 +213,22 @@ describe('Conversational Intelligence', () => {
       expect(issues[0].severity).toBe('VIOLATION');
     });
 
+    it('should detect GDPR keywords as warnings', () => {
+      const segments: TranscriptSegment[] = [
+        {
+          speaker: 'CALLER',
+          text: 'I want to exercise my right to erasure',
+          startTime: 0,
+          endTime: 5,
+          sentiment: -0.3,
+          confidence: 0.9,
+        },
+      ];
+      const issues = checkCompliance(segments, ['GDPR']);
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0].severity).toBe('WARNING');
+    });
+
     it('should return no issues when no compliance profile given', () => {
       const segments: TranscriptSegment[] = [
         {
@@ -212,6 +241,21 @@ describe('Conversational Intelligence', () => {
         },
       ];
       const issues = checkCompliance(segments, []);
+      expect(issues).toHaveLength(0);
+    });
+
+    it('should return empty for non-matching profiles', () => {
+      const segments: TranscriptSegment[] = [
+        {
+          speaker: 'AGENT',
+          text: 'Hello, how are you?',
+          startTime: 0,
+          endTime: 3,
+          sentiment: 0.5,
+          confidence: 0.9,
+        },
+      ];
+      const issues = checkCompliance(segments, ['HIPAA']);
       expect(issues).toHaveLength(0);
     });
   });
@@ -244,6 +288,109 @@ describe('Conversational Intelligence', () => {
       expect(analysis.transcript).toHaveLength(2);
       expect(analysis.talkRatio.agent + analysis.talkRatio.caller).toBe(100);
       expect(analysis.keyInfoExtracted.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('analyzeCallWithAI', () => {
+    const segments: TranscriptSegment[] = [
+      { speaker: 'AGENT', text: 'Hello, how can I help you today?', startTime: 0, endTime: 5, sentiment: 0.5, confidence: 0.9 },
+      { speaker: 'CALLER', text: 'I want to discuss pricing for your services.', startTime: 5, endTime: 10, sentiment: 0, confidence: 0.9 },
+    ];
+
+    it('should call generateJSON with transcript content', async () => {
+      mockGenerateJSON.mockResolvedValueOnce({
+        sentimentScore: 0.7,
+        topics: ['pricing'],
+        actionItems: ['Send pricing sheet'],
+        keyInsights: ['Customer interested in pricing'],
+        overallTone: 'POSITIVE',
+        followUpRecommendation: 'Send pricing proposal within 24 hours',
+      });
+
+      await analyzeCallWithAI('call-ai-1', segments);
+      expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
+      const prompt = mockGenerateJSON.mock.calls[0][0] as string;
+      expect(prompt).toContain('Analyze this call transcript');
+    });
+
+    it('should merge AI insights into base analysis', async () => {
+      mockGenerateJSON.mockResolvedValueOnce({
+        sentimentScore: 0.8,
+        topics: ['pricing', 'services'],
+        actionItems: ['Follow up on pricing'],
+        keyInsights: ['Strong buying signal detected'],
+        overallTone: 'POSITIVE',
+        followUpRecommendation: 'Schedule demo',
+      });
+
+      const result = await analyzeCallWithAI('call-ai-2', segments);
+      expect(result.overallSentiment).toBe(0.8);
+      expect(result.summary.keyPoints).toContain('Strong buying signal detected');
+    });
+
+    it('should fallback to rule-based analysis on AI failure', async () => {
+      mockGenerateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
+
+      const result = await analyzeCallWithAI('call-ai-3', segments);
+      expect(result.callId).toBe('call-ai-3');
+      expect(result.transcript).toHaveLength(2);
+      // Should still have basic analysis
+      expect(result.talkRatio.agent + result.talkRatio.caller).toBe(100);
+    });
+
+    it('should add AI action items to summary', async () => {
+      mockGenerateJSON.mockResolvedValueOnce({
+        sentimentScore: 0.5,
+        topics: [],
+        actionItems: ['Send brochure', 'Schedule follow-up'],
+        keyInsights: [],
+        overallTone: 'NEUTRAL',
+        followUpRecommendation: '',
+      });
+
+      const result = await analyzeCallWithAI('call-ai-4', segments);
+      expect(result.summary.actionItems).toContain('Send brochure');
+      expect(result.summary.actionItems).toContain('Schedule follow-up');
+    });
+  });
+
+  describe('calculateSentimentWithAI', () => {
+    it('should use keyword approach for short text', async () => {
+      const result = await calculateSentimentWithAI('great excellent');
+      expect(result).toBeGreaterThan(0);
+      // Should NOT call generateJSON for short text
+      expect(mockGenerateJSON).not.toHaveBeenCalled();
+    });
+
+    it('should call generateJSON for longer text', async () => {
+      mockGenerateJSON.mockResolvedValueOnce({ sentiment: 0.75 });
+
+      const longText = 'This is a much longer piece of text that contains many words and should trigger the AI-based sentiment analysis because it exceeds the twenty word threshold that we set for short text processing and this should make it use the AI path instead';
+      const result = await calculateSentimentWithAI(longText);
+
+      expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
+      expect(result).toBe(0.75);
+    });
+
+    it('should fallback to keyword approach on AI failure', async () => {
+      mockGenerateJSON.mockRejectedValueOnce(new Error('AI error'));
+
+      const longText = 'This is a much longer piece of text that contains many words and should trigger the AI based sentiment analysis great excellent wonderful amazing fantastic brilliant absolutely perfect happy pleased delighted';
+      const result = await calculateSentimentWithAI(longText);
+
+      // Should still return a result from keyword approach
+      expect(typeof result).toBe('number');
+      expect(result).toBeGreaterThanOrEqual(-1);
+      expect(result).toBeLessThanOrEqual(1);
+    });
+
+    it('should clamp AI result between -1 and 1', async () => {
+      mockGenerateJSON.mockResolvedValueOnce({ sentiment: 5.0 });
+
+      const longText = 'This is a much longer piece of text that contains many words and should trigger the AI based sentiment analysis because it exceeds the twenty word threshold that we set for processing';
+      const result = await calculateSentimentWithAI(longText);
+
+      expect(result).toBeLessThanOrEqual(1);
     });
   });
 });
