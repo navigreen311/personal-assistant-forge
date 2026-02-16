@@ -65,7 +65,7 @@ class CaptureService {
 
       // Route the processed capture
       const routeStart = Date.now();
-      const routingResult = await routingService.routeCapture(capture);
+      const routingResult = await routingService.routeAndStore(capture);
       const routeEnd = Date.now();
       const processedToRoutedMs = routeEnd - routeStart;
 
