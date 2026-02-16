@@ -7,6 +7,12 @@ import {
 import type { VelocityMetrics } from '@/modules/tasks/types';
 import { addWeeks } from 'date-fns';
 
+// Mock AI client — reject so we fall back to algorithmic forecasting
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 // Mock prisma
 const mockTaskCount = jest.fn();
 const mockTaskFindMany = jest.fn();

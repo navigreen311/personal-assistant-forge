@@ -1,5 +1,11 @@
 import type { Budget, BudgetCategory } from '@/modules/finance/types';
 
+// Mock AI client — reject so we fall back to algorithmic budget analysis
+const mockGenerateJSON = jest.fn();
+jest.mock('@/lib/ai', () => ({
+  generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
+}));
+
 const mockPrisma = {
   document: {
     create: jest.fn(),
