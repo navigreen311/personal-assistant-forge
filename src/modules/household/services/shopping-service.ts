@@ -1,43 +1,92 @@
-import { v4 as uuidv4 } from 'uuid';
 import { generateJSON } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { ShoppingItem } from '../types';
 
-const shoppingStore = new Map<string, ShoppingItem>();
+function docToShoppingItem(doc: {
+  id: string;
+  entityId: string;
+  content: string | null;
+}): ShoppingItem {
+  const data = doc.content ? JSON.parse(doc.content) : {};
+  return {
+    id: doc.id,
+    userId: doc.entityId,
+    name: data.name ?? '',
+    category: data.category ?? '',
+    quantity: data.quantity ?? 1,
+    unit: data.unit,
+    store: data.store,
+    estimatedPrice: data.estimatedPrice,
+    isPurchased: data.isPurchased ?? false,
+    isRecurring: data.isRecurring ?? false,
+    recurringFrequency: data.recurringFrequency,
+    addedAt: data.addedAt ? new Date(data.addedAt) : new Date(),
+  };
+}
 
 export async function addItem(
   userId: string,
   item: Omit<ShoppingItem, 'id' | 'isPurchased' | 'addedAt'>
 ): Promise<ShoppingItem> {
-  const newItem: ShoppingItem = {
-    ...item,
-    id: uuidv4(),
-    userId,
-    isPurchased: false,
-    addedAt: new Date(),
-  };
-  shoppingStore.set(newItem.id, newItem);
-  return newItem;
+  const now = new Date();
+  const created = await prisma.document.create({
+    data: {
+      title: item.name,
+      entityId: userId,
+      type: 'SHOPPING_LIST',
+      status: 'ACTIVE',
+      content: JSON.stringify({
+        name: item.name,
+        category: item.category,
+        quantity: item.quantity,
+        unit: item.unit,
+        store: item.store,
+        estimatedPrice: item.estimatedPrice,
+        isPurchased: false,
+        isRecurring: item.isRecurring,
+        recurringFrequency: item.recurringFrequency,
+        addedAt: now.toISOString(),
+      }),
+    },
+  });
+
+  return docToShoppingItem(created);
 }
 
 export async function getList(userId: string, includePurchased = false): Promise<ShoppingItem[]> {
-  const all = Array.from(shoppingStore.values()).filter(i => i.userId === userId);
-  if (includePurchased) return all;
-  return all.filter(i => !i.isPurchased);
+  const docs = await prisma.document.findMany({
+    where: {
+      entityId: userId,
+      type: 'SHOPPING_LIST',
+      deletedAt: null,
+    },
+  });
+
+  const items: ShoppingItem[] = docs.map(docToShoppingItem);
+  if (includePurchased) return items;
+  return items.filter((i: ShoppingItem) => !i.isPurchased);
 }
 
 export async function markPurchased(itemId: string): Promise<ShoppingItem> {
-  const item = shoppingStore.get(itemId);
-  if (!item) throw new Error(`Shopping item ${itemId} not found`);
+  const existing = await prisma.document.findUnique({ where: { id: itemId } });
+  if (!existing) throw new Error(`Shopping item ${itemId} not found`);
 
-  item.isPurchased = true;
-  shoppingStore.set(itemId, item);
-  return item;
+  const data = existing.content ? JSON.parse(existing.content) : {};
+  data.isPurchased = true;
+
+  const updated = await prisma.document.update({
+    where: { id: itemId },
+    data: {
+      content: JSON.stringify(data),
+    },
+  });
+
+  return docToShoppingItem(updated);
 }
 
 export async function getSmartSuggestions(userId: string): Promise<ShoppingItem[]> {
-  const allItems = Array.from(shoppingStore.values()).filter(i => i.userId === userId);
+  const allItems = await getList(userId, true);
 
-  // Find recurring items that have been purchased but not re-added
   const recurringPurchased = allItems.filter(i => i.isRecurring && i.isPurchased);
   const activeItems = allItems.filter(i => !i.isPurchased).map(i => i.name.toLowerCase());
 
@@ -46,14 +95,13 @@ export async function getSmartSuggestions(userId: string): Promise<ShoppingItem[
     if (!activeItems.includes(item.name.toLowerCase())) {
       suggestions.push({
         ...item,
-        id: uuidv4(),
+        id: `suggestion-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         isPurchased: false,
         addedAt: new Date(),
       });
     }
   }
 
-  // Use AI to analyze purchase patterns and suggest additional items
   if (allItems.length > 0) {
     try {
       const purchaseHistory = allItems.map(i => ({
@@ -84,7 +132,7 @@ Limit to 3-5 suggestions.`,
         for (const item of aiSuggestions.items) {
           if (!activeItems.includes(item.name.toLowerCase())) {
             suggestions.push({
-              id: uuidv4(),
+              id: `suggestion-${Date.now()}-${Math.random().toString(36).slice(2)}`,
               userId,
               name: item.name,
               category: item.category,
