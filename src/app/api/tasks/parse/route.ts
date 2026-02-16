@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuth } from '@/shared/middleware/auth';
 import { parseTaskFromText } from '@/modules/tasks/services/nlp-parser';
 
 const ParseSchema = z.object({
@@ -9,18 +10,20 @@ const ParseSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const parsed = ParseSchema.safeParse(body);
+  return withAuth(request, async (req, session) => {
+    try {
+      const body = await req.json();
+      const parsed = ParseSchema.safeParse(body);
 
-    if (!parsed.success) {
-      return error('VALIDATION_ERROR', parsed.error.message, 400);
+      if (!parsed.success) {
+        return error('VALIDATION_ERROR', parsed.error.message, 400);
+      }
+
+      const result = await parseTaskFromText(parsed.data.text);
+      return success(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to parse task';
+      return error('PARSE_FAILED', message, 500);
     }
-
-    const result = await parseTaskFromText(parsed.data.text);
-    return success(result);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to parse task';
-    return error('PARSE_FAILED', message, 500);
-  }
+  });
 }
