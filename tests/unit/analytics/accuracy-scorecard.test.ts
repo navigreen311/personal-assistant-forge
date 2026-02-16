@@ -14,6 +14,21 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockResolvedValue({
+    suggestions: {
+      'Triage Accuracy': 'AI: Improve triage rules for better accuracy.',
+      'Draft Approval Rate': 'AI: Refine draft templates.',
+      'Deadline Performance': 'AI: Add buffer time to estimates.',
+      'Automation Success': 'AI: Fix failing workflow steps.',
+    },
+  }),
+  generateText: jest.fn().mockResolvedValue('AI-generated insight'),
+}));
+
+const { generateJSON } = require('@/lib/ai');
+
 describe('generateScorecard', () => {
   it('should assign grade A for overall >= 90', () => {
     expect(scoreToGrade(90)).toBe('A');
@@ -46,8 +61,12 @@ describe('generateScorecard', () => {
   });
 });
 
-describe('getGradeBreakdown', () => {
-  it('should return all 4 dimensions with individual grades', () => {
+describe('getGradeBreakdown (AI-powered)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should return all 4 dimensions with individual grades', async () => {
     const scorecard: AccuracyScorecard = {
       entityId: 'entity1',
       period: '2026-02-W7',
@@ -58,7 +77,7 @@ describe('getGradeBreakdown', () => {
       overallGrade: 'B',
     };
 
-    const breakdown = getGradeBreakdown(scorecard);
+    const breakdown = await getGradeBreakdown(scorecard);
     expect(breakdown).toHaveLength(4);
     expect(breakdown[0].dimension).toBe('Triage Accuracy');
     expect(breakdown[0].grade).toBe('A');
@@ -70,7 +89,7 @@ describe('getGradeBreakdown', () => {
     expect(breakdown[3].grade).toBe('C');
   });
 
-  it('should provide improvement suggestions for low-scoring dimensions', () => {
+  it('should use AI-generated suggestions per dimension', async () => {
     const scorecard: AccuracyScorecard = {
       entityId: 'entity1',
       period: '2026-02-W7',
@@ -81,7 +100,26 @@ describe('getGradeBreakdown', () => {
       overallGrade: 'F',
     };
 
-    const breakdown = getGradeBreakdown(scorecard);
+    const breakdown = await getGradeBreakdown(scorecard);
+    expect(generateJSON).toHaveBeenCalledTimes(1);
+    expect(breakdown[0].suggestion).toBe('AI: Improve triage rules for better accuracy.');
+    expect(breakdown[1].suggestion).toBe('AI: Refine draft templates.');
+  });
+
+  it('should fall back to default suggestions if AI fails', async () => {
+    generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
+
+    const scorecard: AccuracyScorecard = {
+      entityId: 'entity1',
+      period: '2026-02-W7',
+      triageAccuracy: 55,
+      draftApprovalRate: 45,
+      missedDeadlineRate: 50,
+      automationSuccessRate: 40,
+      overallGrade: 'F',
+    };
+
+    const breakdown = await getGradeBreakdown(scorecard);
     for (const dim of breakdown) {
       expect(dim.suggestion).toBeTruthy();
       expect(dim.suggestion.length).toBeGreaterThan(0);

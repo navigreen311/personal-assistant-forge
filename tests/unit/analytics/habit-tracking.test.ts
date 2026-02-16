@@ -3,6 +3,12 @@ jest.mock('uuid', () => ({
   v4: jest.fn().mockReturnValue('test-uuid'),
 }));
 
+// Mock AI client
+jest.mock('@/lib/ai', () => ({
+  generateText: jest.fn().mockResolvedValue('AI-generated habit insight'),
+  generateJSON: jest.fn().mockResolvedValue({}),
+}));
+
 // Mock prisma and productivity scoring
 jest.mock('@/lib/db', () => ({
   prisma: {
