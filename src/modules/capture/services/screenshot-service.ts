@@ -2,26 +2,69 @@
 // Screenshot Intelligence Service
 // Extracts actionable data from screenshots and clipboard content.
 // Uses pattern-based extraction for emails, phones, dates, URLs, action verbs.
+// Stores screenshot metadata in Prisma Document model.
 // ============================================================================
 
 import type { SuggestedAction } from '@/modules/capture/types';
+import { prisma } from '@/lib/db';
+import { generateJSON } from '@/lib/ai';
 
 class ScreenshotService {
-  async analyzeScreenshot(imageData: string): Promise<{
+  async analyzeScreenshot(imageData: string, entityId?: string): Promise<{
+    documentId: string;
     extractedText: string;
     suggestedActions: SuggestedAction[];
   }> {
-    // Placeholder: In production, this would use OCR to extract text first,
-    // then analyze the text for actionable content.
+    // In production, OCR would extract text from imageData first.
     // For now, treat imageData as already-extracted text.
     const extractedText = imageData;
     const suggestedActions = this.extractActions(extractedText);
 
-    return { extractedText, suggestedActions };
+    // Store screenshot metadata
+    const doc = await prisma.document.create({
+      data: {
+        title: `Screenshot ${new Date().toISOString()}`,
+        entityId: entityId ?? '',
+        type: 'SCREENSHOT',
+        content: extractedText.substring(0, 5000),
+        metadata: {
+          capturedAt: new Date().toISOString(),
+          suggestedActions: suggestedActions.map(a => ({ type: a.type, confidence: a.confidence })),
+        },
+        status: 'DRAFT',
+      },
+    });
+
+    return { documentId: doc.id, extractedText, suggestedActions };
+  }
+
+  async analyzeScreenshotWithAI(text: string): Promise<SuggestedAction[]> {
+    try {
+      const result = await generateJSON<{ actions: SuggestedAction[] }>(
+        `Analyze this text captured from a screenshot and suggest actions.
+
+Text: "${text.substring(0, 2000)}"
+
+Return JSON with "actions" array. Each action has: type (CREATE_CONTACT, CREATE_TASK, CREATE_EVENT, ADD_NOTE), data (object with relevant fields), confidence (0-1).`,
+        {
+          maxTokens: 512,
+          temperature: 0.3,
+          system: 'You are a screenshot analysis assistant. Identify actionable items from captured text.',
+        },
+      );
+      return result.actions ?? [];
+    } catch {
+      return this.extractActions(text);
+    }
   }
 
   async extractFromClipboard(clipboardContent: string): Promise<SuggestedAction[]> {
-    return this.extractActions(clipboardContent);
+    // Try AI-enhanced extraction first, fall back to regex
+    try {
+      return await this.analyzeScreenshotWithAI(clipboardContent);
+    } catch {
+      return this.extractActions(clipboardContent);
+    }
   }
 
   private extractActions(text: string): SuggestedAction[] {
