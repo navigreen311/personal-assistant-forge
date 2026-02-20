@@ -23,6 +23,7 @@
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.69.2",
     "date-fns": "^4.1.0",
+    "effect": "^3.19.18",
     "eventsource-parser": "^3.0.6",
     "ioredis": "^5.9.3",
     "next": "16.1.6",

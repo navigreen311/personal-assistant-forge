@@ -2,12 +2,40 @@ import {
   createGoal,
   updateGoalProgress,
   suggestCourseCorrection,
-  _getGoalStore,
 } from '@/modules/analytics/services/goal-tracking-service';
+
+// Track created goals for mock lookups
+const goalStore = new Map<string, Record<string, unknown>>();
+let uuidCounter = 0;
+
+// Mock uuid
+jest.mock('uuid', () => ({
+  v4: jest.fn(() => `test-uuid-${++uuidCounter}`),
+}));
 
 // Mock prisma
 jest.mock('@/lib/db', () => ({
   prisma: {
+    goalEntry: {
+      create: jest.fn().mockImplementation(({ data }: { data: Record<string, unknown> }) => {
+        const record = { id: data.id || `test-uuid-${uuidCounter}`, ...data, createdAt: new Date(), updatedAt: new Date() };
+        goalStore.set(record.id as string, record);
+        return Promise.resolve(record);
+      }),
+      findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        return Promise.resolve(goalStore.get(where.id) || null);
+      }),
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn().mockImplementation(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const existing = goalStore.get(where.id);
+        if (existing) {
+          const updated = { ...existing, ...data, updatedAt: new Date() };
+          goalStore.set(where.id, updated);
+          return Promise.resolve(updated);
+        }
+        return Promise.resolve(null);
+      }),
+    },
     task: {
       findMany: jest.fn().mockResolvedValue([]),
     },
@@ -25,20 +53,34 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated insight'),
 }));
 
-// Mock uuid
-jest.mock('uuid', () => ({
-  v4: jest.fn().mockReturnValue('test-uuid-1'),
-}));
-
 const { prisma } = require('@/lib/db');
 const { generateJSON } = require('@/lib/ai');
 
-describe('updateGoalProgress', () => {
-  beforeEach(() => {
-    _getGoalStore().clear();
-    jest.clearAllMocks();
+beforeEach(() => {
+  goalStore.clear();
+  uuidCounter = 0;
+  jest.clearAllMocks();
+  // Re-wire create mock after clearAllMocks
+  prisma.goalEntry.create.mockImplementation(({ data }: { data: Record<string, unknown> }) => {
+    const record = { id: data.id || `test-uuid-${++uuidCounter}`, ...data, createdAt: new Date(), updatedAt: new Date() };
+    goalStore.set(record.id as string, record);
+    return Promise.resolve(record);
   });
+  prisma.goalEntry.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
+    return Promise.resolve(goalStore.get(where.id) || null);
+  });
+  prisma.goalEntry.update.mockImplementation(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+    const existing = goalStore.get(where.id);
+    if (existing) {
+      const updated = { ...existing, ...data, updatedAt: new Date() };
+      goalStore.set(where.id, updated);
+      return Promise.resolve(updated);
+    }
+    return Promise.resolve(null);
+  });
+});
 
+describe('updateGoalProgress', () => {
   it('should update currentValue from linked task completion', async () => {
     const goal = await createGoal({
       userId: 'user1',
@@ -78,7 +120,6 @@ describe('updateGoalProgress', () => {
       linkedWorkflowIds: [],
     });
 
-    // 2 out of 3 = 67% progress, only ~13% of time elapsed -> ON_TRACK
     prisma.task.findMany.mockResolvedValueOnce([
       { id: 'task1', status: 'DONE' },
       { id: 'task2', status: 'DONE' },
@@ -90,12 +131,11 @@ describe('updateGoalProgress', () => {
   });
 
   it('should set AT_RISK when pace is 80-100% of required', async () => {
-    // Create goal that's almost half elapsed with less than half done
     const now = new Date();
     const startDate = new Date(now);
-    startDate.setDate(startDate.getDate() - 50); // 50 days ago
+    startDate.setDate(startDate.getDate() - 50);
     const endDate = new Date(now);
-    endDate.setDate(endDate.getDate() + 10); // 10 days from now
+    endDate.setDate(endDate.getDate() + 10);
 
     const goal = await createGoal({
       userId: 'user1',
@@ -110,7 +150,6 @@ describe('updateGoalProgress', () => {
       linkedWorkflowIds: [],
     });
 
-    // 4 out of 5 tasks done = 80% progress, but 83% time elapsed
     prisma.task.findMany.mockResolvedValueOnce([
       { id: 't1', status: 'DONE' },
       { id: 't2', status: 'DONE' },
@@ -120,7 +159,6 @@ describe('updateGoalProgress', () => {
     ]);
 
     const updated = await updateGoalProgress(goal.id);
-    // pace ratio = (80/100) / (50/60) = 0.96 -> AT_RISK (between 0.8 and 1.0)
     expect(['ON_TRACK', 'AT_RISK']).toContain(updated.status);
   });
 
@@ -144,7 +182,6 @@ describe('updateGoalProgress', () => {
       linkedWorkflowIds: [],
     });
 
-    // Only 1 out of 5 done = 20% progress, but 90% time elapsed
     prisma.task.findMany.mockResolvedValueOnce([
       { id: 't1', status: 'DONE' },
       { id: 't2', status: 'TODO' },
@@ -181,11 +218,6 @@ describe('updateGoalProgress', () => {
 });
 
 describe('suggestCourseCorrection (AI-powered)', () => {
-  beforeEach(() => {
-    _getGoalStore().clear();
-    jest.clearAllMocks();
-  });
-
   it('should call generateJSON with goal context in prompt', async () => {
     const goal = await createGoal({
       userId: 'user1',
@@ -200,11 +232,12 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       linkedWorkflowIds: [],
     });
 
-    const store = _getGoalStore();
-    const g = store.get(goal.id)!;
-    g.status = 'AT_RISK';
-    g.currentValue = 40;
-    store.set(goal.id, g);
+    // Set goal status directly in store for mock
+    const stored = goalStore.get(goal.id);
+    if (stored) {
+      stored.status = 'AT_RISK';
+      stored.currentValue = 40;
+    }
 
     await suggestCourseCorrection(goal.id);
     expect(generateJSON).toHaveBeenCalledTimes(1);
@@ -227,11 +260,11 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       linkedWorkflowIds: [],
     });
 
-    const store = _getGoalStore();
-    const g = store.get(goal.id)!;
-    g.status = 'BEHIND';
-    g.currentValue = 10;
-    store.set(goal.id, g);
+    const stored = goalStore.get(goal.id);
+    if (stored) {
+      stored.status = 'BEHIND';
+      stored.currentValue = 10;
+    }
 
     await suggestCourseCorrection(goal.id);
     const prompt = generateJSON.mock.calls[0][0] as string;
@@ -253,11 +286,11 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       linkedWorkflowIds: [],
     });
 
-    const store = _getGoalStore();
-    const g = store.get(goal.id)!;
-    g.status = 'AT_RISK';
-    g.currentValue = 40;
-    store.set(goal.id, g);
+    const stored = goalStore.get(goal.id);
+    if (stored) {
+      stored.status = 'AT_RISK';
+      stored.currentValue = 40;
+    }
 
     const result = await suggestCourseCorrection(goal.id);
     expect(result.suggestion).toBe('Increase your daily pace to meet the deadline.');
@@ -282,14 +315,13 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       linkedWorkflowIds: [],
     });
 
-    const store = _getGoalStore();
-    const g = store.get(goal.id)!;
-    g.status = 'BEHIND';
-    g.currentValue = 10;
-    store.set(goal.id, g);
+    const stored = goalStore.get(goal.id);
+    if (stored) {
+      stored.status = 'BEHIND';
+      stored.currentValue = 10;
+    }
 
     const result = await suggestCourseCorrection(goal.id);
-    // Should fall back to static suggestion
     expect(result.suggestion).toBeTruthy();
     expect(result.suggestion.length).toBeGreaterThan(0);
     expect(result.adjustedEndDate).toBeDefined();
@@ -309,11 +341,11 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       linkedWorkflowIds: [],
     });
 
-    const store = _getGoalStore();
-    const g = store.get(goal.id)!;
-    g.status = 'BEHIND';
-    g.currentValue = 20;
-    store.set(goal.id, g);
+    const stored = goalStore.get(goal.id);
+    if (stored) {
+      stored.status = 'BEHIND';
+      stored.currentValue = 20;
+    }
 
     const suggestion = await suggestCourseCorrection(goal.id);
     if (suggestion.adjustedEndDate) {

@@ -88,3 +88,89 @@ export interface STTProvider {
   getTranscript(): string;
   reset(): void;
 }
+
+// ============================================================================
+// Wake Word Engine — Abstraction Layer
+// Pluggable engines for wake word detection (browser, Picovoice, custom ML).
+// ============================================================================
+
+/** Status of the wake word detection service */
+export type WakeWordStatus = 'idle' | 'listening' | 'detected' | 'error';
+
+/** Event emitted when a wake word is detected */
+export interface WakeWordDetectionEvent {
+  /** The phrase that was detected */
+  phrase: string;
+  /** Detection confidence (0.0 - 1.0) */
+  confidence: number;
+  /** Timestamp of detection */
+  timestamp: Date;
+  /** Which engine produced the detection */
+  engine: string;
+}
+
+/** Callback type for wake word detection events */
+export type WakeWordCallback = (event: WakeWordDetectionEvent) => void;
+
+/** Supported wake word engine identifiers */
+export type WakeWordEngineType = 'browser' | 'porcupine' | 'mock' | 'custom';
+
+/** Descriptor for a supported engine's capabilities */
+export interface WakeWordEngineInfo {
+  type: WakeWordEngineType;
+  name: string;
+  description: string;
+  requiresApiKey: boolean;
+  supportedPlatforms: ('browser' | 'node' | 'electron')[];
+  supportsCustomWakeWords: boolean;
+}
+
+/** Result from a self-test run */
+export interface WakeWordTestResult {
+  success: boolean;
+  engineType: WakeWordEngineType;
+  microphoneAvailable: boolean;
+  engineInitialized: boolean;
+  detectionWorking: boolean;
+  latencyMs?: number;
+  errors: string[];
+}
+
+/**
+ * WakeWordEngine — The pluggable interface that all detection backends must
+ * implement. The WakeWordService delegates to whichever engine is active.
+ */
+export interface WakeWordEngine {
+  /** Unique name identifying this engine (e.g., 'browser', 'porcupine') */
+  readonly engineType: WakeWordEngineType;
+
+  /** Initialize the engine with the given config */
+  initialize(config: WakeWordConfig): Promise<void>;
+
+  /** Start processing audio for wake word detection */
+  start(): Promise<void>;
+
+  /** Stop processing audio */
+  stop(): Promise<void>;
+
+  /** Update the wake word phrase the engine listens for */
+  setWakeWord(phrase: string): void;
+
+  /** Update detection sensitivity (0.0 - 1.0) */
+  setSensitivity(level: number): void;
+
+  /** Process a single audio frame; returns true if wake word was detected */
+  processAudioFrame(frame: Float32Array): boolean;
+
+  /** Run a self-test to verify the engine is working */
+  selfTest(): Promise<WakeWordTestResult>;
+
+  /** Clean up any resources held by the engine */
+  dispose(): Promise<void>;
+
+  /** Current engine status */
+  getStatus(): WakeWordStatus;
+
+  /** Metadata about this engine */
+  getInfo(): WakeWordEngineInfo;
+}

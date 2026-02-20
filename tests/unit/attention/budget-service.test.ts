@@ -1,15 +1,55 @@
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    user: {
-      findUnique: jest.fn().mockResolvedValue({ id: 'user-1', preferences: {} }),
-      update: jest.fn().mockResolvedValue({}),
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _budgetStore = new Map<string, any>();
+
+jest.mock('@/lib/db', () => {
+  return {
+    prisma: {
+      attentionBudget: {
+        findUnique: jest.fn().mockImplementation((args: { where: Record<string, unknown> }) => {
+          const compound = args.where.userId_date as { userId: string; date: Date } | undefined;
+          if (compound) {
+            const key = compound.userId;
+            const rec = _budgetStore.get(key);
+            return Promise.resolve(rec ? { ...rec } : null);
+          }
+          for (const rec of _budgetStore.values()) {
+            if (rec.id === args.where.id) return Promise.resolve({ ...rec });
+          }
+          return Promise.resolve(null);
+        }),
+        create: jest.fn().mockImplementation((args: { data: Record<string, unknown> }) => {
+          const record = {
+            id: `budget-1`,
+            ...args.data,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          _budgetStore.set(args.data.userId as string, record);
+          return Promise.resolve({ ...record });
+        }),
+        update: jest.fn().mockImplementation((args: { where: { id: string }; data: Record<string, unknown> }) => {
+          for (const [key, rec] of _budgetStore.entries()) {
+            if (rec.id === args.where.id) {
+              const updated = { ...rec, ...args.data, updatedAt: new Date() };
+              _budgetStore.set(key, updated);
+              return Promise.resolve({ ...updated });
+            }
+          }
+          return Promise.resolve(null);
+        }),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      actionLog: {
+        create: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'user-1', preferences: {} }),
+        update: jest.fn().mockResolvedValue({}),
+      },
     },
-    actionLog: {
-      create: jest.fn().mockResolvedValue({}),
-      findMany: jest.fn().mockResolvedValue([]),
-    },
-  },
-}));
+  };
+});
 
 import {
   getBudget,
@@ -20,14 +60,12 @@ import {
   setBudgetLimit,
   getBudgetHistory,
   isLowBudget,
-  budgetStore,
 } from '@/modules/attention/services/attention-budget-service';
 
 const { prisma } = jest.requireMock('@/lib/db');
 
 beforeEach(() => {
-  budgetStore.clear();
-  jest.clearAllMocks();
+  _budgetStore.clear();
 });
 
 describe('getBudget', () => {
@@ -40,15 +78,19 @@ describe('getBudget', () => {
   });
 
   it('should auto-reset if lastReset is yesterday', async () => {
-    // Set up a budget with expired resetAt
+    // Seed a budget with an expired resetAt
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    budgetStore.set('user-1', {
+    const pastReset = new Date(yesterday);
+    pastReset.setHours(0, 0, 0, 0);
+
+    _budgetStore.set('user-1', {
+      id: 'budget-old',
       userId: 'user-1',
-      dailyBudget: 10,
-      usedToday: 8,
-      remaining: 2,
-      resetAt: yesterday,
+      date: yesterday,
+      totalMinutes: 10,
+      consumedMinutes: 8,
+      resetAt: pastReset,
     });
 
     const budget = await getBudget('user-1');
@@ -57,11 +99,9 @@ describe('getBudget', () => {
   });
 
   it('should initialize budget if none exists', async () => {
-    expect(budgetStore.has('new-user')).toBe(false);
     const budget = await getBudget('new-user');
     expect(budget.dailyBudget).toBe(10);
     expect(budget.remaining).toBe(10);
-    expect(budgetStore.has('new-user')).toBe(true);
   });
 });
 
@@ -138,7 +178,6 @@ describe('resetBudget', () => {
 describe('isLowBudget', () => {
   it('should return true when below threshold', async () => {
     await setBudget('user-1', 10);
-    // Use 9 units
     for (let i = 0; i < 9; i++) {
       await consumeBudget('user-1');
     }
@@ -156,7 +195,6 @@ describe('isLowBudget', () => {
 
   it('should use default 20% threshold', async () => {
     await setBudget('user-1', 10);
-    // Use 8 units (remaining = 2 = 20% of 10)
     for (let i = 0; i < 8; i++) {
       await consumeBudget('user-1');
     }
@@ -168,7 +206,7 @@ describe('isLowBudget', () => {
 
 describe('getBudgetHistory', () => {
   it('should query ActionLog for recent deductions', async () => {
-    (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([
+    (prisma.actionLog.findMany as jest.Mock).mockResolvedValueOnce([
       { reason: 'test deduction (amount: 2)', timestamp: new Date(), status: 'COMPLETED' },
     ]);
 
@@ -185,7 +223,7 @@ describe('getBudgetHistory', () => {
   });
 
   it('should return empty array on error', async () => {
-    (prisma.actionLog.findMany as jest.Mock).mockRejectedValue(new Error('DB error'));
+    (prisma.actionLog.findMany as jest.Mock).mockRejectedValueOnce(new Error('DB error'));
 
     const history = await getBudgetHistory('user-1', 7);
     expect(history).toEqual([]);

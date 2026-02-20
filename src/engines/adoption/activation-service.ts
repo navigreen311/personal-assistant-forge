@@ -1,8 +1,6 @@
+import { prisma } from '@/lib/db';
 import type { ActivationChecklist, ActivationPhase, ActivationTask } from './types';
 const uuidv4 = () => crypto.randomUUID();
-
-// In-memory checklist store
-const checklists = new Map<string, ActivationChecklist>();
 
 function buildDefaultPhases(): ActivationPhase[] {
   return [
@@ -74,43 +72,135 @@ function updatePhaseStatuses(phases: ActivationPhase[]): void {
   }
 }
 
+interface CompletedStep {
+  taskId: string;
+  completedAt: string;
+}
+
+interface StoredAhaMoment {
+  taskId: string;
+  triggeredAt: string;
+}
+
+function applyCompletedSteps(phases: ActivationPhase[], completedSteps: CompletedStep[]): void {
+  const completedMap = new Map(completedSteps.map(s => [s.taskId, new Date(s.completedAt)]));
+  for (const phase of phases) {
+    for (const task of phase.tasks) {
+      if (completedMap.has(task.id)) {
+        task.isComplete = true;
+        task.completedAt = completedMap.get(task.id);
+      }
+    }
+  }
+}
+
+function recordToChecklist(
+  record: { userId: string; startedAt: Date; completedSteps: unknown; ahaMoments: unknown; phase: string },
+  phases: ActivationPhase[]
+): ActivationChecklist {
+  const completedSteps = (record.completedSteps ?? []) as CompletedStep[];
+  applyCompletedSteps(phases, completedSteps);
+  updatePhaseStatuses(phases);
+
+  const daysSinceStart = Math.floor(
+    (new Date().getTime() - record.startedAt.getTime()) / (24 * 60 * 60 * 1000)
+  ) + 1;
+
+  return {
+    userId: record.userId,
+    startDate: record.startedAt,
+    currentDay: Math.min(daysSinceStart, 30),
+    phases,
+    overallProgress: calculateProgress(phases),
+  };
+}
+
 export async function initializeChecklist(userId: string): Promise<ActivationChecklist> {
   const phases = buildDefaultPhases();
-  const checklist: ActivationChecklist = {
-    userId,
-    startDate: new Date(),
-    currentDay: 1,
-    phases,
-    overallProgress: 0,
-  };
-  checklists.set(userId, checklist);
-  return checklist;
+
+  // Upsert to avoid failure if already exists
+  const record = await prisma.adoptionProgress.upsert({
+    where: { userId },
+    create: {
+      userId,
+      phase: 'Inbox Mastery',
+      completedSteps: [],
+      ahaMoments: [],
+      startedAt: new Date(),
+    },
+    update: {
+      phase: 'Inbox Mastery',
+      completedSteps: [],
+      ahaMoments: [],
+      startedAt: new Date(),
+      completedAt: null,
+    },
+  });
+
+  return recordToChecklist(record, phases);
 }
 
 export async function getChecklist(userId: string): Promise<ActivationChecklist> {
-  const checklist = checklists.get(userId);
-  if (!checklist) {
+  const record = await prisma.adoptionProgress.findUnique({
+    where: { userId },
+  });
+
+  if (!record) {
     return initializeChecklist(userId);
   }
 
-  // Update current day
-  const daysSinceStart = Math.floor(
-    (new Date().getTime() - checklist.startDate.getTime()) / (24 * 60 * 60 * 1000)
-  ) + 1;
-  checklist.currentDay = Math.min(daysSinceStart, 30);
-
-  return checklist;
+  const phases = buildDefaultPhases();
+  return recordToChecklist(record, phases);
 }
 
 export async function completeTask(userId: string, taskId: string): Promise<ActivationChecklist> {
   const checklist = await getChecklist(userId);
 
+  // Find the task to verify it exists and check if it is an aha moment
+  let isAhaMoment = false;
+  let alreadyComplete = false;
   for (const phase of checklist.phases) {
     const task = phase.tasks.find(t => t.id === taskId);
-    if (task && !task.isComplete) {
+    if (task) {
+      if (task.isComplete) {
+        alreadyComplete = true;
+      }
+      isAhaMoment = task.isAhaMoment;
       task.isComplete = true;
       task.completedAt = new Date();
       break;
+    }
+  }
+
+  if (!alreadyComplete) {
+    // Get current record to update its JSON fields
+    const record = await prisma.adoptionProgress.findUnique({
+      where: { userId },
+    });
+
+    if (record) {
+      const completedSteps = (record.completedSteps ?? []) as CompletedStep[];
+      completedSteps.push({ taskId, completedAt: new Date().toISOString() });
+
+      const ahaMoments = (record.ahaMoments ?? []) as StoredAhaMoment[];
+      if (isAhaMoment) {
+        ahaMoments.push({ taskId, triggeredAt: new Date().toISOString() });
+      }
+
+      // Determine current phase name
+      updatePhaseStatuses(checklist.phases);
+      const activePhase = checklist.phases.find(p => p.status !== 'COMPLETE') ?? checklist.phases[checklist.phases.length - 1];
+      const allComplete = checklist.phases.every(p => p.status === 'COMPLETE');
+
+      await prisma.adoptionProgress.update({
+        where: { userId },
+        data: {
+          completedSteps,
+          ahaMoments,
+          phase: activePhase.name,
+          completedAt: allComplete ? new Date() : null,
+        },
+      });
     }
   }
 

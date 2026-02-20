@@ -1,75 +1,115 @@
+import { prisma } from '@/lib/db';
 import type { AttentionBudget } from '../types';
 
-function getPrisma() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('@/lib/db').prisma;
-}
-
-const budgetStore = new Map<string, AttentionBudget>();
-
-function getDefaultBudget(userId: string): AttentionBudget {
+function getDefaultResetAt(): Date {
   const resetAt = new Date();
   resetAt.setHours(24, 0, 0, 0);
+  return resetAt;
+}
+
+function getTodayStart(): Date {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+}
+
+function toAttentionBudget(record: {
+  userId: string;
+  totalMinutes: number;
+  consumedMinutes: number;
+  resetAt: Date;
+}): AttentionBudget {
   return {
-    userId,
-    dailyBudget: 10,
-    usedToday: 0,
-    remaining: 10,
-    resetAt,
+    userId: record.userId,
+    dailyBudget: record.totalMinutes,
+    usedToday: record.consumedMinutes,
+    remaining: record.totalMinutes - record.consumedMinutes,
+    resetAt: record.resetAt,
   };
 }
 
-function checkAndReset(budget: AttentionBudget): AttentionBudget {
-  if (new Date() >= budget.resetAt) {
-    budget.usedToday = 0;
-    budget.remaining = budget.dailyBudget;
-    const resetAt = new Date();
-    resetAt.setHours(24, 0, 0, 0);
-    budget.resetAt = resetAt;
+async function getOrCreateRecord(userId: string) {
+  const today = getTodayStart();
+
+  let record = await prisma.attentionBudget.findUnique({
+    where: { userId_date: { userId, date: today } },
+  });
+
+  if (!record) {
+    record = await prisma.attentionBudget.create({
+      data: {
+        userId,
+        date: today,
+        totalMinutes: 10,
+        consumedMinutes: 0,
+        resetAt: getDefaultResetAt(),
+      },
+    });
   }
-  return budget;
+
+  // Check if budget needs reset (past resetAt time)
+  if (new Date() >= record.resetAt) {
+    record = await prisma.attentionBudget.update({
+      where: { id: record.id },
+      data: {
+        consumedMinutes: 0,
+        resetAt: getDefaultResetAt(),
+      },
+    });
+  }
+
+  return record;
 }
 
 export async function getBudget(userId: string): Promise<AttentionBudget> {
-  let budget = budgetStore.get(userId);
-  if (!budget) {
-    budget = getDefaultBudget(userId);
-    budgetStore.set(userId, budget);
-  }
-  return checkAndReset(budget);
+  const record = await getOrCreateRecord(userId);
+  return toAttentionBudget(record);
 }
 
 export async function consumeBudget(
   userId: string,
   amount = 1
 ): Promise<{ allowed: boolean; budget: AttentionBudget }> {
-  const budget = await getBudget(userId);
-  if (budget.remaining < amount) {
-    return { allowed: false, budget };
+  const record = await getOrCreateRecord(userId);
+  const remaining = record.totalMinutes - record.consumedMinutes;
+
+  if (remaining < amount) {
+    return { allowed: false, budget: toAttentionBudget(record) };
   }
-  budget.usedToday += amount;
-  budget.remaining = budget.dailyBudget - budget.usedToday;
-  budgetStore.set(userId, budget);
-  return { allowed: true, budget };
+
+  const updated = await prisma.attentionBudget.update({
+    where: { id: record.id },
+    data: { consumedMinutes: record.consumedMinutes + amount },
+  });
+
+  return { allowed: true, budget: toAttentionBudget(updated) };
 }
 
 export async function setBudget(userId: string, dailyBudget: number): Promise<AttentionBudget> {
-  const budget = await getBudget(userId);
-  budget.dailyBudget = dailyBudget;
-  budget.remaining = Math.max(0, dailyBudget - budget.usedToday);
-  budgetStore.set(userId, budget);
-  return budget;
+  const record = await getOrCreateRecord(userId);
+
+  const updated = await prisma.attentionBudget.update({
+    where: { id: record.id },
+    data: {
+      totalMinutes: dailyBudget,
+    },
+  });
+
+  return toAttentionBudget(updated);
 }
 
 export async function resetBudget(userId: string): Promise<AttentionBudget> {
-  const budget = await getBudget(userId);
-  budget.usedToday = 0;
-  budget.remaining = budget.dailyBudget;
-  const resetAt = new Date();
-  resetAt.setHours(24, 0, 0, 0);
-  budget.resetAt = resetAt;
-  budgetStore.set(userId, budget);
-  return budget;
+  const record = await getOrCreateRecord(userId);
+
+  const updated = await prisma.attentionBudget.update({
+    where: { id: record.id },
+    data: {
+      consumedMinutes: 0,
+      resetAt: getDefaultResetAt(),
+    },
+  });
+
+  return toAttentionBudget(updated);
 }
 
 export async function deductBudget(
@@ -77,16 +117,17 @@ export async function deductBudget(
   amount: number,
   reason: string
 ): Promise<{ allowed: boolean; overBudget: boolean; budget: AttentionBudget }> {
-  const budget = await getBudget(userId);
-  const overBudget = budget.remaining <= 0;
+  const record = await getOrCreateRecord(userId);
+  const overBudget = record.totalMinutes - record.consumedMinutes <= 0;
 
-  budget.usedToday += amount;
-  budget.remaining = budget.dailyBudget - budget.usedToday;
-  budgetStore.set(userId, budget);
+  const updated = await prisma.attentionBudget.update({
+    where: { id: record.id },
+    data: { consumedMinutes: record.consumedMinutes + amount },
+  });
 
   // Log deduction
   try {
-    await getPrisma().actionLog.create({
+    await prisma.actionLog.create({
       data: {
         actor: userId,
         actorId: userId,
@@ -105,7 +146,7 @@ export async function deductBudget(
   return {
     allowed: !overBudget,
     overBudget,
-    budget,
+    budget: toAttentionBudget(updated),
   };
 }
 
@@ -121,7 +162,7 @@ export async function getBudgetHistory(
   since.setDate(since.getDate() - days);
 
   try {
-    const logs = await getPrisma().actionLog.findMany({
+    const logs = await prisma.actionLog.findMany({
       where: {
         actorId: userId,
         actionType: 'BUDGET_DEDUCTION',
@@ -151,5 +192,3 @@ export async function isLowBudget(
     remaining: budget.remaining,
   };
 }
-
-export { budgetStore };
