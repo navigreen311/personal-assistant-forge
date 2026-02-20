@@ -1,3 +1,45 @@
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    decision: {
+      findUnique: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      create: jest.fn().mockResolvedValue({}),
+      update: jest.fn().mockResolvedValue({}),
+    },
+    document: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    contact: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    actionLog: {
+      create: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+  },
+}));
+
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error("AI unavailable - use fallback")),
+  generateText: jest.fn().mockResolvedValue("test"),
+}));
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    decision: { findUnique: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([]) },
+    document: { findMany: jest.fn().mockResolvedValue([]) },
+    contact: { findMany: jest.fn().mockResolvedValue([]) },
+    project: { findMany: jest.fn().mockResolvedValue([]) },
+    task: { findMany: jest.fn().mockResolvedValue([]) },
+    budget: { findMany: jest.fn().mockResolvedValue([]) },
+    workflow: { findMany: jest.fn().mockResolvedValue([]) },
+    financialRecord: { findMany: jest.fn().mockResolvedValue([]), aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }) },
+  },
+}));
+jest.mock('@/lib/ai', () => ({
+  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable')),
+  generateText: jest.fn().mockRejectedValue(new Error('AI unavailable')),
+}));
+
 import {
   analyzeEffects,
   flattenEffectsTree,

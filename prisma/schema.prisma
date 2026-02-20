@@ -29,6 +29,9 @@ model User {
   actionLogs   ActionLog[]
   memories     MemoryEntry[]
   notifications Notification[]
+  attentionBudgets AttentionBudget[]
+  adoptionProgress AdoptionProgress?
+  goalEntries    GoalEntry[]
 }
 
 model Entity {
@@ -546,4 +549,69 @@ model HealthMetric {
   @@index([entityId])
   @@index([type])
   @@index([recordedAt])
+}
+
+// === PERSISTENCE MIGRATION MODELS ===
+
+model AttentionBudget {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId        String?
+  date            DateTime @default(now())
+  totalMinutes    Int      @default(10)
+  consumedMinutes Int      @default(0)
+  resetAt         DateTime
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@index([date])
+}
+
+model AdoptionProgress {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phase          String    @default("Inbox Mastery")
+  completedSteps Json      @default("[]")
+  ahaMoments     Json      @default("[]")
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([phase])
+}
+
+model GoalEntry {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId          String?
+  title             String
+  description       String?
+  framework         String    @default("CUSTOM")
+  targetValue       Float
+  currentValue      Float     @default(0)
+  unit              String
+  milestones        Json      @default("[]")
+  startDate         DateTime
+  endDate           DateTime
+  status            String    @default("ON_TRACK")
+  autoProgress      Boolean   @default(false)
+  linkedTaskIds     Json      @default("[]")
+  linkedWorkflowIds Json      @default("[]")
+  deadline          DateTime?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([entityId])
+  @@index([status])
 }

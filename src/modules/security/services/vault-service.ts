@@ -1,6 +1,11 @@
 // ============================================================================
 // Vault Service — AES-256-GCM Encrypted Secret Storage
 // Worker 15: Security, Privacy & Compliance
+//
+// Two layers of functionality:
+// 1. Vault Entries — encrypted records with categories, metadata, access logs
+// 2. Named Secrets — simple key/value secret storage per entity with
+//    multi-key support, key rotation, and secure deletion
 // ============================================================================
 
 import crypto from 'node:crypto';
@@ -21,6 +26,7 @@ const PBKDF2_KEY_LENGTH = 32; // 256 bits
 const PBKDF2_DIGEST = 'sha256';
 const GCM_IV_LENGTH = 12; // 96 bits — recommended for AES-GCM
 const PBKDF2_SALT = Buffer.from('paf-vault-salt-v1');
+const AES_ALGORITHM = 'aes-256-gcm';
 
 const DEFAULT_CONFIG: VaultConfig = {
   encryptionAlgorithm: 'aes-256-gcm',
@@ -44,6 +50,30 @@ const DEFAULT_CONFIG: VaultConfig = {
 type SafeVaultEntry = Omit<VaultEntry, 'encryptedValue' | 'iv' | 'authTag'>;
 
 // ---------------------------------------------------------------------------
+// Named Secret Types
+// ---------------------------------------------------------------------------
+
+interface StoredSecret {
+  id: string;
+  name: string;
+  entityId: string;
+  encryptedValue: string;
+  iv: string;
+  authTag: string;
+  keyId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface ManagedKey {
+  id: string;
+  key: Buffer;
+  createdAt: Date;
+  rotatedAt?: Date;
+  isActive: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // VaultService
 // ---------------------------------------------------------------------------
 
@@ -52,6 +82,15 @@ export class VaultService {
   private readonly accessCounts: Map<string, number> = new Map();
   private readonly config: VaultConfig;
   private encryptionKey: Buffer;
+
+  /** Named secrets store: composite key "entityId:name" -> StoredSecret */
+  private readonly secrets: Map<string, StoredSecret> = new Map();
+
+  /** Managed encryption keys: keyId -> ManagedKey */
+  private readonly managedKeys: Map<string, ManagedKey> = new Map();
+
+  /** The default key ID used when no keyId is specified */
+  private defaultKeyId: string;
 
   constructor(config?: Partial<VaultConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -66,10 +105,19 @@ export class VaultService {
     }
 
     this.encryptionKey = this.deriveKey(masterKey);
+
+    // Initialize a default managed key from the master key
+    this.defaultKeyId = 'default';
+    this.managedKeys.set(this.defaultKeyId, {
+      id: this.defaultKeyId,
+      key: this.encryptionKey,
+      createdAt: new Date(),
+      isActive: true,
+    });
   }
 
   // -------------------------------------------------------------------------
-  // Public API
+  // Vault Entries — Public API (original interface preserved)
   // -------------------------------------------------------------------------
 
   /**
@@ -88,7 +136,7 @@ export class VaultService {
     const { entityId, category, label, value, metadata, expiresAt, createdBy } =
       params;
 
-    const { encrypted, iv, authTag } = this.encrypt(value);
+    const { encrypted, iv, authTag } = this.encryptRaw(value);
 
     const now = new Date();
     const entry: VaultEntry = {
@@ -148,7 +196,7 @@ export class VaultService {
       this.accessCounts.set(entryId, 0);
     }
 
-    const value = this.decrypt(entry.encryptedValue, entry.iv, entry.authTag);
+    const value = this.decryptRaw(entry.encryptedValue, entry.iv, entry.authTag);
 
     return { value, entry, reauthRequired };
   }
@@ -253,6 +301,383 @@ export class VaultService {
   }
 
   // -------------------------------------------------------------------------
+  // Encrypt / Decrypt — Public API (multi-key support)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Encrypt plaintext using AES-256-GCM with a specified key.
+   * If no keyId is provided, the default key is used.
+   *
+   * @param plaintext - The data to encrypt
+   * @param keyId - Optional managed key ID (defaults to 'default')
+   * @returns Object containing ciphertext, IV, auth tag, and the keyId used
+   */
+  async encrypt(
+    plaintext: string,
+    keyId?: string,
+  ): Promise<{
+    ciphertext: string;
+    iv: string;
+    authTag: string;
+    keyId: string;
+  }> {
+    const resolvedKeyId = keyId ?? this.defaultKeyId;
+    const managedKey = this.managedKeys.get(resolvedKeyId);
+
+    if (!managedKey) {
+      throw new Error(`Encryption key not found: ${resolvedKeyId}`);
+    }
+
+    if (!managedKey.isActive) {
+      throw new Error(`Encryption key is inactive: ${resolvedKeyId}. Use an active key or rotate.`);
+    }
+
+    const { encrypted, iv, authTag } = this.encryptWithKey(
+      plaintext,
+      managedKey.key,
+    );
+
+    return {
+      ciphertext: encrypted,
+      iv,
+      authTag,
+      keyId: resolvedKeyId,
+    };
+  }
+
+  /**
+   * Decrypt ciphertext using AES-256-GCM with a specified key.
+   * If no keyId is provided, the default key is used.
+   *
+   * @param ciphertext - The encrypted data (hex-encoded)
+   * @param keyId - Optional managed key ID (defaults to 'default')
+   * @param iv - The initialization vector (hex-encoded)
+   * @param authTag - The GCM authentication tag (hex-encoded)
+   * @returns The decrypted plaintext
+   */
+  async decrypt(
+    ciphertext: string,
+    keyId?: string,
+    iv?: string,
+    authTag?: string,
+  ): Promise<string> {
+    const resolvedKeyId = keyId ?? this.defaultKeyId;
+    const managedKey = this.managedKeys.get(resolvedKeyId);
+
+    if (!managedKey) {
+      throw new Error(`Encryption key not found: ${resolvedKeyId}`);
+    }
+
+    if (!iv || !authTag) {
+      throw new Error('IV and authTag are required for decryption.');
+    }
+
+    return this.decryptWithKey(ciphertext, iv, authTag, managedKey.key);
+  }
+
+  // -------------------------------------------------------------------------
+  // Key Management — Public API
+  // -------------------------------------------------------------------------
+
+  /**
+   * Rotate a specific managed key. Generates a new key, re-encrypts all
+   * secrets that were encrypted with the old key, and marks the old key
+   * as inactive.
+   *
+   * @param keyId - The key to rotate (defaults to 'default')
+   * @returns The number of secrets re-encrypted and the new key ID
+   */
+  async rotateKey(
+    keyId?: string,
+  ): Promise<{ newKeyId: string; reEncryptedSecrets: number; reEncryptedVaultEntries: number }> {
+    const resolvedKeyId = keyId ?? this.defaultKeyId;
+    const oldManagedKey = this.managedKeys.get(resolvedKeyId);
+
+    if (!oldManagedKey) {
+      throw new Error(`Encryption key not found: ${resolvedKeyId}`);
+    }
+
+    // Generate a new key
+    const newKeyId = `${resolvedKeyId}-${Date.now()}`;
+    const newKeyBuffer = crypto.randomBytes(PBKDF2_KEY_LENGTH);
+
+    const newManagedKey: ManagedKey = {
+      id: newKeyId,
+      key: newKeyBuffer,
+      createdAt: new Date(),
+      isActive: true,
+    };
+
+    // Mark old key as rotated (keep it around for decryption of unreferenced data)
+    oldManagedKey.rotatedAt = new Date();
+    oldManagedKey.isActive = false;
+
+    this.managedKeys.set(newKeyId, newManagedKey);
+
+    // Re-encrypt all secrets that used the old key
+    let reEncryptedSecrets = 0;
+    for (const secret of this.secrets.values()) {
+      if (secret.keyId === resolvedKeyId) {
+        // Decrypt with old key
+        const plaintext = this.decryptWithKey(
+          secret.encryptedValue,
+          secret.iv,
+          secret.authTag,
+          oldManagedKey.key,
+        );
+
+        // Re-encrypt with new key
+        const { encrypted, iv, authTag } = this.encryptWithKey(
+          plaintext,
+          newKeyBuffer,
+        );
+
+        secret.encryptedValue = encrypted;
+        secret.iv = iv;
+        secret.authTag = authTag;
+        secret.keyId = newKeyId;
+        secret.updatedAt = new Date();
+
+        reEncryptedSecrets++;
+      }
+    }
+
+    // If rotating the default key, also re-encrypt vault entries and update default
+    let reEncryptedVaultEntries = 0;
+    if (resolvedKeyId === this.defaultKeyId) {
+      for (const entry of this.vault.values()) {
+        const plaintext = this.decryptWithKey(
+          entry.encryptedValue,
+          entry.iv,
+          entry.authTag,
+          oldManagedKey.key,
+        );
+
+        const { encrypted, iv, authTag } = this.encryptWithKey(
+          plaintext,
+          newKeyBuffer,
+        );
+
+        entry.encryptedValue = encrypted;
+        entry.iv = iv;
+        entry.authTag = authTag;
+        entry.updatedAt = new Date();
+
+        reEncryptedVaultEntries++;
+      }
+
+      this.encryptionKey = newKeyBuffer;
+      this.defaultKeyId = newKeyId;
+    }
+
+    console.log(
+      `[VaultService] Key rotation for "${resolvedKeyId}" complete. New key: "${newKeyId}". ` +
+        `Re-encrypted ${reEncryptedSecrets} secrets, ${reEncryptedVaultEntries} vault entries.`,
+    );
+
+    return { newKeyId, reEncryptedSecrets, reEncryptedVaultEntries };
+  }
+
+  /**
+   * Create a new managed encryption key for use with encrypt/decrypt
+   * and named secrets.
+   *
+   * @param keyId - Optional custom key ID (auto-generated if omitted)
+   * @returns The new key's ID
+   */
+  async createKey(keyId?: string): Promise<string> {
+    const id = keyId ?? `key-${uuidv4()}`;
+
+    if (this.managedKeys.has(id)) {
+      throw new Error(`Key already exists: ${id}`);
+    }
+
+    const keyBuffer = crypto.randomBytes(PBKDF2_KEY_LENGTH);
+
+    this.managedKeys.set(id, {
+      id,
+      key: keyBuffer,
+      createdAt: new Date(),
+      isActive: true,
+    });
+
+    return id;
+  }
+
+  // -------------------------------------------------------------------------
+  // Named Secrets — Public API
+  // -------------------------------------------------------------------------
+
+  /**
+   * Store a named secret for an entity. The value is encrypted using
+   * AES-256-GCM before storage. If a secret with the same name already
+   * exists for this entity, it is overwritten.
+   *
+   * @param name - The secret name (e.g., 'STRIPE_API_KEY')
+   * @param value - The plaintext secret value
+   * @param entityId - The owning entity
+   * @param keyId - Optional managed key ID (defaults to 'default')
+   */
+  async storeSecret(
+    name: string,
+    value: string,
+    entityId: string,
+    keyId?: string,
+  ): Promise<{ id: string; name: string; entityId: string; createdAt: Date }> {
+    const resolvedKeyId = keyId ?? this.defaultKeyId;
+    const managedKey = this.managedKeys.get(resolvedKeyId);
+
+    if (!managedKey) {
+      throw new Error(`Encryption key not found: ${resolvedKeyId}`);
+    }
+
+    if (!managedKey.isActive) {
+      throw new Error(`Encryption key is inactive: ${resolvedKeyId}`);
+    }
+
+    const { encrypted, iv, authTag } = this.encryptWithKey(
+      value,
+      managedKey.key,
+    );
+
+    const compositeKey = this.secretCompositeKey(entityId, name);
+    const now = new Date();
+
+    const existing = this.secrets.get(compositeKey);
+
+    const secret: StoredSecret = {
+      id: existing?.id ?? uuidv4(),
+      name,
+      entityId,
+      encryptedValue: encrypted,
+      iv,
+      authTag,
+      keyId: resolvedKeyId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    this.secrets.set(compositeKey, secret);
+
+    return {
+      id: secret.id,
+      name: secret.name,
+      entityId: secret.entityId,
+      createdAt: secret.createdAt,
+    };
+  }
+
+  /**
+   * Retrieve and decrypt a named secret for an entity.
+   *
+   * @param name - The secret name
+   * @param entityId - The owning entity
+   * @returns The decrypted secret value
+   * @throws Error if the secret does not exist or the key is unavailable
+   */
+  async retrieveSecret(name: string, entityId: string): Promise<string> {
+    const compositeKey = this.secretCompositeKey(entityId, name);
+    const secret = this.secrets.get(compositeKey);
+
+    if (!secret) {
+      throw new Error(
+        `Secret not found: name="${name}", entityId="${entityId}"`,
+      );
+    }
+
+    const managedKey = this.managedKeys.get(secret.keyId);
+    if (!managedKey) {
+      throw new Error(
+        `Encryption key not found for secret "${name}": keyId="${secret.keyId}"`,
+      );
+    }
+
+    return this.decryptWithKey(
+      secret.encryptedValue,
+      secret.iv,
+      secret.authTag,
+      managedKey.key,
+    );
+  }
+
+  /**
+   * List the names of all secrets stored for an entity.
+   * Secret values are never returned by this method.
+   *
+   * @param entityId - The owning entity
+   * @returns Array of secret metadata (name, id, timestamps)
+   */
+  async listSecrets(
+    entityId: string,
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      entityId: string;
+      keyId: string;
+      createdAt: Date;
+      updatedAt: Date;
+    }>
+  > {
+    const results: Array<{
+      id: string;
+      name: string;
+      entityId: string;
+      keyId: string;
+      createdAt: Date;
+      updatedAt: Date;
+    }> = [];
+
+    for (const secret of this.secrets.values()) {
+      if (secret.entityId === entityId) {
+        results.push({
+          id: secret.id,
+          name: secret.name,
+          entityId: secret.entityId,
+          keyId: secret.keyId,
+          createdAt: secret.createdAt,
+          updatedAt: secret.updatedAt,
+        });
+      }
+    }
+
+    // Sort by name for consistent ordering
+    results.sort((a, b) => a.name.localeCompare(b.name));
+
+    return results;
+  }
+
+  /**
+   * Securely delete a named secret. The encrypted data is removed from
+   * the store. The secret cannot be recovered after deletion.
+   *
+   * @param name - The secret name
+   * @param entityId - The owning entity
+   * @throws Error if the secret does not exist
+   */
+  async deleteSecret(name: string, entityId: string): Promise<void> {
+    const compositeKey = this.secretCompositeKey(entityId, name);
+    const secret = this.secrets.get(compositeKey);
+
+    if (!secret) {
+      throw new Error(
+        `Secret not found: name="${name}", entityId="${entityId}"`,
+      );
+    }
+
+    // Overwrite the encrypted data in memory before deletion (defense in depth)
+    secret.encryptedValue = '';
+    secret.iv = '';
+    secret.authTag = '';
+
+    this.secrets.delete(compositeKey);
+
+    console.log(
+      `[VaultService] AUDIT: Secret "${name}" for entity "${entityId}" securely deleted.`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
 
@@ -272,7 +697,7 @@ export class VaultService {
   /**
    * Encrypt plaintext using AES-256-GCM with the instance encryption key.
    */
-  private encrypt(plaintext: string): {
+  private encryptRaw(plaintext: string): {
     encrypted: string;
     iv: string;
     authTag: string;
@@ -283,7 +708,7 @@ export class VaultService {
   /**
    * Decrypt ciphertext using AES-256-GCM with the instance encryption key.
    */
-  private decrypt(encrypted: string, iv: string, authTag: string): string {
+  private decryptRaw(encrypted: string, iv: string, authTag: string): string {
     return this.decryptWithKey(encrypted, iv, authTag, this.encryptionKey);
   }
 
@@ -295,7 +720,7 @@ export class VaultService {
     key: Buffer,
   ): { encrypted: string; iv: string; authTag: string } {
     const iv = crypto.randomBytes(GCM_IV_LENGTH);
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const cipher = crypto.createCipheriv(AES_ALGORITHM, key, iv);
 
     let encrypted = cipher.update(plaintext, 'utf8', 'hex');
     encrypted += cipher.final('hex');
@@ -319,7 +744,7 @@ export class VaultService {
     key: Buffer,
   ): string {
     const decipher = crypto.createDecipheriv(
-      'aes-256-gcm',
+      AES_ALGORITHM,
       key,
       Buffer.from(iv, 'hex'),
     );
@@ -343,6 +768,13 @@ export class VaultService {
     } = entry;
 
     return safe;
+  }
+
+  /**
+   * Build a composite key for the secrets store from entityId and name.
+   */
+  private secretCompositeKey(entityId: string, name: string): string {
+    return `${entityId}:${name}`;
   }
 }
 

@@ -3,38 +3,68 @@ import { generateJSON } from '@/lib/ai';
 import { v4 as uuidv4 } from 'uuid';
 import type { GoalDefinition, GoalMilestone, GoalCorrectionSuggestion } from '../types';
 
-// In-memory store for goals (would be a dedicated DB table in production)
-const goalStore = new Map<string, GoalDefinition>();
+function dbRecordToGoal(record: any): GoalDefinition {
+  return {
+    id: record.id,
+    userId: record.userId,
+    entityId: record.entityId ?? undefined,
+    title: record.title,
+    description: record.description ?? undefined,
+    framework: record.framework as GoalDefinition['framework'],
+    targetValue: record.targetValue,
+    currentValue: record.currentValue,
+    unit: record.unit,
+    milestones: (record.milestones ?? []) as GoalMilestone[],
+    startDate: new Date(record.startDate),
+    endDate: new Date(record.endDate),
+    status: record.status as GoalDefinition['status'],
+    autoProgress: record.autoProgress,
+    linkedTaskIds: (record.linkedTaskIds ?? []) as string[],
+    linkedWorkflowIds: (record.linkedWorkflowIds ?? []) as string[],
+  };
+}
 
 export async function createGoal(
   goal: Omit<GoalDefinition, 'id' | 'currentValue' | 'status' | 'milestones'> & {
     milestones?: Omit<GoalMilestone, 'id' | 'isComplete'>[];
   }
 ): Promise<GoalDefinition> {
-  const id = uuidv4();
   const milestones: GoalMilestone[] = (goal.milestones ?? []).map((m) => ({
     ...m,
     id: uuidv4(),
     isComplete: false,
   }));
 
-  const newGoal: GoalDefinition = {
-    ...goal,
-    id,
-    currentValue: 0,
-    status: 'ON_TRACK',
-    milestones,
-  };
+  const record = await prisma.goalEntry.create({
+    data: {
+      userId: goal.userId,
+      entityId: goal.entityId ?? null,
+      title: goal.title,
+      description: goal.description ?? null,
+      framework: goal.framework,
+      targetValue: goal.targetValue,
+      currentValue: 0,
+      unit: goal.unit,
+      milestones: milestones as any,
+      startDate: goal.startDate,
+      endDate: goal.endDate,
+      status: 'ON_TRACK',
+      autoProgress: goal.autoProgress,
+      linkedTaskIds: goal.linkedTaskIds as any,
+      linkedWorkflowIds: goal.linkedWorkflowIds as any,
+    },
+  });
 
-  goalStore.set(id, newGoal);
-  return newGoal;
+  return dbRecordToGoal(record);
 }
 
 export async function updateGoalProgress(
   goalId: string
 ): Promise<GoalDefinition> {
-  const goal = goalStore.get(goalId);
-  if (!goal) throw new Error(`Goal not found: ${goalId}`);
+  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+  if (!record) throw new Error(`Goal not found: ${goalId}`);
+
+  const goal = dbRecordToGoal(record);
 
   // Auto-update from linked tasks
   if (goal.linkedTaskIds.length > 0) {
@@ -75,7 +105,16 @@ export async function updateGoalProgress(
   // Check completion
   if (goal.currentValue >= goal.targetValue) {
     goal.status = 'COMPLETE';
-    goalStore.set(goalId, goal);
+
+    await prisma.goalEntry.update({
+      where: { id: goalId },
+      data: {
+        currentValue: goal.currentValue,
+        status: goal.status,
+        milestones: goal.milestones as any,
+      },
+    });
+
     return goal;
   }
 
@@ -96,7 +135,15 @@ export async function updateGoalProgress(
     goal.status = 'BEHIND';
   }
 
-  goalStore.set(goalId, goal);
+  await prisma.goalEntry.update({
+    where: { id: goalId },
+    data: {
+      currentValue: goal.currentValue,
+      status: goal.status,
+      milestones: goal.milestones as any,
+    },
+  });
+
   return goal;
 }
 
@@ -104,17 +151,22 @@ export async function getGoals(
   userId: string,
   entityId?: string
 ): Promise<GoalDefinition[]> {
-  const goals = Array.from(goalStore.values());
-  return goals.filter(
-    (g) => g.userId === userId && (!entityId || g.entityId === entityId)
-  );
+  const where: any = { userId };
+  if (entityId) {
+    where.entityId = entityId;
+  }
+
+  const records = await prisma.goalEntry.findMany({ where });
+  return records.map(dbRecordToGoal);
 }
 
 export async function suggestCourseCorrection(
   goalId: string
 ): Promise<GoalCorrectionSuggestion> {
-  const goal = goalStore.get(goalId);
-  if (!goal) throw new Error(`Goal not found: ${goalId}`);
+  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+  if (!record) throw new Error(`Goal not found: ${goalId}`);
+
+  const goal = dbRecordToGoal(record);
 
   const now = new Date();
   const elapsed = now.getTime() - goal.startDate.getTime();
@@ -177,8 +229,10 @@ Respond with JSON: { "suggestion": "<actionable advice in 1-2 sentences>" }`,
 }
 
 export async function completeGoal(goalId: string): Promise<GoalDefinition> {
-  const goal = goalStore.get(goalId);
-  if (!goal) throw new Error(`Goal not found: ${goalId}`);
+  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+  if (!record) throw new Error(`Goal not found: ${goalId}`);
+
+  const goal = dbRecordToGoal(record);
 
   goal.status = 'COMPLETE';
   goal.currentValue = goal.targetValue;
@@ -190,11 +244,14 @@ export async function completeGoal(goalId: string): Promise<GoalDefinition> {
     }
   }
 
-  goalStore.set(goalId, goal);
-  return goal;
-}
+  await prisma.goalEntry.update({
+    where: { id: goalId },
+    data: {
+      status: 'COMPLETE',
+      currentValue: goal.targetValue,
+      milestones: goal.milestones as any,
+    },
+  });
 
-// Exported for testing
-export function _getGoalStore(): Map<string, GoalDefinition> {
-  return goalStore;
+  return goal;
 }

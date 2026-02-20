@@ -126,6 +126,79 @@ export interface DecompressionRule {
   decompressionMinutes: number;
 }
 
+// --- Buffer Context & Settings ---
+
+export interface BufferContext {
+  previousEvent?: CalendarEvent & { location?: string; type?: EventType };
+  nextEvent?: CalendarEvent & { location?: string; type?: EventType };
+  userSettings?: BufferSettings;
+}
+
+export interface BufferTime {
+  before: number;
+  after: number;
+  breakdown: {
+    travel: { before: number; after: number };
+    contextSwitch: { before: number; after: number };
+    recovery: number;
+    prep: number;
+  };
+}
+
+export interface BufferBlock {
+  eventId: string;
+  type: 'before' | 'after';
+  bufferType: 'travel' | 'context_switch' | 'recovery' | 'prep' | 'default';
+  start: Date;
+  end: Date;
+  durationMinutes: number;
+}
+
+export interface BufferConflict {
+  bufferBlock: BufferBlock;
+  conflictingEvent: CalendarEvent;
+  overlapMinutes: number;
+  resolution: string;
+}
+
+export interface BufferSettings {
+  defaultBeforeMinutes: number;
+  defaultAfterMinutes: number;
+  travelBufferEnabled: boolean;
+  contextSwitchBufferEnabled: boolean;
+  recoveryBufferEnabled: boolean;
+  prepBufferEnabled: boolean;
+  maxBufferMinutes: number;
+  minBufferMinutes: number;
+  travelBufferMultiplier: number;
+  contextSwitchMinutes: { low: number; medium: number; high: number };
+  recoveryThresholds: {
+    durationMinutes: number;
+    participantCount: number;
+    recoveryMinutes: number;
+  }[];
+  prepMinutesByPriority: {
+    LOW: number;
+    MEDIUM: number;
+    HIGH: number;
+    CRITICAL: number;
+  };
+}
+
+export interface BufferOptimizationConstraints {
+  maxTotalBufferMinutes: number;
+  minimumBufferMinutes: number;
+  preservePrepBuffers: boolean;
+  preserveTravelBuffers: boolean;
+  compressionRatio: number;
+}
+
+export type CalendarEventWithBuffers = CalendarEvent & {
+  bufferBlocks: BufferBlock[];
+  location?: string;
+  type?: EventType;
+};
+
 // --- Energy Management ---
 
 export type Chronotype = 'EARLY_BIRD' | 'NIGHT_OWL' | 'FLEXIBLE';
