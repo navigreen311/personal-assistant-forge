@@ -211,7 +211,7 @@ export async function GET(request: NextRequest) {
       type DecisionRow = (typeof decisions)[number];
 
       const enhanced = decisions.map((d: DecisionRow) => {
-        const options = (d.options as DecisionOption[]) ?? [];
+        const options = (d.options as unknown as DecisionOption[]) ?? [];
         const stakeholders = (d.stakeholders as unknown[]) ?? [];
         const matrix = d.matrix as MatrixData | null;
 

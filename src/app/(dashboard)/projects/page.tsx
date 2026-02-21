@@ -663,7 +663,23 @@ export default function ProjectsPage() {
             ) : (
               <ErrorBoundaryWrapper onError={() => setCardGridFailed(true)}>
                 <ProjectCardGrid
-                  projects={sortedProjects}
+                  projects={sortedProjects.map((s) => ({
+                    id: s.project.id,
+                    name: s.project.name,
+                    description: s.project.description ?? undefined,
+                    entityId: s.project.entityId,
+                    entityName: (s.project as any).entity?.name,
+                    health: s.health,
+                    status: s.project.status,
+                    milestones: (s.project.milestones ?? []).map((m: any) => ({
+                      id: m.id ?? m.title,
+                      title: m.title,
+                      dueDate: m.dueDate,
+                      status: m.status ?? 'TODO',
+                    })),
+                    tasks: { total: Object.values(s.taskCounts).reduce((a, b) => a + b, 0), completed: s.taskCounts.DONE ?? 0 },
+                    updatedAt: s.project.updatedAt?.toString() ?? new Date().toISOString(),
+                  }))}
                   onProjectClick={(id: string) => router.push(`/projects/${id}`)}
                 />
               </ErrorBoundaryWrapper>
@@ -672,14 +688,36 @@ export default function ProjectsPage() {
 
           {viewMode === 'list' && (
             <ProjectListView
-              projects={sortedProjects}
+              projects={sortedProjects.map((s) => ({
+                id: s.project.id,
+                name: s.project.name,
+                entityName: (s.project as any).entity?.name,
+                health: s.health,
+                status: s.project.status,
+                tasks: { total: Object.values(s.taskCounts).reduce((a, b) => a + b, 0), completed: s.taskCounts.DONE ?? 0 },
+                targetDate: (s.project.milestones ?? []).find((m: any) => m.status !== 'DONE')?.dueDate?.toString(),
+                updatedAt: s.project.updatedAt?.toString() ?? new Date().toISOString(),
+              }))}
+              sortBy={sortBy}
+              sortOrder="asc"
+              onSort={(field: string) => setSortBy(field as SortKey)}
               onProjectClick={(id: string) => router.push(`/projects/${id}`)}
             />
           )}
 
           {viewMode === 'board' && (
             <ProjectBoardView
-              projects={sortedProjects}
+              projects={sortedProjects.map((s) => ({
+                id: s.project.id,
+                name: s.project.name,
+                description: s.project.description ?? undefined,
+                entityName: (s.project as any).entity?.name,
+                health: s.health,
+                status: s.project.status,
+                tasks: { total: Object.values(s.taskCounts).reduce((a, b) => a + b, 0), completed: s.taskCounts.DONE ?? 0 },
+                targetDate: (s.project.milestones ?? []).find((m: any) => m.status !== 'DONE')?.dueDate?.toString(),
+                updatedAt: s.project.updatedAt?.toString() ?? new Date().toISOString(),
+              }))}
               onProjectClick={(id: string) => router.push(`/projects/${id}`)}
             />
           )}
@@ -691,6 +729,7 @@ export default function ProjectsPage() {
       {/* ----------------------------------------------------------------- */}
       {showNewProject && (
         <NewProjectModal
+          isOpen={showNewProject}
           onClose={() => setShowNewProject(false)}
           onCreated={() => {
             setShowNewProject(false);

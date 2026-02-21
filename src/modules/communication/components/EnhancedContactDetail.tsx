@@ -354,7 +354,7 @@ function StakeholderDossierSection({ contact }: { contact: Contact }) {
 function InteractionHistorySection({ contact }: { contact: Contact }) {
   // Interaction history is derived from available data; the API may provide
   // an `interactions` field on the contact. We handle both cases gracefully.
-  const interactions = ((contact as Record<string, unknown>).interactions as Array<{
+  const interactions = ((contact as unknown as Record<string, unknown>).interactions as Array<{
     id: string;
     date: string;
     type: 'email' | 'call' | 'meeting' | 'note';
@@ -405,7 +405,7 @@ function InteractionHistorySection({ contact }: { contact: Contact }) {
 
 function LinkedItemsSection({ contact }: { contact: Contact }) {
   // Linked items may be provided by the API as extended contact data
-  const extended = contact as Record<string, unknown>;
+  const extended = contact as unknown as Record<string, unknown>;
   const linkedTasks = (extended.linkedTasks as Array<{ id: string; title: string; status: string }>) ?? [];
   const linkedProjects = (extended.linkedProjects as Array<{ id: string; name: string }>) ?? [];
   const linkedDecisions = (extended.linkedDecisions as Array<{ id: string; title: string }>) ?? [];
