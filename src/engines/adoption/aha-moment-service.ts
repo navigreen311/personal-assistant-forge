@@ -1,4 +1,5 @@
 import { generateJSON } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { AhaMoment } from './types';
 
 const AHA_MOMENTS: AhaMoment[] = [
@@ -34,11 +35,17 @@ const AHA_MOMENTS: AhaMoment[] = [
   },
 ];
 
-// In-memory tracking of which aha moments a user has completed
-const completedMoments = new Map<string, Set<string>>();
-
 export function getAhaMoments(): AhaMoment[] {
   return [...AHA_MOMENTS];
+}
+
+async function getCompletedMoments(userId: string): Promise<string[]> {
+  const record = await prisma.adoptionProgress.findUnique({
+    where: { userId },
+  });
+  if (!record) return [];
+  const data = (record.data ?? {}) as Record<string, unknown>;
+  return (data.ahaMomentActions as string[]) ?? [];
 }
 
 export async function checkAhaMomentProgress(userId: string): Promise<{
@@ -46,7 +53,8 @@ export async function checkAhaMomentProgress(userId: string): Promise<{
   next: AhaMoment | null;
   guidanceMessage: string;
 }> {
-  const userCompleted = completedMoments.get(userId) ?? new Set();
+  const completedActions = await getCompletedMoments(userId);
+  const userCompleted = new Set(completedActions);
 
   const completed = AHA_MOMENTS.filter(m => userCompleted.has(m.action));
   const remaining = AHA_MOMENTS
@@ -96,8 +104,26 @@ Return JSON with:
 }
 
 // Helper to mark an aha moment as completed (used by other services)
-export function markAhaMomentCompleted(userId: string, action: string): void {
-  const userCompleted = completedMoments.get(userId) ?? new Set();
-  userCompleted.add(action);
-  completedMoments.set(userId, userCompleted);
+export async function markAhaMomentCompleted(userId: string, action: string): Promise<void> {
+  const record = await prisma.adoptionProgress.findUnique({
+    where: { userId },
+  });
+
+  const existingData = (record?.data ?? {}) as Record<string, unknown>;
+  const existingActions = (existingData.ahaMomentActions as string[]) ?? [];
+
+  if (existingActions.includes(action)) return;
+
+  const updatedActions = [...existingActions, action];
+
+  await prisma.adoptionProgress.upsert({
+    where: { userId },
+    create: {
+      userId,
+      data: { ...existingData, ahaMomentActions: updatedActions },
+    },
+    update: {
+      data: { ...existingData, ahaMomentActions: updatedActions },
+    },
+  });
 }

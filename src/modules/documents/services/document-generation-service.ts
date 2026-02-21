@@ -103,7 +103,198 @@ a { color: ${brandKit.secondaryColor}; }
   return `${style}${header}${content}`;
 }
 
-export function convertFormat(content: string, _fromFormat: string, _toFormat: string): string {
-  // Placeholder: returns content as-is for Markdown/HTML
+export function convertFormat(content: string, fromFormat: string, toFormat: string): string {
+  const from = fromFormat.toLowerCase();
+  const to = toFormat.toLowerCase();
+
+  if (from === to) return content;
+
+  if (from === 'markdown' && to === 'html') {
+    return markdownToHtml(content);
+  }
+  if (from === 'html' && to === 'markdown') {
+    return htmlToMarkdown(content);
+  }
+  if (from === 'html' && to === 'plaintext') {
+    return htmlToPlaintext(content);
+  }
+  if (from === 'markdown' && to === 'plaintext') {
+    return markdownToPlaintext(content);
+  }
+
+  console.warn(`Unrecognized format conversion: ${fromFormat} → ${toFormat}. Returning content unchanged.`);
   return content;
+}
+
+function markdownToHtml(md: string): string {
+  let html = md;
+
+  // Code blocks (fenced) — must come before inline processing
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
+    return `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`;
+  });
+
+  // Headings (h1-h6)
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  // Bold and italic (bold first to avoid conflict)
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Unordered list items
+  html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+
+  // Wrap consecutive <li> elements in <ul>
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>\n$1</ul>');
+
+  // Paragraphs: wrap remaining non-empty, non-tag lines
+  const lines = html.split('\n');
+  const result: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (
+      trimmed === '' ||
+      trimmed.startsWith('<h') ||
+      trimmed.startsWith('<ul') ||
+      trimmed.startsWith('</ul') ||
+      trimmed.startsWith('<li') ||
+      trimmed.startsWith('<pre') ||
+      trimmed.startsWith('</pre') ||
+      trimmed.startsWith('<code') ||
+      trimmed.startsWith('</code')
+    ) {
+      result.push(line);
+    } else {
+      result.push(`<p>${trimmed}</p>`);
+    }
+  }
+
+  return result.join('\n');
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function htmlToMarkdown(html: string): string {
+  let md = html;
+
+  // Headings
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '# $1');
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '## $1');
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '### $1');
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, '#### $1');
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, '##### $1');
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, '###### $1');
+
+  // Bold and italic
+  md = md.replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**');
+  md = md.replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**');
+  md = md.replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, '*$1*');
+  md = md.replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, '*$1*');
+
+  // Links
+  md = md.replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+
+  // Inline code
+  md = md.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+
+  // Code blocks
+  md = md.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, '```\n$1\n```');
+  md = md.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, '```\n$1\n```');
+
+  // List items
+  md = md.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1');
+
+  // Paragraphs
+  md = md.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1\n');
+
+  // Line breaks
+  md = md.replace(/<br\s*\/?>/gi, '\n');
+
+  // Strip remaining HTML tags
+  md = md.replace(/<[^>]+>/g, '');
+
+  // Decode common entities
+  md = decodeHtmlEntities(md);
+
+  // Clean up extra blank lines
+  md = md.replace(/\n{3,}/g, '\n\n');
+
+  return md.trim();
+}
+
+function htmlToPlaintext(html: string): string {
+  let text = html;
+
+  // Line breaks and block-level elements get newlines
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>/gi, '\n');
+  text = text.replace(/<\/div>/gi, '\n');
+  text = text.replace(/<\/h[1-6]>/gi, '\n');
+  text = text.replace(/<\/li>/gi, '\n');
+
+  // Strip all HTML tags
+  text = text.replace(/<[^>]+>/g, '');
+
+  // Decode common entities
+  text = decodeHtmlEntities(text);
+
+  // Clean up extra blank lines and whitespace
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
+}
+
+function markdownToPlaintext(md: string): string {
+  let text = md;
+
+  // Remove code blocks (fenced)
+  text = text.replace(/```[\s\S]*?```/g, (match) => {
+    return match.replace(/```\w*\n?/g, '').replace(/```/g, '');
+  });
+
+  // Remove headings syntax
+  text = text.replace(/^#{1,6}\s+/gm, '');
+
+  // Remove bold/italic markers
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '$1');
+  text = text.replace(/\*\*(.+?)\*\*/g, '$1');
+  text = text.replace(/\*(.+?)\*/g, '$1');
+
+  // Remove inline code backticks
+  text = text.replace(/`([^`]+)`/g, '$1');
+
+  // Convert links [text](url) to just "text"
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+  // Remove list markers
+  text = text.replace(/^[-*]\s+/gm, '');
+
+  return text.trim();
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
 }

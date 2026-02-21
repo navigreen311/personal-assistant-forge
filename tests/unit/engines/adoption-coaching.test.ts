@@ -1,3 +1,44 @@
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _adoptionStore = new Map<string, any>();
+
+jest.mock('@/lib/db', () => {
+  return {
+    prisma: {
+      adoptionProgress: {
+        upsert: jest.fn().mockImplementation((args: { where: { userId: string }; create: Record<string, unknown>; update: Record<string, unknown> }) => {
+          const existing = _adoptionStore.get(args.where.userId);
+          if (existing) {
+            const updated = { ...existing, ...args.update, updatedAt: new Date() };
+            _adoptionStore.set(args.where.userId, updated);
+            return Promise.resolve({ ...updated });
+          }
+          const record = {
+            id: 'adoption-' + args.where.userId,
+            ...args.create,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          _adoptionStore.set(args.where.userId, record);
+          return Promise.resolve({ ...record });
+        }),
+        findUnique: jest.fn().mockImplementation((args: { where: { userId: string } }) => {
+          const rec = _adoptionStore.get(args.where.userId);
+          return Promise.resolve(rec ? { ...rec } : null);
+        }),
+        update: jest.fn().mockImplementation((args: { where: { userId: string }; data: Record<string, unknown> }) => {
+          const rec = _adoptionStore.get(args.where.userId);
+          if (rec) {
+            const updated = { ...rec, ...args.data, updatedAt: new Date() };
+            _adoptionStore.set(args.where.userId, updated);
+            return Promise.resolve({ ...updated });
+          }
+          return Promise.resolve(null);
+        }),
+      },
+    },
+  };
+});
+
 import { generateRecommendations, getWeeklyReview } from '@/engines/adoption/coaching-service';
 
 // Mock AI client
@@ -14,6 +55,7 @@ const mockGenerateText = generateText as jest.MockedFunction<typeof generateText
 describe('coaching recommendations (AI-powered)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    _adoptionStore.clear();
     mockGenerateText.mockResolvedValue(
       '- Try enabling smart triage to save 15 minutes daily.\n- Automate meeting prep to reclaim 50 minutes per week.\n- Consolidate notifications for fewer interruptions.\n- Set up a weekly review to stay on track.'
     );

@@ -1,8 +1,27 @@
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    webhookConfig: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
+    webhookEvent: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+  },
+}));
+
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('Check webhook URL and ensure endpoint is accessible.'),
   generateJSON: jest.fn().mockResolvedValue({}),
 }));
 
+import { prisma } from '@/lib/db';
 import {
   createWebhook,
   getWebhooks,
@@ -12,52 +31,96 @@ import {
   retryFailedEvent,
   getDebuggingSuggestions,
   verifyWebhookSignature,
-  webhookStore,
-  webhookEventStore,
 } from '@/modules/developer/services/webhook-service';
 import { createHmac } from 'crypto';
 import { generateText } from '@/lib/ai';
 
+const mockWebhookConfig = prisma.webhookConfig as jest.Mocked<typeof prisma.webhookConfig>;
+const mockWebhookEvent = prisma.webhookEvent as jest.Mocked<typeof prisma.webhookEvent>;
 const mockGenerateText = generateText as jest.MockedFunction<typeof generateText>;
+
+// Mock global fetch
+const mockFetch = jest.fn() as jest.MockedFunction<typeof fetch>;
+global.fetch = mockFetch;
 
 describe('webhook-service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    webhookStore.clear();
-    webhookEventStore.clear();
+    jest.useFakeTimers({ advanceTimers: true });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const makeConfigRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'wh-1',
+    userId: 'entity-1',
+    url: 'https://example.com/hook',
+    events: ['task.created'] as unknown,
+    secret: 'abc123secret',
+    isActive: true,
+    createdAt: new Date('2026-01-01'),
+    updatedAt: new Date('2026-01-01'),
+    ...overrides,
+  });
+
+  const makeEventRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'evt-1',
+    webhookConfigId: 'wh-1',
+    event: 'task.created',
+    payload: { taskId: 'task-1' } as unknown,
+    status: 'PENDING',
+    response: null as unknown,
+    attempts: 0,
+    lastAttemptAt: null as Date | null,
+    createdAt: new Date('2026-01-01'),
+    ...overrides,
   });
 
   describe('createWebhook', () => {
-    it('creates webhook with correct fields, active status, and zero failure count', async () => {
+    it('creates webhook via Prisma with correct fields', async () => {
+      const row = makeConfigRow();
+      (mockWebhookConfig.create as jest.Mock).mockResolvedValue(row);
+
       const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://example.com/hook', ['task.created']);
 
-      expect(webhook.id).toBeDefined();
+      expect(mockWebhookConfig.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 'entity-1',
+          url: 'https://example.com/hook',
+          events: ['task.created'],
+          isActive: true,
+        }),
+      });
+      expect(webhook.id).toBe('wh-1');
       expect(webhook.entityId).toBe('entity-1');
-      expect(webhook.direction).toBe('OUTBOUND');
       expect(webhook.url).toBe('https://example.com/hook');
       expect(webhook.events).toEqual(['task.created']);
-      expect(webhook.secret).toBeDefined();
       expect(webhook.isActive).toBe(true);
-      expect(webhook.failureCount).toBe(0);
       expect(webhook.createdAt).toBeInstanceOf(Date);
-      expect(webhookStore.has(webhook.id)).toBe(true);
     });
   });
 
   describe('getWebhooks', () => {
-    it('returns only webhooks for the given entityId', async () => {
-      await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      await createWebhook('entity-2', 'INBOUND', 'https://b.com', ['event.b']);
-      await createWebhook('entity-1', 'OUTBOUND', 'https://c.com', ['event.c']);
+    it('returns webhooks for the given entityId via Prisma', async () => {
+      const rows = [
+        makeConfigRow({ id: 'wh-1', url: 'https://a.com' }),
+        makeConfigRow({ id: 'wh-2', url: 'https://c.com' }),
+      ];
+      (mockWebhookConfig.findMany as jest.Mock).mockResolvedValue(rows);
 
       const results = await getWebhooks('entity-1');
 
+      expect(mockWebhookConfig.findMany).toHaveBeenCalledWith({
+        where: { userId: 'entity-1' },
+      });
       expect(results).toHaveLength(2);
-      expect(results.every((w) => w.entityId === 'entity-1')).toBe(true);
+      expect(results[0].entityId).toBe('entity-1');
     });
 
     it('returns empty array when no webhooks match', async () => {
-      await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
+      (mockWebhookConfig.findMany as jest.Mock).mockResolvedValue([]);
 
       const results = await getWebhooks('entity-999');
       expect(results).toHaveLength(0);
@@ -65,39 +128,209 @@ describe('webhook-service', () => {
   });
 
   describe('deleteWebhook', () => {
-    it('removes the webhook from the store', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      expect(webhookStore.has(webhook.id)).toBe(true);
+    it('deletes the webhook via Prisma', async () => {
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(makeConfigRow());
+      (mockWebhookConfig.delete as jest.Mock).mockResolvedValue(makeConfigRow());
 
-      await deleteWebhook(webhook.id);
+      await deleteWebhook('wh-1');
 
-      expect(webhookStore.has(webhook.id)).toBe(false);
+      expect(mockWebhookConfig.delete).toHaveBeenCalledWith({ where: { id: 'wh-1' } });
     });
 
     it('throws for unknown ID', async () => {
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(null);
+
       await expect(deleteWebhook('non-existent')).rejects.toThrow('Webhook non-existent not found');
     });
   });
 
   describe('triggerWebhook', () => {
-    it('creates an event with DELIVERED status and updates lastTriggered', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['task.created']);
+    it('delivers successfully on first attempt with real fetch', async () => {
+      const configRow = makeConfigRow();
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
 
-      const event = await triggerWebhook(webhook.id, 'task.created', { taskId: 'task-1' });
+      const pendingEvent = makeEventRow();
+      const deliveredEvent = makeEventRow({
+        status: 'DELIVERED',
+        attempts: 1,
+        lastAttemptAt: new Date(),
+        response: { status: 200, body: 'OK' },
+      });
 
-      expect(event.id).toBeDefined();
-      expect(event.webhookId).toBe(webhook.id);
-      expect(event.event).toBe('task.created');
-      expect(event.payload).toEqual({ taskId: 'task-1' });
-      expect(event.status).toBe('DELIVERED');
-      expect(event.attempts).toBe(1);
-      expect(event.response).toEqual({ status: 200, body: 'OK' });
+      (mockWebhookEvent.create as jest.Mock).mockResolvedValue(pendingEvent);
+      (mockWebhookEvent.update as jest.Mock).mockResolvedValue(deliveredEvent);
+      (mockWebhookConfig.update as jest.Mock).mockResolvedValue(configRow);
 
-      const updatedWebhook = webhookStore.get(webhook.id);
-      expect(updatedWebhook?.lastTriggered).toBeInstanceOf(Date);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('OK'),
+      } as Response);
+
+      const result = await triggerWebhook('wh-1', 'task.created', { taskId: 'task-1' });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://example.com/hook',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            'X-Webhook-Event': 'task.created',
+            'X-Webhook-Signature': expect.any(String),
+          }),
+          body: JSON.stringify({ taskId: 'task-1' }),
+        })
+      );
+      expect(result.status).toBe('DELIVERED');
+      expect(result.attempts).toBe(1);
+      expect(result.response).toEqual({ status: 200, body: 'OK' });
+    });
+
+    it('sends correct HMAC signature in X-Webhook-Signature header', async () => {
+      const configRow = makeConfigRow({ secret: 'my-secret' });
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+
+      const pendingEvent = makeEventRow();
+      const deliveredEvent = makeEventRow({ status: 'DELIVERED', attempts: 1 });
+
+      (mockWebhookEvent.create as jest.Mock).mockResolvedValue(pendingEvent);
+      (mockWebhookEvent.update as jest.Mock).mockResolvedValue(deliveredEvent);
+      (mockWebhookConfig.update as jest.Mock).mockResolvedValue(configRow);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('OK'),
+      } as Response);
+
+      const payload = { taskId: 'task-1' };
+      await triggerWebhook('wh-1', 'task.created', payload);
+
+      const expectedSig = createHmac('sha256', 'my-secret')
+        .update(JSON.stringify(payload))
+        .digest('hex');
+
+      const fetchCall = mockFetch.mock.calls[0];
+      const headers = fetchCall[1]?.headers as Record<string, string>;
+      expect(headers['X-Webhook-Signature']).toBe(expectedSig);
+    });
+
+    it('retries with exponential backoff on failure and marks FAILED after 3 attempts', async () => {
+      const configRow = makeConfigRow();
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+
+      const pendingEvent = makeEventRow();
+      const retryingEvent = makeEventRow({ status: 'RETRYING', attempts: 1 });
+      const retryingEvent2 = makeEventRow({ status: 'RETRYING', attempts: 2 });
+      const failedEvent = makeEventRow({
+        status: 'FAILED',
+        attempts: 3,
+        lastAttemptAt: new Date(),
+        response: { status: 500, body: 'Internal Server Error' },
+      });
+
+      (mockWebhookEvent.create as jest.Mock).mockResolvedValue(pendingEvent);
+      (mockWebhookEvent.update as jest.Mock)
+        .mockResolvedValueOnce(retryingEvent)
+        .mockResolvedValueOnce(retryingEvent2)
+        .mockResolvedValueOnce(failedEvent);
+
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('Internal Server Error'),
+      } as Response);
+
+      const resultPromise = triggerWebhook('wh-1', 'task.created', { taskId: 'task-1' });
+
+      // Advance through backoff delays: 1s after first failure, 5s after second
+      await jest.advanceTimersByTimeAsync(1000);
+      await jest.advanceTimersByTimeAsync(5000);
+
+      const result = await resultPromise;
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(result.status).toBe('FAILED');
+      expect(result.attempts).toBe(3);
+    });
+
+    it('retries on network error (fetch throws) and marks FAILED', async () => {
+      const configRow = makeConfigRow();
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+
+      const pendingEvent = makeEventRow();
+      const retryingEvent = makeEventRow({ status: 'RETRYING', attempts: 1 });
+      const retryingEvent2 = makeEventRow({ status: 'RETRYING', attempts: 2 });
+      const failedEvent = makeEventRow({
+        status: 'FAILED',
+        attempts: 3,
+        response: { status: 0, body: 'Request failed' },
+      });
+
+      (mockWebhookEvent.create as jest.Mock).mockResolvedValue(pendingEvent);
+      (mockWebhookEvent.update as jest.Mock)
+        .mockResolvedValueOnce(retryingEvent)
+        .mockResolvedValueOnce(retryingEvent2)
+        .mockResolvedValueOnce(failedEvent);
+
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
+      const resultPromise = triggerWebhook('wh-1', 'task.created', { taskId: 'task-1' });
+
+      await jest.advanceTimersByTimeAsync(1000);
+      await jest.advanceTimersByTimeAsync(5000);
+
+      const result = await resultPromise;
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(result.status).toBe('FAILED');
+    });
+
+    it('succeeds on second attempt after first failure', async () => {
+      const configRow = makeConfigRow();
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+
+      const pendingEvent = makeEventRow();
+      const retryingEvent = makeEventRow({ status: 'RETRYING', attempts: 1 });
+      const deliveredEvent = makeEventRow({
+        status: 'DELIVERED',
+        attempts: 2,
+        response: { status: 200, body: 'OK' },
+      });
+
+      (mockWebhookEvent.create as jest.Mock).mockResolvedValue(pendingEvent);
+      (mockWebhookEvent.update as jest.Mock)
+        .mockResolvedValueOnce(retryingEvent)
+        .mockResolvedValueOnce(deliveredEvent);
+      (mockWebhookConfig.update as jest.Mock).mockResolvedValue(configRow);
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          text: () => Promise.resolve('Error'),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve('OK'),
+        } as Response);
+
+      const resultPromise = triggerWebhook('wh-1', 'task.created', { taskId: 'task-1' });
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      const result = await resultPromise;
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(result.status).toBe('DELIVERED');
+      expect(result.attempts).toBe(2);
     });
 
     it('throws for unknown webhook ID', async () => {
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(null);
+
       await expect(triggerWebhook('non-existent', 'event', {})).rejects.toThrow(
         'Webhook non-existent not found'
       );
@@ -106,42 +339,91 @@ describe('webhook-service', () => {
 
   describe('getWebhookEvents', () => {
     it('returns events for a webhook sorted by createdAt descending', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
+      const rows = [
+        makeEventRow({ id: 'evt-2', createdAt: new Date('2026-01-02') }),
+        makeEventRow({ id: 'evt-1', createdAt: new Date('2026-01-01') }),
+      ];
+      (mockWebhookEvent.findMany as jest.Mock).mockResolvedValue(rows);
 
-      const event1 = await triggerWebhook(webhook.id, 'event.a', { seq: 1 });
-      const event2 = await triggerWebhook(webhook.id, 'event.a', { seq: 2 });
+      const events = await getWebhookEvents('wh-1');
 
-      const events = await getWebhookEvents(webhook.id);
-
+      expect(mockWebhookEvent.findMany).toHaveBeenCalledWith({
+        where: { webhookConfigId: 'wh-1' },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
       expect(events).toHaveLength(2);
-      // Sorted by createdAt descending - most recent first
-      expect(events[0].createdAt.getTime()).toBeGreaterThanOrEqual(events[1].createdAt.getTime());
     });
 
     it('returns empty array for webhook with no events', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      const events = await getWebhookEvents(webhook.id);
+      (mockWebhookEvent.findMany as jest.Mock).mockResolvedValue([]);
+
+      const events = await getWebhookEvents('wh-1');
       expect(events).toHaveLength(0);
+    });
+
+    it('respects the limit parameter', async () => {
+      (mockWebhookEvent.findMany as jest.Mock).mockResolvedValue([]);
+
+      await getWebhookEvents('wh-1', 10);
+
+      expect(mockWebhookEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 10 })
+      );
     });
   });
 
   describe('retryFailedEvent', () => {
-    it('increments attempts and sets status to DELIVERED', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      const event = await triggerWebhook(webhook.id, 'event.a', { data: 'test' });
+    it('retries delivery via fetch and updates event to DELIVERED', async () => {
+      const eventRow = makeEventRow({ status: 'FAILED', attempts: 2 });
+      const configRow = makeConfigRow();
+      const updatedRow = makeEventRow({
+        status: 'DELIVERED',
+        attempts: 3,
+        lastAttemptAt: new Date(),
+        response: { status: 200, body: 'OK' },
+      });
 
-      // Manually set to FAILED for retry
-      event.status = 'FAILED';
-      webhookEventStore.set(event.id, event);
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(eventRow);
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+      (mockWebhookEvent.update as jest.Mock).mockResolvedValue(updatedRow);
 
-      const retried = await retryFailedEvent(event.id);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('OK'),
+      } as Response);
 
-      expect(retried.attempts).toBe(2);
-      expect(retried.status).toBe('DELIVERED');
-      expect(retried.lastAttempt).toBeInstanceOf(Date);
+      const result = await retryFailedEvent('evt-1');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('DELIVERED');
+      expect(result.attempts).toBe(3);
+    });
+
+    it('marks event as FAILED when retry fetch fails', async () => {
+      const eventRow = makeEventRow({ status: 'FAILED', attempts: 2 });
+      const configRow = makeConfigRow();
+      const updatedRow = makeEventRow({
+        status: 'FAILED',
+        attempts: 3,
+        response: { status: 0, body: 'Request failed' },
+      });
+
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(eventRow);
+      (mockWebhookConfig.findUnique as jest.Mock).mockResolvedValue(configRow);
+      (mockWebhookEvent.update as jest.Mock).mockResolvedValue(updatedRow);
+
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
+      const result = await retryFailedEvent('evt-1');
+
+      expect(result.status).toBe('FAILED');
     });
 
     it('throws for unknown event ID', async () => {
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(null);
+
       await expect(retryFailedEvent('non-existent')).rejects.toThrow('Event non-existent not found');
     });
   });
@@ -165,32 +447,44 @@ describe('webhook-service', () => {
 
   describe('getDebuggingSuggestions', () => {
     it('returns success message for non-FAILED events', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      const event = await triggerWebhook(webhook.id, 'event.a', { data: 'test' });
+      const eventRow = makeEventRow({ status: 'DELIVERED' });
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(eventRow);
 
-      const result = await getDebuggingSuggestions(event.id);
+      const result = await getDebuggingSuggestions('evt-1');
 
       expect(result).toBe('Event was delivered successfully. No debugging needed.');
       expect(mockGenerateText).not.toHaveBeenCalled();
     });
 
     it('calls AI for FAILED events', async () => {
-      const webhook = await createWebhook('entity-1', 'OUTBOUND', 'https://a.com', ['event.a']);
-      const event = await triggerWebhook(webhook.id, 'event.a', { data: 'test' });
-
-      // Manually set to FAILED
-      event.status = 'FAILED';
-      webhookEventStore.set(event.id, event);
-
+      const eventRow = makeEventRow({
+        status: 'FAILED',
+        response: { status: 500, body: 'Server Error' },
+      });
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(eventRow);
       mockGenerateText.mockResolvedValueOnce('Debug: Check URL, verify SSL, confirm endpoint is up.');
 
-      const result = await getDebuggingSuggestions(event.id);
+      const result = await getDebuggingSuggestions('evt-1');
 
       expect(mockGenerateText).toHaveBeenCalled();
       expect(result).toBe('Debug: Check URL, verify SSL, confirm endpoint is up.');
     });
 
+    it('returns fallback message when AI fails', async () => {
+      const eventRow = makeEventRow({ status: 'FAILED' });
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(eventRow);
+      mockGenerateText.mockRejectedValueOnce(new Error('AI unavailable'));
+
+      const result = await getDebuggingSuggestions('evt-1');
+
+      expect(result).toBe(
+        'Unable to generate debugging suggestions. Check the webhook URL, ensure the endpoint is accessible, and verify the payload format.'
+      );
+    });
+
     it('throws for unknown event ID', async () => {
+      (mockWebhookEvent.findUnique as jest.Mock).mockResolvedValue(null);
+
       await expect(getDebuggingSuggestions('non-existent')).rejects.toThrow(
         'Event non-existent not found'
       );

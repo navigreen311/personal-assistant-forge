@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { generateJSON, generateText } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type {
   ResearchRequest,
   ResearchReport,
@@ -10,35 +11,91 @@ import type {
   ResearchFinding,
   DocumentAnalysis,
   SourceType,
+  SourceQuality,
 } from '@/modules/decisions/types';
 
 /**
+ * Extract meaningful keywords from a topic string for knowledge base queries.
+ */
+export function extractTopicKeywords(topic: string): string[] {
+  const stopWords = new Set([
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'shall', 'can', 'for', 'and', 'nor', 'but',
+    'or', 'yet', 'so', 'in', 'on', 'at', 'to', 'of', 'with', 'by', 'from',
+    'this', 'that', 'these', 'those', 'it', 'its', 'not', 'no', 'what',
+    'how', 'why', 'when', 'where', 'which', 'who', 'about', 'into',
+  ]);
+
+  return topic
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 2 && !stopWords.has(w));
+}
+
+/**
  * Conduct research using AI to produce contextual findings and summary.
- * Falls back to placeholder data on AI failure.
+ * Falls back to knowledge base lookup, then to context-aware generated data.
  */
 export async function conductResearch(
   request: ResearchRequest
 ): Promise<ResearchReport> {
   try {
     return await conductResearchWithAI(request);
-  } catch {
-    // Fall back to placeholder research on AI failure
-    const sources = generatePlaceholderSources(request);
-    const findings = generatePlaceholderFindings(request, sources);
+  } catch (error) {
+    console.warn(
+      `[ResearchAgent] AI research failed for query="${request.query}" ` +
+      `entityId="${request.entityId}" depth="${request.depth}": ${error instanceof Error ? error.message : String(error)}`
+    );
+
+    // Attempt to query knowledge base for relevant entries
+    const keywords = extractTopicKeywords(request.query);
+    let sourceQuality: SourceQuality = 'generated';
+    let sources: ResearchSource[];
+    let findings: ResearchFinding[];
+
+    try {
+      const knowledgeEntries = await queryKnowledgeBase(request.entityId, keywords);
+
+      if (knowledgeEntries.length > 0) {
+        sourceQuality = 'knowledge-base';
+        sources = knowledgeEntriesToSources(knowledgeEntries, request);
+        findings = generateKnowledgeBaseFindings(knowledgeEntries, request, sources);
+      } else {
+        sources = generateContextAwareSources(request, keywords);
+        findings = generateContextAwareFindings(request, sources, keywords);
+      }
+    } catch (dbError) {
+      console.warn(
+        `[ResearchAgent] Knowledge base query failed: ${dbError instanceof Error ? dbError.message : String(dbError)}`
+      );
+      sources = generateContextAwareSources(request, keywords);
+      findings = generateContextAwareFindings(request, sources, keywords);
+    }
 
     return {
       id: `research-${Date.now()}`,
       query: request.query,
       summary: `Research summary for: "${request.query}". ` +
-        `Depth: ${request.depth}. ${sources.length} sources consulted.`,
+        `Depth: ${request.depth}. ${sources.length} sources consulted.` +
+        (sourceQuality === 'knowledge-base'
+          ? ' Sourced from internal knowledge base.'
+          : ` Based on analysis of key topics: ${keywords.slice(0, 3).join(', ')}.`),
       findings,
       sources,
-      confidenceScore: getDepthConfidence(request.depth),
-      gaps: [
-        'Proprietary data not accessible',
-        'Historical trends beyond 5 years not analyzed',
-        'Competitor intelligence limited to public sources',
-      ],
+      confidenceScore: getDepthConfidence(request.depth) * (sourceQuality === 'knowledge-base' ? 0.9 : 0.6),
+      sourceQuality,
+      gaps: sourceQuality === 'knowledge-base'
+        ? [
+            'AI-powered deep analysis unavailable',
+            'Knowledge base may not contain the latest external data',
+            'Cross-referencing with external sources not performed',
+          ]
+        : [
+            'AI-powered analysis unavailable',
+            'No matching knowledge base entries found',
+            `Generated findings based on topic keywords: ${keywords.slice(0, 5).join(', ')}`,
+          ],
       createdAt: new Date(),
     };
   }
@@ -124,6 +181,7 @@ ${findings.map((f) => `- ${f.claim}: ${f.evidence}`).join('\n')}`,
     findings,
     sources,
     confidenceScore: getDepthConfidence(request.depth),
+    sourceQuality: 'ai' as SourceQuality,
     gaps: result.gaps || [],
     createdAt: now,
   };
@@ -178,39 +236,158 @@ export async function analyzeDocument(
 
 // --- Internal Helpers ---
 
-function generatePlaceholderSources(request: ResearchRequest): ResearchSource[] {
-  const maxSources = Math.min(request.maxSources, 10);
-  const now = new Date();
+interface KnowledgeEntryRecord {
+  id: string;
+  content: string;
+  tags: string[];
+  entityId: string;
+  source: string;
+}
 
-  return request.sourceTypes.slice(0, maxSources).map((type, i) => ({
-    id: `source-${Date.now()}-${i}`,
-    type,
-    title: `${type} Source ${i + 1}: ${request.query}`,
-    url: type === 'WEB' ? `https://example.com/research/${i}` : undefined,
-    credibilityScore: evaluateSourceCredibility({ type }),
-    excerpt: `Relevant excerpt from ${type.toLowerCase()} source regarding "${request.query}"`,
+async function queryKnowledgeBase(
+  entityId: string,
+  keywords: string[]
+): Promise<KnowledgeEntryRecord[]> {
+  if (keywords.length === 0) return [];
+
+  const orConditions = keywords.map((keyword) => ({
+    content: { contains: keyword },
+  }));
+
+  const entries = await prisma.knowledgeEntry.findMany({
+    where: {
+      entityId,
+      OR: orConditions,
+    },
+    take: 5,
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  return entries as KnowledgeEntryRecord[];
+}
+
+function knowledgeEntriesToSources(
+  entries: KnowledgeEntryRecord[],
+  request: ResearchRequest
+): ResearchSource[] {
+  const now = new Date();
+  return entries.map((entry, i) => ({
+    id: `source-kb-${Date.now()}-${i}`,
+    type: 'KNOWLEDGE' as SourceType,
+    title: `Knowledge Base: ${entry.tags.length > 0 ? entry.tags.slice(0, 3).join(', ') : entry.source}`,
+    credibilityScore: evaluateSourceCredibility({
+      type: 'KNOWLEDGE' as SourceType,
+      title: entry.source,
+      excerpt: entry.content.slice(0, 200),
+    }),
+    excerpt: entry.content.length > 200
+      ? entry.content.slice(0, 200) + '...'
+      : entry.content,
     accessedAt: now,
   }));
 }
 
-function generatePlaceholderFindings(
+function generateKnowledgeBaseFindings(
+  entries: KnowledgeEntryRecord[],
   request: ResearchRequest,
   sources: ResearchSource[]
 ): ResearchFinding[] {
-  return [
-    {
-      claim: `Primary finding related to "${request.query}"`,
-      evidence: 'Based on analysis of available sources',
-      sourceIds: sources.slice(0, 2).map((s) => s.id),
-      confidence: getDepthConfidence(request.depth),
-    },
-    {
-      claim: `Supporting data point for "${request.query}"`,
-      evidence: 'Corroborated across multiple source types',
+  const findings: ResearchFinding[] = [];
+
+  for (let i = 0; i < Math.min(entries.length, 3); i++) {
+    const entry = entries[i];
+    const contentPreview = entry.content.length > 100
+      ? entry.content.slice(0, 100) + '...'
+      : entry.content;
+
+    findings.push({
+      claim: `Knowledge base entry from "${entry.source}" relates to "${request.query}"`,
+      evidence: contentPreview,
+      sourceIds: sources[i] ? [sources[i].id] : [],
+      confidence: getDepthConfidence(request.depth) * getSourceTypeCredibilityMultiplier('KNOWLEDGE'),
+    });
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      claim: `Knowledge base entries found for "${request.query}"`,
+      evidence: 'Entries matched but no specific findings could be extracted',
       sourceIds: sources.slice(0, 1).map((s) => s.id),
-      confidence: getDepthConfidence(request.depth) * 0.8,
-    },
-  ];
+      confidence: getDepthConfidence(request.depth) * 0.5,
+    });
+  }
+
+  return findings;
+}
+
+function getSourceTypeCredibilityMultiplier(type: SourceType): number {
+  switch (type) {
+    case 'KNOWLEDGE': return 0.9;
+    case 'DOCUMENT': return 0.8;
+    case 'WEB': return 0.6;
+  }
+}
+
+function generateContextAwareSources(
+  request: ResearchRequest,
+  keywords: string[]
+): ResearchSource[] {
+  const maxSources = Math.min(request.maxSources, 10);
+  const now = new Date();
+
+  return request.sourceTypes.slice(0, maxSources).map((type, i) => {
+    const keyword = keywords[i % keywords.length] || request.query;
+    return {
+      id: `source-${Date.now()}-${i}`,
+      type,
+      title: `${type} Source ${i + 1}: ${keyword}`,
+      url: type === 'WEB' ? `https://example.com/research/${encodeURIComponent(keyword)}` : undefined,
+      credibilityScore: evaluateSourceCredibility({ type }) * getSourceTypeCredibilityMultiplier(type),
+      excerpt: `Analysis of "${keyword}" from ${type.toLowerCase()} source in context of "${request.query}"`,
+      accessedAt: now,
+    };
+  });
+}
+
+function generateContextAwareFindings(
+  request: ResearchRequest,
+  sources: ResearchSource[],
+  keywords: string[]
+): ResearchFinding[] {
+  const findings: ResearchFinding[] = [];
+  const baseConfidence = getDepthConfidence(request.depth);
+
+  // Primary finding referencing the main topic keywords
+  if (keywords.length > 0) {
+    findings.push({
+      claim: `Analysis of ${keywords.slice(0, 3).join(', ')} indicates relevance to "${request.query}"`,
+      evidence: `Key terms identified: ${keywords.slice(0, 5).join(', ')}. Further AI-powered analysis recommended for deeper insights.`,
+      sourceIds: sources.slice(0, 2).map((s) => s.id),
+      confidence: baseConfidence * 0.6,
+    });
+  }
+
+  // Secondary finding with topic-specific context
+  if (keywords.length > 1) {
+    findings.push({
+      claim: `Relationship between ${keywords[0]} and ${keywords[1]} warrants further investigation`,
+      evidence: `Multiple topic dimensions detected in query. Cross-referencing ${keywords[0]} with ${keywords[1]} may yield actionable insights.`,
+      sourceIds: sources.slice(0, 1).map((s) => s.id),
+      confidence: baseConfidence * 0.4,
+    });
+  }
+
+  // Fallback if no keywords were extracted
+  if (findings.length === 0) {
+    findings.push({
+      claim: `Preliminary assessment of "${request.query}" pending deeper analysis`,
+      evidence: 'AI-powered research unavailable. Manual review of the topic is recommended.',
+      sourceIds: sources.slice(0, 1).map((s) => s.id),
+      confidence: baseConfidence * 0.3,
+    });
+  }
+
+  return findings;
 }
 
 function getDepthConfidence(depth: ResearchRequest['depth']): number {

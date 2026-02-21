@@ -6,10 +6,13 @@
 // 1. AI Output Provenance — tracks source documents used to generate AI outputs
 // 2. Data Provenance — full audit trail of who did what, when, to which data,
 //    with cryptographic hash chain for tamper detection and compliance reporting
+//
+// Persistence: Prisma (provenanceRecord model)
 // ============================================================================
 
 import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
 import type {
   ProvenanceRecord,
   ProvenanceSource,
@@ -21,6 +24,13 @@ import type {
 
 const GENESIS_HASH = '0';
 const HASH_ALGORITHM = 'sha256';
+
+/**
+ * Discriminator stored in metadata.recordType to distinguish between
+ * AI-output provenance rows and data-provenance (audit trail) rows.
+ */
+const RECORD_TYPE_AI = 'AI_OUTPUT';
+const RECORD_TYPE_DATA = 'DATA_PROVENANCE';
 
 // ---------------------------------------------------------------------------
 // Data Provenance Types (audit trail layer)
@@ -58,28 +68,61 @@ export interface ProvenanceReport {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers: row <-> domain object mapping
+// ---------------------------------------------------------------------------
+
+/** Shape of a Prisma provenanceRecord row */
+interface PrismaRow {
+  id: string;
+  userId: string | null;
+  entityId: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  inputHash: string;
+  outputHash: string;
+  modelId: string;
+  promptTemplate: string | null;
+  metadata: unknown;
+  timestamp: Date;
+}
+
+/** Convert a Prisma row (data-provenance type) back to a DataProvenanceEntry */
+function rowToDataEntry(row: PrismaRow): DataProvenanceEntry {
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  return {
+    id: row.id,
+    entityId: row.entityId ?? '',
+    action: (meta.action as string) ?? '',
+    actor: (meta.actor as string) ?? undefined,
+    targetType: row.targetType ?? undefined,
+    targetId: row.targetId ?? undefined,
+    metadata: (meta.userMetadata as Record<string, unknown>) ?? {},
+    timestamp: row.timestamp,
+    hash: row.outputHash,
+    previousHash: row.inputHash,
+  };
+}
+
+/** Convert a Prisma row (AI-output type) back to a ProvenanceRecord */
+function rowToProvenanceRecord(row: PrismaRow): ProvenanceRecord {
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  return {
+    id: row.id,
+    outputId: row.outputHash,
+    outputType: (meta.outputType as string) ?? '',
+    sourceDocuments: (meta.sourceDocuments as ProvenanceSource[]) ?? [],
+    modelUsed: row.modelId || undefined,
+    prompt: row.promptTemplate ?? undefined,
+    confidence: (meta.confidence as number) ?? 0,
+    createdAt: row.timestamp,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // ProvenanceService
 // ---------------------------------------------------------------------------
 
 export class ProvenanceService {
-  /** Primary store: record id -> ProvenanceRecord (AI output provenance) */
-  private readonly records: Map<string, ProvenanceRecord> = new Map();
-
-  /** Secondary index: outputId -> ProvenanceRecord (for fast lookup) */
-  private readonly outputIndex: Map<string, ProvenanceRecord> = new Map();
-
-  /** Data provenance chain: ordered list of entries for hash chain integrity */
-  private readonly provenanceChain: DataProvenanceEntry[] = [];
-
-  /** Index: entityId -> entry ids for fast lookup */
-  private readonly entityIndex: Map<string, string[]> = new Map();
-
-  /** Index: targetKey (targetType:targetId) -> entry ids for document chain lookup */
-  private readonly targetIndex: Map<string, string[]> = new Map();
-
-  /** Index: id -> DataProvenanceEntry for O(1) lookup */
-  private readonly provenanceById: Map<string, DataProvenanceEntry> = new Map();
-
   // -------------------------------------------------------------------------
   // AI Output Provenance — Public API (original interface preserved)
   // -------------------------------------------------------------------------
@@ -92,16 +135,27 @@ export class ProvenanceService {
   async recordProvenance(
     params: Omit<ProvenanceRecord, 'id' | 'createdAt'>,
   ): Promise<ProvenanceRecord> {
-    const record: ProvenanceRecord = {
-      ...params,
-      id: uuidv4(),
-      createdAt: new Date(),
-    };
+    const id = uuidv4();
+    const now = new Date();
 
-    this.records.set(record.id, record);
-    this.outputIndex.set(record.outputId, record);
+    const row = await prisma.provenanceRecord.create({
+      data: {
+        id,
+        outputHash: params.outputId,
+        inputHash: '',
+        modelId: params.modelUsed ?? '',
+        promptTemplate: params.prompt ?? null,
+        metadata: {
+          recordType: RECORD_TYPE_AI,
+          outputType: params.outputType,
+          sourceDocuments: params.sourceDocuments,
+          confidence: params.confidence,
+        },
+        timestamp: now,
+      },
+    });
 
-    return record;
+    return rowToProvenanceRecord(row as unknown as PrismaRow);
   }
 
   /**
@@ -109,7 +163,12 @@ export class ProvenanceService {
    * Uses the secondary index for O(1) lookup by outputId.
    */
   async getProvenance(outputId: string): Promise<ProvenanceRecord | null> {
-    return this.outputIndex.get(outputId) ?? null;
+    const row = await prisma.provenanceRecord.findFirst({
+      where: { outputHash: outputId },
+    });
+
+    if (!row) return null;
+    return rowToProvenanceRecord(row as unknown as PrismaRow);
   }
 
   /**
@@ -117,13 +176,21 @@ export class ProvenanceService {
    * a specific source by its sourceId.
    */
   async getSourceUsage(sourceId: string): Promise<ProvenanceRecord[]> {
+    // Fetch all AI-output provenance rows; filter by sourceDocuments in memory
+    // because nested JSON array filtering is not reliably supported across
+    // all Prisma adapters.
+    const rows = await prisma.provenanceRecord.findMany();
+
     const results: ProvenanceRecord[] = [];
 
-    for (const record of this.records.values()) {
+    for (const row of rows) {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>;
+      if (meta.recordType !== RECORD_TYPE_AI) continue;
+
+      const record = rowToProvenanceRecord(row as unknown as PrismaRow);
       const usesSource = record.sourceDocuments.some(
         (source: ProvenanceSource) => source.sourceId === sourceId,
       );
-
       if (usesSource) {
         results.push(record);
       }
@@ -144,7 +211,7 @@ export class ProvenanceService {
     missingSource: boolean;
     sourceAvailable: boolean[];
   }> {
-    const record = this.outputIndex.get(outputId);
+    const record = await this.getProvenance(outputId);
 
     if (!record) {
       return {
@@ -193,11 +260,20 @@ export class ProvenanceService {
     const id = uuidv4();
     const timestamp = new Date();
 
-    // Chain to the previous entry's hash
-    const previousHash =
-      this.provenanceChain.length > 0
-        ? this.provenanceChain[this.provenanceChain.length - 1].hash
-        : GENESIS_HASH;
+    // Chain to the previous entry's hash — find the latest entry globally
+    const lastEntry = await prisma.provenanceRecord.findFirst({
+      where: {
+        metadata: {
+          path: ['recordType'],
+          equals: RECORD_TYPE_DATA,
+        },
+      },
+      orderBy: { timestamp: 'desc' },
+    });
+
+    const previousHash = lastEntry
+      ? (lastEntry as unknown as PrismaRow).outputHash
+      : GENESIS_HASH;
 
     // Extract well-known metadata fields for indexing
     const actor = typeof metadata.actor === 'string' ? metadata.actor : undefined;
@@ -217,7 +293,27 @@ export class ProvenanceService {
       previousHash,
     });
 
-    const entry: DataProvenanceEntry = {
+    // Persist via Prisma
+    await prisma.provenanceRecord.create({
+      data: {
+        id,
+        entityId,
+        targetType: targetType ?? null,
+        targetId: targetId ?? null,
+        inputHash: previousHash,
+        outputHash: hash,
+        modelId: '',
+        metadata: {
+          recordType: RECORD_TYPE_DATA,
+          action,
+          actor: actor ?? null,
+          userMetadata: metadata,
+        },
+        timestamp,
+      },
+    });
+
+    return {
       id,
       entityId,
       action,
@@ -229,25 +325,6 @@ export class ProvenanceService {
       hash,
       previousHash,
     };
-
-    // Store in chain and indexes
-    this.provenanceChain.push(entry);
-    this.provenanceById.set(id, entry);
-
-    // Update entity index
-    const entityEntries = this.entityIndex.get(entityId) ?? [];
-    entityEntries.push(id);
-    this.entityIndex.set(entityId, entityEntries);
-
-    // Update target index
-    if (targetType && targetId) {
-      const targetKey = `${targetType}:${targetId}`;
-      const targetEntries = this.targetIndex.get(targetKey) ?? [];
-      targetEntries.push(id);
-      this.targetIndex.set(targetKey, targetEntries);
-    }
-
-    return entry;
   }
 
   /**
@@ -261,21 +338,12 @@ export class ProvenanceService {
     documentId: string,
     targetType: string = 'DOCUMENT',
   ): Promise<DataProvenanceEntry[]> {
-    const targetKey = `${targetType}:${documentId}`;
-    const entryIds = this.targetIndex.get(targetKey) ?? [];
+    const rows = await prisma.provenanceRecord.findMany({
+      where: { targetType, targetId: documentId },
+      orderBy: { timestamp: 'asc' },
+    });
 
-    const entries: DataProvenanceEntry[] = [];
-    for (const id of entryIds) {
-      const entry = this.provenanceById.get(id);
-      if (entry) {
-        entries.push(entry);
-      }
-    }
-
-    // Return in chronological order
-    return entries.sort(
-      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
-    );
+    return rows.map((r: unknown) => rowToDataEntry(r as PrismaRow));
   }
 
   /**
@@ -299,9 +367,11 @@ export class ProvenanceService {
     computedHash: string;
     storedHash: string;
   }> {
-    const entry = this.provenanceById.get(recordId);
+    const row = await prisma.provenanceRecord.findUnique({
+      where: { id: recordId },
+    });
 
-    if (!entry) {
+    if (!row) {
       return {
         valid: false,
         chainIntact: false,
@@ -311,6 +381,8 @@ export class ProvenanceService {
         storedHash: '',
       };
     }
+
+    const entry = rowToDataEntry(row as unknown as PrismaRow);
 
     // Recalculate the expected hash
     const computedHash = this.calculateEntryHash({
@@ -336,11 +408,22 @@ export class ProvenanceService {
       // This is the first entry in the chain — no predecessor to verify
       chainDetail = 'First entry in chain (genesis).';
     } else {
-      // Find the entry in the chain that precedes this one
-      const chainIndex = this.provenanceChain.findIndex((e) => e.id === entry.id);
+      // Find all data-provenance entries ordered by timestamp to locate predecessor
+      const allRows = await prisma.provenanceRecord.findMany({
+        where: {
+          metadata: {
+            path: ['recordType'],
+            equals: RECORD_TYPE_DATA,
+          },
+        },
+        orderBy: { timestamp: 'asc' },
+      });
+
+      const chain = allRows.map((r: unknown) => rowToDataEntry(r as PrismaRow));
+      const chainIndex = chain.findIndex((e) => e.id === entry.id);
 
       if (chainIndex > 0) {
-        const predecessor = this.provenanceChain[chainIndex - 1];
+        const predecessor = chain[chainIndex - 1];
         if (predecessor.hash !== entry.previousHash) {
           chainIntact = false;
           chainDetail = `Chain broken: predecessor hash mismatch. Expected ${entry.previousHash}, found ${predecessor.hash}.`;
@@ -389,20 +472,18 @@ export class ProvenanceService {
     brokenAt?: string;
     details: string;
   }> {
-    const entryIds = this.entityIndex.get(entityId) ?? [];
-    let entries = entryIds
-      .map((id) => this.provenanceById.get(id))
-      .filter((e): e is DataProvenanceEntry => e !== undefined);
-
-    // Apply date range filter
+    // Build the where clause for entity + optional date range
+    const where: Record<string, unknown> = { entityId };
     if (dateRange) {
-      entries = entries.filter(
-        (e) => e.timestamp >= dateRange.from && e.timestamp <= dateRange.to,
-      );
+      where.timestamp = { gte: dateRange.from, lte: dateRange.to };
     }
 
-    // Sort chronologically
-    entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const rows = await prisma.provenanceRecord.findMany({
+      where,
+      orderBy: { timestamp: 'asc' },
+    });
+
+    const entries = rows.map((r: unknown) => rowToDataEntry(r as PrismaRow));
 
     if (entries.length === 0) {
       return {
@@ -470,17 +551,15 @@ export class ProvenanceService {
     entityId: string,
     dateRange: { from: Date; to: Date },
   ): Promise<ProvenanceReport> {
-    const entryIds = this.entityIndex.get(entityId) ?? [];
-    const allEntries = entryIds
-      .map((id) => this.provenanceById.get(id))
-      .filter((e): e is DataProvenanceEntry => e !== undefined);
+    const rows = await prisma.provenanceRecord.findMany({
+      where: {
+        entityId,
+        timestamp: { gte: dateRange.from, lte: dateRange.to },
+      },
+      orderBy: { timestamp: 'asc' },
+    });
 
-    // Filter by date range
-    const entries = allEntries
-      .filter(
-        (e) => e.timestamp >= dateRange.from && e.timestamp <= dateRange.to,
-      )
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const entries = rows.map((r: unknown) => rowToDataEntry(r as PrismaRow));
 
     // Build summary: group by action type
     const actionGroups = new Map<

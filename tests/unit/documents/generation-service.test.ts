@@ -200,11 +200,213 @@ describe('document-generation-service', () => {
   });
 
   describe('convertFormat', () => {
-    it('returns content as-is (placeholder behavior)', () => {
-      const content = '# Hello World';
-      const result = convertFormat(content, 'MARKDOWN', 'PDF');
+    describe('same format passthrough', () => {
+      it('returns content unchanged when fromFormat equals toFormat', () => {
+        const content = '# Hello World';
+        expect(convertFormat(content, 'markdown', 'markdown')).toBe(content);
+        expect(convertFormat(content, 'html', 'html')).toBe(content);
+      });
+    });
 
-      expect(result).toBe(content);
+    describe('markdown to html', () => {
+      it('converts headings to HTML h tags', () => {
+        const result = convertFormat('# Title\n## Subtitle\n### Section', 'markdown', 'html');
+        expect(result).toContain('<h1>Title</h1>');
+        expect(result).toContain('<h2>Subtitle</h2>');
+        expect(result).toContain('<h3>Section</h3>');
+      });
+
+      it('converts bold text', () => {
+        const result = convertFormat('This is **bold** text', 'markdown', 'html');
+        expect(result).toContain('<strong>bold</strong>');
+      });
+
+      it('converts italic text', () => {
+        const result = convertFormat('This is *italic* text', 'markdown', 'html');
+        expect(result).toContain('<em>italic</em>');
+      });
+
+      it('converts links', () => {
+        const result = convertFormat('[Click here](https://example.com)', 'markdown', 'html');
+        expect(result).toContain('<a href="https://example.com">Click here</a>');
+      });
+
+      it('converts inline code', () => {
+        const result = convertFormat('Use `console.log()` to debug', 'markdown', 'html');
+        expect(result).toContain('<code>console.log()</code>');
+      });
+
+      it('converts fenced code blocks', () => {
+        const result = convertFormat('```js\nconst x = 1;\n```', 'markdown', 'html');
+        expect(result).toContain('<pre><code>');
+        expect(result).toContain('const x = 1;');
+        expect(result).toContain('</code></pre>');
+      });
+
+      it('converts unordered list items', () => {
+        const result = convertFormat('- Item 1\n- Item 2', 'markdown', 'html');
+        expect(result).toContain('<li>Item 1</li>');
+        expect(result).toContain('<li>Item 2</li>');
+        expect(result).toContain('<ul>');
+      });
+
+      it('wraps plain text lines in paragraph tags', () => {
+        const result = convertFormat('Hello world', 'markdown', 'html');
+        expect(result).toContain('<p>Hello world</p>');
+      });
+    });
+
+    describe('html to markdown', () => {
+      it('converts heading tags to markdown headings', () => {
+        const result = convertFormat('<h1>Title</h1><h2>Sub</h2>', 'html', 'markdown');
+        expect(result).toContain('# Title');
+        expect(result).toContain('## Sub');
+      });
+
+      it('converts strong/b tags to bold markdown', () => {
+        const result = convertFormat('<strong>bold</strong> and <b>also bold</b>', 'html', 'markdown');
+        expect(result).toContain('**bold**');
+        expect(result).toContain('**also bold**');
+      });
+
+      it('converts em/i tags to italic markdown', () => {
+        const result = convertFormat('<em>italic</em> and <i>also italic</i>', 'html', 'markdown');
+        expect(result).toContain('*italic*');
+        expect(result).toContain('*also italic*');
+      });
+
+      it('converts anchor tags to markdown links', () => {
+        const result = convertFormat('<a href="https://example.com">Link</a>', 'html', 'markdown');
+        expect(result).toContain('[Link](https://example.com)');
+      });
+
+      it('converts code tags to backticks', () => {
+        const result = convertFormat('<code>foo()</code>', 'html', 'markdown');
+        expect(result).toContain('`foo()`');
+      });
+
+      it('converts list items to markdown list syntax', () => {
+        const result = convertFormat('<ul><li>One</li><li>Two</li></ul>', 'html', 'markdown');
+        expect(result).toContain('- One');
+        expect(result).toContain('- Two');
+      });
+
+      it('strips remaining HTML tags', () => {
+        const result = convertFormat('<div class="wrapper"><span>Text</span></div>', 'html', 'markdown');
+        expect(result).not.toContain('<div');
+        expect(result).not.toContain('<span');
+        expect(result).toContain('Text');
+      });
+
+      it('decodes common HTML entities', () => {
+        const result = convertFormat('<p>&amp; &lt; &gt; &quot;</p>', 'html', 'markdown');
+        expect(result).toContain('&');
+        expect(result).toContain('<');
+        expect(result).toContain('>');
+        expect(result).toContain('"');
+      });
+    });
+
+    describe('html to plaintext', () => {
+      it('strips all HTML tags', () => {
+        const result = convertFormat('<h1>Title</h1><p>Paragraph</p>', 'html', 'plaintext');
+        expect(result).not.toContain('<');
+        expect(result).not.toContain('>');
+        expect(result).toContain('Title');
+        expect(result).toContain('Paragraph');
+      });
+
+      it('decodes common HTML entities', () => {
+        const result = convertFormat('&amp; &lt; &gt; &quot;', 'html', 'plaintext');
+        expect(result).toBe('& < > "');
+      });
+
+      it('preserves line breaks from block elements', () => {
+        const result = convertFormat('<p>One</p><p>Two</p>', 'html', 'plaintext');
+        expect(result).toContain('One');
+        expect(result).toContain('Two');
+        // Should have some separation
+        expect(result).not.toBe('OneTwo');
+      });
+    });
+
+    describe('markdown to plaintext', () => {
+      it('removes heading markers', () => {
+        const result = convertFormat('# Title\n## Subtitle', 'markdown', 'plaintext');
+        expect(result).toContain('Title');
+        expect(result).toContain('Subtitle');
+        expect(result).not.toContain('#');
+      });
+
+      it('removes bold and italic markers', () => {
+        const result = convertFormat('**bold** and *italic* and ***both***', 'markdown', 'plaintext');
+        expect(result).toContain('bold');
+        expect(result).toContain('italic');
+        expect(result).toContain('both');
+        expect(result).not.toContain('*');
+      });
+
+      it('extracts link text and removes URL syntax', () => {
+        const result = convertFormat('[Click](https://example.com)', 'markdown', 'plaintext');
+        expect(result).toContain('Click');
+        expect(result).not.toContain('https://example.com');
+        expect(result).not.toContain('[');
+        expect(result).not.toContain(']');
+      });
+
+      it('removes inline code backticks', () => {
+        const result = convertFormat('Use `console.log()` to debug', 'markdown', 'plaintext');
+        expect(result).toContain('console.log()');
+        expect(result).not.toContain('`');
+      });
+
+      it('removes list markers', () => {
+        const result = convertFormat('- Item 1\n- Item 2', 'markdown', 'plaintext');
+        expect(result).toContain('Item 1');
+        expect(result).toContain('Item 2');
+        expect(result).not.toMatch(/^- /m);
+      });
+
+      it('removes fenced code block markers', () => {
+        const result = convertFormat('```js\nconst x = 1;\n```', 'markdown', 'plaintext');
+        expect(result).toContain('const x = 1;');
+        expect(result).not.toContain('```');
+      });
+    });
+
+    describe('unrecognized format pairs', () => {
+      it('returns content unchanged for unrecognized conversions', () => {
+        const content = '# Hello World';
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const result = convertFormat(content, 'markdown', 'pdf');
+        expect(result).toBe(content);
+
+        warnSpy.mockRestore();
+      });
+
+      it('emits a console.warn for unrecognized format pair', () => {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        convertFormat('content', 'docx', 'rtf');
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Unrecognized format conversion')
+        );
+
+        warnSpy.mockRestore();
+      });
+    });
+
+    describe('case insensitivity', () => {
+      it('handles uppercase format names', () => {
+        const result = convertFormat('# Title', 'MARKDOWN', 'HTML');
+        expect(result).toContain('<h1>Title</h1>');
+      });
+
+      it('handles mixed case format names', () => {
+        const result = convertFormat('<h1>Title</h1>', 'Html', 'Markdown');
+        expect(result).toContain('# Title');
+      });
     });
   });
 });

@@ -32,6 +32,15 @@ model User {
   attentionBudgets AttentionBudget[]
   adoptionProgress AdoptionProgress?
   goalEntries    GoalEntry[]
+  vaultEntries     VaultEntry[]
+  vaultSecrets     VaultSecret[]
+  vaultKeys        VaultKey[]
+  provenanceRecords ProvenanceRecord[]
+  webhookConfigs   WebhookConfig[]
+  pluginRecords    PluginRecord[]
+  dndConfig        DNDConfig?
+  permissionGrants PermissionGrant[]
+  voiceConsents    VoiceConsent[]
 }
 
 model Entity {
@@ -578,6 +587,7 @@ model AdoptionProgress {
   phase          String    @default("Inbox Mastery")
   completedSteps Json      @default("[]")
   ahaMoments     Json      @default("[]")
+  data           Json      @default("{}")
   startedAt      DateTime  @default(now())
   completedAt    DateTime?
 
@@ -614,4 +624,181 @@ model GoalEntry {
   @@index([userId])
   @@index([entityId])
   @@index([status])
+}
+
+// === PERSISTENCE EXPANSION MODELS ===
+
+model VaultEntry {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label         String
+  encryptedData String
+  iv            String
+  tag           String
+  algorithm     String   @default("aes-256-gcm")
+  keyVersion    Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, label])
+  @@index([userId])
+}
+
+model VaultSecret {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  encryptedValue String
+  iv             String
+  tag            String
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, name])
+}
+
+model VaultKey {
+  id                   String    @id @default(cuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  keyId                String    @unique
+  encryptedKeyMaterial String
+  algorithm            String
+  status               String    @default("ACTIVE")
+  createdAt            DateTime  @default(now())
+  rotatedAt            DateTime?
+
+  @@index([userId])
+}
+
+model ProvenanceRecord {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId        String?
+  targetType      String?
+  targetId        String?
+  inputHash       String
+  outputHash      String
+  modelId         String
+  promptTemplate  String?
+  metadata        Json?
+  timestamp       DateTime @default(now())
+
+  @@index([userId])
+  @@index([outputHash])
+  @@index([entityId])
+  @@index([targetType, targetId])
+}
+
+model WebhookConfig {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url       String
+  events    Json
+  secret    String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  webhookEvents WebhookEvent[]
+
+  @@index([userId])
+}
+
+model WebhookEvent {
+  id              String    @id @default(cuid())
+  webhookConfigId String
+  webhookConfig   WebhookConfig @relation(fields: [webhookConfigId], references: [id], onDelete: Cascade)
+  event           String
+  payload         Json
+  status          String    @default("PENDING")
+  response        Json?
+  attempts        Int       @default(0)
+  lastAttemptAt   DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([webhookConfigId])
+  @@index([status])
+}
+
+model PluginRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  version     String
+  author      String?
+  description String?
+  permissions Json
+  status      String   @default("ACTIVE")
+  config      Json?
+  installedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pluginReviews PluginReview[]
+
+  @@unique([userId, name])
+}
+
+model PluginReview {
+  id              String    @id @default(cuid())
+  pluginRecordId  String
+  pluginRecord    PluginRecord @relation(fields: [pluginRecordId], references: [id], onDelete: Cascade)
+  reviewerId      String
+  status          String    @default("PENDING")
+  findings        Json
+  riskScore       Float?
+  reviewedAt      DateTime?
+  revokedAt       DateTime?
+  affectedUsers   Int       @default(0)
+  createdAt       DateTime  @default(now())
+
+  @@index([pluginRecordId])
+}
+
+model DNDConfig {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isActive               Boolean  @default(false)
+  mode                   String   @default("MANUAL")
+  startTime              String?
+  endTime                String?
+  vipBreakthroughEnabled Boolean  @default(false)
+  vipContactIds          Json     @default("[]")
+  calendarIntegration    Boolean  @default(false)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+model PermissionGrant {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource   String
+  actions    Json
+  grantedBy  String?
+  grantedAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  revoked    Boolean   @default(false)
+
+  @@unique([userId, resource])
+  @@index([userId])
+}
+
+model VoiceConsent {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  voiceCloneId     String
+  consentGiven     Boolean   @default(true)
+  consentTimestamp  DateTime  @default(now())
+  revokedAt        DateTime?
+
+  @@unique([userId, voiceCloneId])
 }
