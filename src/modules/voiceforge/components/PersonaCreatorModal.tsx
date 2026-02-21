@@ -198,7 +198,7 @@ export default function PersonaCreatorModal({
   // Validation
   // ---------------------------------------------------------------------------
 
-  const isValid = name.trim() !== '' && entityId !== '' && voiceGender !== '';
+  const isValid = name.trim() !== '' && entityId !== '';
 
   // ---------------------------------------------------------------------------
   // Submit

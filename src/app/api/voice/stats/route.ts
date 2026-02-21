@@ -57,6 +57,9 @@ export async function GET(request: NextRequest) {
         }
       };
 
+      // Use (prisma as any) for models that may not exist in the schema yet
+      const db = prisma as any;
+
       const [
         totalCalls,
         todayCalls,
@@ -67,12 +70,12 @@ export async function GET(request: NextRequest) {
         totalScripts,
       ] = await Promise.all([
         safeCount(() =>
-          prisma.voiceCall.count({
+          db.voiceCall.count({
             where: { entityId: { in: entityIds } },
           })
         ),
         safeCount(() =>
-          prisma.voiceCall.count({
+          db.voiceCall.count({
             where: {
               entityId: { in: entityIds },
               createdAt: { gte: startOfToday },
@@ -80,7 +83,7 @@ export async function GET(request: NextRequest) {
           })
         ),
         safeCount(() =>
-          prisma.voiceCall.count({
+          db.voiceCall.count({
             where: {
               entityId: { in: entityIds },
               outcome: { in: ['CONNECTED', 'INTERESTED'] },
@@ -88,22 +91,22 @@ export async function GET(request: NextRequest) {
           })
         ),
         safeCount(() =>
-          prisma.voiceCampaign.count({
+          db.voiceCampaign.count({
             where: { entityId: { in: entityIds }, status: 'ACTIVE' },
           })
         ),
         safeCount(() =>
-          prisma.phoneNumber.count({
+          db.phoneNumber.count({
             where: { entityId: { in: entityIds } },
           })
         ),
         safeCount(() =>
-          prisma.voicePersona.count({
+          db.voicePersona.count({
             where: { entityId: { in: entityIds } },
           })
         ),
         safeCount(() =>
-          prisma.voiceScript.count({
+          db.voiceScript.count({
             where: { entityId: { in: entityIds } },
           })
         ),
