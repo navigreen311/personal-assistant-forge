@@ -28,6 +28,11 @@ import type {
   WakeWordTestResult,
 } from '@/modules/voice/types';
 
+// Browser Speech API type declarations for environments where lib.dom types are incomplete
+declare class SpeechRecognition extends EventTarget { continuous: boolean; interimResults: boolean; lang: string; maxAlternatives: number; onresult: ((event: any) => void) | null; onend: (() => void) | null; onerror: ((event: any) => void) | null; start(): void; stop(): void; abort(): void; }
+declare class SpeechRecognitionEvent extends Event { readonly resultIndex: number; readonly results: SpeechRecognitionResultList; }
+declare class SpeechRecognitionErrorEvent extends Event { readonly error: string; readonly message: string; }
+
 // ---------------------------------------------------------------------------
 // Environment-driven defaults
 // ---------------------------------------------------------------------------

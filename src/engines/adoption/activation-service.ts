@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import type { ActivationChecklist, ActivationPhase, ActivationTask } from './types';
 const uuidv4 = () => crypto.randomUUID();
@@ -98,7 +99,7 @@ function recordToChecklist(
   record: { userId: string; startedAt: Date; completedSteps: unknown; ahaMoments: unknown; phase: string },
   phases: ActivationPhase[]
 ): ActivationChecklist {
-  const completedSteps = (record.completedSteps ?? []) as CompletedStep[];
+  const completedSteps = (record.completedSteps ?? []) as unknown as CompletedStep[];
   applyCompletedSteps(phases, completedSteps);
   updatePhaseStatuses(phases);
 
@@ -179,10 +180,10 @@ export async function completeTask(userId: string, taskId: string): Promise<Acti
     });
 
     if (record) {
-      const completedSteps = (record.completedSteps ?? []) as CompletedStep[];
+      const completedSteps = (record.completedSteps ?? []) as unknown as CompletedStep[];
       completedSteps.push({ taskId, completedAt: new Date().toISOString() });
 
-      const ahaMoments = (record.ahaMoments ?? []) as StoredAhaMoment[];
+      const ahaMoments = (record.ahaMoments ?? []) as unknown as StoredAhaMoment[];
       if (isAhaMoment) {
         ahaMoments.push({ taskId, triggeredAt: new Date().toISOString() });
       }
@@ -195,8 +196,8 @@ export async function completeTask(userId: string, taskId: string): Promise<Acti
       await prisma.adoptionProgress.update({
         where: { userId },
         data: {
-          completedSteps,
-          ahaMoments,
+          completedSteps: completedSteps as unknown as Prisma.InputJsonValue,
+          ahaMoments: ahaMoments as unknown as Prisma.InputJsonValue,
           phase: activePhase.name,
           completedAt: allComplete ? new Date() : null,
         },

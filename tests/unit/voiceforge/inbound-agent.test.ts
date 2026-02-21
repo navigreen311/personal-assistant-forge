@@ -1,11 +1,16 @@
+const mockGenerateJSON = jest.fn();
+const mockGenerateText = jest.fn();
+
 jest.mock('@/lib/ai', () => ({
-  generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
+  generateJSON: mockGenerateJSON,
+  generateText: mockGenerateText,
 }));
 
 import {
   routeCall,
   isAfterHours,
   screenCaller,
+  collectIntakeForm,
 } from '@/modules/voiceforge/services/inbound-agent';
 import type { InboundConfig, AfterHoursConfig } from '@/modules/voiceforge/types';
 
@@ -54,6 +59,10 @@ describe('Inbound Agent', () => {
     spamFilterEnabled: true,
     vipContactIds: ['contact-vip-1'],
   };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
   describe('routeCall', () => {
     it('should block spam when spam filter is enabled', () => {
@@ -183,4 +192,78 @@ describe('Inbound Agent', () => {
       expect(result.contact?.name).toBe('John Doe');
     });
   });
+
+  describe('collectIntakeForm', () => {
+    it('should return empty object for empty fields array', async () => {
+      const result = await collectIntakeForm([]);
+      expect(result).toEqual({});
+      expect(mockGenerateJSON).not.toHaveBeenCalled();
+    });
+
+    it('should generate intake prompts via AI for each field', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        name: 'May I have your full name please?',
+        email: 'What email address can we reach you at?',
+        phone: 'What is your phone number?',
+      });
+
+      const result = await collectIntakeForm(['name', 'email', 'phone']);
+
+      expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        name: 'May I have your full name please?',
+        email: 'What email address can we reach you at?',
+        phone: 'What is your phone number?',
+      });
+    });
+
+    it('should fill missing fields with empty strings when AI returns partial result', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        name: 'What is your name?',
+      });
+
+      const result = await collectIntakeForm(['name', 'email', 'phone']);
+
+      expect(result.name).toBe('What is your name?');
+      expect(result.email).toBe('');
+      expect(result.phone).toBe('');
+    });
+
+    it('should return template prompts when AI is unavailable', async () => {
+      mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
+
+      const result = await collectIntakeForm(['name', 'email', 'reason']);
+
+      expect(result.name).toBe('Please provide your name');
+      expect(result.email).toBe('Please provide your email');
+      expect(result.reason).toBe('Please provide your reason');
+    });
+
+    it('should handle single field collection', async () => {
+      mockGenerateJSON.mockResolvedValue({
+        reason: 'What is the reason for your call today?',
+      });
+
+      const result = await collectIntakeForm(['reason']);
+
+      expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        reason: 'What is the reason for your call today?',
+      });
+    });
+
+    it('should pass correct prompt structure to AI', async () => {
+      mockGenerateJSON.mockResolvedValue({ name: 'prompt' });
+
+      await collectIntakeForm(['name']);
+
+      const callArgs = mockGenerateJSON.mock.calls[0];
+      expect(callArgs[0]).toContain('intake');
+      expect(callArgs[0]).toContain('name');
+      expect(callArgs[1]).toHaveProperty('maxTokens');
+      expect(callArgs[1]).toHaveProperty('temperature');
+      expect(callArgs[1]).toHaveProperty('system');
+    });
+  });
+
 });

@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 
 const querySchema = z.object({
@@ -49,7 +50,7 @@ export async function GET(request: NextRequest) {
           entityId: { in: entityIds },
           status: 'DONE',
           createdAt: { gte: since },
-          createdFrom: { not: null },
+          createdFrom: { not: Prisma.DbNull },
         },
       });
 
