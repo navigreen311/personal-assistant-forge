@@ -6,6 +6,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import type {
   RetentionPolicy,
   RetentionExecutionResult,
@@ -64,73 +65,221 @@ const ANONYMIZE_FIELDS: Record<PrismaModelName, string[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Helpers — map between Prisma row and RetentionPolicy interface
+// ---------------------------------------------------------------------------
+
+/**
+ * The Prisma RetentionPolicy model stores some fields that don't exist as
+ * dedicated columns (name, classification, nextExecution) inside the
+ * executionHistory JSON column as metadata.  This helper reconstitutes the
+ * full RetentionPolicy interface from a Prisma row.
+ */
+function toPolicy(row: {
+  id: string;
+  entityId: string;
+  dataType: string;
+  action: string;
+  retentionDays: number;
+  schedule: string;
+  isActive: boolean;
+  lastExecutedAt: Date | null;
+  executionHistory: Prisma.JsonValue;
+  createdAt: Date;
+  updatedAt: Date;
+}): RetentionPolicy {
+  const meta = (
+    Array.isArray(row.executionHistory)
+      ? {}
+      : typeof row.executionHistory === 'object' && row.executionHistory !== null
+        ? row.executionHistory
+        : {}
+  ) as Record<string, unknown>;
+
+  // If executionHistory is an array, there is no metadata wrapper — treat as
+  // a legacy row.  In the new layout we store { __meta: {...}, history: [...] }.
+  const metaBlock =
+    meta && typeof meta === 'object' && '__meta' in meta
+      ? (meta.__meta as Record<string, unknown>)
+      : {};
+
+  return {
+    id: row.id,
+    name: (metaBlock.name as string) ?? `${row.dataType} retention`,
+    entityId: row.entityId,
+    dataType: row.dataType,
+    classification: metaBlock.classification as DataClassification | undefined,
+    retentionDays: row.retentionDays,
+    action: row.action as RetentionPolicy['action'],
+    isActive: row.isActive,
+    lastExecuted: row.lastExecutedAt ?? undefined,
+    nextExecution: metaBlock.nextExecution
+      ? new Date(metaBlock.nextExecution as string)
+      : undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+/**
+ * Build the executionHistory JSON payload that carries metadata alongside
+ * the actual execution history entries.
+ */
+function buildExecutionHistoryJson(
+  policy: {
+    name?: string;
+    classification?: DataClassification;
+    nextExecution?: Date;
+  },
+  existingHistory: unknown[] = [],
+): Prisma.JsonObject {
+  return {
+    __meta: {
+      name: policy.name,
+      classification: policy.classification,
+      nextExecution: policy.nextExecution?.toISOString(),
+    },
+    history: existingHistory as Prisma.JsonArray,
+  } as unknown as Prisma.JsonObject;
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compatible in-memory Map stub (for tests that call policies.clear())
+// ---------------------------------------------------------------------------
+
+export const policies = {
+  clear() {
+    // no-op — data now lives in Prisma
+  },
+};
+
+// ---------------------------------------------------------------------------
 // RetentionService
 // ---------------------------------------------------------------------------
 
 export class RetentionService {
-  private policies: Map<string, RetentionPolicy> = new Map();
+  /**
+   * @deprecated kept for backward compatibility; data is now in Prisma.
+   */
+  private policies = policies;
 
   // -------------------------------------------------------------------------
   // CRUD
   // -------------------------------------------------------------------------
 
-  createPolicy(
+  async createPolicy(
     params: Omit<RetentionPolicy, 'id' | 'createdAt' | 'lastExecuted' | 'nextExecution'>,
-  ): RetentionPolicy {
+  ): Promise<RetentionPolicy> {
     const now = new Date();
     const nextExecution = new Date(now.getTime() + params.retentionDays * 24 * 60 * 60 * 1000);
 
-    const policy: RetentionPolicy = {
-      ...params,
-      id: uuidv4(),
-      createdAt: now,
-      lastExecuted: undefined,
+    const executionHistory = buildExecutionHistoryJson({
+      name: params.name,
+      classification: params.classification,
       nextExecution,
-    };
+    });
 
-    this.policies.set(policy.id, policy);
-    return policy;
+    const row = await prisma.retentionPolicy.create({
+      data: {
+        id: uuidv4(),
+        entityId: params.entityId ?? '',
+        dataType: params.dataType,
+        action: params.action,
+        retentionDays: params.retentionDays,
+        isActive: params.isActive,
+        executionHistory,
+      },
+    });
+
+    return toPolicy(row);
   }
 
-  getPolicy(policyId: string): RetentionPolicy | null {
-    return this.policies.get(policyId) ?? null;
+  async getPolicy(policyId: string): Promise<RetentionPolicy | null> {
+    const row = await prisma.retentionPolicy.findUnique({ where: { id: policyId } });
+    return row ? toPolicy(row) : null;
   }
 
   /**
    * Lists global policies (no entityId) plus any policies scoped to the given
    * entity. When no entityId is provided every policy is returned.
    */
-  listPolicies(entityId?: string): RetentionPolicy[] {
-    const all = Array.from(this.policies.values());
+  async listPolicies(entityId?: string): Promise<RetentionPolicy[]> {
+    let rows;
 
     if (entityId === undefined) {
-      return all;
+      rows = await prisma.retentionPolicy.findMany();
+    } else {
+      rows = await prisma.retentionPolicy.findMany({
+        where: {
+          OR: [
+            { entityId: '' },
+            { entityId },
+          ],
+        },
+      });
     }
 
-    return all.filter(
-      (p) => p.entityId === undefined || p.entityId === entityId,
-    );
+    return rows.map(toPolicy);
   }
 
-  updatePolicy(
+  async updatePolicy(
     policyId: string,
     updates: Partial<RetentionPolicy>,
-  ): RetentionPolicy {
-    const existing = this.policies.get(policyId);
+  ): Promise<RetentionPolicy> {
+    const existing = await prisma.retentionPolicy.findUnique({ where: { id: policyId } });
     if (!existing) {
       throw new Error(`Retention policy not found: ${policyId}`);
     }
 
-    const updated: RetentionPolicy = { ...existing, ...updates, id: existing.id };
-    this.policies.set(policyId, updated);
-    return updated;
+    const currentPolicy = toPolicy(existing);
+
+    // Merge the updates into the current policy for metadata
+    const merged = { ...currentPolicy, ...updates, id: existing.id };
+
+    // Extract the history entries from the existing row
+    const existingExecHistory = existing.executionHistory as unknown;
+    let historyEntries: unknown[] = [];
+    if (
+      typeof existingExecHistory === 'object' &&
+      existingExecHistory !== null &&
+      !Array.isArray(existingExecHistory) &&
+      'history' in existingExecHistory
+    ) {
+      historyEntries = (existingExecHistory as Record<string, unknown>).history as unknown[] ?? [];
+    } else if (Array.isArray(existingExecHistory)) {
+      historyEntries = existingExecHistory;
+    }
+
+    const executionHistory = buildExecutionHistoryJson(
+      {
+        name: merged.name,
+        classification: merged.classification,
+        nextExecution: merged.nextExecution,
+      },
+      historyEntries,
+    );
+
+    // Build Prisma data payload — only include columns that actually exist
+    const data: Record<string, unknown> = { executionHistory };
+    if (updates.dataType !== undefined) data.dataType = updates.dataType;
+    if (updates.action !== undefined) data.action = updates.action;
+    if (updates.retentionDays !== undefined) data.retentionDays = updates.retentionDays;
+    if (updates.isActive !== undefined) data.isActive = updates.isActive;
+    if (updates.entityId !== undefined) data.entityId = updates.entityId ?? '';
+    if (updates.lastExecuted !== undefined) data.lastExecutedAt = updates.lastExecuted;
+
+    const row = await prisma.retentionPolicy.update({
+      where: { id: policyId },
+      data,
+    });
+
+    return toPolicy(row);
   }
 
-  deletePolicy(policyId: string): void {
-    if (!this.policies.has(policyId)) {
+  async deletePolicy(policyId: string): Promise<void> {
+    const existing = await prisma.retentionPolicy.findUnique({ where: { id: policyId } });
+    if (!existing) {
       throw new Error(`Retention policy not found: ${policyId}`);
     }
-    this.policies.delete(policyId);
+    await prisma.retentionPolicy.delete({ where: { id: policyId } });
   }
 
   // -------------------------------------------------------------------------
@@ -142,10 +291,12 @@ export class RetentionService {
    * holds, and apply the configured action (DELETE / ARCHIVE / ANONYMIZE).
    */
   async executePolicy(policyId: string): Promise<RetentionExecutionResult> {
-    const policy = this.policies.get(policyId);
-    if (!policy) {
+    const row = await prisma.retentionPolicy.findUnique({ where: { id: policyId } });
+    if (!row) {
       throw new Error(`Retention policy not found: ${policyId}`);
     }
+
+    const policy = toPolicy(row);
 
     const result: RetentionExecutionResult = {
       policyId: policy.id,
@@ -202,7 +353,7 @@ export class RetentionService {
       result.recordsProcessed = eligible.length;
 
       if (eligible.length === 0) {
-        this.markPolicyExecuted(policy);
+        await this.markPolicyExecuted(policy);
         return result;
       }
 
@@ -225,7 +376,7 @@ export class RetentionService {
       result.errors.push(`Policy execution failed: ${message}`);
     }
 
-    this.markPolicyExecuted(policy);
+    await this.markPolicyExecuted(policy);
     return result;
   }
 
@@ -234,7 +385,12 @@ export class RetentionService {
    */
   async executeAllDuePolicies(): Promise<RetentionExecutionResult[]> {
     const now = new Date();
-    const due = Array.from(this.policies.values()).filter(
+    const allRows = await prisma.retentionPolicy.findMany({
+      where: { isActive: true },
+    });
+
+    const allPolicies = allRows.map(toPolicy);
+    const due = allPolicies.filter(
       (p) => p.isActive && p.nextExecution && p.nextExecution <= now,
     );
 
@@ -260,11 +416,12 @@ export class RetentionService {
     newestRecord: Date;
     legalHoldConflicts: number;
   }> {
-    const policy = this.policies.get(policyId);
-    if (!policy) {
+    const row = await prisma.retentionPolicy.findUnique({ where: { id: policyId } });
+    if (!row) {
       throw new Error(`Retention policy not found: ${policyId}`);
     }
 
+    const policy = toPolicy(row);
     const modelName = policy.dataType as PrismaModelName;
     const delegate = getPrismaDelegate(modelName);
 
@@ -320,7 +477,7 @@ export class RetentionService {
   /**
    * Creates a standard set of retention policies for a new entity.
    */
-  createDefaultPolicies(entityId: string): RetentionPolicy[] {
+  async createDefaultPolicies(entityId: string): Promise<RetentionPolicy[]> {
     const defaults: Array<
       Omit<RetentionPolicy, 'id' | 'createdAt' | 'lastExecuted' | 'nextExecution'>
     > = [
@@ -360,19 +517,24 @@ export class RetentionService {
       },
     ];
 
-    return defaults.map((d) => this.createPolicy(d));
+    const results: RetentionPolicy[] = [];
+    for (const d of defaults) {
+      const policy = await this.createPolicy(d);
+      results.push(policy);
+    }
+    return results;
   }
 
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
 
-  private markPolicyExecuted(policy: RetentionPolicy): void {
+  private async markPolicyExecuted(policy: RetentionPolicy): Promise<void> {
     const now = new Date();
     const nextExecution = new Date(
       now.getTime() + policy.retentionDays * 24 * 60 * 60 * 1000,
     );
-    this.updatePolicy(policy.id, { lastExecuted: now, nextExecution });
+    await this.updatePolicy(policy.id, { lastExecuted: now, nextExecution });
   }
 
   /**

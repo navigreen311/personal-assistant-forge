@@ -4,7 +4,7 @@
 // ============================================================================
 
 import { v4 as uuidv4 } from 'uuid';
-import prisma from '@/lib/db';
+import { prisma } from '@/lib/db';
 import type { Prisma } from '@prisma/client';
 import type { LegalHold, LegalHoldScope } from '@/modules/security/types';
 
@@ -52,11 +52,55 @@ const SUPPORTED_MODELS = [
 type SupportedModel = (typeof SUPPORTED_MODELS)[number];
 
 // ---------------------------------------------------------------------------
+// Helpers — map between Prisma row and LegalHold interface
+// ---------------------------------------------------------------------------
+
+function toHold(row: {
+  id: string;
+  entityId: string;
+  reason: string;
+  scope: Prisma.JsonValue;
+  status: string;
+  createdBy: string;
+  releasedBy: string | null;
+  createdAt: Date;
+  releasedAt: Date | null;
+  updatedAt: Date;
+}): LegalHold {
+  const scope = (row.scope ?? {}) as unknown as LegalHoldScope;
+  return {
+    id: row.id,
+    name: (scope as any).__name ?? row.reason,
+    entityId: row.entityId,
+    reason: row.reason,
+    scope,
+    status: row.status as LegalHold['status'],
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+    releasedAt: row.releasedAt ?? undefined,
+    expiresAt: (scope as any).__expiresAt ? new Date((scope as any).__expiresAt) : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compatible in-memory Map stub (for tests that call holds.clear())
+// ---------------------------------------------------------------------------
+
+export const holds = {
+  clear() {
+    // no-op — data now lives in Prisma
+  },
+};
+
+// ---------------------------------------------------------------------------
 // LegalHoldService
 // ---------------------------------------------------------------------------
 
 export class LegalHoldService {
-  private readonly holds: Map<string, LegalHold> = new Map();
+  /**
+   * @deprecated kept for backward compatibility; data is now in Prisma.
+   */
+  private readonly holds = holds;
 
   // -------------------------------------------------------------------------
   // Public API
@@ -68,16 +112,26 @@ export class LegalHoldService {
   async createLegalHold(
     params: Omit<LegalHold, 'id' | 'createdAt' | 'releasedAt'>,
   ): Promise<LegalHold> {
-    const hold: LegalHold = {
-      ...params,
-      id: uuidv4(),
-      createdAt: new Date(),
-      releasedAt: undefined,
+    // Stash name and expiresAt inside the scope JSON since the Prisma model
+    // does not have dedicated columns for them.
+    const scopeJson = {
+      ...(params.scope ?? {}),
+      __name: params.name,
+      __expiresAt: params.expiresAt?.toISOString(),
     };
 
-    this.holds.set(hold.id, hold);
+    const row = await prisma.legalHold.create({
+      data: {
+        id: uuidv4(),
+        entityId: params.entityId,
+        reason: params.reason,
+        scope: scopeJson as unknown as Prisma.JsonObject,
+        status: params.status,
+        createdBy: params.createdBy,
+      },
+    });
 
-    return hold;
+    return toHold(row);
   }
 
   /**
@@ -85,22 +139,28 @@ export class LegalHoldService {
    * release timestamp.
    */
   async releaseLegalHold(holdId: string): Promise<LegalHold> {
-    const hold = this.holds.get(holdId);
-    if (!hold) {
+    const existing = await prisma.legalHold.findUnique({ where: { id: holdId } });
+    if (!existing) {
       throw new Error(`Legal hold not found: ${holdId}`);
     }
 
-    hold.status = 'RELEASED';
-    hold.releasedAt = new Date();
+    const row = await prisma.legalHold.update({
+      where: { id: holdId },
+      data: {
+        status: 'RELEASED',
+        releasedAt: new Date(),
+      },
+    });
 
-    return hold;
+    return toHold(row);
   }
 
   /**
    * Retrieve a legal hold by ID.
    */
   async getLegalHold(holdId: string): Promise<LegalHold | null> {
-    return this.holds.get(holdId) ?? null;
+    const row = await prisma.legalHold.findUnique({ where: { id: holdId } });
+    return row ? toHold(row) : null;
   }
 
   /**
@@ -110,16 +170,13 @@ export class LegalHoldService {
     entityId: string,
     status?: 'ACTIVE' | 'RELEASED',
   ): Promise<LegalHold[]> {
-    const results: LegalHold[] = [];
-
-    for (const hold of this.holds.values()) {
-      if (hold.entityId !== entityId) continue;
-      if (status && hold.status !== status) continue;
-
-      results.push(hold);
+    const where: Prisma.LegalHoldWhereInput = { entityId };
+    if (status) {
+      where.status = status;
     }
 
-    return results;
+    const rows = await prisma.legalHold.findMany({ where });
+    return rows.map(toHold);
   }
 
   /**
@@ -155,20 +212,21 @@ export class LegalHoldService {
    * Collect all records that fall under a specific legal hold.
    */
   async getHeldRecords(holdId: string): Promise<HeldRecord[]> {
-    const hold = this.holds.get(holdId);
+    const hold = await prisma.legalHold.findUnique({ where: { id: holdId } });
     if (!hold) {
       throw new Error(`Legal hold not found: ${holdId}`);
     }
 
+    const holdObj = toHold(hold);
     const results: HeldRecord[] = [];
-    const modelsToSearch = this.resolveModels(hold.scope);
+    const modelsToSearch = this.resolveModels(holdObj.scope);
 
     for (const model of modelsToSearch) {
-      const records = await this.queryModelRecords(model, hold.entityId, hold.scope);
+      const records = await this.queryModelRecords(model, holdObj.entityId, holdObj.scope);
 
       for (const record of records) {
-        if (this.doesRecordMatchScope(hold.scope, model, record)) {
-          const reasons = this.buildMatchReasons(hold.scope, model, record);
+        if (this.doesRecordMatchScope(holdObj.scope, model, record)) {
+          const reasons = this.buildMatchReasons(holdObj.scope, model, record);
           results.push({
             model,
             recordId: record.id,

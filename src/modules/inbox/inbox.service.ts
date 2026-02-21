@@ -1,5 +1,4 @@
 import { prisma } from '@/lib/db';
-import { v4 as uuidv4 } from 'uuid';
 import type { Message, MessageChannel, Contact, Commitment, ContactPreferences } from '@/shared/types';
 import type {
   InboxItem,
@@ -14,25 +13,131 @@ import type {
 } from './inbox.types';
 import { TriageService } from './triage.service';
 
-// --- Auth Stub ---
-// Will be replaced when Worker 02 (Auth) integrates
-export function getCurrentUserId(): string {
-  return 'stub-user-id';
+// --- Auth ---
+// Extracts userId from the x-user-id header, falling back to 'default-user'
+export function getCurrentUserId(headers?: Record<string, string | string[] | undefined>): string {
+  if (!headers) return 'default-user';
+  const userId = headers['x-user-id'];
+  if (typeof userId === 'string' && userId.length > 0) return userId;
+  return 'default-user';
 }
 
-// --- In-memory stores for entities not in Prisma schema ---
+// --- Compatibility shims for tests ---
+// These objects maintain backward-compatible interfaces with a clear() method,
+// but all actual data flows through Prisma.
 
-// Follow-ups store (no Prisma model)
-const followUpsStore: Map<string, FollowUpReminder> = new Map();
+export const followUpsStore = {
+  clear: async () => {
+    await prisma.followUpReminder.deleteMany({});
+  },
+};
 
-// Canned responses store (no Prisma model)
-const cannedResponsesStore: Map<string, CannedResponse> = new Map();
+export const cannedResponsesStore = {
+  clear: async () => {
+    await prisma.cannedResponse.deleteMany({});
+  },
+};
 
-// Read/starred state (no Prisma fields for these)
-const readState: Map<string, boolean> = new Map();
-const starredState: Map<string, boolean> = new Map();
+export const readState = {
+  clear: async () => {
+    await prisma.message.updateMany({ data: { read: false } });
+  },
+};
+
+export const starredState = {
+  clear: async () => {
+    await prisma.message.updateMany({ data: { starred: false } });
+  },
+};
 
 const triageService = new TriageService();
+
+// --- Prisma row -> FollowUpReminder mapping ---
+// Prisma model fields: id, userId, messageId?, description, dueDate, priority, completed, completedAt, createdAt, updatedAt
+// TS interface fields: id, messageId, entityId, reminderAt, reason, status, createdAt
+
+// We encode entityId and status in the `priority` field as "STATUS:entityId" since
+// the Prisma model lacks dedicated entityId and status-string columns.
+function encodeFollowUpPriority(status: string, entityId: string): string {
+  return `${status}:${entityId}`;
+}
+
+function decodeFollowUpPriority(priority: string): { status: FollowUpReminder['status']; entityId: string } {
+  const colonIndex = priority.indexOf(':');
+  if (colonIndex === -1) {
+    return { status: 'PENDING', entityId: '' };
+  }
+  const status = priority.substring(0, colonIndex) as FollowUpReminder['status'];
+  const entityId = priority.substring(colonIndex + 1);
+  return { status, entityId };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapFollowUpRow(row: any): FollowUpReminder {
+  const { status, entityId } = decodeFollowUpPriority(row.priority);
+  return {
+    id: row.id,
+    messageId: row.messageId ?? '',
+    entityId,
+    reminderAt: row.dueDate,
+    reason: row.description,
+    status,
+    createdAt: row.createdAt,
+  };
+}
+
+// --- Prisma row -> CannedResponse mapping ---
+// Prisma model fields: id, userId, title, content, tags, shortcut, createdAt, updatedAt
+// TS interface fields: id, name, entityId, channel, category, subject, body, variables, tone, usageCount, lastUsed, createdAt, updatedAt
+//
+// We store extended metadata as a JSON string in the `shortcut` field:
+// { entityId, channel, category, subject, tone, usageCount, lastUsed }
+// `title` -> `name`, `content` -> `body`, `tags` -> `variables`
+
+interface CannedResponseMeta {
+  entityId: string;
+  channel: MessageChannel;
+  category: string;
+  subject?: string;
+  tone: string;
+  usageCount: number;
+  lastUsed?: string; // ISO date string
+}
+
+function encodeCannedResponseMeta(meta: CannedResponseMeta): string {
+  return JSON.stringify(meta);
+}
+
+function decodeCannedResponseMeta(shortcut: string | null): CannedResponseMeta {
+  if (!shortcut) {
+    return { entityId: '', channel: 'EMAIL', category: '', tone: 'PROFESSIONAL', usageCount: 0 };
+  }
+  try {
+    return JSON.parse(shortcut) as CannedResponseMeta;
+  } catch {
+    return { entityId: '', channel: 'EMAIL', category: '', tone: 'PROFESSIONAL', usageCount: 0 };
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapCannedResponseRow(row: any): CannedResponse {
+  const meta = decodeCannedResponseMeta(row.shortcut);
+  return {
+    id: row.id,
+    name: row.title,
+    entityId: meta.entityId,
+    channel: meta.channel,
+    category: meta.category,
+    subject: meta.subject,
+    body: row.content,
+    variables: row.tags ?? [],
+    tone: meta.tone as CannedResponse['tone'],
+    usageCount: meta.usageCount,
+    lastUsed: meta.lastUsed ? new Date(meta.lastUsed) : undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapMessageRow(row: any): Message {
@@ -120,8 +225,13 @@ export class InboxService {
       ];
     }
 
-    // Filter by read/starred state (in-memory)
-    // These filters are applied post-query since they're in-memory
+    // Filter by read/starred state using Prisma fields
+    if (params.isRead !== undefined) {
+      where.read = params.isRead;
+    }
+    if (params.isStarred !== undefined) {
+      where.starred = params.isStarred;
+    }
 
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
@@ -137,32 +247,35 @@ export class InboxService {
       prisma.message.count({ where }),
     ]);
 
+    // Fetch pending follow-ups for returned message IDs
+    const messageIds = messages.map((m: { id: string }) => m.id);
+    const pendingFollowUps = messageIds.length > 0
+      ? await prisma.followUpReminder.findMany({
+          where: {
+            messageId: { in: messageIds },
+            completed: false,
+          },
+        })
+      : [];
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let items: InboxItem[] = messages.map((msg: any) => {
-      const isRead = readState.get(msg.id) ?? false;
-      const isStarred = starredState.get(msg.id) ?? false;
-      const followUp = Array.from(followUpsStore.values()).find(
-        (f) => f.messageId === msg.id && f.status === 'PENDING'
+    const items: InboxItem[] = messages.map((msg: any) => {
+      const followUpRow = pendingFollowUps.find(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (f: any) => f.messageId === msg.id && decodeFollowUpPriority(f.priority).status === 'PENDING'
       );
+      const followUp = followUpRow ? mapFollowUpRow(followUpRow) : undefined;
 
       return {
         message: mapMessageRow(msg),
         senderName: msg.contact?.name ?? msg.senderId,
         senderContact: msg.contact ? mapContactRow(msg.contact) : undefined,
         entityName: msg.entity?.name ?? msg.entityId,
-        isRead,
-        isStarred,
+        isRead: msg.read ?? false,
+        isStarred: msg.starred ?? false,
         followUp,
       };
     });
-
-    // Post-filter for read/starred
-    if (params.isRead !== undefined) {
-      items = items.filter((item) => item.isRead === params.isRead);
-    }
-    if (params.isStarred !== undefined) {
-      items = items.filter((item) => item.isStarred === params.isStarred);
-    }
 
     const stats = await this.getInboxStats(userId, params.entityId);
 
@@ -205,11 +318,20 @@ export class InboxService {
       };
     }
 
-    const isRead = readState.get(msg.id) ?? false;
-    const isStarred = starredState.get(msg.id) ?? false;
-    const followUp = Array.from(followUpsStore.values()).find(
-      (f) => f.messageId === msg.id && f.status === 'PENDING'
-    );
+    // Read/starred from Prisma Message fields
+    const isRead = msg.read ?? false;
+    const isStarred = msg.starred ?? false;
+
+    // Find pending follow-up from Prisma
+    const followUpRow = await prisma.followUpReminder.findFirst({
+      where: {
+        messageId: msg.id,
+        completed: false,
+      },
+    });
+    const followUp = followUpRow && decodeFollowUpPriority(followUpRow.priority).status === 'PENDING'
+      ? mapFollowUpRow(followUpRow)
+      : undefined;
 
     return {
       message: mapMessageRow(msg),
@@ -235,17 +357,22 @@ export class InboxService {
   }
 
   async markAsRead(messageId: string, isRead: boolean): Promise<void> {
-    // Verify message exists
     const msg = await prisma.message.findUnique({ where: { id: messageId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
-    readState.set(messageId, isRead);
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { read: isRead },
+    });
   }
 
   async toggleStar(messageId: string): Promise<void> {
     const msg = await prisma.message.findUnique({ where: { id: messageId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
-    const current = starredState.get(messageId) ?? false;
-    starredState.set(messageId, !current);
+    const current = msg.starred ?? false;
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { starred: !current },
+    });
   }
 
   async sendDraft(messageId: string, userId: string): Promise<Message> {
@@ -283,8 +410,10 @@ export class InboxService {
     const msg = await prisma.message.findUnique({ where: { id: messageId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
     // Mark as read and un-star when archived
-    readState.set(messageId, true);
-    starredState.set(messageId, false);
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { read: true, starred: false },
+    });
   }
 
   async getInboxStats(userId: string, entityId?: string): Promise<InboxStats> {
@@ -299,12 +428,13 @@ export class InboxService {
         triageScore: true,
         intent: true,
         draftStatus: true,
+        read: true,
       },
     });
 
     const total = messages.length;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const unread = messages.filter((m: any) => !(readState.get(m.id) ?? false)).length;
+    const unread = messages.filter((m: any) => !(m.read ?? false)).length;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const urgent = messages.filter((m: any) => m.triageScore >= 8).length;
     const needsResponse = messages.filter(
@@ -356,54 +486,91 @@ export class InboxService {
     });
     if (!msg) throw new Error(`Message not found: ${input.messageId}`);
 
-    const followUp: FollowUpReminder = {
-      id: uuidv4(),
-      messageId: input.messageId,
-      entityId: input.entityId,
-      reminderAt: input.reminderAt,
-      reason: input.reason ?? 'Follow up required',
-      status: 'PENDING',
-      createdAt: new Date(),
-    };
+    const status = 'PENDING';
+    const reason = input.reason ?? 'Follow up required';
 
-    followUpsStore.set(followUp.id, followUp);
-    return followUp;
+    const row = await prisma.followUpReminder.create({
+      data: {
+        userId: getCurrentUserId(),
+        messageId: input.messageId,
+        description: reason,
+        dueDate: input.reminderAt,
+        priority: encodeFollowUpPriority(status, input.entityId),
+        completed: false,
+      },
+    });
+
+    return mapFollowUpRow(row);
   }
 
   async listFollowUps(
     userId: string,
     entityId?: string
   ): Promise<FollowUpReminder[]> {
-    let followUps = Array.from(followUpsStore.values());
+    const rows = await prisma.followUpReminder.findMany({
+      where: {
+        userId,
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    let followUps = rows.map(mapFollowUpRow);
+
     if (entityId) {
       followUps = followUps.filter((f) => f.entityId === entityId);
     }
+
     return followUps.sort(
       (a, b) => a.reminderAt.getTime() - b.reminderAt.getTime()
     );
   }
 
   async completeFollowUp(followUpId: string): Promise<void> {
-    const followUp = followUpsStore.get(followUpId);
-    if (!followUp) throw new Error(`Follow-up not found: ${followUpId}`);
-    followUp.status = 'COMPLETED';
-    followUpsStore.set(followUpId, followUp);
+    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+    if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
+
+    const { entityId } = decodeFollowUpPriority(row.priority);
+
+    await prisma.followUpReminder.update({
+      where: { id: followUpId },
+      data: {
+        completed: true,
+        completedAt: new Date(),
+        priority: encodeFollowUpPriority('COMPLETED', entityId),
+      },
+    });
   }
 
   async snoozeFollowUp(followUpId: string, newDate: Date): Promise<void> {
-    const followUp = followUpsStore.get(followUpId);
-    if (!followUp) throw new Error(`Follow-up not found: ${followUpId}`);
-    followUp.status = 'SNOOZED';
-    followUp.reminderAt = newDate;
-    followUp.status = 'PENDING'; // Reset to pending with new date
-    followUpsStore.set(followUpId, followUp);
+    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+    if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
+
+    const { entityId } = decodeFollowUpPriority(row.priority);
+
+    // Reset to pending with new date (matching original behavior)
+    await prisma.followUpReminder.update({
+      where: { id: followUpId },
+      data: {
+        dueDate: newDate,
+        priority: encodeFollowUpPriority('PENDING', entityId),
+        completed: false,
+        completedAt: null,
+      },
+    });
   }
 
   async cancelFollowUp(followUpId: string): Promise<void> {
-    const followUp = followUpsStore.get(followUpId);
-    if (!followUp) throw new Error(`Follow-up not found: ${followUpId}`);
-    followUp.status = 'CANCELLED';
-    followUpsStore.set(followUpId, followUp);
+    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+    if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
+
+    const { entityId } = decodeFollowUpPriority(row.priority);
+
+    await prisma.followUpReminder.update({
+      where: { id: followUpId },
+      data: {
+        priority: encodeFollowUpPriority('CANCELLED', entityId),
+      },
+    });
   }
 
   // --- Canned Response CRUD ---
@@ -411,73 +578,106 @@ export class InboxService {
   async createCannedResponse(
     input: CreateCannedResponseInput
   ): Promise<CannedResponse> {
-    const response: CannedResponse = {
-      id: uuidv4(),
-      name: input.name,
+    const meta: CannedResponseMeta = {
       entityId: input.entityId,
       channel: input.channel,
       category: input.category,
       subject: input.subject,
-      body: input.body,
-      variables: input.variables ?? [],
       tone: input.tone,
       usageCount: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
     };
 
-    cannedResponsesStore.set(response.id, response);
-    return response;
+    const row = await prisma.cannedResponse.create({
+      data: {
+        userId: getCurrentUserId(),
+        title: input.name,
+        content: input.body,
+        tags: input.variables ?? [],
+        shortcut: encodeCannedResponseMeta(meta),
+      },
+    });
+
+    return mapCannedResponseRow(row);
   }
 
   async listCannedResponses(
     entityId: string,
     channel?: MessageChannel
   ): Promise<CannedResponse[]> {
-    let responses = Array.from(cannedResponsesStore.values()).filter(
-      (r) => r.entityId === entityId
-    );
+    const rows = await prisma.cannedResponse.findMany({
+      orderBy: { title: 'asc' },
+    });
+
+    let responses = rows
+      .map(mapCannedResponseRow)
+      .filter((r) => r.entityId === entityId);
+
     if (channel) {
       responses = responses.filter((r) => r.channel === channel);
     }
+
     return responses.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async getCannedResponse(responseId: string): Promise<CannedResponse | null> {
-    return cannedResponsesStore.get(responseId) ?? null;
+    const row = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
+    if (!row) return null;
+    return mapCannedResponseRow(row);
   }
 
   async updateCannedResponse(
     responseId: string,
     updates: Partial<CreateCannedResponseInput>
   ): Promise<CannedResponse> {
-    const existing = cannedResponsesStore.get(responseId);
+    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
     if (!existing) throw new Error(`Canned response not found: ${responseId}`);
 
-    const updated: CannedResponse = {
-      ...existing,
-      ...updates,
-      variables: updates.variables ?? existing.variables,
-      updatedAt: new Date(),
+    const currentMeta = decodeCannedResponseMeta(existing.shortcut);
+
+    const newMeta: CannedResponseMeta = {
+      entityId: updates.entityId ?? currentMeta.entityId,
+      channel: updates.channel ?? currentMeta.channel,
+      category: updates.category ?? currentMeta.category,
+      subject: updates.subject !== undefined ? updates.subject : currentMeta.subject,
+      tone: updates.tone ?? currentMeta.tone,
+      usageCount: currentMeta.usageCount,
+      lastUsed: currentMeta.lastUsed,
     };
 
-    cannedResponsesStore.set(responseId, updated);
-    return updated;
+    const row = await prisma.cannedResponse.update({
+      where: { id: responseId },
+      data: {
+        title: updates.name ?? existing.title,
+        content: updates.body ?? existing.content,
+        tags: updates.variables ?? existing.tags,
+        shortcut: encodeCannedResponseMeta(newMeta),
+      },
+    });
+
+    return mapCannedResponseRow(row);
   }
 
   async deleteCannedResponse(responseId: string): Promise<void> {
-    if (!cannedResponsesStore.has(responseId)) {
+    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
+    if (!existing) {
       throw new Error(`Canned response not found: ${responseId}`);
     }
-    cannedResponsesStore.delete(responseId);
+    await prisma.cannedResponse.delete({ where: { id: responseId } });
   }
 
   async incrementCannedResponseUsage(responseId: string): Promise<void> {
-    const existing = cannedResponsesStore.get(responseId);
+    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
     if (existing) {
-      existing.usageCount += 1;
-      existing.lastUsed = new Date();
-      cannedResponsesStore.set(responseId, existing);
+      const meta = decodeCannedResponseMeta(existing.shortcut);
+      meta.usageCount += 1;
+      meta.lastUsed = new Date().toISOString();
+
+      await prisma.cannedResponse.update({
+        where: { id: responseId },
+        data: {
+          shortcut: encodeCannedResponseMeta(meta),
+        },
+      });
     }
   }
 }

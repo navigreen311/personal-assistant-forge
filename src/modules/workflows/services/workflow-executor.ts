@@ -16,6 +16,7 @@ import type {
   DelayNodeConfig,
   LoopNodeConfig,
   ErrorHandlerNodeConfig,
+  SubWorkflowNodeConfig,
 } from '@/modules/workflows/types';
 import { evaluateExpression } from './condition-evaluator';
 import { executeAction } from './action-handlers';
@@ -230,10 +231,51 @@ export async function executeNode(
         break;
       }
 
-      case 'SUB_WORKFLOW':
-        result.output = { subWorkflow: 'placeholder', status: 'QUEUED' };
-        result.status = 'COMPLETED';
+      case 'SUB_WORKFLOW': {
+        const subConfig = node.config as SubWorkflowNodeConfig;
+        const subWorkflowId = subConfig.workflowId;
+        try {
+          // Look up the sub-workflow definition
+          const subWorkflow = await prisma.workflow.findUnique({
+            where: { id: subWorkflowId },
+          });
+          if (!subWorkflow) {
+            throw new Error(`Sub-workflow ${subWorkflowId} not found`);
+          }
+
+          // Map input variables from parent execution into sub-workflow variables
+          const subVariables: Record<string, unknown> = {};
+          for (const [subKey, parentKey] of Object.entries(subConfig.inputMapping)) {
+            if (parentKey in execution.variables) {
+              subVariables[subKey] = execution.variables[parentKey];
+            }
+          }
+
+          // Recursively execute the sub-workflow
+          const subResult = await executeWorkflow(
+            subWorkflowId,
+            execution.id,
+            'SUB_WORKFLOW',
+            subVariables,
+          );
+
+          // Map output variables from sub-workflow back to parent execution
+          for (const [parentKey, subKey] of Object.entries(subConfig.outputMapping)) {
+            if (subKey in subResult.variables) {
+              execution.variables[parentKey] = subResult.variables[subKey];
+            }
+          }
+
+          result.output = { subWorkflowId, status: 'COMPLETED', output: subResult };
+          result.status = 'COMPLETED';
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          result.output = { subWorkflowId, status: 'FAILED', error: message };
+          result.status = 'FAILED';
+          result.error = message;
+        }
         break;
+      }
 
       default:
         result.status = 'SKIPPED';

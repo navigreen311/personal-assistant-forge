@@ -41,6 +41,8 @@ model User {
   dndConfig        DNDConfig?
   permissionGrants PermissionGrant[]
   voiceConsents    VoiceConsent[]
+  followUpReminders FollowUpReminder[]
+  cannedResponses   CannedResponse[]
 }
 
 model Entity {
@@ -76,6 +78,8 @@ model Entity {
   usageRecords      UsageRecord[]
   habitEntries      HabitEntry[]
   healthMetrics     HealthMetric[]
+  legalHolds        LegalHold[]
+  retentionPolicies RetentionPolicy[]
 
   @@index([userId])
 }
@@ -185,6 +189,8 @@ model Message {
   intent       String?
   sensitivity  String   @default("INTERNAL")
   draftStatus  String?
+  read         Boolean  @default(false)
+  starred      Boolean  @default(false)
   attachments  Json     @default("[]")
   deletedAt    DateTime?
   createdAt    DateTime @default(now())
@@ -801,4 +807,73 @@ model VoiceConsent {
   revokedAt        DateTime?
 
   @@unique([userId, voiceCloneId])
+}
+
+// === INBOX & COMPLIANCE PERSISTENCE MODELS ===
+
+model FollowUpReminder {
+  id          String   @id @default(cuid())
+  userId      String
+  messageId   String?
+  description String
+  dueDate     DateTime
+  priority    String   @default("NORMAL")
+  completed   Boolean  @default(false)
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id])
+  @@index([userId])
+  @@index([dueDate])
+}
+
+model CannedResponse {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  content   String
+  tags      String[] @default([])
+  shortcut  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User     @relation(fields: [userId], references: [id])
+  @@unique([userId, title])
+  @@index([userId])
+}
+
+model LegalHold {
+  id          String    @id @default(cuid())
+  entityId    String
+  reason      String
+  scope       Json
+  status      String    @default("ACTIVE")
+  createdBy   String
+  releasedBy  String?
+  createdAt   DateTime  @default(now())
+  releasedAt  DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  entity      Entity    @relation(fields: [entityId], references: [id])
+  @@index([entityId])
+  @@index([status])
+}
+
+model RetentionPolicy {
+  id             String   @id @default(cuid())
+  entityId       String
+  dataType       String
+  action         String   @default("ARCHIVE")
+  retentionDays  Int
+  schedule       String   @default("DAILY")
+  isActive       Boolean  @default(true)
+  lastExecutedAt DateTime?
+  executionHistory Json   @default("[]")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  entity         Entity   @relation(fields: [entityId], references: [id])
+  @@unique([entityId, dataType])
+  @@index([entityId])
 }

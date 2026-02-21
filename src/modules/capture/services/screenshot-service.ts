@@ -8,6 +8,7 @@
 import type { SuggestedAction } from '@/modules/capture/types';
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import { ocrService } from './ocr-service';
 
 class ScreenshotService {
   async analyzeScreenshot(imageData: string, entityId?: string): Promise<{
@@ -15,9 +16,22 @@ class ScreenshotService {
     extractedText: string;
     suggestedActions: SuggestedAction[];
   }> {
-    // In production, OCR would extract text from imageData first.
-    // For now, treat imageData as already-extracted text.
-    const extractedText = imageData;
+    let extractedText: string;
+
+    // Use OCR service to extract text from image data when it looks like an image
+    if (imageData.startsWith('data:image') || imageData.startsWith('http')) {
+      try {
+        const ocrResult = await ocrService.extractTextFromImage(imageData, 'GENERAL');
+        extractedText = ocrResult.text;
+      } catch {
+        // Fallback: treat imageData as-is if OCR fails
+        extractedText = imageData;
+      }
+    } else {
+      // Not an image reference — treat as already-extracted text
+      extractedText = imageData;
+    }
+
     const suggestedActions = this.extractActions(extractedText);
 
     // Store screenshot metadata

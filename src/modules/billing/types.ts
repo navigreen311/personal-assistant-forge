@@ -1,5 +1,10 @@
 // ============================================================================
 // Billing Module — Type Definitions
+//
+// NOTE: Billing service logic (budget management, usage metering, cost
+// attribution, model routing, provider failover) lives in the cost engine
+// at src/engines/cost/. This module provides UI components and the type
+// contracts they consume. See also: src/engines/cost/types.ts
 // ============================================================================
 
 // --- Plans ---

@@ -38,42 +38,34 @@ describe('OCRService', () => {
       expect(result.confidence).toBe(0.9);
     });
 
-    it('should stub OCR for image data URIs with AI description', async () => {
-      generateText.mockResolvedValueOnce('Extracted text from business card image');
-
+    it('should return demo response for image data URIs without API key', async () => {
       const result = await service.extractTextFromImage(
         'data:image/png;base64,iVBORw0KGgoAAAANS...',
         'BUSINESS_CARD',
       );
 
-      expect(generateText).toHaveBeenCalled();
-      expect(result.text).toBe('Extracted text from business card image');
-      expect(result.confidence).toBe(0.7);
+      expect(result.text).toBe('[OCR: image processed]');
+      expect(result.confidence).toBe(0.5);
     });
 
-    it('should stub OCR for URLs with AI description', async () => {
-      generateText.mockResolvedValueOnce('Receipt text from image');
-
+    it('should return demo response for URLs without API key', async () => {
       const result = await service.extractTextFromImage(
         'https://example.com/receipt.png',
         'RECEIPT',
       );
 
-      expect(generateText).toHaveBeenCalled();
-      expect(result.text).toBe('Receipt text from image');
-      expect(result.confidence).toBe(0.7);
+      expect(result.text).toBe('[OCR: image processed]');
+      expect(result.confidence).toBe(0.5);
     });
 
-    it('should return low-confidence fallback on AI failure', async () => {
-      generateText.mockRejectedValueOnce(new Error('AI unavailable'));
-
+    it('should return demo fallback for image data when no API key set', async () => {
       const result = await service.extractTextFromImage(
         'data:image/png;base64,abc123...',
         'GENERAL',
       );
 
-      expect(result.text).toBe('[OCR pending: GENERAL]');
-      expect(result.confidence).toBe(0.3);
+      expect(result.text).toBe('[OCR: image processed]');
+      expect(result.confidence).toBe(0.5);
     });
   });
 

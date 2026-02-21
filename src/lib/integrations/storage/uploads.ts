@@ -128,13 +128,78 @@ export async function calculateChecksum(content: Buffer | ArrayBuffer): Promise<
   return createHash('sha256').update(buf).digest('hex');
 }
 
-// --- Virus Scan Placeholder ---
+// --- Virus Scan ---
+//
+// DEV PLACEHOLDER: In development, this always returns clean.
+// In production, set the CLAMAV_HOST environment variable (e.g. "clamav:3310")
+// to enable real virus scanning via ClamAV's TCP socket protocol.
+// Future alternatives: cloud-based scanning (e.g. VirusTotal API, AWS S3
+// malware scanning, or Google Cloud DLP).
 
 export async function scanForVirus(
-  _content: Buffer | ArrayBuffer
+  content: Buffer | ArrayBuffer
 ): Promise<{ clean: boolean; threat?: string }> {
-  // Placeholder: always returns clean.
-  // Replace with ClamAV or cloud-based scanning integration.
+  const clamavHost = process.env.CLAMAV_HOST;
+
+  if (clamavHost) {
+    // Real ClamAV scan via TCP socket (clamd INSTREAM protocol)
+    try {
+      const { Socket } = await import('net');
+      const [host, portStr] = clamavHost.split(':');
+      const port = parseInt(portStr || '3310', 10);
+      const buf = content instanceof ArrayBuffer ? Buffer.from(content) : content;
+
+      return await new Promise<{ clean: boolean; threat?: string }>((resolve, reject) => {
+        const socket = new Socket();
+        const chunks: Buffer[] = [];
+
+        socket.setTimeout(30_000);
+        socket.on('timeout', () => {
+          socket.destroy();
+          reject(new Error('ClamAV scan timed out'));
+        });
+
+        socket.connect(port, host, () => {
+          // Send INSTREAM command
+          socket.write('zINSTREAM\0');
+          // Send data length as 4-byte big-endian, then data
+          const sizeBuffer = Buffer.alloc(4);
+          sizeBuffer.writeUInt32BE(buf.length, 0);
+          socket.write(sizeBuffer);
+          socket.write(buf);
+          // Send zero-length chunk to signal end
+          const endBuffer = Buffer.alloc(4, 0);
+          socket.write(endBuffer);
+        });
+
+        socket.on('data', (data) => chunks.push(data));
+
+        socket.on('end', () => {
+          const response = Buffer.concat(chunks).toString('utf-8').trim();
+          if (response.includes('OK')) {
+            resolve({ clean: true });
+          } else {
+            // Response format: "stream: <threat> FOUND"
+            const match = response.match(/stream:\s*(.+)\s+FOUND/);
+            resolve({
+              clean: false,
+              threat: match ? match[1].trim() : response,
+            });
+          }
+        });
+
+        socket.on('error', (err) => reject(err));
+      });
+    } catch (err) {
+      // If ClamAV is unreachable, fail closed (reject the file)
+      return {
+        clean: false,
+        threat: `Virus scan unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  // Intentional dev placeholder: no CLAMAV_HOST configured, skip scanning.
   return { clean: true };
 }
 
