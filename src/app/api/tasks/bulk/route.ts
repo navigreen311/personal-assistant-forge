@@ -15,7 +15,7 @@ const BulkUpdateSchema = z.object({
 });
 
 export async function PATCH(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = BulkUpdateSchema.safeParse(body);

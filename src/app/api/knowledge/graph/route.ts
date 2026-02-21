@@ -4,7 +4,7 @@ import { buildGraph } from '@/modules/knowledge/services/graph-service';
 import { withAuth } from '@/shared/middleware/auth';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
       const graph = await buildGraph(entityId);
       return success(graph);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to build knowledge graph', 500);
     }
   });

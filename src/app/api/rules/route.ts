@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createRule, listRules } from '@/engines/policy/rule-crud';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const CreateRuleSchema = z.object({
   name: z.string().min(1),
@@ -17,7 +16,7 @@ const CreateRuleSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const scope = searchParams.get('scope') as 'GLOBAL' | 'ENTITY' | 'PROJECT' | 'CONTACT' | 'CHANNEL' | null;
@@ -46,7 +45,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = CreateRuleSchema.safeParse(body);

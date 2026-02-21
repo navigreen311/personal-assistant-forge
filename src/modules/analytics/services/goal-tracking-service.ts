@@ -1,9 +1,11 @@
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import { v4 as uuidv4 } from 'uuid';
+import { Prisma } from '@prisma/client';
+import type { GoalEntry, Task, Workflow } from '@prisma/client';
 import type { GoalDefinition, GoalMilestone, GoalCorrectionSuggestion } from '../types';
 
-function dbRecordToGoal(record: any): GoalDefinition {
+function dbRecordToGoal(record: GoalEntry): GoalDefinition {
   return {
     id: record.id,
     userId: record.userId,
@@ -14,7 +16,7 @@ function dbRecordToGoal(record: any): GoalDefinition {
     targetValue: record.targetValue,
     currentValue: record.currentValue,
     unit: record.unit,
-    milestones: (record.milestones ?? []) as GoalMilestone[],
+    milestones: (record.milestones ?? []) as unknown as GoalMilestone[],
     startDate: new Date(record.startDate),
     endDate: new Date(record.endDate),
     status: record.status as GoalDefinition['status'],
@@ -45,13 +47,13 @@ export async function createGoal(
       targetValue: goal.targetValue,
       currentValue: 0,
       unit: goal.unit,
-      milestones: milestones as any,
+      milestones: milestones as unknown as Prisma.InputJsonValue,
       startDate: goal.startDate,
       endDate: goal.endDate,
       status: 'ON_TRACK',
       autoProgress: goal.autoProgress,
-      linkedTaskIds: goal.linkedTaskIds as any,
-      linkedWorkflowIds: goal.linkedWorkflowIds as any,
+      linkedTaskIds: goal.linkedTaskIds as unknown as Prisma.InputJsonValue,
+      linkedWorkflowIds: goal.linkedWorkflowIds as unknown as Prisma.InputJsonValue,
     },
   });
 
@@ -71,7 +73,7 @@ export async function updateGoalProgress(
     const tasks = await prisma.task.findMany({
       where: { id: { in: goal.linkedTaskIds } },
     });
-    const completedCount = tasks.filter((t: any) => t.status === 'DONE').length;
+    const completedCount = tasks.filter((t: Task) => t.status === 'DONE').length;
     const totalCount = tasks.length;
     goal.currentValue =
       totalCount > 0
@@ -85,7 +87,7 @@ export async function updateGoalProgress(
       where: { id: { in: goal.linkedWorkflowIds } },
     });
     const avgSuccessRate =
-      workflows.reduce((sum: number, w: any) => sum + w.successRate, 0) / workflows.length;
+      workflows.reduce((sum: number, w: Workflow) => sum + w.successRate, 0) / workflows.length;
     // Blend workflow success rate with current value
     if (goal.linkedTaskIds.length === 0) {
       goal.currentValue = Math.round(
@@ -111,7 +113,7 @@ export async function updateGoalProgress(
       data: {
         currentValue: goal.currentValue,
         status: goal.status,
-        milestones: goal.milestones as any,
+        milestones: goal.milestones as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -140,7 +142,7 @@ export async function updateGoalProgress(
     data: {
       currentValue: goal.currentValue,
       status: goal.status,
-      milestones: goal.milestones as any,
+      milestones: goal.milestones as unknown as Prisma.InputJsonValue,
     },
   });
 
@@ -151,7 +153,7 @@ export async function getGoals(
   userId: string,
   entityId?: string
 ): Promise<GoalDefinition[]> {
-  const where: any = { userId };
+  const where: Record<string, unknown> = { userId };
   if (entityId) {
     where.entityId = entityId;
   }
@@ -249,7 +251,7 @@ export async function completeGoal(goalId: string): Promise<GoalDefinition> {
     data: {
       status: 'COMPLETE',
       currentValue: goal.targetValue,
-      milestones: goal.milestones as any,
+      milestones: goal.milestones as unknown as Prisma.InputJsonValue,
     },
   });
 

@@ -11,13 +11,13 @@ interface ProjectPageProps {
 
 export default function ProjectPage({ params }: ProjectPageProps) {
   const { id } = use(params);
-  const [project, setProject] = useState<Project | null>(null);
+  const [project] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [health, setHealth] = useState<ProjectHealth>('GREEN');
+  const [health] = useState<ProjectHealth>('GREEN');
   const [completionPercent, setCompletionPercent] = useState(0);
-  const [burndown, setBurndown] = useState<BurndownData | undefined>();
-  const [velocity, setVelocity] = useState<VelocityMetrics | undefined>();
-  const [resources, setResources] = useState<ResourceAllocation[]>([]);
+  const [burndown] = useState<BurndownData | undefined>();
+  const [velocity] = useState<VelocityMetrics | undefined>();
+  const [resources] = useState<ResourceAllocation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {

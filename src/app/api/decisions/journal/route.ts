@@ -21,7 +21,7 @@ const CreateJournalSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -68,14 +68,14 @@ export async function GET(request: NextRequest) {
       });
 
       return paginated(entries, total, page, pageSize);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to list journal entries', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = CreateJournalSchema.safeParse(body);
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
       });
 
       return success(entry, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create journal entry', 500);
     }
   });

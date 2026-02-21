@@ -15,7 +15,7 @@ const requestExportSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const entityId = req.nextUrl.searchParams.get('entityId');
       if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);

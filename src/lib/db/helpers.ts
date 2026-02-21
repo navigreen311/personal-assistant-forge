@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { prisma } from './index';
 
 // --- Pagination ---
@@ -80,7 +80,7 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
   records: T[],
   uniqueField: string,
 ): Promise<number> {
-  const delegate = (prisma as unknown as Record<string, unknown>)[model] as Record<string, Function> | undefined;
+  const delegate = (prisma as unknown as Record<string, unknown>)[model] as Record<string, (...args: unknown[]) => unknown> | undefined;
   if (!delegate || typeof delegate.upsert !== 'function') {
     throw new Error(`Model "${model}" not found on Prisma client`);
   }

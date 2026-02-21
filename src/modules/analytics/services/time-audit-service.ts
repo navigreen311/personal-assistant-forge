@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
+import type { Task } from '@prisma/client';
 import type { TimeAuditReport, TimeAuditEntry, DriftAlert } from '../types';
 
 const DEFAULT_ALLOCATION: Record<string, number> = {
@@ -34,7 +35,7 @@ export async function generateTimeAudit(
     where: { id: userId },
     include: { entities: { select: { id: true } } },
   });
-  const entityIds = user?.entities.map((e: any) => e.id) ?? [];
+  const entityIds = user?.entities.map((e: { id: string }) => e.id) ?? [];
 
   // Fetch calendar events in range
   const events = await prisma.calendarEvent.findMany({
@@ -68,12 +69,12 @@ export async function generateTimeAudit(
 
   // Deep work: estimate from completed high-priority tasks
   const deepWorkTasks = tasks.filter(
-    (t: any) => t.priority === 'P0' || t.priority === 'P1'
+    (t: Task) => t.priority === 'P0' || t.priority === 'P1'
   );
   actual.deep_work = deepWorkTasks.length * 45; // estimate 45 min per high-pri task
 
   // Admin: estimate from low-priority tasks
-  const adminTasks = tasks.filter((t: any) => t.priority === 'P2');
+  const adminTasks = tasks.filter((t: Task) => t.priority === 'P2');
   actual.admin = adminTasks.length * 20; // estimate 20 min per admin task
 
   // Email/communication: fetch messages count

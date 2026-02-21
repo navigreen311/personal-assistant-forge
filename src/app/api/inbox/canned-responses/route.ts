@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 import { InboxService } from '@/modules/inbox';
 import { createCannedResponseSchema } from '@/modules/inbox/inbox.validation';
 import type { MessageChannel } from '@/shared/types';
@@ -9,7 +9,7 @@ import type { MessageChannel } from '@/shared/types';
 const inboxService = new InboxService();
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const entityId = req.nextUrl.searchParams.get('entityId');
       if (!entityId) {
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = createCannedResponseSchema.safeParse(body);

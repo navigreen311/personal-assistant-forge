@@ -10,7 +10,6 @@ import {
   getHours,
   getDay,
   differenceInMinutes,
-  isWithinInterval,
   areIntervalsOverlapping,
 } from 'date-fns';
 import { v4 as uuid } from 'uuid';
@@ -28,7 +27,6 @@ import type {
   CalendarEventDisplay,
   DragDropUpdate,
   Chronotype,
-  EnergyMapping,
 } from './calendar.types';
 
 export class SchedulingService {
@@ -121,7 +119,7 @@ export class SchedulingService {
   async createEvent(
     request: ScheduleRequest,
     selectedSlot: TimeRange,
-    userId: string
+    _userId: string
   ): Promise<CalendarEvent> {
     const buffers = this.bufferService.calculateBuffers(request);
 

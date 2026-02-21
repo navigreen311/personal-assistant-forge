@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { format, subDays } from 'date-fns';
 import { AnalyticsDashboard } from '@/modules/calendar/components/AnalyticsDashboard';
 
@@ -19,12 +20,12 @@ export default function AnalyticsPage() {
             Insights into your calendar patterns and optimization opportunities.
           </p>
         </div>
-        <a
+        <Link
           href="/calendar"
           style={{ padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: '6px', textDecoration: 'none', color: '#374151', fontSize: '14px' }}
         >
           &larr; Calendar
-        </a>
+        </Link>
       </div>
 
       <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', alignItems: 'center' }}>

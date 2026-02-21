@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const compliance = await entityService.getComplianceStatus(entityId);
     return success(compliance);
-  } catch (err) {
+  } catch (_err) {
     return error('INTERNAL_ERROR', 'Failed to get compliance status', 500);
   }
 }

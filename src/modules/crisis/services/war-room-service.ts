@@ -1,5 +1,5 @@
 import { generateText } from '@/lib/ai';
-import type { WarRoomState, CrisisEvent } from '../types';
+import type { WarRoomState } from '../types';
 import { getCrisisById, updateCrisis } from './detection-service';
 
 export async function activateWarRoom(crisisId: string): Promise<WarRoomState> {

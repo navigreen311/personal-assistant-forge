@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, getWinningAction } from '@/engines/policy/rule-engine';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const EvaluateSchema = z.object({
   context: z.record(z.string(), z.unknown()),
@@ -11,7 +10,7 @@ const EvaluateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = EvaluateSchema.safeParse(body);

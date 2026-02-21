@@ -9,7 +9,7 @@ import { OutcomeBadge } from '@/modules/voiceforge/components/OutcomeBadge';
 
 export default function VoiceForgePage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [calls, setCalls] = useState<Call[]>([]);
+  const [calls] = useState<Call[]>([]);
   const [numbers, setNumbers] = useState<ManagedNumber[]>([]);
   const [personas, setPersonas] = useState<VoicePersona[]>([]);
   const [loading, setLoading] = useState(true);

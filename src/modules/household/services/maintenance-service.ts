@@ -201,7 +201,7 @@ export async function generateAnnualSchedule(userId: string): Promise<Maintenanc
     { userId, category: 'APPLIANCE', title: 'Clean dryer vent', frequency: 'ANNUAL', season: 'ANY', nextDueDate: new Date(year, 5, 1), estimatedCostUsd: 100 },
   ];
 
-  let optimizedTemplates = templates;
+  const optimizedTemplates = [...templates];
   try {
     const taskSummary = templates.map(t => ({
       title: t.title,

@@ -13,7 +13,7 @@ const createPolicySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const entityId = req.nextUrl.searchParams.get('entityId');
       if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = createPolicySchema.safeParse(body);

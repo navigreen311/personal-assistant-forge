@@ -13,7 +13,7 @@ interface JournalReviewFormProps {
 }
 
 export default function JournalReviewForm({
-  entryId,
+  entryId: _entryId,
   onSubmit,
   onCancel,
 }: JournalReviewFormProps) {

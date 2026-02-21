@@ -1,5 +1,5 @@
 import {
-  CalendarEvent, PrepPacket, User, UserPreferences, Contact
+  CalendarEvent, PrepPacket
 } from '@/shared/types';
 
 // --- Scheduling Types ---

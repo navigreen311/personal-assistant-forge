@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
 import { PrepPacketService } from '@/modules/calendar/prep.service';
 import { prepPacketSchema } from '@/modules/calendar/calendar.validation';
@@ -13,7 +12,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ eventId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { eventId } = await params;
       const event = await prisma.calendarEvent.findUnique({
@@ -29,7 +28,7 @@ export async function GET(
       }
 
       return success(event.prepPacket as unknown as GeneratedPrepPacket);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch prep packet', 500);
     }
   });
@@ -39,7 +38,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ eventId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { eventId } = await params;
       const body = await req.json();
@@ -53,7 +52,7 @@ export async function POST(
 
       const packet = await prepService.generatePrepPacket(parsed.data);
       return success(packet, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to generate prep packet', 500);
     }
   });

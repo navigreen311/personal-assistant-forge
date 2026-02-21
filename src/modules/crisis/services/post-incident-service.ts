@@ -1,5 +1,5 @@
 import { generateJSON } from '@/lib/ai';
-import type { PostIncidentReview, CrisisEvent } from '../types';
+import type { PostIncidentReview } from '../types';
 import { getCrisisById, updateCrisis } from './detection-service';
 
 const reviewStore = new Map<string, PostIncidentReview>();

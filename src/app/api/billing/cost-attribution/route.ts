@@ -4,7 +4,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import { getTopCostlyWorkflows } from '@/engines/cost/cost-attribution';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const entityId = searchParams.get('entityId');
@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
       const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 10;
       const attributions = await getTopCostlyWorkflows(entityId, limit);
       return success(attributions);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get cost attribution', 500);
     }
   });

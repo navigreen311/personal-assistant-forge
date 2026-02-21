@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
       const userId = parsed.data.userId ?? session.userId;
       const habits = await getHabits(userId);
       return success(habits);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch habits', 500);
     }
   });
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
       const userId = parsed.data.userId ?? session.userId;
       const habit = await createHabit(userId, parsed.data.name, parsed.data.frequency);
       return success(habit, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create habit', 500);
     }
   });

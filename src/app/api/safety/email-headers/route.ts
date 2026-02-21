@@ -9,7 +9,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RequestSchema.safeParse(body);
@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
 
       const analysis = analyzeEmailHeaders(parsed.data.headers);
       return success(analysis);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to analyze email headers', 500);
     }
   });

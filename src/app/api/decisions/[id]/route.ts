@@ -20,7 +20,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const brief = await getDecisionBrief(id);
@@ -30,7 +30,7 @@ export async function GET(
       }
 
       return success(brief);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get decision brief', 500);
     }
   });
@@ -40,7 +40,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const doc = await prisma.document.findUnique({ where: { id } });
@@ -89,7 +89,7 @@ export async function PUT(
         status: updated.status,
         updatedAt: updated.updatedAt,
       });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to update decision brief', 500);
     }
   });
@@ -99,7 +99,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const doc = await prisma.document.findUnique({ where: { id } });
@@ -114,7 +114,7 @@ export async function DELETE(
       });
 
       return success({ id, archived: true });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to archive decision brief', 500);
     }
   });

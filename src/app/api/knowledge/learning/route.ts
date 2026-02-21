@@ -44,7 +44,7 @@ function toLearningItem(entry: Record<string, unknown>): LearningItem {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -69,14 +69,14 @@ export async function GET(request: NextRequest) {
       }
 
       return success(items);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to list learning items', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = addLearningSchema.safeParse(body);
@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
       const item = await addLearningItem(data);
       return success(item, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to add learning item', 500);
     }
   });

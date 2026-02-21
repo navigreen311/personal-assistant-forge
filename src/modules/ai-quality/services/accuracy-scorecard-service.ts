@@ -16,7 +16,7 @@ export async function generateScorecard(
     },
   });
   const triageOverrides = triageActions.filter(
-    (a: any) => a.status === 'ROLLED_BACK'
+    (a) => a.status === 'ROLLED_BACK'
   ).length;
   const triageAccuracy =
     triageActions.length > 0
@@ -34,7 +34,7 @@ export async function generateScorecard(
     },
   });
   const approved = messages.filter(
-    (m: any) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
+    (m) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
   ).length;
   const draftApprovalRate =
     messages.length > 0
@@ -50,7 +50,7 @@ export async function generateScorecard(
     },
   });
   const missed = tasksWithDeadline.filter(
-    (t: any) => t.status !== 'DONE' || (t.dueDate && t.updatedAt > t.dueDate)
+    (t) => t.status !== 'DONE' || (t.dueDate && t.updatedAt > t.dueDate)
   ).length;
   const missedDeadlineRate =
     tasksWithDeadline.length > 0
@@ -64,7 +64,7 @@ export async function generateScorecard(
   const automationSuccessRate =
     workflows.length > 0
       ? Math.round(
-          workflows.reduce((sum: number, w: any) => sum + w.successRate, 0) /
+          workflows.reduce((sum: number, w) => sum + w.successRate, 0) /
             workflows.length
         )
       : 100;

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { format, addDays } from 'date-fns';
 import { AvailabilityPicker } from '@/modules/calendar/components/AvailabilityPicker';
 
@@ -19,12 +20,12 @@ export default function AvailabilityPage() {
             View your free and busy slots for a selected time range.
           </p>
         </div>
-        <a
+        <Link
           href="/calendar"
           style={{ padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: '6px', textDecoration: 'none', color: '#374151', fontSize: '14px' }}
         >
           &larr; Calendar
-        </a>
+        </Link>
       </div>
 
       <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', alignItems: 'center' }}>

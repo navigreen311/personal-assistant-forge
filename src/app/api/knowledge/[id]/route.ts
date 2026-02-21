@@ -19,7 +19,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const entry = await prisma.knowledgeEntry.findUnique({ where: { id } });
@@ -42,7 +42,7 @@ export async function GET(
         ...captured,
         linked: linkedEntries.map((e: unknown) => knowledgeEntryToCaptured(e as unknown as KnowledgeEntry)),
       });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get knowledge entry', 500);
     }
   });
@@ -52,7 +52,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -89,7 +89,7 @@ export async function PUT(
       });
 
       return success(knowledgeEntryToCaptured(updated as unknown as KnowledgeEntry));
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to update knowledge entry', 500);
     }
   });
@@ -99,7 +99,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const existing = await prisma.knowledgeEntry.findUnique({ where: { id } });
@@ -110,7 +110,7 @@ export async function DELETE(
 
       await prisma.knowledgeEntry.delete({ where: { id } });
       return success({ deleted: true });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to delete knowledge entry', 500);
     }
   });

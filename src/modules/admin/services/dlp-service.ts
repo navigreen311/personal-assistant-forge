@@ -4,7 +4,7 @@ import type { DLPRule } from '../types';
 
 export const dlpStore = new Map<string, DLPRule>();
 
-const BUILT_IN_PATTERNS: Record<string, RegExp> = {
+const _BUILT_IN_PATTERNS: Record<string, RegExp> = {
   SSN: /\b\d{3}-\d{2}-\d{4}\b/g,
   CREDIT_CARD: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g,
   EMAIL: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,

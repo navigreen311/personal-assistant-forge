@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { Priority, TaskStatus } from '@/shared/types';
+import type { Priority } from '@/shared/types';
 import type { ParsedTaskInput } from '../types';
 
 interface TaskCreateFormProps {

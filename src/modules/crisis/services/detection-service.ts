@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateJSON } from '@/lib/ai';
-import type { CrisisDetectionSignal, CrisisType, CrisisSeverity, CrisisEvent, CrisisStatus } from '../types';
+import type { CrisisDetectionSignal, CrisisType, CrisisSeverity, CrisisEvent } from '../types';
 import { getEscalationChain } from './escalation-service';
 import { getPlaybook } from './playbook-service';
 

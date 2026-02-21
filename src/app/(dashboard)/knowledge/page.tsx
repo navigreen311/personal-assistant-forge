@@ -49,6 +49,7 @@ export default function KnowledgeHubPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetching data on mount is intentional
     loadEntries();
     loadSurfaced();
   }, [loadEntries, loadSurfaced]);

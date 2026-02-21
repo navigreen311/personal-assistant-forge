@@ -83,7 +83,7 @@ export default function AnalyticsPage() {
         if (results[5].status === 'fulfilled' && results[5].value?.data) {
           setTimeSaved(results[5].value.data);
         }
-      } catch (err) {
+      } catch {
         setError('Failed to load analytics data');
       } finally {
         setLoading(false);

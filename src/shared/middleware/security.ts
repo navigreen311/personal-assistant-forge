@@ -132,7 +132,7 @@ function containsInjectionPattern(input: string): { blocked: boolean; type: stri
   return { blocked: false, type: '' };
 }
 
-function sanitizeValue(value: unknown, maxLength: number): unknown {
+export function sanitizeValue(value: unknown, maxLength: number): unknown {
   if (typeof value === 'string') {
     if (value.length > maxLength) {
       return null; // Will be rejected

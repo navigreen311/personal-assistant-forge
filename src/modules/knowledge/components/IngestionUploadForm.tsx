@@ -10,7 +10,7 @@ interface IngestionUploadFormProps {
 export default function IngestionUploadForm({ entityId, onIngested }: IngestionUploadFormProps) {
   const [filename, setFilename] = useState('');
   const [content, setContent] = useState('');
-  const [mimeType, setMimeType] = useState('text/plain');
+  const [mimeType, _setMimeType] = useState('text/plain');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ summary: string; wordCount: number; entries: number } | null>(null);
 

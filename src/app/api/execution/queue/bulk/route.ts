@@ -29,7 +29,7 @@ const bulkActionSchema = z.discriminatedUnion('action', [
 // --- Handler ---
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin', 'owner'], async (req, session) => {
+  return withRole(request, ['admin', 'owner'], async (req, _session) => {
     try {
       const body: unknown = await req.json();
 

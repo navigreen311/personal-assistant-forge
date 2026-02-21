@@ -10,7 +10,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RequestSchema.safeParse(body);
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
       const decision = await routeRequest(parsed.data.inputText, parsed.data.taskType);
       return success(decision);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to route model request', 500);
     }
   });

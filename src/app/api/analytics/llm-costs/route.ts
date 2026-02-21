@@ -10,7 +10,7 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
 
       const dashboard = await getCostDashboard(parsed.data.entityId, period);
       return success(dashboard);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get LLM costs', 500);
     }
   });

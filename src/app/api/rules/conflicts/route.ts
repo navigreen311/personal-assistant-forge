@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, resolveConflicts } from '@/engines/policy/rule-engine';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const ConflictsSchema = z.object({
   context: z.record(z.string(), z.unknown()),
@@ -11,7 +10,7 @@ const ConflictsSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = ConflictsSchema.safeParse(body);

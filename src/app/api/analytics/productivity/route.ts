@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
         parsed.data.date ?? new Date().toISOString().split('T')[0];
       const score = await calculateProductivityScore(userId, date);
       return success(score);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to calculate productivity', 500);
     }
   });

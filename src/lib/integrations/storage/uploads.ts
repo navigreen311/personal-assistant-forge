@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { createHash, timingSafeEqual } from 'crypto';
+import { createHash } from 'crypto';
 import { uploadFile, getSignedDownloadUrl, deleteFile } from './client';
 
 // --- Types ---

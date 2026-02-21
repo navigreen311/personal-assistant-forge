@@ -116,7 +116,7 @@ export async function getRoles(entityId: string): Promise<RolePermission[]> {
   }
 }
 
-export async function assignRole(userId: string, roleId: string, entityId?: string): Promise<void> {
+export async function assignRole(userId: string, roleId: string, _entityId?: string): Promise<void> {
   const role = roleStore.get(roleId);
   if (!role) throw new Error(`Role ${roleId} not found`);
   const existing = userRoleMap.get(userId) || [];
@@ -160,7 +160,7 @@ export async function checkPermission(
   return false;
 }
 
-export async function removeRole(userId: string, roleId: string, entityId?: string): Promise<void> {
+export async function removeRole(userId: string, roleId: string, _entityId?: string): Promise<void> {
   const existing = userRoleMap.get(userId) || [];
   const filtered = existing.filter((id) => id !== roleId);
   userRoleMap.set(userId, filtered);

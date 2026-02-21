@@ -7,7 +7,7 @@ import {
 } from '@/modules/tasks/services/forecasting-service';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = req.nextUrl.searchParams;
       const taskId = params.get('taskId');

@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
-import { differenceInDays, differenceInHours, isAfter, isBefore, addDays } from 'date-fns';
+import { differenceInDays, differenceInHours, isBefore, addDays } from 'date-fns';
 import type { Task } from '@/shared/types';
 import type {
   PrioritizationScore,

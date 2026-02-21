@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
+import type { UsageRecord } from '@prisma/client';
 import type { LLMCostDashboard } from '../types';
 
 const DEFAULT_BUDGET_CAP = 500; // $500/month default
@@ -287,7 +288,7 @@ export async function getCostForecast(
     return { forecastedCost: 0, confidence: 0, basedOnDays: 0 };
   }
 
-  const totalCost = records.reduce((sum: number, r: any) => sum + r.cost, 0);
+  const totalCost = records.reduce((sum: number, r: UsageRecord) => sum + r.cost, 0);
   const actualDays = Math.max(
     1,
     (end.getTime() - start.getTime()) / 86400000
@@ -332,8 +333,8 @@ export async function getTokenUsageSummary(
     };
   }
 
-  const totalInputTokens = records.reduce((s: number, r: any) => s + r.inputTokens, 0);
-  const totalOutputTokens = records.reduce((s: number, r: any) => s + r.outputTokens, 0);
+  const totalInputTokens = records.reduce((s: number, r: UsageRecord) => s + r.inputTokens, 0);
+  const totalOutputTokens = records.reduce((s: number, r: UsageRecord) => s + r.outputTokens, 0);
   const avgTokensPerRequest = Math.round(
     (totalInputTokens + totalOutputTokens) / records.length
   );

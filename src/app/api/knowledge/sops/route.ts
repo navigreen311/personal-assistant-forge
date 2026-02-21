@@ -24,7 +24,7 @@ const createSOPSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -41,14 +41,14 @@ export async function GET(request: NextRequest) {
       });
 
       return success(sops);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to list SOPs', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = createSOPSchema.safeParse(body);
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 
       const sop = await createSOP(data);
       return success(sop, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create SOP', 500);
     }
   });

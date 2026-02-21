@@ -136,7 +136,7 @@ export async function setQuietHours(
   userId: string,
   startHour: number,
   endHour: number,
-  timezone?: string
+  _timezone?: string
 ): Promise<DNDConfig> {
   const startTime = `${String(startHour).padStart(2, '0')}:00`;
   const endTime = `${String(endHour).padStart(2, '0')}:00`;

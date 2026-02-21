@@ -114,7 +114,7 @@ const DEFAULT_FIX_SUGGESTIONS: Record<string, string> = {
 };
 
 export async function getOverridePatterns(
-  entityId: string
+  _entityId: string
 ): Promise<{ pattern: string; count: number; suggestedFix: string }[]> {
   // Group by reason first
   const patternMap = new Map<string, { count: number; samples: { original: string; overridden: string }[] }>();

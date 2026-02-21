@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const health = await entityService.getEntityHealth(entityId);
     return success(health);
-  } catch (err) {
+  } catch (_err) {
     return error('INTERNAL_ERROR', 'Failed to get entity health', 500);
   }
 }

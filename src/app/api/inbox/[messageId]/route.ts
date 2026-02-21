@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 import { InboxService } from '@/modules/inbox';
 import { updateMessageSchema } from '@/modules/inbox/inbox.validation';
 
@@ -11,7 +11,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ messageId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, session) => {
     try {
       const { messageId } = await params;
 
@@ -32,7 +32,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ messageId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { messageId } = await params;
       const body = await req.json();
@@ -69,7 +69,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ messageId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { messageId } = await params;
       await inboxService.archiveMessage(messageId);

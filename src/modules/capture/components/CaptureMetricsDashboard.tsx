@@ -1,6 +1,6 @@
 'use client';
 
-import type { CaptureLatencyMetrics, CaptureSource, CaptureItem } from '@/modules/capture/types';
+import type { CaptureLatencyMetrics, CaptureItem } from '@/modules/capture/types';
 
 interface CaptureMetricsDashboardProps {
   metrics: CaptureLatencyMetrics[];

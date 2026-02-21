@@ -29,7 +29,7 @@ const SummaryQuerySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const rawQuery: Record<string, string> = {};

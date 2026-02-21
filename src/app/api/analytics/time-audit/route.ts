@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
       );
 
       return success(report);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to generate time audit', 500);
     }
   });

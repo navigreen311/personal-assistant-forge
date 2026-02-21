@@ -29,7 +29,7 @@ export async function findByEntity<T>(
   params?: PaginationParams,
 ): Promise<PaginatedResult<T>> {
   const delegate = (prisma as unknown as Record<string, unknown>)[model] as
-    | Record<string, Function>
+    | Record<string, (...args: unknown[]) => unknown>
     | undefined;
   if (!delegate || typeof delegate.findMany !== 'function') {
     throw new Error(`Model "${model}" not found on Prisma client`);
@@ -54,7 +54,7 @@ export async function countByStatus(
   entityId: string,
 ): Promise<Record<string, number>> {
   const delegate = (prisma as unknown as Record<string, unknown>)[model] as
-    | Record<string, Function>
+    | Record<string, (...args: unknown[]) => unknown>
     | undefined;
   if (!delegate || typeof delegate.groupBy !== 'function') {
     throw new Error(`Model "${model}" not found on Prisma client`);
@@ -83,7 +83,7 @@ export async function textSearch(
   entityId?: string,
 ): Promise<unknown[]> {
   const delegate = (prisma as unknown as Record<string, unknown>)[model] as
-    | Record<string, Function>
+    | Record<string, (...args: unknown[]) => unknown>
     | undefined;
   if (!delegate || typeof delegate.findMany !== 'function') {
     throw new Error(`Model "${model}" not found on Prisma client`);

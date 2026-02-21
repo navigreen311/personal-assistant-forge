@@ -34,10 +34,10 @@ export default function BroadcastComposer() {
 
     try {
       const ids = recipientIds.split(',').map((id) => id.trim()).filter(Boolean);
-      let mergeFields: Record<string, string>[] = [];
+      let _mergeFields: Record<string, string>[] = [];
       if (mergeFieldsRaw) {
         const parsed = JSON.parse(mergeFieldsRaw);
-        mergeFields = Array.isArray(parsed) ? parsed : [parsed];
+        _mergeFields = Array.isArray(parsed) ? parsed : [parsed];
       }
 
       // In a real app, this would call a broadcast API endpoint

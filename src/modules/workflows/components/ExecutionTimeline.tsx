@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import type { WorkflowExecution, StepExecutionResult } from '@/modules/workflows/types';
+import type { WorkflowExecution } from '@/modules/workflows/types';
 
 // ============================================================================
 // Execution Timeline — Vertical timeline showing execution progress
@@ -44,9 +44,10 @@ export default function ExecutionTimeline({ execution }: ExecutionTimelineProps)
     });
   };
 
+  const [now] = useState(() => Date.now());
   const duration = execution.completedAt
     ? execution.completedAt.getTime() - execution.startedAt.getTime()
-    : Date.now() - execution.startedAt.getTime();
+    : now - execution.startedAt.getTime();
 
   return (
     <div className="bg-white rounded-lg shadow p-4">

@@ -21,7 +21,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const persona = await personaService.getPersonaContext(entityId);
     return success(persona);
-  } catch (err) {
+  } catch (_err) {
     return error('INTERNAL_ERROR', 'Failed to get persona context', 500);
   }
 }

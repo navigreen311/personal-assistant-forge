@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { CalendarView } from '@/modules/calendar/components/CalendarView';
 import { EventDetailPanel } from '@/modules/calendar/components/EventDetailPanel';
 import { ScheduleWizard } from '@/modules/calendar/components/ScheduleWizard';
@@ -12,7 +13,7 @@ export default function CalendarPage() {
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventDisplay | null>(null);
   const [showScheduleWizard, setShowScheduleWizard] = useState(false);
   const [showEnergyOverlay, setShowEnergyOverlay] = useState(false);
-  const [entityFilter, setEntityFilter] = useState<string | undefined>(undefined);
+  const [entityFilter, _setEntityFilter] = useState<string | undefined>(undefined);
 
   const handleEventClick = (event: CalendarEventDisplay) => {
     setSelectedEvent(event);
@@ -50,7 +51,7 @@ export default function CalendarPage() {
           >
             + Schedule Event
           </button>
-          <a
+          <Link
             href="/calendar/analytics"
             style={{
               padding: '8px 16px', border: '1px solid #d1d5db', borderRadius: '6px',
@@ -58,7 +59,7 @@ export default function CalendarPage() {
             }}
           >
             Analytics
-          </a>
+          </Link>
         </div>
       </div>
 

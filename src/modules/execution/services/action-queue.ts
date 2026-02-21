@@ -7,7 +7,6 @@ import { v4 as uuidv4 } from 'uuid';
 import type { AutonomyLevel } from '@/shared/types';
 import prisma from '@/lib/db';
 import type { QueuedAction, ActionQueueFilters } from '../types';
-import { scoreAction } from './blast-radius-scorer';
 import { evaluateGates } from './execution-gate';
 
 // --- In-Memory Action Store ---
@@ -113,7 +112,7 @@ export async function approveAction(
 
 export async function rejectAction(
   actionId: string,
-  reason: string
+  _reason: string
 ): Promise<QueuedAction> {
   const action = actionStore.get(actionId);
   if (!action) {

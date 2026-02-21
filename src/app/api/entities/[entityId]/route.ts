@@ -3,7 +3,7 @@ import { success, error } from '@/shared/utils/api-response';
 import { EntityService } from '@/modules/entities/entity.service';
 import { updateEntitySchema } from '@/modules/entities/entity.validation';
 import { withEntityAccess } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 
 const entityService = new EntityService();
 
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       }
 
       return success(entity);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get entity', 500);
     }
   });

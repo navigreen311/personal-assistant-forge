@@ -11,7 +11,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
 
@@ -34,7 +34,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withRole(request, ['admin', 'owner'], async (req, session) => {
+  return withRole(request, ['admin', 'owner'], async (_req, _session) => {
     try {
       const { id } = await params;
 

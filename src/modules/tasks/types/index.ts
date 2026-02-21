@@ -1,4 +1,4 @@
-import type { Task, TaskStatus, Priority, ProjectHealth } from '@/shared/types';
+import type { Task, TaskStatus, Priority } from '@/shared/types';
 
 // --- Task View Types ---
 

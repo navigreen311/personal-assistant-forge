@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { conflictCheckSchema } from '@/modules/calendar/calendar.validation';
 
@@ -27,7 +26,7 @@ export async function POST(request: NextRequest) {
       );
 
       return success(conflicts);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to check conflicts', 500);
     }
   });

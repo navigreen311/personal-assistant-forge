@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { calendarViewSchema, scheduleRequestSchema } from '@/modules/calendar/calendar.validation';
 
@@ -31,7 +30,7 @@ export async function GET(request: NextRequest) {
       );
 
       return success(data);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch calendar data', 500);
     }
   });
@@ -61,7 +60,7 @@ export async function POST(request: NextRequest) {
       );
 
       return success(event, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create event', 500);
     }
   });

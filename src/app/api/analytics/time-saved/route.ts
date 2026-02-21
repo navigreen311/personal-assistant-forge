@@ -140,7 +140,7 @@ export async function GET(request: NextRequest) {
         trend,
         period,
       });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to calculate time saved', 500);
     }
   });

@@ -199,7 +199,7 @@ Return JSON with:
     capture.updatedAt = new Date();
   }
 
-  async getCaptureMetrics(userId: string): Promise<CaptureLatencyMetrics[]> {
+  async getCaptureMetrics(_userId: string): Promise<CaptureLatencyMetrics[]> {
     // In production, filter by userId via DB query
     return [...this.latencyMetrics];
   }

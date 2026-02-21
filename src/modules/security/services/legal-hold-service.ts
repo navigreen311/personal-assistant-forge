@@ -70,7 +70,7 @@ function toHold(row: {
   const scope = (row.scope ?? {}) as unknown as LegalHoldScope;
   return {
     id: row.id,
-    name: (scope as any).__name ?? row.reason,
+    name: (scope as unknown as Record<string, unknown>).__name as string ?? row.reason,
     entityId: row.entityId,
     reason: row.reason,
     scope,
@@ -78,7 +78,9 @@ function toHold(row: {
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     releasedAt: row.releasedAt ?? undefined,
-    expiresAt: (scope as any).__expiresAt ? new Date((scope as any).__expiresAt) : undefined,
+    expiresAt: (scope as unknown as Record<string, unknown>).__expiresAt
+      ? new Date((scope as unknown as Record<string, unknown>).__expiresAt as string)
+      : undefined,
   };
 }
 

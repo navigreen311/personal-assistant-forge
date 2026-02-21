@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { Project, Milestone, TaskStatus, ProjectHealth, Task } from '@/shared/types';
+import type { Project, TaskStatus, ProjectHealth, Task } from '@/shared/types';
 import type { ProjectView, BurndownData, VelocityMetrics, ResourceAllocation } from '../types';
 import TaskKanbanView from './TaskKanbanView';
 import TaskListView from './TaskListView';

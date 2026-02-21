@@ -16,7 +16,7 @@ const updateBrandKitSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const entityId = req.nextUrl.searchParams.get('entityId');
       if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = updateBrandKitSchema.safeParse(body);

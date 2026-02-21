@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { generateText } from '@/lib/ai';
 import { prisma } from '@/lib/db';
 import type { FlightAlert, Itinerary, ItineraryLeg, DisruptionResponse } from '../types';
-import { getItinerary, listItineraries } from './itinerary-service';
+import { getItinerary } from './itinerary-service';
 
 export async function checkFlightStatus(itineraryId: string): Promise<FlightAlert[]> {
   const itinerary = await getItinerary(itineraryId);

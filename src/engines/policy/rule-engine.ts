@@ -51,8 +51,7 @@ export async function evaluateRules(
     orderBy: { precedence: 'desc' },
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const evaluated = rules.map((rule: any) => evaluateSingleRule(rule, context));
+  const evaluated = rules.map((rule) => evaluateSingleRule(rule, context));
 
   // Return only matched rules first, then unmatched, preserving precedence order
   const matched = evaluated.filter((r) => r.matched);
@@ -72,9 +71,18 @@ export async function matchRules(
   return evaluated.filter((r) => r.matched);
 }
 
+interface PrismaRuleRecord {
+  id: string;
+  name: string;
+  scope: string;
+  condition: unknown;
+  action: unknown;
+  precedence: number;
+  isActive: boolean;
+}
+
 function evaluateSingleRule(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  rule: any,
+  rule: PrismaRuleRecord,
   context: Record<string, unknown>
 ): EvaluatedRule {
   const conditions = parseConditions(rule.condition);
@@ -377,9 +385,8 @@ export async function getInheritedRules(
   const ruleMap = new Map<string, Rule>();
 
   // Sort by scope breadth (GLOBAL first, CONTACT last)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sortedRules = rules.sort(
-    (a: any, b: any) => SCOPE_PRIORITY[a.scope as RuleScope] - SCOPE_PRIORITY[b.scope as RuleScope]
+    (a, b) => SCOPE_PRIORITY[a.scope as RuleScope] - SCOPE_PRIORITY[b.scope as RuleScope]
   );
 
   for (const raw of sortedRules) {

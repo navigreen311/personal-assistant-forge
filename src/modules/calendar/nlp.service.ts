@@ -170,9 +170,8 @@ Return JSON with:
 
     return names.map((name) => {
       const lowerName = name.toLowerCase();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const match = contacts.find(
-        (c: any) => c.name.toLowerCase() === lowerName ||
+        (c: { id: string; name: string }) => c.name.toLowerCase() === lowerName ||
           c.name.toLowerCase().includes(lowerName) ||
           lowerName.includes(c.name.toLowerCase())
       );

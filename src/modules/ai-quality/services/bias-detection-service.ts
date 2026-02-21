@@ -94,7 +94,7 @@ export function getAffectedGroups(
 ): { group: string; expectedRate: number; actualRate: number; deviation: number }[] {
   if (dimension.affectedGroups.length === 0) return [];
 
-  const avgDeviation =
+  const _avgDeviation =
     dimension.affectedGroups.reduce(
       (sum, g) => sum + Math.abs(g.deviation),
       0

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { ActionLog, Message, Task, Workflow } from '@prisma/client';
 import type { AIAccuracyMetrics } from '../types';
 
 // --- Existing accuracy metrics (Phase 2) ---
@@ -17,7 +18,7 @@ export async function calculateAccuracyMetrics(
     },
   });
   const triageOverrides = triageActions.filter(
-    (a: any) => a.status === 'ROLLED_BACK'
+    (a: ActionLog) => a.status === 'ROLLED_BACK'
   ).length;
   const triageAccuracy =
     triageActions.length > 0
@@ -32,9 +33,9 @@ export async function calculateAccuracyMetrics(
       createdAt: { gte: startDate, lte: endDate },
     },
   });
-  const drafts = messages.filter((m: any) => m.draftStatus !== null);
+  const drafts = messages.filter((m: Message) => m.draftStatus !== null);
   const approved = drafts.filter(
-    (m: any) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
+    (m: Message) => m.draftStatus === 'APPROVED' || m.draftStatus === 'SENT'
   ).length;
   const draftApprovalRate =
     drafts.length > 0 ? Math.round((approved / drafts.length) * 100) : 100;
@@ -49,7 +50,7 @@ export async function calculateAccuracyMetrics(
     },
   });
   const onTime = tasks.filter(
-    (t: any) => t.dueDate && t.updatedAt <= t.dueDate
+    (t: Task) => t.dueDate && t.updatedAt <= t.dueDate
   ).length;
   const predictionAccuracy =
     tasks.length > 0 ? Math.round((onTime / tasks.length) * 100) : 100;
@@ -64,7 +65,7 @@ export async function calculateAccuracyMetrics(
   const automationSuccess =
     workflows.length > 0
       ? Math.round(
-          workflows.reduce((sum: number, w: any) => sum + w.successRate, 0) / workflows.length
+          workflows.reduce((sum: number, w: Workflow) => sum + w.successRate, 0) / workflows.length
         )
       : 100;
 
@@ -191,13 +192,13 @@ export async function getAccuracyByModule(
       continue;
     }
 
-    const module = (details.module as string) ?? 'unknown';
-    const existing = moduleMap.get(module) ?? { correct: 0, total: 0 };
+    const moduleName = (details.module as string) ?? 'unknown';
+    const existing = moduleMap.get(moduleName) ?? { correct: 0, total: 0 };
     existing.total++;
     if (details.accurate === true) {
       existing.correct++;
     }
-    moduleMap.set(module, existing);
+    moduleMap.set(moduleName, existing);
   }
 
   return Array.from(moduleMap.entries()).map(([module, data]) => ({

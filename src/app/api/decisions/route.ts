@@ -19,7 +19,7 @@ const CreateDecisionSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -32,14 +32,14 @@ export async function GET(request: NextRequest) {
 
       const result = await listDecisionBriefs(entityId, page, pageSize);
       return paginated(result.briefs, result.total, page, pageSize);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to list decision briefs', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = CreateDecisionSchema.safeParse(body);
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
       });
 
       return success(brief, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create decision brief', 500);
     }
   });

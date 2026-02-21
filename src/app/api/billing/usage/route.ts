@@ -12,7 +12,7 @@ const RecordUsageSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RecordUsageSchema.safeParse(body);
@@ -30,14 +30,14 @@ export async function POST(request: NextRequest) {
         parsed.data.source
       );
       return success(record, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to record usage', 500);
     }
   });
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const entityId = searchParams.get('entityId');
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
 
       const summary = await getUsageSummary(entityId, startDate, endDate);
       return success(summary);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get usage summary', 500);
     }
   });

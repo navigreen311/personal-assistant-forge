@@ -2,7 +2,6 @@ import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { getMemoryStats } from '@/engines/memory/memory-service';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {

@@ -10,7 +10,6 @@ import type {
   InboundConfig,
   InboundCallResult,
   AfterHoursConfig,
-  RoutingRule,
 } from '@/modules/voiceforge/types';
 
 const DOC_TYPE = 'INBOUND_CONFIG';

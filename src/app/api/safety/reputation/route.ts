@@ -4,7 +4,7 @@ import { withRole } from '@/shared/middleware/auth';
 import { getReputationDashboard } from '@/engines/trust-safety/reputation-service';
 
 export async function GET(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const entityId = searchParams.get('entityId');
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
       const dashboard = await getReputationDashboard(entityId);
       return success(dashboard);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get reputation dashboard', 500);
     }
   });

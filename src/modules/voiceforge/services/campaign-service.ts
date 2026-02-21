@@ -3,12 +3,10 @@
 // Create, manage, and track outbound calling campaigns
 // ============================================================================
 
-import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import type {
   Campaign,
   CampaignStats,
-  StopCondition,
   OutboundCallResult,
 } from '@/modules/voiceforge/types';
 import { generateJSON } from '@/lib/ai';

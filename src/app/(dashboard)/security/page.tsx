@@ -725,7 +725,8 @@ function ConsentPanel() {
 
 function EncryptionPanel() {
   const [vault] = useState<VaultHealth>(generateMockVaultHealth);
-  const daysSinceRotation = vault.lastRotation ? Math.floor((Date.now() - new Date(vault.lastRotation).getTime()) / (24 * 3600000)) : null;
+  const [now] = useState(() => Date.now());
+  const daysSinceRotation = vault.lastRotation ? Math.floor((now - new Date(vault.lastRotation).getTime()) / (24 * 3600000)) : null;
   const rotationPctUsed = daysSinceRotation !== null ? Math.min((daysSinceRotation / vault.keyRotationDays) * 100, 100) : 0;
 
   return (

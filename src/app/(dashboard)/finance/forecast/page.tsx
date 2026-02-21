@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import CashFlowTimeline from '@/modules/finance/components/CashFlowTimeline';
-import BurnRateCard from '@/modules/finance/components/BurnRateCard';
 import ScenarioForm from '@/modules/finance/components/ScenarioForm';
 import ScenarioResultPanel from '@/modules/finance/components/ScenarioResultPanel';
 import RenewalCard from '@/modules/finance/components/RenewalCard';

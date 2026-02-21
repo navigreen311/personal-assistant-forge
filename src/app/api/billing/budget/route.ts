@@ -12,7 +12,7 @@ const SetBudgetSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const entityId = searchParams.get('entityId');
@@ -27,14 +27,14 @@ export async function GET(request: NextRequest) {
       }
 
       return success(budget);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get budget', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = SetBudgetSchema.safeParse(body);
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
         parsed.data.overageBehavior
       );
       return success(budget, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to set budget', 500);
     }
   });

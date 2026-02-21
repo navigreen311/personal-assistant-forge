@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { VoiceIntent, ParsedVoiceCommand, ExtractedEntity } from '@/modules/voice/types';
+import type { VoiceIntent, ParsedVoiceCommand } from '@/modules/voice/types';
 
 interface CommandSuggestion {
   intent: VoiceIntent;

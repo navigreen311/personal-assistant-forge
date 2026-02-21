@@ -23,7 +23,7 @@ function toLearningItem(entry: Record<string, unknown>): LearningItem {
   };
 }
 
-function toStoredData(item: Partial<LearningItem> & Pick<LearningItem, 'title' | 'type' | 'status' | 'progress' | 'notes' | 'keyTakeaways' | 'reviewCount' | 'tags'>, easeFactor: number = 2.5, interval: number = 0): string {
+function _toStoredData(item: Partial<LearningItem> & Pick<LearningItem, 'title' | 'type' | 'status' | 'progress' | 'notes' | 'keyTakeaways' | 'reviewCount' | 'tags'>, easeFactor: number = 2.5, interval: number = 0): string {
   const stored: StoredLearningData = {
     title: item.title,
     type: item.type,

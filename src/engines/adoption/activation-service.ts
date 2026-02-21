@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import type { ActivationChecklist, ActivationPhase, ActivationTask } from './types';
+import type { ActivationChecklist, ActivationPhase } from './types';
 const uuidv4 = () => crypto.randomUUID();
 
 function buildDefaultPhases(): ActivationPhase[] {
