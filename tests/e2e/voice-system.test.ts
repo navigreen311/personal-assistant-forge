@@ -310,7 +310,7 @@ describe('Voice System E2E', () => {
       ], startNodeId: 'g' });
 
       const script = await generateScriptWithAI('entity-1', { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
-      const e = startExecution(script.id, 'call-lc', script.startNodeId);
+      const e = startExecution((script as any).id, 'call-lc', script.startNodeId);
       expect(e.currentNodeId).toBe('g');
 
       const s1 = advanceNode(e, 'I am interested', script.nodes);

@@ -436,6 +436,7 @@ describe('Calendar Management E2E Tests', () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Schedule a call with Alice tomorrow at 2pm',
         entityId: 'entity-1',
+        userId: 'user-1',
       });
 
       expect(parsed.title).toBeTruthy();
@@ -449,6 +450,7 @@ describe('Calendar Management E2E Tests', () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Quick meeting with Bob next Monday',
         entityId: 'entity-1',
+        userId: 'user-1',
       });
 
       expect(parsed.type).toBe('MEETING');
@@ -461,6 +463,7 @@ describe('Calendar Management E2E Tests', () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: '2 hour workshop with Dr. Smith next Friday',
         entityId: 'entity-1',
+        userId: 'user-1',
       });
 
       expect(parsed.duration).toBe(120);
@@ -550,6 +553,7 @@ describe('Calendar Management E2E Tests', () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Schedule a meeting with Alice tomorrow morning',
         entityId: 'entity-1',
+        userId: 'user-1',
       });
       expect(parsed.type).toBe('MEETING');
       expect(parsed.participantNames).toContain('Alice');
@@ -560,7 +564,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([]);
 
       const slots = await schedulingService.findAvailableSlots(
-        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration, priority: parsed.priority, type: parsed.type },
+        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type },
         'user-1', 7
       );
       expect(slots.length).toBeGreaterThan(0);
@@ -576,7 +580,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.create.mockResolvedValue(eventRecord);
 
       const event = await schedulingService.createEvent(
-        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration, priority: parsed.priority, type: parsed.type, participantIds: ['contact-alice'] },
+        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type, participantIds: ['contact-alice'] },
         slots[0].slot, 'user-1'
       );
       expect(event.id).toBe('nlp-event');
@@ -625,6 +629,7 @@ describe('Calendar Management E2E Tests', () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'meet with the team sometime',
         entityId: 'entity-1',
+        userId: 'user-1',
       });
 
       expect(parsed.title).toBeTruthy();

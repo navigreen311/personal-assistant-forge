@@ -1,4 +1,5 @@
 import { generateText } from '@/lib/ai';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import type { CoachingRecommendation } from './types';
 const uuidv4 = () => crypto.randomUUID();
@@ -72,10 +73,10 @@ async function storeRecommendations(userId: string, recs: CoachingRecommendation
     where: { userId },
     create: {
       userId,
-      data: { ...existingData, coaching: recs },
+      data: JSON.parse(JSON.stringify({ ...existingData, coaching: recs })) as Prisma.InputJsonValue,
     },
     update: {
-      data: { ...existingData, coaching: recs },
+      data: JSON.parse(JSON.stringify({ ...existingData, coaching: recs })) as Prisma.InputJsonValue,
     },
   });
 }

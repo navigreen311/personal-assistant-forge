@@ -6,10 +6,13 @@
 // 1. Vault Entries — encrypted records with categories, metadata, access logs
 // 2. Named Secrets — simple key/value secret storage per entity with
 //    multi-key support, key rotation, and secure deletion
+//
+// Persistence: Prisma (vaultEntry, vaultSecret, vaultKey)
 // ============================================================================
 
 import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
 import type {
   VaultEntry,
   VaultAccessEntry,
@@ -78,15 +81,11 @@ interface ManagedKey {
 // ---------------------------------------------------------------------------
 
 export class VaultService {
-  private readonly vault: Map<string, VaultEntry> = new Map();
   private readonly accessCounts: Map<string, number> = new Map();
   private readonly config: VaultConfig;
   private encryptionKey: Buffer;
 
-  /** Named secrets store: composite key "entityId:name" -> StoredSecret */
-  private readonly secrets: Map<string, StoredSecret> = new Map();
-
-  /** Managed encryption keys: keyId -> ManagedKey */
+  /** In-memory cache of managed keys for crypto operations (key material cannot be stored in plaintext in DB) */
   private readonly managedKeys: Map<string, ManagedKey> = new Map();
 
   /** The default key ID used when no keyId is specified */
@@ -95,16 +94,23 @@ export class VaultService {
   constructor(config?: Partial<VaultConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    const masterKey =
-      process.env.VAULT_MASTER_KEY || 'INSECURE_DEFAULT_KEY_CHANGE_ME';
+    const env = process.env.NODE_ENV || 'development';
+    const masterKey = process.env.VAULT_MASTER_KEY;
 
-    if (!process.env.VAULT_MASTER_KEY) {
+    if (!masterKey) {
+      if (env === 'production') {
+        throw new Error(
+          '[VaultService] VAULT_MASTER_KEY environment variable is required in production.',
+        );
+      }
+      // Allow a deterministic test key in development/test
       console.warn(
-        '[VaultService] WARNING: VAULT_MASTER_KEY not set. Using insecure default key.',
+        '[VaultService] WARNING: VAULT_MASTER_KEY not set. Using test-only default key.',
       );
     }
 
-    this.encryptionKey = this.deriveKey(masterKey);
+    const effectiveKey = masterKey || 'dev-only-test-key-not-for-production';
+    this.encryptionKey = this.deriveKey(effectiveKey);
 
     // Initialize a default managed key from the master key
     this.defaultKeyId = 'default';
@@ -139,8 +145,10 @@ export class VaultService {
     const { encrypted, iv, authTag } = this.encryptRaw(value);
 
     const now = new Date();
+    const id = uuidv4();
+
     const entry: VaultEntry = {
-      id: uuidv4(),
+      id,
       entityId,
       category,
       label,
@@ -156,8 +164,48 @@ export class VaultService {
       expiresAt,
     };
 
-    this.vault.set(entry.id, entry);
-    this.accessCounts.set(entry.id, 0);
+    // Persist to database via Prisma
+    await prisma.vaultEntry.upsert({
+      where: { userId_label: { userId: entityId, label } },
+      create: {
+        id,
+        userId: entityId,
+        label,
+        encryptedData: JSON.stringify({
+          encryptedValue: encrypted,
+          category,
+          metadata: metadata ?? {},
+          classification: 'RESTRICTED',
+          accessLog: [],
+          createdBy,
+          expiresAt: expiresAt?.toISOString(),
+        }),
+        iv,
+        tag: authTag,
+        algorithm: AES_ALGORITHM,
+        keyVersion: this.defaultKeyId as any,
+        createdAt: now,
+        updatedAt: now,
+      },
+      update: {
+        encryptedData: JSON.stringify({
+          encryptedValue: encrypted,
+          category,
+          metadata: metadata ?? {},
+          classification: 'RESTRICTED',
+          accessLog: [],
+          createdBy,
+          expiresAt: expiresAt?.toISOString(),
+        }),
+        iv,
+        tag: authTag,
+        algorithm: AES_ALGORITHM,
+        keyVersion: this.defaultKeyId as any,
+        updatedAt: now,
+      },
+    });
+
+    this.accessCounts.set(id, 0);
 
     return this.stripSensitiveFields(entry);
   }
@@ -171,10 +219,19 @@ export class VaultService {
     userId: string,
     reason: string,
   ): Promise<{ value: string; entry: VaultEntry; reauthRequired: boolean }> {
-    const entry = this.vault.get(entryId);
-    if (!entry) {
+    // Look up by ID
+    const row = await prisma.vaultEntry.findUnique({
+      where: { id: entryId },
+    });
+
+    if (!row) {
       throw new Error(`Vault entry not found: ${entryId}`);
     }
+
+    const stored = JSON.parse(row.encryptedData as string);
+
+    // Reconstruct the VaultEntry
+    const accessLog: VaultAccessEntry[] = stored.accessLog || [];
 
     // Log access
     const accessEntry: VaultAccessEntry = {
@@ -183,7 +240,7 @@ export class VaultService {
       timestamp: new Date(),
       reason,
     };
-    entry.accessLog.push(accessEntry);
+    accessLog.push(accessEntry);
 
     // Track access count for re-auth
     const currentCount = (this.accessCounts.get(entryId) ?? 0) + 1;
@@ -196,7 +253,40 @@ export class VaultService {
       this.accessCounts.set(entryId, 0);
     }
 
-    const value = this.decryptRaw(entry.encryptedValue, entry.iv, entry.authTag);
+    // Update access log in database
+    await prisma.vaultEntry.update({
+      where: { id: entryId },
+      data: {
+        encryptedData: JSON.stringify({
+          ...stored,
+          accessLog,
+        }),
+        updatedAt: new Date(),
+      },
+    });
+
+    const value = this.decryptRaw(
+      stored.encryptedValue,
+      row.iv,
+      row.tag,
+    );
+
+    const entry: VaultEntry = {
+      id: row.id,
+      entityId: row.userId,
+      category: stored.category,
+      label: row.label,
+      encryptedValue: stored.encryptedValue,
+      iv: row.iv,
+      authTag: row.tag,
+      metadata: stored.metadata ?? {},
+      classification: (stored.classification ?? 'RESTRICTED') as DataClassification,
+      accessLog,
+      createdBy: stored.createdBy,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      expiresAt: stored.expiresAt ? new Date(stored.expiresAt) : undefined,
+    };
 
     return { value, entry, reauthRequired };
   }
@@ -209,11 +299,33 @@ export class VaultService {
     entityId: string,
     category?: VaultEntry['category'],
   ): Promise<SafeVaultEntry[]> {
+    const rows = await prisma.vaultEntry.findMany({
+      where: { userId: entityId },
+    });
+
     const results: SafeVaultEntry[] = [];
 
-    for (const entry of this.vault.values()) {
-      if (entry.entityId !== entityId) continue;
-      if (category && entry.category !== category) continue;
+    for (const row of rows) {
+      const stored = JSON.parse(row.encryptedData as string);
+
+      if (category && stored.category !== category) continue;
+
+      const entry: VaultEntry = {
+        id: row.id,
+        entityId: row.userId,
+        category: stored.category,
+        label: row.label,
+        encryptedValue: stored.encryptedValue,
+        iv: row.iv,
+        authTag: row.tag,
+        metadata: stored.metadata ?? {},
+        classification: (stored.classification ?? 'RESTRICTED') as DataClassification,
+        accessLog: stored.accessLog ?? [],
+        createdBy: stored.createdBy,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        expiresAt: stored.expiresAt ? new Date(stored.expiresAt) : undefined,
+      };
 
       results.push(this.stripSensitiveFields(entry));
     }
@@ -229,17 +341,23 @@ export class VaultService {
     userId: string,
     reason: string,
   ): Promise<void> {
-    const entry = this.vault.get(entryId);
-    if (!entry) {
+    const row = await prisma.vaultEntry.findUnique({
+      where: { id: entryId },
+    });
+
+    if (!row) {
       throw new Error(`Vault entry not found: ${entryId}`);
     }
 
     // Audit trail
     console.log(
-      `[VaultService] AUDIT: Entry ${entryId} (${entry.label}) deleted by ${userId}. Reason: ${reason}`,
+      `[VaultService] AUDIT: Entry ${entryId} (${row.label}) deleted by ${userId}. Reason: ${reason}`,
     );
 
-    this.vault.delete(entryId);
+    await prisma.vaultEntry.delete({
+      where: { id: entryId },
+    });
+
     this.accessCounts.delete(entryId);
   }
 
@@ -247,12 +365,16 @@ export class VaultService {
    * Return the access history for a vault entry.
    */
   async getVaultAccessLog(entryId: string): Promise<VaultAccessEntry[]> {
-    const entry = this.vault.get(entryId);
-    if (!entry) {
+    const row = await prisma.vaultEntry.findUnique({
+      where: { id: entryId },
+    });
+
+    if (!row) {
       throw new Error(`Vault entry not found: ${entryId}`);
     }
 
-    return [...entry.accessLog];
+    const stored = JSON.parse(row.encryptedData as string);
+    return [...(stored.accessLog ?? [])];
   }
 
   /**
@@ -261,19 +383,24 @@ export class VaultService {
   async rotateEncryptionKey(): Promise<{ reEncrypted: number }> {
     // Derive a new key by appending a rotation timestamp to the master secret
     const masterKey =
-      process.env.VAULT_MASTER_KEY || 'INSECURE_DEFAULT_KEY_CHANGE_ME';
+      process.env.VAULT_MASTER_KEY || 'dev-only-test-key-not-for-production';
     const rotationSuffix = `-rotated-${Date.now()}`;
     const newKey = this.deriveKey(masterKey + rotationSuffix);
 
     const oldKey = this.encryptionKey;
     let reEncrypted = 0;
 
-    for (const entry of this.vault.values()) {
+    // Fetch all vault entries from the database
+    const rows = await prisma.vaultEntry.findMany();
+
+    for (const row of rows) {
+      const stored = JSON.parse(row.encryptedData as string);
+
       // Decrypt with the old key
       const plaintext = this.decryptWithKey(
-        entry.encryptedValue,
-        entry.iv,
-        entry.authTag,
+        stored.encryptedValue,
+        row.iv,
+        row.tag,
         oldKey,
       );
 
@@ -283,10 +410,18 @@ export class VaultService {
         newKey,
       );
 
-      entry.encryptedValue = encrypted;
-      entry.iv = iv;
-      entry.authTag = authTag;
-      entry.updatedAt = new Date();
+      // Update the stored data
+      stored.encryptedValue = encrypted;
+
+      await prisma.vaultEntry.update({
+        where: { id: row.id },
+        data: {
+          encryptedData: JSON.stringify(stored),
+          iv,
+          tag: authTag,
+          updatedAt: new Date(),
+        },
+      });
 
       reEncrypted++;
     }
@@ -414,15 +549,56 @@ export class VaultService {
 
     this.managedKeys.set(newKeyId, newManagedKey);
 
+    // Persist old key status update to DB
+    await prisma.vaultKey.upsert({
+      where: { keyId: resolvedKeyId },
+      create: {
+        id: uuidv4(),
+        userId: 'system',
+        keyId: resolvedKeyId,
+        encryptedKeyMaterial: '',
+        algorithm: AES_ALGORITHM,
+        status: 'ROTATED',
+        createdAt: oldManagedKey.createdAt,
+        rotatedAt: oldManagedKey.rotatedAt,
+      },
+      update: {
+        status: 'ROTATED',
+        rotatedAt: oldManagedKey.rotatedAt,
+      },
+    });
+
+    // Persist new key metadata to DB
+    await prisma.vaultKey.upsert({
+      where: { keyId: newKeyId },
+      create: {
+        id: uuidv4(),
+        userId: 'system',
+        keyId: newKeyId,
+        encryptedKeyMaterial: '',
+        algorithm: AES_ALGORITHM,
+        status: 'ACTIVE',
+        createdAt: newManagedKey.createdAt,
+      },
+      update: {
+        status: 'ACTIVE',
+      },
+    });
+
     // Re-encrypt all secrets that used the old key
     let reEncryptedSecrets = 0;
-    for (const secret of this.secrets.values()) {
-      if (secret.keyId === resolvedKeyId) {
+
+    // Query secrets by iterating through DB and checking keyId in stored data
+    const allSecrets = await prisma.vaultSecret.findMany();
+
+    for (const secretRow of allSecrets) {
+      const stored = JSON.parse(secretRow.encryptedValue as string);
+      if (stored.keyId === resolvedKeyId) {
         // Decrypt with old key
         const plaintext = this.decryptWithKey(
-          secret.encryptedValue,
-          secret.iv,
-          secret.authTag,
+          stored.data,
+          secretRow.iv,
+          secretRow.tag,
           oldManagedKey.key,
         );
 
@@ -432,11 +608,18 @@ export class VaultService {
           newKeyBuffer,
         );
 
-        secret.encryptedValue = encrypted;
-        secret.iv = iv;
-        secret.authTag = authTag;
-        secret.keyId = newKeyId;
-        secret.updatedAt = new Date();
+        stored.data = encrypted;
+        stored.keyId = newKeyId;
+
+        await prisma.vaultSecret.update({
+          where: { id: secretRow.id },
+          data: {
+            encryptedValue: JSON.stringify(stored),
+            iv,
+            tag: authTag,
+            updatedAt: new Date(),
+          },
+        });
 
         reEncryptedSecrets++;
       }
@@ -445,11 +628,15 @@ export class VaultService {
     // If rotating the default key, also re-encrypt vault entries and update default
     let reEncryptedVaultEntries = 0;
     if (resolvedKeyId === this.defaultKeyId) {
-      for (const entry of this.vault.values()) {
+      const vaultRows = await prisma.vaultEntry.findMany();
+
+      for (const row of vaultRows) {
+        const stored = JSON.parse(row.encryptedData as string);
+
         const plaintext = this.decryptWithKey(
-          entry.encryptedValue,
-          entry.iv,
-          entry.authTag,
+          stored.encryptedValue,
+          row.iv,
+          row.tag,
           oldManagedKey.key,
         );
 
@@ -458,10 +645,18 @@ export class VaultService {
           newKeyBuffer,
         );
 
-        entry.encryptedValue = encrypted;
-        entry.iv = iv;
-        entry.authTag = authTag;
-        entry.updatedAt = new Date();
+        stored.encryptedValue = encrypted;
+
+        await prisma.vaultEntry.update({
+          where: { id: row.id },
+          data: {
+            encryptedData: JSON.stringify(stored),
+            iv,
+            tag: authTag,
+            keyVersion: newKeyId as any,
+            updatedAt: new Date(),
+          },
+        });
 
         reEncryptedVaultEntries++;
       }
@@ -499,6 +694,23 @@ export class VaultService {
       key: keyBuffer,
       createdAt: new Date(),
       isActive: true,
+    });
+
+    // Persist key metadata to DB (key material stays in memory only)
+    await prisma.vaultKey.upsert({
+      where: { keyId: id },
+      create: {
+        id: uuidv4(),
+        userId: 'system',
+        keyId: id,
+        encryptedKeyMaterial: '',
+        algorithm: AES_ALGORITHM,
+        status: 'ACTIVE',
+        createdAt: new Date(),
+      },
+      update: {
+        status: 'ACTIVE',
+      },
     });
 
     return id;
@@ -540,30 +752,43 @@ export class VaultService {
       managedKey.key,
     );
 
-    const compositeKey = this.secretCompositeKey(entityId, name);
     const now = new Date();
 
-    const existing = this.secrets.get(compositeKey);
+    // Check for existing secret in DB
+    const existing = await prisma.vaultSecret.findUnique({
+      where: { userId_name: { userId: entityId, name } },
+    });
 
-    const secret: StoredSecret = {
-      id: existing?.id ?? uuidv4(),
-      name,
-      entityId,
-      encryptedValue: encrypted,
-      iv,
-      authTag,
-      keyId: resolvedKeyId,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
+    const secretId = existing?.id ?? uuidv4();
+    const createdAt = existing?.createdAt ?? now;
 
-    this.secrets.set(compositeKey, secret);
+    // Persist to database
+    await prisma.vaultSecret.upsert({
+      where: { userId_name: { userId: entityId, name } },
+      create: {
+        id: secretId,
+        userId: entityId,
+        name,
+        encryptedValue: JSON.stringify({ data: encrypted, keyId: resolvedKeyId }),
+        iv,
+        tag: authTag,
+        version: 1,
+        createdAt,
+        updatedAt: now,
+      },
+      update: {
+        encryptedValue: JSON.stringify({ data: encrypted, keyId: resolvedKeyId }),
+        iv,
+        tag: authTag,
+        updatedAt: now,
+      },
+    });
 
     return {
-      id: secret.id,
-      name: secret.name,
-      entityId: secret.entityId,
-      createdAt: secret.createdAt,
+      id: secretId,
+      name,
+      entityId,
+      createdAt,
     };
   }
 
@@ -576,26 +801,30 @@ export class VaultService {
    * @throws Error if the secret does not exist or the key is unavailable
    */
   async retrieveSecret(name: string, entityId: string): Promise<string> {
-    const compositeKey = this.secretCompositeKey(entityId, name);
-    const secret = this.secrets.get(compositeKey);
+    const row = await prisma.vaultSecret.findUnique({
+      where: { userId_name: { userId: entityId, name } },
+    });
 
-    if (!secret) {
+    if (!row) {
       throw new Error(
         `Secret not found: name="${name}", entityId="${entityId}"`,
       );
     }
 
-    const managedKey = this.managedKeys.get(secret.keyId);
+    const stored = JSON.parse(row.encryptedValue as string);
+    const secretKeyId = stored.keyId;
+
+    const managedKey = this.managedKeys.get(secretKeyId);
     if (!managedKey) {
       throw new Error(
-        `Encryption key not found for secret "${name}": keyId="${secret.keyId}"`,
+        `Encryption key not found for secret "${name}": keyId="${secretKeyId}"`,
       );
     }
 
     return this.decryptWithKey(
-      secret.encryptedValue,
-      secret.iv,
-      secret.authTag,
+      stored.data,
+      row.iv,
+      row.tag,
       managedKey.key,
     );
   }
@@ -619,32 +848,22 @@ export class VaultService {
       updatedAt: Date;
     }>
   > {
-    const results: Array<{
-      id: string;
-      name: string;
-      entityId: string;
-      keyId: string;
-      createdAt: Date;
-      updatedAt: Date;
-    }> = [];
+    const rows = await prisma.vaultSecret.findMany({
+      where: { userId: entityId },
+      orderBy: { name: 'asc' },
+    });
 
-    for (const secret of this.secrets.values()) {
-      if (secret.entityId === entityId) {
-        results.push({
-          id: secret.id,
-          name: secret.name,
-          entityId: secret.entityId,
-          keyId: secret.keyId,
-          createdAt: secret.createdAt,
-          updatedAt: secret.updatedAt,
-        });
-      }
-    }
-
-    // Sort by name for consistent ordering
-    results.sort((a, b) => a.name.localeCompare(b.name));
-
-    return results;
+    return rows.map((row: { id: string; name: string; userId: string; encryptedValue: string; createdAt: Date; updatedAt: Date }) => {
+      const stored = JSON.parse(row.encryptedValue as string);
+      return {
+        id: row.id,
+        name: row.name,
+        entityId: row.userId,
+        keyId: stored.keyId,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      };
+    });
   }
 
   /**
@@ -656,21 +875,19 @@ export class VaultService {
    * @throws Error if the secret does not exist
    */
   async deleteSecret(name: string, entityId: string): Promise<void> {
-    const compositeKey = this.secretCompositeKey(entityId, name);
-    const secret = this.secrets.get(compositeKey);
+    const row = await prisma.vaultSecret.findUnique({
+      where: { userId_name: { userId: entityId, name } },
+    });
 
-    if (!secret) {
+    if (!row) {
       throw new Error(
         `Secret not found: name="${name}", entityId="${entityId}"`,
       );
     }
 
-    // Overwrite the encrypted data in memory before deletion (defense in depth)
-    secret.encryptedValue = '';
-    secret.iv = '';
-    secret.authTag = '';
-
-    this.secrets.delete(compositeKey);
+    await prisma.vaultSecret.delete({
+      where: { userId_name: { userId: entityId, name } },
+    });
 
     console.log(
       `[VaultService] AUDIT: Secret "${name}" for entity "${entityId}" securely deleted.`,
@@ -770,12 +987,6 @@ export class VaultService {
     return safe;
   }
 
-  /**
-   * Build a composite key for the secrets store from entityId and name.
-   */
-  private secretCompositeKey(entityId: string, name: string): string {
-    return `${entityId}:${name}`;
-  }
 }
 
 // ---------------------------------------------------------------------------

@@ -111,12 +111,12 @@ export default function STTControls({
             {isActive ? (
               <>
                 <StopIcon />
-                {status === 'stopping' ? 'Stopping...' : 'Stop'}
+                {(status as string) === 'stopping' ? 'Stopping...' : 'Stop'}
               </>
             ) : (
               <>
                 <MicIcon />
-                {status === 'starting' ? 'Starting...' : 'Start'}
+                {(status as string) === 'starting' ? 'Starting...' : 'Start'}
               </>
             )}
           </button>

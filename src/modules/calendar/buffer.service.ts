@@ -3,6 +3,7 @@ import {
   differenceInMinutes,
   areIntervalsOverlapping,
 } from 'date-fns';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import type { CalendarEvent, UserPreferences } from '@/shared/types';
 import type {
@@ -503,10 +504,10 @@ export class BufferService {
     await prisma.user.update({
       where: { id: userId },
       data: {
-        preferences: {
+        preferences: JSON.parse(JSON.stringify({
           ...existingPrefs,
           bufferSettings: merged,
-        },
+        })) as Prisma.InputJsonValue,
       },
     });
 

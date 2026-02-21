@@ -872,11 +872,13 @@ describe('Auth Flow E2E Tests', () => {
         token: mockToken as never,
         trigger: 'update' as never,
         newSession: undefined as never,
-      });
+        user: session.user as never,
+      } as any);
 
-      expect(result.user.id).toBe('session-user-1');
-      expect(result.user.role).toBe('owner');
-      expect(result.user.activeEntityId).toBe('session-entity-1');
+      const resultUser = result.user as any;
+      expect(resultUser.id).toBe('session-user-1');
+      expect(resultUser.role).toBe('owner');
+      expect(resultUser.activeEntityId).toBe('session-entity-1');
     });
   });
 });

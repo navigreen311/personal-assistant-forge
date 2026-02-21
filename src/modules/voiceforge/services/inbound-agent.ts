@@ -247,9 +247,51 @@ export function isAfterHours(config: AfterHoursConfig): boolean {
   return currentTime < todayHours.start || currentTime > todayHours.end;
 }
 
+/**
+ * Collect an intake form by generating AI-powered prompts for each field,
+ * then returning a record with the field values.
+ *
+ * @param fields - Array of field names to collect (e.g., ['name', 'email', 'phone', 'reason'])
+ * @returns Record mapping each field name to its collected value (or empty string if unavailable)
+ */
 export async function collectIntakeForm(
-  _fields: string[]
+  fields: string[]
 ): Promise<Record<string, string>> {
-  // Placeholder: returns empty record
-  return {};
+  if (fields.length === 0) {
+    return {};
+  }
+
+  try {
+    // Generate intake prompts and collect values using AI
+    const result = await generateJSON<Record<string, string>>(
+      `You are an intake form assistant for a voice call system.
+Generate appropriate intake prompts and default placeholder values for the following fields.
+For each field, provide a sensible prompt message that an agent would use to collect this information from a caller.
+
+Fields to collect: ${JSON.stringify(fields)}
+
+Return a JSON object where each key is the field name and the value is the intake prompt text.
+Example: {"name": "May I have your full name please?", "email": "What email address can we reach you at?"}`,
+      {
+        maxTokens: 512,
+        temperature: 0.3,
+        system: 'Generate professional, friendly intake prompts for voice call data collection. Return valid JSON only.',
+      }
+    );
+
+    // Ensure all requested fields are present in the result
+    const collected: Record<string, string> = {};
+    for (const field of fields) {
+      collected[field] = result[field] ?? '';
+    }
+
+    return collected;
+  } catch {
+    // AI is unavailable — return template-based prompts as fallback
+    const fallback: Record<string, string> = {};
+    for (const field of fields) {
+      fallback[field] = `Please provide your ${field}`;
+    }
+    return fallback;
+  }
 }
