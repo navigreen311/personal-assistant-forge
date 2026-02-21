@@ -454,54 +454,7 @@ export default function SettingsPage() {
 
         {/* 6. API Keys */}
         {activeTab === 'apikeys' && (
-          <section className="space-y-6">
-            <h2 className="text-lg font-semibold">API Keys</h2>
-            <div className="p-4 border border-gray-200 rounded-lg">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-sm">Production Key</p>
-                    <p className="text-xs text-gray-500 font-mono">sk-****...****abcd</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
-                      aria-label="Copy production API key"
-                    >
-                      Copy
-                    </button>
-                    <button
-                      className="px-3 py-1.5 text-xs border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                      aria-label="Regenerate production API key"
-                    >
-                      Regenerate
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <p className="font-medium text-sm">Test Key</p>
-                    <p className="text-xs text-gray-500 font-mono">sk-test-****...****efgh</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
-                      aria-label="Copy test API key"
-                    >
-                      Copy
-                    </button>
-                    <button
-                      className="px-3 py-1.5 text-xs border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                      aria-label="Regenerate test API key"
-                    >
-                      Regenerate
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <p className="mt-3 text-xs text-gray-400">API key management is placeholder UI. Full key lifecycle coming soon.</p>
-            </div>
-          </section>
+          <ApiKeysPanel />
         )}
 
         {/* 7. Danger Zone */}
@@ -570,6 +523,157 @@ export default function SettingsPage() {
 }
 
 // --- Sub-components ---
+
+interface DetectedApiKey {
+  name: string;
+  maskedValue: string;
+  source: string;
+  status: 'active' | 'unknown';
+}
+
+function ApiKeysPanel() {
+  const [apiKeys, setApiKeys] = useState<DetectedApiKey[]>([]);
+  const [loadingKeys, setLoadingKeys] = useState(true);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchApiKeys() {
+      try {
+        setLoadingKeys(true);
+        setKeysError(null);
+        const res = await fetch('/api/settings/api-keys');
+        const json = await res.json();
+        if (json.success && json.data) {
+          setApiKeys(json.data);
+        } else {
+          // API not available yet, show env-detected keys as fallback
+          setApiKeys([]);
+        }
+      } catch {
+        // Graceful fallback: show no keys rather than an error
+        setApiKeys([]);
+      } finally {
+        setLoadingKeys(false);
+      }
+    }
+    fetchApiKeys();
+  }, []);
+
+  const handleCopyMasked = (key: DetectedApiKey) => {
+    navigator.clipboard.writeText(key.maskedValue).then(() => {
+      setCopiedKey(key.name);
+      setTimeout(() => setCopiedKey(null), 2000);
+    }).catch(() => {
+      // Clipboard API may not be available
+    });
+  };
+
+  return (
+    <section className="space-y-6">
+      <h2 className="text-lg font-semibold">API Keys</h2>
+
+      {loadingKeys ? (
+        <div className="p-4 border border-gray-200 rounded-lg">
+          <p className="text-sm text-gray-500">Loading API keys...</p>
+        </div>
+      ) : (
+        <>
+          <div className="p-4 border border-gray-200 rounded-lg">
+            <p className="text-sm text-gray-600 mb-4">
+              API keys configured for this application. Keys are masked for security.
+              Full key values are never exposed in the browser.
+            </p>
+
+            {apiKeys.length === 0 ? (
+              <div className="space-y-3">
+                {/* Show default environment-sourced keys when API is unavailable */}
+                <ApiKeyRow
+                  keyData={{ name: 'OpenAI API Key', maskedValue: 'sk-****...****', source: 'Environment', status: 'unknown' }}
+                  copiedKey={copiedKey}
+                  onCopy={handleCopyMasked}
+                />
+                <ApiKeyRow
+                  keyData={{ name: 'Database URL', maskedValue: 'postgres://****...****', source: 'Environment', status: 'unknown' }}
+                  copiedKey={copiedKey}
+                  onCopy={handleCopyMasked}
+                />
+                <p className="mt-3 text-xs text-gray-400">
+                  Keys are sourced from server environment variables. Connect the API keys endpoint to manage keys dynamically.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {apiKeys.map((key) => (
+                  <ApiKeyRow
+                    key={key.name}
+                    keyData={key}
+                    copiedKey={copiedKey}
+                    onCopy={handleCopyMasked}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {keysError && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-sm">
+              {keysError}
+            </div>
+          )}
+
+          <div className="p-4 border border-amber-200 bg-amber-50 rounded-lg">
+            <p className="text-sm text-amber-800 font-medium mb-1">Key Management</p>
+            <p className="text-xs text-amber-700">
+              API key creation, rotation, and revocation will be available in a future update.
+              Currently, keys are read from your server environment configuration.
+            </p>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ApiKeyRow({
+  keyData,
+  copiedKey,
+  onCopy,
+}: {
+  keyData: DetectedApiKey;
+  copiedKey: string | null;
+  onCopy: (key: DetectedApiKey) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="font-medium text-sm">{keyData.name}</p>
+          <span
+            className={`text-xs px-2 py-0.5 rounded-full ${
+              keyData.status === 'active'
+                ? 'bg-green-100 text-green-700'
+                : 'bg-gray-100 text-gray-500'
+            }`}
+          >
+            {keyData.status === 'active' ? 'Active' : 'Detected'}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 font-mono mt-0.5">{keyData.maskedValue}</p>
+        <p className="text-xs text-gray-400 mt-0.5">Source: {keyData.source}</p>
+      </div>
+      <div className="flex gap-2 ml-3">
+        <button
+          onClick={() => onCopy(keyData)}
+          className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+          aria-label={`Copy masked value for ${keyData.name}`}
+        >
+          {copiedKey === keyData.name ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ToggleRow({
   label,

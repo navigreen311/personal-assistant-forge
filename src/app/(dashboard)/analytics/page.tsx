@@ -17,7 +17,7 @@ import type {
   CallAnalytics,
 } from '@/modules/analytics/types';
 
-// TODO: Replace with real API when time-saved endpoint is available
+// Fallback demo data for time-saved if API fetch fails
 const demoTimeSaved: TimeSavedAggregate = {
   userId: 'demo',
   totalMinutesSaved: 847,
@@ -34,6 +34,7 @@ const demoTimeSaved: TimeSavedAggregate = {
 };
 
 export default function AnalyticsPage() {
+  const [timeSaved, setTimeSaved] = useState<TimeSavedAggregate | null>(null);
   const [productivity, setProductivity] = useState<ProductivityScore | null>(null);
   const [timeAudit, setTimeAudit] = useState<TimeAuditReport | null>(null);
   const [goals, setGoals] = useState<GoalDefinition[] | null>(null);
@@ -61,6 +62,7 @@ export default function AnalyticsPage() {
           fetch(
             `/api/analytics/call-analytics?entityId=default&start=${thirtyDaysAgo.toISOString()}&end=${now.toISOString()}`
           ).then((r) => r.json()),
+          fetch('/api/analytics/time-saved').then((r) => r.json()),
         ]);
 
         if (results[0].status === 'fulfilled' && results[0].value?.data) {
@@ -78,6 +80,9 @@ export default function AnalyticsPage() {
         if (results[4].status === 'fulfilled' && results[4].value?.data) {
           setCalls(results[4].value.data);
         }
+        if (results[5].status === 'fulfilled' && results[5].value?.data) {
+          setTimeSaved(results[5].value.data);
+        }
       } catch (err) {
         setError('Failed to load analytics data');
       } finally {
@@ -89,6 +94,8 @@ export default function AnalyticsPage() {
   }, []);
 
   // Fallback demo data for sections that fail to load
+  const timeSavedData: TimeSavedAggregate = timeSaved ?? demoTimeSaved;
+
   const productivityData: ProductivityScore = productivity ?? {
     userId: 'demo',
     date: new Date().toISOString().split('T')[0],
@@ -178,7 +185,7 @@ export default function AnalyticsPage() {
     <div className="space-y-6">
       {/* Hero Row */}
       <div className="grid gap-6 md:grid-cols-2">
-        <TimeSavedDisplay aggregate={demoTimeSaved} />
+        <TimeSavedDisplay aggregate={timeSavedData} />
         <ProductivityScoreCard score={productivityData} />
       </div>
 

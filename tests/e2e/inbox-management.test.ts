@@ -18,6 +18,7 @@ const mockPrisma = {
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     count: jest.fn(),
   },
   contact: {
@@ -27,6 +28,23 @@ const mockPrisma = {
   entity: {
     findUnique: jest.fn(),
     findMany: jest.fn(),
+  },
+  followUpReminder: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    findFirst: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+    deleteMany: jest.fn(),
+  },
+  cannedResponse: {
+    create: jest.fn(),
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+    deleteMany: jest.fn(),
   },
 };
 
@@ -70,7 +88,10 @@ function createMockMessage(overrides: Record<string, unknown> = {}) {
     intent: null,
     sensitivity: 'PUBLIC',
     draftStatus: null,
+    read: false,
+    starred: false,
     attachments: [],
+    deletedAt: null,
     createdAt: new Date('2026-01-15'),
     updatedAt: new Date('2026-01-15'),
     ...overrides,
@@ -95,6 +116,12 @@ describe('Inbox Management E2E Tests', () => {
   let triageService: TriageService;
   let draftService: DraftService;
 
+  // In-memory stores for stateful Prisma mocking
+  let followUpStore: Record<string, unknown>[];
+  let cannedStore: Record<string, unknown>[];
+  let followUpIdCounter: number;
+  let cannedIdCounter: number;
+
   beforeEach(() => {
     jest.clearAllMocks();
     inboxService = new InboxService();
@@ -103,6 +130,58 @@ describe('Inbox Management E2E Tests', () => {
     mockedGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
     mockedGenerateText.mockRejectedValue(new Error('AI unavailable'));
     mockedChat.mockRejectedValue(new Error('AI unavailable'));
+
+    // Reset in-memory stores
+    followUpStore = [];
+    cannedStore = [];
+    followUpIdCounter = 1;
+    cannedIdCounter = 1;
+
+    // Default empty returns for list/message queries
+    mockPrisma.followUpReminder.findMany.mockImplementation(() => Promise.resolve(followUpStore));
+    mockPrisma.followUpReminder.findFirst.mockImplementation(() => Promise.resolve(null));
+    mockPrisma.followUpReminder.findUnique.mockImplementation((args: { where: { id: string } }) => {
+      return Promise.resolve(followUpStore.find((f: any) => f.id === args.where.id) ?? null);
+    });
+    mockPrisma.followUpReminder.create.mockImplementation((args: { data: any }) => {
+      const row = { id: `fu-${followUpIdCounter++}`, ...args.data, createdAt: new Date(), updatedAt: new Date() };
+      followUpStore.push(row);
+      return Promise.resolve(row);
+    });
+    mockPrisma.followUpReminder.update.mockImplementation((args: { where: { id: string }; data: any }) => {
+      const idx = followUpStore.findIndex((f: any) => f.id === args.where.id);
+      if (idx >= 0) {
+        followUpStore[idx] = { ...followUpStore[idx], ...args.data };
+        return Promise.resolve(followUpStore[idx]);
+      }
+      return Promise.reject(new Error('Not found'));
+    });
+
+    mockPrisma.cannedResponse.findMany.mockImplementation(() => Promise.resolve(cannedStore));
+    mockPrisma.cannedResponse.findUnique.mockImplementation((args: { where: { id: string } }) => {
+      return Promise.resolve(cannedStore.find((c: any) => c.id === args.where.id) ?? null);
+    });
+    mockPrisma.cannedResponse.create.mockImplementation((args: { data: any }) => {
+      const row = { id: `cr-${cannedIdCounter++}`, ...args.data, createdAt: new Date(), updatedAt: new Date() };
+      cannedStore.push(row);
+      return Promise.resolve(row);
+    });
+    mockPrisma.cannedResponse.update.mockImplementation((args: { where: { id: string }; data: any }) => {
+      const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
+      if (idx >= 0) {
+        cannedStore[idx] = { ...cannedStore[idx], ...args.data, updatedAt: new Date() };
+        return Promise.resolve(cannedStore[idx]);
+      }
+      return Promise.reject(new Error('Not found'));
+    });
+    mockPrisma.cannedResponse.delete.mockImplementation((args: { where: { id: string } }) => {
+      const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
+      if (idx >= 0) {
+        const removed = cannedStore.splice(idx, 1);
+        return Promise.resolve(removed[0]);
+      }
+      return Promise.reject(new Error('Not found'));
+    });
   });
 
   // =========================================================================

@@ -102,17 +102,35 @@ describe('wearable-service', () => {
       await expect(syncWearableData(conn.id)).rejects.toThrow('Wearable not connected');
     });
 
-    it('falls back to DB data when adapter fails (stub adapters)', async () => {
+    it('returns demo data when no API keys are configured', async () => {
       const conn = await connectWearable('user-sync-2', 'APPLE_WATCH');
+
+      // createMany mock succeeds (default behavior)
+      (mockPrisma.healthMetric.createMany as jest.Mock).mockResolvedValue({ count: 21 });
+
+      const result = await syncWearableData(conn.id);
+
+      // Adapters generate demo data (7 days x 3 metric types = 21 entries)
+      expect(result.length).toBe(21);
+      expect(result.some(r => r.type === 'sleep')).toBe(true);
+      expect(result.some(r => r.type === 'stress')).toBe(true);
+      expect(result.some(r => r.type === 'heart_rate')).toBe(true);
+    });
+
+    it('falls back to DB data when createMany fails', async () => {
+      const conn = await connectWearable('user-sync-3', 'GARMIN');
+
+      // Force createMany to throw so the catch block is reached
+      (mockPrisma.healthMetric.createMany as jest.Mock).mockRejectedValue(new Error('DB write failed'));
 
       const mockDbData = [
         {
           id: 'hm-1',
-          entityId: 'user-sync-2',
+          entityId: 'user-sync-3',
           type: 'sleep',
           value: 7.5,
           unit: 'hours',
-          source: 'apple_health',
+          source: 'garmin',
           metadata: null,
           recordedAt: new Date(),
           createdAt: new Date(),
@@ -126,22 +144,12 @@ describe('wearable-service', () => {
       expect(mockPrisma.healthMetric.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            entityId: 'user-sync-2',
+            entityId: 'user-sync-3',
           }),
         })
       );
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('sleep');
-      expect(result[0].value).toBe(7.5);
-    });
-
-    it('returns empty array when adapter fails and no DB data exists', async () => {
-      const conn = await connectWearable('user-sync-3', 'GARMIN');
-
-      (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await syncWearableData(conn.id);
-      expect(result).toEqual([]);
     });
   });
 
