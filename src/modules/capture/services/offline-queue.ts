@@ -43,14 +43,21 @@ class OfflineQueue {
 
   /**
    * Lazily initialize the BullMQ Queue, reusing the shared Redis URL.
-   * If Redis is unavailable, marks redisAvailable = false and returns null.
+   * If Redis is unavailable, marks redisAvailable = false and returns null,
+   * ensuring in-memory fallback will be used for all queue operations.
    */
   private getBullQueue(): Queue | null {
     if (this.bullQueue) return this.bullQueue;
 
     try {
+      const redisUrl = getRedisUrl();
+      if (!redisUrl) {
+        this.redisAvailable = false;
+        return null;
+      }
+
       this.bullQueue = new Queue(QUEUE_NAME, {
-        connection: { url: getRedisUrl() },
+        connection: { url: redisUrl },
         defaultJobOptions: DEFAULT_JOB_OPTIONS,
       });
 
@@ -62,6 +69,9 @@ class OfflineQueue {
       this.redisAvailable = true;
       return this.bullQueue;
     } catch {
+      // Redis unavailable — all operations will use the in-memory fallback queue.
+      // Items stored in-memory are drained back to Redis via drainFallbackToRedis()
+      // when the connection recovers during a flush() call.
       this.redisAvailable = false;
       return null;
     }
@@ -179,14 +189,21 @@ class OfflineQueue {
           return result;
         } catch {
           item.retryCount++;
+          item.updatedAt = new Date();
           await nextJob.updateData({ ...item });
           if (item.retryCount >= this.maxRetries) {
+            item.status = 'FAILED';
             await nextJob.moveToFailed(
               new Error('Max retries exceeded'),
               'capture-processor',
             );
           }
-          return null;
+          // Return the item with updated status so the caller has
+          // visibility into what failed rather than getting a silent null.
+          return {
+            ...item,
+            status: item.retryCount >= this.maxRetries ? 'FAILED' : 'PENDING',
+          } as CaptureItem;
         }
       } catch {
         this.redisAvailable = false;
@@ -210,11 +227,18 @@ class OfflineQueue {
       return result;
     } catch {
       item.retryCount++;
+      item.updatedAt = new Date();
       if (item.retryCount >= this.maxRetries) {
+        item.status = 'FAILED';
         this.fallbackQueue.shift();
         this.fallbackDeadLetter.push(item);
       }
-      return null;
+      // Return the item with updated status so callers have
+      // visibility into what failed rather than getting a silent null.
+      return {
+        ...item,
+        status: item.retryCount >= this.maxRetries ? 'FAILED' : 'PENDING',
+      } as CaptureItem;
     }
   }
 

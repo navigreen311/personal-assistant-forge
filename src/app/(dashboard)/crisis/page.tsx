@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import CrisisAlertBanner from '@/modules/crisis/components/CrisisAlertBanner';
 import CrisisDashboard from '@/modules/crisis/components/CrisisDashboard';
 import EscalationTimeline from '@/modules/crisis/components/EscalationTimeline';
@@ -10,6 +11,7 @@ import PostIncidentReport from '@/modules/crisis/components/PostIncidentReport';
 import PhoneTreeVisualization from '@/modules/crisis/components/PhoneTreeVisualization';
 import type { CrisisEvent, DeadManSwitch, PostIncidentReview, PhoneTreeNode } from '@/modules/crisis/types';
 
+// Fallback demo data for crisis if API fetch fails
 const sampleCrisis: CrisisEvent = {
   id: 'crisis-1',
   userId: 'user-1',
@@ -71,35 +73,91 @@ const samplePhoneTree: PhoneTreeNode[] = [
 ];
 
 export default function CrisisPage() {
+  const [crises, setCrises] = useState<CrisisEvent[] | null>(null);
+  const [dms, setDms] = useState<DeadManSwitch | null>(null);
+  const [phoneTree, setPhoneTree] = useState<PhoneTreeNode[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchData() {
+      try {
+        const results = await Promise.allSettled([
+          fetch('/api/crisis').then((r) => r.json()),
+          fetch('/api/crisis/dms').then((r) => r.json()),
+          fetch('/api/crisis/phone-tree').then((r) => r.json()),
+        ]);
+
+        if (results[0].status === 'fulfilled' && results[0].value?.data) {
+          setCrises(results[0].value.data);
+        }
+        if (results[1].status === 'fulfilled' && results[1].value?.data) {
+          setDms(results[1].value.data);
+        }
+        if (results[2].status === 'fulfilled' && results[2].value?.data) {
+          setPhoneTree(results[2].value.data);
+        }
+      } catch (err) {
+        setError('Failed to load crisis data');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchData();
+  }, []);
+
+  // Fallback to demo data for sections that fail to load
+  const crisesData: CrisisEvent[] = crises ?? [sampleCrisis];
+  const activeCrisis: CrisisEvent = crisesData[0] ?? sampleCrisis;
+  const dmsData: DeadManSwitch = dms ?? sampleDMS;
+  const phoneTreeData: PhoneTreeNode[] = phoneTree ?? samplePhoneTree;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-gray-500">Loading crisis data...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-red-500">{error}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-bold">Crisis Management</h1>
 
-      <CrisisAlertBanner crisis={sampleCrisis} />
+      <CrisisAlertBanner crisis={activeCrisis} />
 
       <div className="bg-white rounded-lg shadow p-6">
-        <CrisisDashboard crises={[sampleCrisis]} />
+        <CrisisDashboard crises={crisesData} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow p-6">
-          <EscalationTimeline steps={sampleCrisis.escalationChain} />
+          <EscalationTimeline steps={activeCrisis.escalationChain} />
         </div>
         <div className="bg-white rounded-lg shadow p-6">
-          {sampleCrisis.playbook && <PlaybookProgress playbook={sampleCrisis.playbook} />}
+          {activeCrisis.playbook && <PlaybookProgress playbook={activeCrisis.playbook} />}
         </div>
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">
-        <WarRoomPanel state={sampleCrisis.warRoom} />
+        <WarRoomPanel state={activeCrisis.warRoom} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow p-6">
-          <DeadManSwitchConfig config={sampleDMS} onSave={() => {}} />
+          <DeadManSwitchConfig config={dmsData} onSave={() => {}} />
         </div>
         <div className="bg-white rounded-lg shadow p-6">
-          <PhoneTreeVisualization tree={samplePhoneTree} />
+          <PhoneTreeVisualization tree={phoneTreeData} />
         </div>
       </div>
     </div>

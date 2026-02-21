@@ -42,11 +42,43 @@ function isValidE164(phone: string): boolean {
   return /^\+\d{7,15}$/.test(phone);
 }
 
-function getPhonePrefixScore(phone: string): number | null {
+function getPhonePrefixScore(phone: string): number {
+  // Check against known high-risk prefixes first
   for (const [prefix, score] of HIGH_RISK_PREFIXES) {
     if (phone.startsWith(prefix)) return score;
   }
-  return null;
+
+  // Basic heuristic scoring for phones that don't match known prefixes:
+  // Start with a baseline and adjust based on format characteristics
+  let score = 20; // baseline for unknown numbers
+
+  // Shorter numbers are more suspicious (potential short codes or spoofed)
+  const digitCount = phone.replace(/\D/g, '').length;
+  if (digitCount < 8) score += 15;
+  if (digitCount > 15) score += 10;
+
+  // Numbers with repeated digits are suspicious (e.g., +1111111111)
+  const digits = phone.slice(1); // skip the '+'
+  const uniqueDigits = new Set(digits.replace(/\D/g, '')).size;
+  if (uniqueDigits <= 2) score += 25;
+  else if (uniqueDigits <= 3) score += 10;
+
+  // Sequential digit patterns (e.g., 1234567890) are suspicious
+  const digitStr = phone.replace(/\D/g, '');
+  let sequential = 0;
+  for (let i = 1; i < digitStr.length; i++) {
+    if (parseInt(digitStr[i]) === parseInt(digitStr[i - 1]) + 1) {
+      sequential++;
+    }
+  }
+  if (sequential >= 5) score += 15;
+
+  // Apply country code tier adjustment
+  const tier = getCountryCodeRiskTier(phone);
+  if (tier === 'low') score = Math.max(5, score - 10);
+  else if (tier === 'high') score += 20;
+
+  return Math.min(score, 100);
 }
 
 function getCountryCodeRiskTier(phone: string): 'low' | 'medium' | 'high' {
@@ -75,43 +107,27 @@ export async function checkPhoneReputation(phoneNumber: string): Promise<Reputat
     };
   }
 
-  const prefixScore = getPhonePrefixScore(phoneNumber);
-  if (prefixScore !== null) {
-    const tier = getCountryCodeRiskTier(phoneNumber);
-    return {
-      channel: 'PHONE',
-      identifier: phoneNumber,
-      spamScore: prefixScore,
-      warmingProgress: tier === 'low' ? 30 : tier === 'medium' ? 20 : 10,
-      stirShakenCompliant: isUsOrCaNumber(phoneNumber),
-      lastChecked: new Date(),
-    };
-  }
-
+  const spamScore = getPhonePrefixScore(phoneNumber);
   const tier = getCountryCodeRiskTier(phoneNumber);
-  let spamScore: number;
-  let warmingProgress: number;
 
-  switch (tier) {
-    case 'low':
-      spamScore = 10;
-      warmingProgress = 90;
-      break;
-    case 'high':
-      spamScore = 55;
-      warmingProgress = 30;
-      break;
-    default:
-      spamScore = 30;
-      warmingProgress = 60;
-      break;
-  }
+  // Calculate warming progress inversely proportional to spam score
+  // Low spam scores indicate trusted numbers with high warming progress
+  let warmingProgress: number;
+  if (spamScore <= 15) warmingProgress = 90;
+  else if (spamScore <= 30) warmingProgress = 60;
+  else if (spamScore <= 50) warmingProgress = 35;
+  else if (spamScore <= 70) warmingProgress = 20;
+  else warmingProgress = 10;
+
+  // Adjust based on tier when score is in the mid-range
+  if (tier === 'low' && warmingProgress < 90) warmingProgress += 10;
+  if (tier === 'high' && warmingProgress > 10) warmingProgress -= 10;
 
   return {
     channel: 'PHONE',
     identifier: phoneNumber,
     spamScore,
-    warmingProgress,
+    warmingProgress: Math.max(0, Math.min(100, warmingProgress)),
     stirShakenCompliant: isUsOrCaNumber(phoneNumber),
     lastChecked: new Date(),
   };

@@ -189,25 +189,57 @@ export async function getExpensesByCategory(
 }
 
 export async function detectDuplicates(expense: Partial<Expense>): Promise<Expense[]> {
-  if (!expense.entityId || expense.amount === undefined || !expense.vendor) {
+  if (!expense.entityId) {
     return [];
   }
 
+  // Build a flexible query: match on any combination of available fields
+  const where: Record<string, unknown> = {
+    entityId: expense.entityId,
+    type: 'EXPENSE',
+    status: { not: 'CANCELLED' },
+  };
+
+  // Exact amount match when provided
+  if (expense.amount !== undefined) {
+    where.amount = expense.amount;
+  }
+
+  // Vendor match when provided
+  if (expense.vendor) {
+    where.vendor = expense.vendor;
+  }
+
+  // Date proximity window: look within +/- 3 days of target date
   const targetDate = expense.date ?? new Date();
   const threeDaysBefore = new Date(targetDate.getTime() - 3 * 24 * 60 * 60 * 1000);
   const threeDaysAfter = new Date(targetDate.getTime() + 3 * 24 * 60 * 60 * 1000);
+  where.OR = [
+    { dueDate: { gte: threeDaysBefore, lte: threeDaysAfter } },
+    { createdAt: { gte: threeDaysBefore, lte: threeDaysAfter } },
+  ];
+
+  // If we have neither amount nor vendor, require at least a category match
+  if (expense.amount === undefined && !expense.vendor) {
+    if (expense.category) {
+      where.category = expense.category;
+    } else {
+      return [];
+    }
+  }
 
   const records = await prisma.financialRecord.findMany({
-    where: {
-      entityId: expense.entityId,
-      type: 'EXPENSE',
-      amount: expense.amount,
-      vendor: expense.vendor,
-      dueDate: { gte: threeDaysBefore, lte: threeDaysAfter },
-    },
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 20,
   });
 
-  return records.map(parseExpenseFromRecord);
+  // Exclude the expense itself if it has an ID
+  const filtered = expense.id
+    ? records.filter((r) => r.id !== expense.id)
+    : records;
+
+  return filtered.map(parseExpenseFromRecord);
 }
 
 // --- Phase 3: Additional Expense Operations ---
