@@ -13,6 +13,7 @@ interface NavItem {
   href: string;
   label: string;
   icon: React.ReactNode;
+  badge?: number;
 }
 
 interface NavGroup {
@@ -67,6 +68,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     category: 'CORE',
     items: [
+      { href: '/dashboard', label: 'Dashboard', icon: <MIcon paths={['M3 3h7v7H3z', 'M14 3h7v7h-7z', 'M14 14h7v7h-7z', 'M3 14h7v7H3z']} /> },
       { href: '/inbox', label: 'Inbox', icon: <MIcon paths={['M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z', 'M22 6l-10 7L2 6']} /> },
       { href: '/calendar', label: 'Calendar', icon: <MIcon paths={['M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z', 'M16 2v4', 'M8 2v4', 'M3 10h18']} /> },
       { href: '/tasks', label: 'Tasks', icon: <MIcon paths={['M9 11l3 3L22 4', 'M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11']} /> },
@@ -168,9 +170,11 @@ NAV_GROUPS[3].items[2] = {
 export function Sidebar({
   collapsed,
   onToggle,
+  badges,
 }: {
   collapsed: boolean;
   onToggle: () => void;
+  badges?: Record<string, number>;
 }) {
   const { data: session } = useSession();
   const pathname = usePathname();
@@ -272,11 +276,12 @@ export function Sidebar({
               {!isCatCollapsed &&
                 group.items.map((item) => {
                   const active = isActive(item.href);
+                  const itemBadge = badges?.[item.href];
                   return (
                     <Link
                       key={item.href + item.label}
                       href={item.href}
-                      className={`flex items-center gap-3 px-4 py-2 mx-2 rounded-md text-sm transition-colors ${
+                      className={`relative flex items-center gap-3 px-4 py-2 mx-2 rounded-md text-sm transition-colors ${
                         active
                           ? 'bg-gray-800 text-white border-l-2 border-blue-500 pl-3.5'
                           : 'hover:bg-gray-800 hover:text-white'
@@ -285,6 +290,20 @@ export function Sidebar({
                     >
                       {item.icon}
                       {!collapsed && <span className="truncate">{item.label}</span>}
+                      {!collapsed && itemBadge !== undefined && itemBadge > 0 && (
+                        <span className={`ml-auto text-xs font-medium px-1.5 py-0.5 rounded-full ${
+                          item.href === '/inbox' ? 'bg-red-500 text-white' :
+                          item.href === '/tasks' ? 'bg-amber-500 text-white' :
+                          'bg-gray-500 text-white'
+                        }`}>
+                          {itemBadge}
+                        </span>
+                      )}
+                      {collapsed && itemBadge !== undefined && itemBadge > 0 && (
+                        <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${
+                          item.href === '/inbox' ? 'bg-red-500' : 'bg-amber-500'
+                        }`} />
+                      )}
                     </Link>
                   );
                 })}
