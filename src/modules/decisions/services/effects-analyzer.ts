@@ -133,10 +133,38 @@ function parseOptions(optionsJson: unknown): DecisionOption[] {
   if (Array.isArray(optionsJson)) return optionsJson as DecisionOption[];
   if (typeof optionsJson === 'string') {
     try {
-      return JSON.parse(optionsJson) as DecisionOption[];
+      const parsed = JSON.parse(optionsJson);
+      if (Array.isArray(parsed)) return parsed as DecisionOption[];
+      // If the parsed result is a single option object, wrap it in an array
+      if (parsed && typeof parsed === 'object' && ('label' in parsed || 'id' in parsed)) {
+        return [parsed as DecisionOption];
+      }
+      return [];
     } catch {
+      // Attempt to extract option-like data from malformed JSON strings
+      // by looking for common patterns like comma-separated labels
+      const labels = optionsJson.split(',').map((s) => s.trim()).filter(Boolean);
+      if (labels.length > 0 && labels.every((l) => l.length < 200)) {
+        return labels.map((label, i) => ({
+          id: `parsed-${i}`,
+          label,
+          description: '',
+          strategy: 'MODERATE' as const,
+          pros: [],
+          cons: [],
+          riskLevel: 'MEDIUM' as const,
+          reversibility: 'MODERATE' as const,
+          estimatedCost: 0,
+          estimatedTimeline: 'Unknown',
+          secondOrderEffects: [],
+        }));
+      }
       return [];
     }
+  }
+  // If it's a single object that looks like a DecisionOption, wrap in array
+  if (typeof optionsJson === 'object' && optionsJson !== null && ('label' in optionsJson || 'id' in optionsJson)) {
+    return [optionsJson as DecisionOption];
   }
   return [];
 }

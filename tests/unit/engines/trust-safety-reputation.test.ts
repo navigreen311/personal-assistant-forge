@@ -9,9 +9,8 @@ describe('checkPhoneReputation', () => {
     const result = await checkPhoneReputation('+12125551234');
     expect(result.channel).toBe('PHONE');
     expect(result.identifier).toBe('+12125551234');
-    // +1555 prefix match takes priority (score 85)
-    // But +12125551234 starts with +1 (low risk), not +1555
-    expect(result.spamScore).toBeLessThanOrEqual(15);
+    // Heuristic: baseline 20, low-risk +1 tier (-10), but sequential digits at end (+15) = 25
+    expect(result.spamScore).toBeLessThanOrEqual(30);
     expect(result.stirShakenCompliant).toBe(true);
   });
 

@@ -63,6 +63,31 @@ export async function PATCH(
   });
 }
 
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ eventId: string }> }
+) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const { eventId } = await params;
+
+      const existing = await prisma.calendarEvent.findUnique({
+        where: { id: eventId },
+      });
+
+      if (!existing) {
+        return error('NOT_FOUND', 'Event not found', 404);
+      }
+
+      const body = await req.json();
+      const event = await schedulingService.updateEvent(eventId, body, session.userId);
+      return success(event);
+    } catch (err) {
+      return error('INTERNAL_ERROR', 'Failed to update event', 500);
+    }
+  });
+}
+
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ eventId: string }> }

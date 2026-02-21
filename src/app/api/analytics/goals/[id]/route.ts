@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
+import { prisma } from '@/lib/db';
 import {
   updateGoalProgress,
   completeGoal,
@@ -51,6 +52,28 @@ export async function PUT(
       return success(goal);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update goal';
+      return error('INTERNAL_ERROR', message, 500);
+    }
+  });
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  return withAuth(request, async (req, session) => {
+    try {
+      const { id } = await params;
+
+      const existing = await prisma.goalEntry.findUnique({ where: { id } });
+      if (!existing) {
+        return error('NOT_FOUND', 'Goal not found', 404);
+      }
+
+      await prisma.goalEntry.delete({ where: { id } });
+      return success({ deleted: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete goal';
       return error('INTERNAL_ERROR', message, 500);
     }
   });

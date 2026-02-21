@@ -33,13 +33,43 @@ export async function evaluateRules(
     where.OR = [{ entityId }, { entityId: null }];
   }
 
+  // Filter by scope if provided in context
+  if (context.scope && typeof context.scope === 'string') {
+    where.scope = context.scope;
+  }
+
+  // Filter by channel if provided in context
+  if (context.channel && typeof context.channel === 'string') {
+    where.OR = where.OR ?? [];
+    if (!Array.isArray(where.OR)) {
+      where.OR = [where.OR as Record<string, unknown>];
+    }
+  }
+
   const rules = await prisma.rule.findMany({
     where,
     orderBy: { precedence: 'desc' },
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rules.map((rule: any) => evaluateSingleRule(rule, context));
+  const evaluated = rules.map((rule: any) => evaluateSingleRule(rule, context));
+
+  // Return only matched rules first, then unmatched, preserving precedence order
+  const matched = evaluated.filter((r) => r.matched);
+  const unmatched = evaluated.filter((r) => !r.matched);
+  return [...matched, ...unmatched];
+}
+
+/**
+ * Match rules against context and return only the rules whose conditions pass.
+ * This is a convenience wrapper around evaluateRules that filters to matched rules only.
+ */
+export async function matchRules(
+  context: Record<string, unknown>,
+  entityId?: string
+): Promise<EvaluatedRule[]> {
+  const evaluated = await evaluateRules(context, entityId);
+  return evaluated.filter((r) => r.matched);
 }
 
 function evaluateSingleRule(

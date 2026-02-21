@@ -271,13 +271,22 @@ export default function RunbookEditor({ runbook, entityId, onSave, onCancel }: R
 
   const handleSave = useCallback(() => {
     const now = new Date();
+    // Clean parameters: strip out parse error markers before saving
+    const cleanedSteps = steps.map((s, i) => {
+      const params = { ...s.parameters };
+      if (params._parseError) {
+        // Revert to empty object if the user left invalid JSON
+        return { ...s, order: i + 1, parameters: {} };
+      }
+      return { ...s, order: i + 1 };
+    });
     const assembled: Runbook = {
       id: runbook?.id ?? generateId(),
       name,
       description,
       entityId,
       schedule: schedule || undefined,
-      steps: steps.map((s, i) => ({ ...s, order: i + 1 })),
+      steps: cleanedSteps,
       tags: tags
         .split(',')
         .map((t) => t.trim())
@@ -294,15 +303,35 @@ export default function RunbookEditor({ runbook, entityId, onSave, onCancel }: R
 
   // --- JSON parameter helpers ---
 
-  const parseParams = (raw: string): Record<string, unknown> => {
+  const [paramErrors, setParamErrors] = useState<Record<number, string>>({});
+
+  const parseParams = (raw: string, stepIndex: number): Record<string, unknown> => {
     try {
-      return JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      return {};
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setParamErrors((prev) => ({ ...prev, [stepIndex]: 'Parameters must be a JSON object (not array or primitive)' }));
+        return { _parseError: true, _rawInput: raw, _message: 'Must be a JSON object' };
+      }
+      // Clear any previous error for this step on successful parse
+      setParamErrors((prev) => {
+        const next = { ...prev };
+        delete next[stepIndex];
+        return next;
+      });
+      return parsed as Record<string, unknown>;
+    } catch (err) {
+      const message = err instanceof SyntaxError ? err.message : 'Invalid JSON';
+      setParamErrors((prev) => ({ ...prev, [stepIndex]: message }));
+      return { _parseError: true, _rawInput: raw, _message: message };
     }
   };
 
   const stringifyParams = (params: Record<string, unknown>): string => {
+    // If the params contain a parse error marker, show the raw input
+    // so the user can continue editing from where they left off
+    if (params._parseError && typeof params._rawInput === 'string') {
+      return params._rawInput;
+    }
     return JSON.stringify(params, null, 2);
   };
 
@@ -580,10 +609,19 @@ export default function RunbookEditor({ runbook, entityId, onSave, onCancel }: R
                   </label>
                   <textarea
                     value={stringifyParams(step.parameters)}
-                    onChange={(e) => updateStep(idx, { parameters: parseParams(e.target.value) })}
+                    onChange={(e) => updateStep(idx, { parameters: parseParams(e.target.value, idx) })}
                     rows={3}
-                    className="w-full rounded-md border border-zinc-300 bg-white px-3 py-1.5 font-mono text-xs text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-500"
+                    className={`w-full rounded-md border bg-white px-3 py-1.5 font-mono text-xs text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-500 ${
+                      paramErrors[idx]
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-500 dark:border-red-500'
+                        : 'border-zinc-300 focus:border-blue-500 focus:ring-blue-500 dark:border-zinc-600'
+                    }`}
                   />
+                  {paramErrors[idx] && (
+                    <p className="mt-1 text-xs text-red-500 dark:text-red-400">
+                      Invalid JSON: {paramErrors[idx]}
+                    </p>
+                  )}
                 </div>
 
                 {/* Max blast radius */}
