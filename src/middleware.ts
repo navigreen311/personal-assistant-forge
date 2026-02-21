@@ -34,9 +34,9 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/favicon') ||
     pathname.includes('.');
 
-  // 3. Auth page redirect: if authenticated user visits /login or /register, redirect to /inbox
+  // 3. Auth page redirect: if authenticated user visits /login or /register, redirect to /dashboard
   if (isAuthenticated && (pathname.startsWith('/login') || pathname.startsWith('/register'))) {
-    return NextResponse.redirect(new URL('/inbox', request.url));
+    return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
   // 4. Protected API routes: return 401 JSON

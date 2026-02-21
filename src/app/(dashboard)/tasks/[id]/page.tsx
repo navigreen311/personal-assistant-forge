@@ -109,10 +109,21 @@ export default function TaskPage({ params }: TaskPageProps) {
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">Dependencies</h3>
           <DependencyGraphView
-            graph={filteredGraph}
-            onNodeClick={(taskId) => {
-              if (taskId !== id) {
-                window.location.href = `/tasks/${taskId}`;
+            tasks={filteredGraph?.nodes?.map((n: { taskId: string; taskTitle: string; status: string; priority: string; dueDate?: Date }) => ({
+              id: n.taskId,
+              title: n.taskTitle,
+              status: n.status as Task['status'],
+              priority: n.priority as Task['priority'],
+              entityId: '',
+              dependencies: [] as string[],
+              tags: [] as string[],
+              dueDate: n.dueDate,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            })) ?? []}
+            onTaskClick={(t) => {
+              if (t.id !== id) {
+                window.location.href = `/tasks/${t.id}`;
               }
             }}
           />
