@@ -320,20 +320,46 @@ export async function handleSendNotification(
 ): Promise<Record<string, unknown>> {
   const validated = sendNotificationSchema.parse(params);
 
-  // Placeholder: In production, this would dispatch to a notification service
-  // (push notifications, email, Slack, etc.)
+  let notificationId: string | null = null;
+  let delivered = false;
 
-  await logAction(
-    'SEND_NOTIFICATION',
-    `user:${validated.userId}`,
-    `Notification sent via ${validated.channel}: ${validated.message.substring(0, 100)}`,
-    'LOW'
-  );
+  // Dispatch notification to persistent storage
+  // Notification failure should not fail the workflow step
+  try {
+    const notification = await prisma.notification.create({
+      data: {
+        userId: validated.userId,
+        title: `Workflow Notification`,
+        body: validated.message,
+        type: validated.channel === 'IN_APP' ? 'system' : validated.channel.toLowerCase(),
+        read: false,
+        priority: 'normal',
+      },
+    });
+    notificationId = notification.id;
+    delivered = true;
+  } catch (error) {
+    console.error('Failed to create notification record:', error);
+    // Notification failure is non-fatal — workflow continues
+    delivered = false;
+  }
+
+  try {
+    await logAction(
+      'SEND_NOTIFICATION',
+      `user:${validated.userId}`,
+      `Notification sent via ${validated.channel}: ${validated.message.substring(0, 100)}`,
+      'LOW'
+    );
+  } catch {
+    // Audit log failure is also non-fatal
+  }
 
   return {
+    notificationId,
     userId: validated.userId,
     channel: validated.channel,
-    delivered: true,
+    delivered,
     timestamp: new Date().toISOString(),
   };
 }

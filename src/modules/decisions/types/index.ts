@@ -180,6 +180,8 @@ export interface ResearchRequest {
   maxSources: number;
 }
 
+export type SourceQuality = 'ai' | 'knowledge-base' | 'generated';
+
 export interface ResearchReport {
   id: string;
   query: string;
@@ -188,6 +190,7 @@ export interface ResearchReport {
   sources: ResearchSource[];
   confidenceScore: number;
   gaps: string[];
+  sourceQuality: SourceQuality;
   createdAt: Date;
 }
 

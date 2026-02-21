@@ -1,9 +1,7 @@
 import { generateText } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { CoachingRecommendation } from './types';
 const uuidv4 = () => crypto.randomUUID();
-
-// In-memory recommendation store
-const recommendations = new Map<string, CoachingRecommendation[]>();
 
 function generateDefaultRecommendations(userId: string): CoachingRecommendation[] {
   return [
@@ -54,8 +52,36 @@ function generateDefaultRecommendations(userId: string): CoachingRecommendation[
   ];
 }
 
+async function getStoredRecommendations(userId: string): Promise<CoachingRecommendation[] | null> {
+  const record = await prisma.adoptionProgress.findUnique({
+    where: { userId },
+  });
+  if (!record) return null;
+  const data = (record.data ?? {}) as Record<string, unknown>;
+  const coaching = data.coaching as CoachingRecommendation[] | undefined;
+  return coaching ?? null;
+}
+
+async function storeRecommendations(userId: string, recs: CoachingRecommendation[]): Promise<void> {
+  const record = await prisma.adoptionProgress.findUnique({
+    where: { userId },
+  });
+  const existingData = (record?.data ?? {}) as Record<string, unknown>;
+
+  await prisma.adoptionProgress.upsert({
+    where: { userId },
+    create: {
+      userId,
+      data: { ...existingData, coaching: recs },
+    },
+    update: {
+      data: { ...existingData, coaching: recs },
+    },
+  });
+}
+
 export async function generateRecommendations(userId: string): Promise<CoachingRecommendation[]> {
-  const existing = recommendations.get(userId);
+  const existing = await getStoredRecommendations(userId);
   if (existing && existing.some(r => r.status === 'PENDING')) {
     const pending = existing.filter(r => r.status === 'PENDING');
 
@@ -80,11 +106,14 @@ Provide a brief, specific, and actionable tip for each recommendation (one line 
       // Keep default descriptions on AI failure
     }
 
+    // Persist any AI-enhanced descriptions back
+    await storeRecommendations(userId, existing);
+
     return pending;
   }
 
   const recs = generateDefaultRecommendations(userId);
-  recommendations.set(userId, recs);
+  await storeRecommendations(userId, recs);
   return recs;
 }
 
@@ -92,13 +121,14 @@ export async function applyRecommendation(
   userId: string,
   recommendationId: string
 ): Promise<{ success: boolean }> {
-  const recs = recommendations.get(userId);
+  const recs = await getStoredRecommendations(userId);
   if (!recs) return { success: false };
 
   const rec = recs.find(r => r.id === recommendationId);
   if (!rec) return { success: false };
 
   rec.status = 'APPLIED';
+  await storeRecommendations(userId, recs);
   return { success: true };
 }
 
@@ -106,12 +136,13 @@ export async function dismissRecommendation(
   userId: string,
   recommendationId: string
 ): Promise<void> {
-  const recs = recommendations.get(userId);
+  const recs = await getStoredRecommendations(userId);
   if (!recs) return;
 
   const rec = recs.find(r => r.id === recommendationId);
   if (rec) {
     rec.status = 'DISMISSED';
+    await storeRecommendations(userId, recs);
   }
 }
 

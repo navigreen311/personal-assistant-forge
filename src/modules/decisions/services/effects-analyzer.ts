@@ -943,9 +943,332 @@ Represent as a nested tree structure.`, {
 
 // --- Fallback Rule-Based Generators ---
 
+type ActionCategory = 'finance' | 'hr' | 'tech' | 'market' | 'generic';
+
+function detectActionCategory(action: string): ActionCategory {
+  const lower = action.toLowerCase();
+
+  const financeTerms = ['cost', 'budget', 'revenue', 'price', 'invest', 'expense', 'profit', 'financial', 'funding', 'capital'];
+  const hrTerms = ['hire', 'fire', 'team', 'staff', 'recruit', 'employee', 'personnel', 'workforce', 'talent', 'onboard'];
+  const techTerms = ['deploy', 'migrate', 'upgrade', 'build', 'develop', 'infrastructure', 'system', 'software', 'platform', 'architecture'];
+  const marketTerms = ['launch', 'market', 'compete', 'customer', 'brand', 'campaign', 'advertise', 'audience', 'segment', 'positioning'];
+
+  const countMatches = (terms: string[]) => terms.filter((t) => lower.includes(t)).length;
+
+  const scores: [ActionCategory, number][] = [
+    ['finance', countMatches(financeTerms)],
+    ['hr', countMatches(hrTerms)],
+    ['tech', countMatches(techTerms)],
+    ['market', countMatches(marketTerms)],
+  ];
+
+  const best = scores.sort((a, b) => b[1] - a[1])[0];
+  return best[1] > 0 ? best[0] : 'generic';
+}
+
 function generateSampleEffects(action: string, _context: string): SecondOrderEffect[] {
   const baseId = action.replace(/\s+/g, '-').toLowerCase().slice(0, 20);
+  const category = detectActionCategory(action);
 
+  switch (category) {
+    case 'finance':
+      return generateFinanceEffects(baseId, action);
+    case 'hr':
+      return generateHREffects(baseId, action);
+    case 'tech':
+      return generateTechEffects(baseId, action);
+    case 'market':
+      return generateMarketEffects(baseId, action);
+    default:
+      return generateGenericEffects(baseId, action);
+  }
+}
+
+function generateFinanceEffects(baseId: string, action: string): SecondOrderEffect[] {
+  const first1: SecondOrderEffect = {
+    id: `${baseId}-1a`,
+    description: `Immediate cash flow impact from: ${action}`,
+    order: 1,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.9,
+    affectedAreas: ['Budget', 'Cash Flow'],
+  };
+
+  const first2: SecondOrderEffect = {
+    id: `${baseId}-1b`,
+    description: `Financial reporting adjustments required for: ${action}`,
+    order: 1,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.8,
+    affectedAreas: ['Accounting', 'Compliance'],
+  };
+
+  const first3: SecondOrderEffect = {
+    id: `${baseId}-1c`,
+    description: `Stakeholder confidence shift from financial change: ${action}`,
+    order: 1,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.6,
+    affectedAreas: ['Investor Relations', 'Board'],
+  };
+
+  const second1: SecondOrderEffect = {
+    id: `${baseId}-2a`,
+    description: 'Budget reallocation enables strategic investment opportunities',
+    order: 2,
+    sentiment: 'POSITIVE',
+    likelihood: 0.6,
+    affectedAreas: ['Strategy', 'Investment'],
+    parentEffectId: first1.id,
+  };
+
+  const second2: SecondOrderEffect = {
+    id: `${baseId}-2b`,
+    description: 'Tighter financial constraints may limit operational flexibility',
+    order: 2,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.5,
+    affectedAreas: ['Operations', 'Procurement'],
+    parentEffectId: first2.id,
+  };
+
+  const third1: SecondOrderEffect = {
+    id: `${baseId}-3a`,
+    description: 'Improved financial discipline may strengthen long-term profitability',
+    order: 3,
+    sentiment: 'POSITIVE',
+    likelihood: 0.4,
+    affectedAreas: ['Profitability', 'Growth'],
+    parentEffectId: second1.id,
+  };
+
+  const third2: SecondOrderEffect = {
+    id: `${baseId}-3b`,
+    description: 'Prolonged constraints could impact talent retention and morale',
+    order: 3,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.3,
+    affectedAreas: ['HR', 'Morale'],
+    parentEffectId: second2.id,
+  };
+
+  return [first1, first2, first3, second1, second2, third1, third2];
+}
+
+function generateHREffects(baseId: string, action: string): SecondOrderEffect[] {
+  const first1: SecondOrderEffect = {
+    id: `${baseId}-1a`,
+    description: `Team dynamics shift from: ${action}`,
+    order: 1,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.9,
+    affectedAreas: ['Team', 'Culture'],
+  };
+
+  const first2: SecondOrderEffect = {
+    id: `${baseId}-1b`,
+    description: `Onboarding and training requirements from: ${action}`,
+    order: 1,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.8,
+    affectedAreas: ['HR', 'Training', 'Budget'],
+  };
+
+  const first3: SecondOrderEffect = {
+    id: `${baseId}-1c`,
+    description: `Productivity adjustment period following: ${action}`,
+    order: 1,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.7,
+    affectedAreas: ['Productivity', 'Operations'],
+  };
+
+  const second1: SecondOrderEffect = {
+    id: `${baseId}-2a`,
+    description: 'New team capabilities unlock previously blocked initiatives',
+    order: 2,
+    sentiment: 'POSITIVE',
+    likelihood: 0.7,
+    affectedAreas: ['Capacity', 'Innovation'],
+    parentEffectId: first1.id,
+  };
+
+  const second2: SecondOrderEffect = {
+    id: `${baseId}-2b`,
+    description: 'Knowledge transfer gaps may create temporary skill deficits',
+    order: 2,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.5,
+    affectedAreas: ['Knowledge Management', 'Quality'],
+    parentEffectId: first2.id,
+  };
+
+  const third1: SecondOrderEffect = {
+    id: `${baseId}-3a`,
+    description: 'Stronger team composition improves organizational resilience',
+    order: 3,
+    sentiment: 'POSITIVE',
+    likelihood: 0.5,
+    affectedAreas: ['Retention', 'Employer Brand'],
+    parentEffectId: second1.id,
+  };
+
+  const third2: SecondOrderEffect = {
+    id: `${baseId}-3b`,
+    description: 'Cultural shifts may affect existing employee satisfaction',
+    order: 3,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.4,
+    affectedAreas: ['Culture', 'Morale'],
+    parentEffectId: second2.id,
+  };
+
+  return [first1, first2, first3, second1, second2, third1, third2];
+}
+
+function generateTechEffects(baseId: string, action: string): SecondOrderEffect[] {
+  const first1: SecondOrderEffect = {
+    id: `${baseId}-1a`,
+    description: `System changes and downtime risk from: ${action}`,
+    order: 1,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.8,
+    affectedAreas: ['Infrastructure', 'Reliability'],
+  };
+
+  const first2: SecondOrderEffect = {
+    id: `${baseId}-1b`,
+    description: `Development resource allocation for: ${action}`,
+    order: 1,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.9,
+    affectedAreas: ['Engineering', 'Sprint Planning'],
+  };
+
+  const first3: SecondOrderEffect = {
+    id: `${baseId}-1c`,
+    description: `Technical debt considerations from: ${action}`,
+    order: 1,
+    sentiment: 'POSITIVE',
+    likelihood: 0.7,
+    affectedAreas: ['Code Quality', 'Architecture'],
+  };
+
+  const second1: SecondOrderEffect = {
+    id: `${baseId}-2a`,
+    description: 'Improved system performance enables better user experience',
+    order: 2,
+    sentiment: 'POSITIVE',
+    likelihood: 0.7,
+    affectedAreas: ['User Experience', 'Performance'],
+    parentEffectId: first1.id,
+  };
+
+  const second2: SecondOrderEffect = {
+    id: `${baseId}-2b`,
+    description: 'Integration complexity may introduce new failure points',
+    order: 2,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.5,
+    affectedAreas: ['Reliability', 'Monitoring'],
+    parentEffectId: first2.id,
+  };
+
+  const third1: SecondOrderEffect = {
+    id: `${baseId}-3a`,
+    description: 'Modern tech stack attracts stronger engineering talent',
+    order: 3,
+    sentiment: 'POSITIVE',
+    likelihood: 0.4,
+    affectedAreas: ['Hiring', 'Innovation'],
+    parentEffectId: second1.id,
+  };
+
+  const third2: SecondOrderEffect = {
+    id: `${baseId}-3b`,
+    description: 'Accumulated integration complexity may slow future development velocity',
+    order: 3,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.3,
+    affectedAreas: ['Velocity', 'Technical Debt'],
+    parentEffectId: second2.id,
+  };
+
+  return [first1, first2, first3, second1, second2, third1, third2];
+}
+
+function generateMarketEffects(baseId: string, action: string): SecondOrderEffect[] {
+  const first1: SecondOrderEffect = {
+    id: `${baseId}-1a`,
+    description: `Market visibility change from: ${action}`,
+    order: 1,
+    sentiment: 'POSITIVE',
+    likelihood: 0.8,
+    affectedAreas: ['Brand', 'Market Presence'],
+  };
+
+  const first2: SecondOrderEffect = {
+    id: `${baseId}-1b`,
+    description: `Competitive response triggered by: ${action}`,
+    order: 1,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.7,
+    affectedAreas: ['Competition', 'Pricing'],
+  };
+
+  const first3: SecondOrderEffect = {
+    id: `${baseId}-1c`,
+    description: `Customer expectations shift from: ${action}`,
+    order: 1,
+    sentiment: 'NEUTRAL',
+    likelihood: 0.8,
+    affectedAreas: ['Customer Relations', 'Support'],
+  };
+
+  const second1: SecondOrderEffect = {
+    id: `${baseId}-2a`,
+    description: 'Increased market share drives revenue growth',
+    order: 2,
+    sentiment: 'POSITIVE',
+    likelihood: 0.6,
+    affectedAreas: ['Revenue', 'Growth'],
+    parentEffectId: first1.id,
+  };
+
+  const second2: SecondOrderEffect = {
+    id: `${baseId}-2b`,
+    description: 'Competitor retaliation may erode initial market gains',
+    order: 2,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.5,
+    affectedAreas: ['Market Share', 'Pricing Strategy'],
+    parentEffectId: first2.id,
+  };
+
+  const third1: SecondOrderEffect = {
+    id: `${baseId}-3a`,
+    description: 'Market leadership position enables premium pricing and partnerships',
+    order: 3,
+    sentiment: 'POSITIVE',
+    likelihood: 0.4,
+    affectedAreas: ['Partnerships', 'Pricing Power'],
+    parentEffectId: second1.id,
+  };
+
+  const third2: SecondOrderEffect = {
+    id: `${baseId}-3b`,
+    description: 'Sustained competitive pressure may require ongoing marketing investment',
+    order: 3,
+    sentiment: 'NEGATIVE',
+    likelihood: 0.4,
+    affectedAreas: ['Marketing Budget', 'ROI'],
+    parentEffectId: second2.id,
+  };
+
+  return [first1, first2, first3, second1, second2, third1, third2];
+}
+
+function generateGenericEffects(baseId: string, action: string): SecondOrderEffect[] {
   const first1: SecondOrderEffect = {
     id: `${baseId}-1a`,
     description: `Direct impact of: ${action}`,

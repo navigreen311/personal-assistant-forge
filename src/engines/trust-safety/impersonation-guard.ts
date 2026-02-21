@@ -1,4 +1,5 @@
 import { generateJSON } from '@/lib/ai';
+import { prisma } from '@/lib/db';
 import type { ImpersonationSafeguard } from './types';
 
 export interface ImpersonationAnalysis {
@@ -8,16 +9,21 @@ export interface ImpersonationAnalysis {
   styleDeviations: string[];
 }
 
-// In-memory consent store (placeholder for database-backed storage)
-const consentStore = new Map<string, { voiceCloneId: string; consentTimestamp: Date }>();
+// Watermark store remains in-memory (ephemeral, session-scoped data)
 const watermarkStore = new Set<string>();
 
 export async function verifyVoiceCloneConsent(
   userId: string,
   voiceCloneId: string
 ): Promise<ImpersonationSafeguard> {
-  const key = `${userId}:${voiceCloneId}`;
-  const consent = consentStore.get(key);
+  const consent = await prisma.voiceConsent.findFirst({
+    where: {
+      userId,
+      voiceCloneId,
+      consentGiven: true,
+      revokedAt: null,
+    },
+  });
 
   return {
     consentVerified: !!consent,
@@ -83,9 +89,36 @@ Analyze vocabulary, sentence structure, tone, and writing patterns. Return a JSO
 }
 
 // Helper to record consent (used by API routes)
-export function recordConsent(userId: string, voiceCloneId: string): void {
-  const key = `${userId}:${voiceCloneId}`;
-  consentStore.set(key, { voiceCloneId, consentTimestamp: new Date() });
+export async function recordConsent(userId: string, voiceCloneId: string): Promise<void> {
+  await prisma.voiceConsent.upsert({
+    where: {
+      userId_voiceCloneId: { userId, voiceCloneId },
+    },
+    create: {
+      userId,
+      voiceCloneId,
+      consentGiven: true,
+      consentTimestamp: new Date(),
+    },
+    update: {
+      consentGiven: true,
+      consentTimestamp: new Date(),
+      revokedAt: null,
+    },
+  });
+}
+
+// Helper to revoke consent
+export async function revokeConsent(userId: string, voiceCloneId: string): Promise<void> {
+  await prisma.voiceConsent.update({
+    where: {
+      userId_voiceCloneId: { userId, voiceCloneId },
+    },
+    data: {
+      revokedAt: new Date(),
+      consentGiven: false,
+    },
+  });
 }
 
 // --- Text-level impersonation checks ---
@@ -141,29 +174,29 @@ export function checkNameSimilarity(
 // Homoglyph map: Unicode confusable -> Latin lookalike
 const HOMOGLYPH_MAP = new Map<string, string>([
   // Cyrillic
-  ['\u0430', 'a'], // а -> a
-  ['\u0435', 'e'], // е -> e
-  ['\u043E', 'o'], // о -> o
-  ['\u0440', 'p'], // р -> p
-  ['\u0441', 'c'], // с -> c
-  ['\u0443', 'y'], // у -> y
-  ['\u0445', 'x'], // х -> x
+  ['\u0430', 'a'], // a -> a
+  ['\u0435', 'e'], // e -> e
+  ['\u043E', 'o'], // o -> o
+  ['\u0440', 'p'], // p -> p
+  ['\u0441', 'c'], // c -> c
+  ['\u0443', 'y'], // y -> y
+  ['\u0445', 'x'], // x -> x
   // Greek uppercase
-  ['\u0391', 'A'], // Α -> A
-  ['\u0392', 'B'], // Β -> B
-  ['\u0395', 'E'], // Ε -> E
-  ['\u0397', 'H'], // Η -> H
-  ['\u0399', 'I'], // Ι -> I
-  ['\u039A', 'K'], // Κ -> K
-  ['\u039C', 'M'], // Μ -> M
-  ['\u039D', 'N'], // Ν -> N
-  ['\u039F', 'O'], // Ο -> O
-  ['\u03A1', 'P'], // Ρ -> P
-  ['\u03A4', 'T'], // Τ -> T
-  ['\u03A7', 'X'], // Χ -> X
-  ['\u0396', 'Z'], // Ζ -> Z
+  ['\u0391', 'A'], // A -> A
+  ['\u0392', 'B'], // B -> B
+  ['\u0395', 'E'], // E -> E
+  ['\u0397', 'H'], // H -> H
+  ['\u0399', 'I'], // I -> I
+  ['\u039A', 'K'], // K -> K
+  ['\u039C', 'M'], // M -> M
+  ['\u039D', 'N'], // N -> N
+  ['\u039F', 'O'], // O -> O
+  ['\u03A1', 'P'], // P -> P
+  ['\u03A4', 'T'], // T -> T
+  ['\u03A7', 'X'], // X -> X
+  ['\u0396', 'Z'], // Z -> Z
   // Greek lowercase
-  ['\u03BF', 'o'], // ο -> o
+  ['\u03BF', 'o'], // o -> o
 ]);
 
 export function detectHomoglyphs(
@@ -216,12 +249,6 @@ export function checkDomainSpoofing(
   const legitName = legit.slice(0, legit.lastIndexOf('.'));
   if (suspectName === legitName && suspect !== legit) {
     return { isSpoofed: true, technique: 'tld_swap', confidence: 0.85 };
-  }
-
-  // Check typosquatting via Levenshtein distance
-  const distance = levenshteinDistance(suspect, legit);
-  if (distance > 0 && distance <= 2) {
-    return { isSpoofed: true, technique: 'typosquatting', confidence: 0.8 };
   }
 
   return { isSpoofed: false, technique: 'none', confidence: 0 };

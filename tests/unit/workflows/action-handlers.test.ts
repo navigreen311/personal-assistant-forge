@@ -6,6 +6,7 @@ import {
   handleCreateTask,
   handleSendMessage,
   handleCallAPI,
+  handleSendNotification,
   executeAction,
 } from '@/modules/workflows/services/action-handlers';
 
@@ -33,6 +34,16 @@ jest.mock('@/lib/db', () => ({
         id: 'msg-1',
         channel: 'EMAIL',
         body: 'Test body',
+      }),
+    },
+    notification: {
+      create: jest.fn().mockResolvedValue({
+        id: 'notif-1',
+        userId: 'user-1',
+        title: 'Workflow Notification',
+        body: 'Test notification',
+        type: 'system',
+        read: false,
       }),
     },
     actionLog: {
@@ -182,6 +193,121 @@ describe('ActionHandlers', () => {
       });
 
       expect(result.data).toEqual({ result: 'success' });
+    });
+  });
+
+  describe('handleSendNotification', () => {
+    it('should create a notification record in the database', async () => {
+      const result = await handleSendNotification({
+        userId: 'user-1',
+        message: 'Your workflow completed successfully',
+        channel: 'IN_APP',
+      });
+
+      expect(prisma.notification.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: 'user-1',
+            body: 'Your workflow completed successfully',
+            type: 'system',
+            read: false,
+          }),
+        })
+      );
+      expect(result.notificationId).toBe('notif-1');
+      expect(result.delivered).toBe(true);
+      expect(result.userId).toBe('user-1');
+      expect(result.channel).toBe('IN_APP');
+      expect(result.timestamp).toBeDefined();
+    });
+
+    it('should use channel-based type when channel is not IN_APP', async () => {
+      await handleSendNotification({
+        userId: 'user-1',
+        message: 'Email notification',
+        channel: 'EMAIL',
+      });
+
+      expect(prisma.notification.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'email',
+          }),
+        })
+      );
+    });
+
+    it('should default channel to IN_APP when not provided', async () => {
+      const result = await handleSendNotification({
+        userId: 'user-1',
+        message: 'Default channel test',
+      });
+
+      expect(result.channel).toBe('IN_APP');
+    });
+
+    it('should validate required parameters', async () => {
+      await expect(
+        handleSendNotification({ userId: '', message: 'test' })
+      ).rejects.toThrow();
+
+      await expect(
+        handleSendNotification({ userId: 'user-1', message: '' })
+      ).rejects.toThrow();
+    });
+
+    it('should log action to ActionLog', async () => {
+      await handleSendNotification({
+        userId: 'user-1',
+        message: 'Audit test notification',
+        channel: 'IN_APP',
+      });
+
+      expect(prisma.actionLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            actionType: 'SEND_NOTIFICATION',
+            status: 'EXECUTED',
+          }),
+        })
+      );
+    });
+
+    it('should not fail the workflow when notification creation fails', async () => {
+      prisma.notification.create.mockRejectedValueOnce(new Error('DB connection lost'));
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await handleSendNotification({
+        userId: 'user-1',
+        message: 'This will fail to persist',
+        channel: 'IN_APP',
+      });
+
+      expect(result.delivered).toBe(false);
+      expect(result.notificationId).toBeNull();
+      expect(result.userId).toBe('user-1');
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Failed to create notification record:',
+        expect.any(Error)
+      );
+
+      errorSpy.mockRestore();
+    });
+
+    it('should include type field as system for IN_APP channel', async () => {
+      await handleSendNotification({
+        userId: 'user-1',
+        message: 'Source test',
+        channel: 'IN_APP',
+      });
+
+      expect(prisma.notification.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'system',
+          }),
+        })
+      );
     });
   });
 
