@@ -268,7 +268,7 @@ async function queryKnowledgeBase(
 
 function knowledgeEntriesToSources(
   entries: KnowledgeEntryRecord[],
-  request: ResearchRequest
+  _request: ResearchRequest
 ): ResearchSource[] {
   const now = new Date();
   return entries.map((entry, i) => ({

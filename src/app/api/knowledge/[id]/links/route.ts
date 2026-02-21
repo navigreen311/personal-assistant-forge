@@ -12,12 +12,12 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const suggestions = await suggestLinks(id);
       return success(suggestions);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get link suggestions', 500);
     }
   });
@@ -27,7 +27,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -39,7 +39,7 @@ export async function POST(
 
       await applyLink(id, parsed.data.targetId);
       return success({ linked: true }, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to apply link', 500);
     }
   });

@@ -8,7 +8,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const call = await prisma.call.findUnique({ where: { id } });

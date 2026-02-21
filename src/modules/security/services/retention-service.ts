@@ -27,13 +27,20 @@ type PrismaModelName =
   | 'Call'
   | 'KnowledgeEntry';
 
+/** Common Prisma delegate shape for dynamic model access */
+interface PrismaDelegate {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  findMany(args?: Record<string, unknown>): Promise<Array<any>>;
+  deleteMany(args?: Record<string, unknown>): Promise<{ count: number }>;
+  updateMany(args?: Record<string, unknown>): Promise<{ count: number }>;
+}
+
 /**
  * Returns the Prisma delegate for a given model name so we can call
  * findMany / deleteMany / updateMany dynamically.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPrismaDelegate(modelName: PrismaModelName): any {
-  const mapping: Record<PrismaModelName, unknown> = {
+function getPrismaDelegate(modelName: PrismaModelName): PrismaDelegate {
+  const mapping: Record<PrismaModelName, PrismaDelegate> = {
     Message: prisma.message,
     ActionLog: prisma.actionLog,
     Document: prisma.document,
@@ -541,7 +548,7 @@ export class RetentionService {
    * Hard-delete eligible records.
    */
   private async applyDelete(
-    delegate: any,
+    delegate: PrismaDelegate,
     ids: string[],
     result: RetentionExecutionResult,
   ): Promise<void> {
@@ -562,7 +569,7 @@ export class RetentionService {
    * with a note.
    */
   private async applyArchive(
-    delegate: any,
+    delegate: PrismaDelegate,
     ids: string[],
     result: RetentionExecutionResult,
   ): Promise<void> {
@@ -582,7 +589,7 @@ export class RetentionService {
    * Replace PII-bearing text fields with '[ANONYMIZED]'.
    */
   private async applyAnonymize(
-    delegate: any,
+    delegate: PrismaDelegate,
     modelName: PrismaModelName,
     ids: string[],
     result: RetentionExecutionResult,

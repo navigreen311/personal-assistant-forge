@@ -27,7 +27,7 @@ const dailySummarySchema = z.object({
 // --- Handlers ---
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body: unknown = await req.json();
 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
 

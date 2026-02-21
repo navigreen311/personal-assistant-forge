@@ -24,7 +24,7 @@ export class BufferService {
     event: ScheduleRequest,
     prevEvent?: CalendarEvent,
     nextEvent?: CalendarEvent,
-    userPrefs?: UserPreferences
+    _userPrefs?: UserPreferences
   ): { before: number; after: number } {
     // Start with explicit overrides from the request
     let before = event.bufferBefore ?? this.getDefaultBufferBefore(event.type);

@@ -1,14 +1,14 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 import { TriageService } from '@/modules/inbox';
 import { batchTriageSchema } from '@/modules/inbox/inbox.validation';
 
 const triageService = new TriageService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = batchTriageSchema.safeParse(body);

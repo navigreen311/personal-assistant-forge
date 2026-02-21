@@ -4,7 +4,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import { buildDependencyGraph } from '@/modules/tasks/services/dependency-graph';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = req.nextUrl.searchParams;
       const projectId = params.get('projectId');

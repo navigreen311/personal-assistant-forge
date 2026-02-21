@@ -13,7 +13,7 @@ const ingestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = ingestSchema.safeParse(body);
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
 
       const result = await ingestDocument(parsed.data);
       return success(result, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to ingest document', 500);
     }
   });

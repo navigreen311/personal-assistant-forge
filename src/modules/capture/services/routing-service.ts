@@ -11,7 +11,6 @@ import type {
   RoutingResult,
   RoutingRule,
   RoutingCondition,
-  RoutingAction,
 } from '@/modules/capture/types';
 import { generateJSON } from '@/lib/ai';
 import { prisma } from '@/lib/db';

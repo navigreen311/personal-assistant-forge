@@ -56,18 +56,6 @@ type SafeVaultEntry = Omit<VaultEntry, 'encryptedValue' | 'iv' | 'authTag'>;
 // Named Secret Types
 // ---------------------------------------------------------------------------
 
-interface StoredSecret {
-  id: string;
-  name: string;
-  entityId: string;
-  encryptedValue: string;
-  iv: string;
-  authTag: string;
-  keyId: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 interface ManagedKey {
   id: string;
   key: Buffer;
@@ -183,7 +171,7 @@ export class VaultService {
         iv,
         tag: authTag,
         algorithm: AES_ALGORITHM,
-        keyVersion: this.defaultKeyId as any,
+        keyVersion: 1,
         createdAt: now,
         updatedAt: now,
       },
@@ -200,7 +188,7 @@ export class VaultService {
         iv,
         tag: authTag,
         algorithm: AES_ALGORITHM,
-        keyVersion: this.defaultKeyId as any,
+        keyVersion: 1,
         updatedAt: now,
       },
     });
@@ -653,7 +641,7 @@ export class VaultService {
             encryptedData: JSON.stringify(stored),
             iv,
             tag: authTag,
-            keyVersion: newKeyId as any,
+            keyVersion: 1,
             updatedAt: new Date(),
           },
         });
@@ -978,11 +966,14 @@ export class VaultService {
    */
   private stripSensitiveFields(entry: VaultEntry): SafeVaultEntry {
     const {
-      encryptedValue: _enc,
-      iv: _iv,
-      authTag: _tag,
+      encryptedValue: _encryptedValue,
+      iv: _ivField,
+      authTag: _authTagField,
       ...safe
     } = entry;
+    void _encryptedValue;
+    void _ivField;
+    void _authTagField;
 
     return safe;
   }

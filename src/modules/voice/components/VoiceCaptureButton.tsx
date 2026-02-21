@@ -11,11 +11,11 @@ interface VoiceCaptureButtonProps {
 
 export default function VoiceCaptureButton({
   onTranscript,
-  onError,
+  onError: _onError,
 }: VoiceCaptureButtonProps) {
   const [state, setState] = useState<VoiceButtonState>('idle');
   const [interimText, setInterimText] = useState('');
-  const animationFrame = useRef<number | null>(null);
+  const _animationFrame = useRef<number | null>(null);
 
   const handleStart = useCallback(() => {
     setState('listening');

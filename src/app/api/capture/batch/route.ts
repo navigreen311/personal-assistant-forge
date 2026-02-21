@@ -22,7 +22,7 @@ const CompleteBatchSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, authSession) => {
+  return withAuth(request, async (req, _authSession) => {
     try {
       const body = await req.json();
       const parsed = StartBatchSchema.safeParse(body);
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = AddToBatchSchema.safeParse(body);
@@ -64,7 +64,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = CompleteBatchSchema.safeParse(body);

@@ -14,7 +14,7 @@ interface RouteParams {
 }
 
 export async function GET(_request: NextRequest, { params }: RouteParams) {
-  return withAuth(_request, async (req, session) => {
+  return withAuth(_request, async (_req, _session) => {
     try {
       const { id } = await params;
       const capture = await captureService.getCaptureById(id);
@@ -32,7 +32,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -65,7 +65,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 }
 
 export async function DELETE(_request: NextRequest, { params }: RouteParams) {
-  return withAuth(_request, async (req, session) => {
+  return withAuth(_request, async (_req, _session) => {
     try {
       const { id } = await params;
       await captureService.archiveCapture(id);

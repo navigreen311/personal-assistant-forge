@@ -34,7 +34,7 @@ export default function FlightAlertBanner({
       {alternatives && (
         <div className="mt-3 border-t pt-3">
           <div className="text-sm font-medium mb-2">Alternative Options:</div>
-          {alternatives.alternatives.map((alt, idx) => (
+          {alternatives.alternatives.map((alt, _idx) => (
             <div key={alt.id} className="flex justify-between items-center py-1 text-sm">
               <span>{alt.provider} - {new Date(alt.departureTime).toLocaleTimeString()}</span>
               <span className="font-medium">${alt.costUsd.toFixed(2)}</span>

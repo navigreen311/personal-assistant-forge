@@ -19,7 +19,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
     const dashboard = await entityService.getEntityDashboardData(entityId);
     return success(dashboard);
-  } catch (err) {
+  } catch (_err) {
     return error('INTERNAL_ERROR', 'Failed to get entity dashboard', 500);
   }
 }

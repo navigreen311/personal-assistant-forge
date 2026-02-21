@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
+import type { HabitEntry } from '@prisma/client';
 import type { HabitDefinition, HabitCorrelation } from '../types';
 import { calculateProductivityScore } from './productivity-scoring';
 
@@ -103,7 +104,7 @@ export async function getStreaks(entityId: string): Promise<
     where: { entityId, isActive: true },
   });
 
-  return entries.map((entry: any) => {
+  return entries.map((entry: HabitEntry) => {
     const completedDates = (entry.completedDates as string[]) ?? [];
     const createdAt = entry.createdAt;
     const now = new Date();

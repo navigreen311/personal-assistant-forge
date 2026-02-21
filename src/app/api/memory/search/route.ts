@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { searchMemories } from '@/engines/memory/memory-service';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const SearchSchema = z.object({
   query: z.string().min(1),

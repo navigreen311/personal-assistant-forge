@@ -117,7 +117,7 @@ function scoreSensitivity(
       : [];
 
   let score = 10;
-  let reasons: string[] = [];
+  const reasons: string[] = [];
 
   switch (sensitivity) {
     case 'PUBLIC':
@@ -310,7 +310,6 @@ export async function scoreAction(
     ? 1 - reversibilityFactor.score / 100
     : 0.5;
 
-  const scopeFactor = factors.find((f) => f.name === 'Scope');
   const affectedCount =
     typeof parameters.recipientCount === 'number'
       ? parameters.recipientCount
@@ -321,7 +320,6 @@ export async function scoreAction(
           ? parameters.recordCount
           : 1;
 
-  const financialFactor = factors.find((f) => f.name === 'Financial Impact');
   const financialImpact =
     typeof parameters.amount === 'number'
       ? parameters.amount

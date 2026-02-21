@@ -67,8 +67,9 @@ function ApprovalCard({ approval, onApprove, onReject }: ApprovalCardProps) {
     onReject(approval.id, comment || undefined);
   }, [approval.id, comment, onReject]);
 
+  const [now] = useState(() => Date.now());
   const timeUntilExpiry = approval.expiresAt
-    ? new Date(approval.expiresAt).getTime() - Date.now()
+    ? new Date(approval.expiresAt).getTime() - now
     : 0;
   const isUrgent = timeUntilExpiry > 0 && timeUntilExpiry < 3600000; // < 1 hour
 

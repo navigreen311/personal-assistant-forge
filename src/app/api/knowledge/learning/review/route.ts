@@ -4,7 +4,7 @@ import { getDueForReview } from '@/modules/knowledge/services/learning-tracker';
 import { withAuth } from '@/shared/middleware/auth';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
       const items = await getDueForReview(entityId);
       return success(items);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get items due for review', 500);
     }
   });

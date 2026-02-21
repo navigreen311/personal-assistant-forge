@@ -13,7 +13,7 @@ const surfaceSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = surfaceSchema.safeParse(body);
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
 
       const surfaced = await surfaceRelevant(parsed.data);
       return success(surfaced);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to surface knowledge', 500);
     }
   });

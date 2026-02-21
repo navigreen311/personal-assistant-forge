@@ -9,7 +9,7 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);

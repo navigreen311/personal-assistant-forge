@@ -13,7 +13,7 @@ interface TaskPageProps {
 export default function TaskPage({ params }: TaskPageProps) {
   const { id } = use(params);
   const [task, setTask] = useState<Task | null>(null);
-  const [context, setContext] = useState<TaskContext | undefined>();
+  const [context] = useState<TaskContext | undefined>();
   const [depGraph, setDepGraph] = useState<DependencyGraph | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 

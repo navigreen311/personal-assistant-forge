@@ -20,7 +20,7 @@ function toSOP(doc: Record<string, unknown>): SOP {
   };
 }
 
-function toStoredData(sop: Partial<SOP> & Pick<SOP, 'title' | 'description' | 'steps' | 'triggerConditions' | 'status'>): string {
+function _toStoredData(sop: Partial<SOP> & Pick<SOP, 'title' | 'description' | 'steps' | 'triggerConditions' | 'status'>): string {
   const stored: StoredSOPData = {
     title: sop.title,
     description: sop.description,

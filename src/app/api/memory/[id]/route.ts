@@ -7,7 +7,6 @@ import {
   deleteMemory,
 } from '@/engines/memory/memory-service';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const UpdateMemorySchema = z.object({
   content: z.string().min(1).optional(),
@@ -19,7 +18,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       // recallMemory also reinforces the memory on access
@@ -40,7 +39,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -68,7 +67,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       await deleteMemory(id);

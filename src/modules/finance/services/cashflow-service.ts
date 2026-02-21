@@ -5,7 +5,6 @@ import type {
   CashFlowForecast,
   BurnRate,
   ScenarioModel,
-  ScenarioAdjustment,
   Renewal,
 } from '@/modules/finance/types';
 

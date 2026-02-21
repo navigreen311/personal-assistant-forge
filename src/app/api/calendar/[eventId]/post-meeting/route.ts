@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { PostMeetingService } from '@/modules/calendar/post-meeting.service';
 import { postMeetingSchema } from '@/modules/calendar/calendar.validation';
 
@@ -11,7 +10,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ eventId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { eventId } = await params;
       const body = await req.json();
@@ -25,7 +24,7 @@ export async function POST(
 
       const result = await postMeetingService.capturePostMeeting(parsed.data);
       return success(result, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to capture post-meeting data', 500);
     }
   });

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, use } from 'react';
+import Link from 'next/link';
 import { EventDetailPanel } from '@/modules/calendar/components/EventDetailPanel';
 import type { CalendarEventDisplay } from '@/modules/calendar/calendar.types';
 
@@ -41,12 +42,12 @@ export default function EventDetailPage({ params }: { params: Promise<{ eventId:
 
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', padding: '24px' }}>
-      <a
+      <Link
         href="/calendar"
         style={{ display: 'inline-block', marginBottom: '16px', color: '#3b82f6', textDecoration: 'none', fontSize: '14px' }}
       >
         &larr; Back to Calendar
-      </a>
+      </Link>
 
       {event ? (
         <div style={{ position: 'relative' }}>

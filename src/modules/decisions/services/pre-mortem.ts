@@ -177,7 +177,7 @@ List 3-5 specific, measurable kill signals that would indicate this decision sho
 
 // --- Fallback Rule-Based Generators ---
 
-const CATEGORIES: FailureCategory[] = [
+const _CATEGORIES: FailureCategory[] = [
   'FINANCIAL',
   'OPERATIONAL',
   'REPUTATIONAL',
@@ -236,7 +236,7 @@ function generateFailureScenarios(request: PreMortemRequest): FailureScenario[] 
 
 function generateMitigations(
   scenarios: FailureScenario[],
-  request: PreMortemRequest
+  _request: PreMortemRequest
 ): MitigationStep[] {
   return scenarios.map((s) => ({
     scenarioId: s.id,

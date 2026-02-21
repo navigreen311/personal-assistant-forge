@@ -10,7 +10,7 @@ const CheckBudgetSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = CheckBudgetSchema.safeParse(body);
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
       const result = await checkBudget(parsed.data.entityId, parsed.data.additionalCost);
       return success(result);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to check budget', 500);
     }
   });

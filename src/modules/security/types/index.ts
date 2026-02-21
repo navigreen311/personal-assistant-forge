@@ -4,8 +4,6 @@
 // compliance, legal hold, provenance, audit logging
 // ============================================================================
 
-import type { ComplianceProfile } from '@/shared/types';
-
 // --- Data Classification Types ---
 
 export type DataClassification =

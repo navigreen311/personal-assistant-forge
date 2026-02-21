@@ -12,7 +12,7 @@ interface DraftComposerProps {
   entityId?: string;
 }
 
-export default function DraftComposer({ entityId }: DraftComposerProps) {
+export default function DraftComposer({ entityId: _entityId }: DraftComposerProps) {
   const [recipientId, setRecipientId] = useState('');
   const [intent, setIntent] = useState('');
   const [context, setContext] = useState('');

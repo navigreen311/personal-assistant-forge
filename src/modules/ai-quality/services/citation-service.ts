@@ -56,7 +56,7 @@ export async function verifyCitation(
   citationId: string
 ): Promise<{ verified: boolean; reason: string }> {
   // Search all citations for the given ID
-  for (const [outputId, citations] of citationStore) {
+  for (const [_outputId, citations] of citationStore) {
     const citation = citations.find((c) => c.claimId === citationId);
     if (!citation) continue;
 

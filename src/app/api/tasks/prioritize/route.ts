@@ -12,7 +12,7 @@ const PrioritizeSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = PrioritizeSchema.safeParse(body);
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = req.nextUrl.searchParams;
       const userId = params.get('userId');

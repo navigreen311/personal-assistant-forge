@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText, generateJSON } from '@/lib/ai';
+import type { Call, Contact } from '@prisma/client';
 import type { CallAnalytics } from '../types';
 
 // --- Core call analytics (Phase 2) ---
@@ -19,16 +20,16 @@ export async function getCallAnalytics(
   const totalCalls = calls.length;
 
   // Connect rate: calls with outcome CONNECTED / total calls
-  const connected = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
+  const connected = calls.filter((c: Call) => c.outcome === 'CONNECTED').length;
   const connectRate =
     totalCalls > 0 ? Math.round((connected / totalCalls) * 100) : 0;
 
   // Average duration (seconds)
-  const callsWithDuration = calls.filter((c: any) => c.duration != null);
+  const callsWithDuration = calls.filter((c: Call) => c.duration != null);
   const averageDuration =
     callsWithDuration.length > 0
       ? Math.round(
-          callsWithDuration.reduce((sum: number, c: any) => sum + (c.duration ?? 0), 0) /
+          callsWithDuration.reduce((sum: number, c: Call) => sum + (c.duration ?? 0), 0) /
             callsWithDuration.length
         )
       : 0;
@@ -41,12 +42,12 @@ export async function getCallAnalytics(
   }
 
   // Sentiment average
-  const callsWithSentiment = calls.filter((c: any) => c.sentiment != null);
+  const callsWithSentiment = calls.filter((c: Call) => c.sentiment != null);
   const sentimentAverage =
     callsWithSentiment.length > 0
       ? Math.round(
           (callsWithSentiment.reduce(
-            (sum: number, c: any) => sum + (c.sentiment ?? 0),
+            (sum: number, c: Call) => sum + (c.sentiment ?? 0),
             0
           ) /
             callsWithSentiment.length) *
@@ -150,7 +151,7 @@ export async function getCallTrend(
       },
     });
 
-    const connectedCount = calls.filter((c: any) => c.outcome === 'CONNECTED').length;
+    const connectedCount = calls.filter((c: Call) => c.outcome === 'CONNECTED').length;
     const connectRate =
       calls.length > 0 ? Math.round((connectedCount / calls.length) * 100) : 0;
 
@@ -318,7 +319,7 @@ export async function getTopCallers(
   });
 
   const contactMap = new Map<string, string>(
-    contacts.map((c: any) => [c.id, c.name])
+    contacts.map((c: Pick<Contact, 'id' | 'name'>) => [c.id, c.name])
   );
 
   return topContactIds.map(([contactId, callCount]) => ({
@@ -351,13 +352,13 @@ export async function getCallTrends(
     const o = c.outcome ?? 'UNKNOWN';
     outcomes[o] = (outcomes[o] ?? 0) + 1;
   }
-  const withSentiment = calls.filter((c: any) => c.sentiment != null);
+  const withSentiment = calls.filter((c: Call) => c.sentiment != null);
   const avgSentiment = withSentiment.length > 0
-    ? (withSentiment.reduce((s: number, c: any) => s + (c.sentiment ?? 0), 0) / withSentiment.length).toFixed(2)
+    ? (withSentiment.reduce((s: number, c: Call) => s + (c.sentiment ?? 0), 0) / withSentiment.length).toFixed(2)
     : 'N/A';
-  const withDuration = calls.filter((c: any) => c.duration != null);
+  const withDuration = calls.filter((c: Call) => c.duration != null);
   const avgDur = withDuration.length > 0
-    ? Math.round(withDuration.reduce((s: number, c: any) => s + (c.duration ?? 0), 0) / withDuration.length)
+    ? Math.round(withDuration.reduce((s: number, c: Call) => s + (c.duration ?? 0), 0) / withDuration.length)
     : 0;
 
   try {

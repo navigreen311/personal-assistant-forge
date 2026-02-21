@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       const userId = parsed.data.userId ?? session.userId;
       const goals = await getGoals(userId, parsed.data.entityId);
       return success(goals);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch goals', 500);
     }
   });
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
       const userId = parsed.data.userId ?? session.userId;
       const goal = await createGoal({ ...parsed.data, userId });
       return success(goal, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create goal', 500);
     }
   });

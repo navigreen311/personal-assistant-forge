@@ -13,7 +13,7 @@ const ResearchRequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = ResearchRequestSchema.safeParse(body);
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
 
       const report = await conductResearch(parsed.data);
       return success(report, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to conduct research', 500);
     }
   });

@@ -21,7 +21,7 @@ interface StepJobData {
 }
 
 async function processWorkflowJob(job: Job<WorkflowJobData>): Promise<void> {
-  const { executionId, workflowId, variables } = job.data;
+  const { executionId, workflowId, variables: _variables } = job.data;
 
   const workflow = await prisma.workflow.findUnique({
     where: { id: workflowId },

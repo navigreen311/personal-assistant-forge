@@ -23,7 +23,7 @@ const createTemplateSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const type = searchParams.get('type') as DocumentType | undefined;
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = createTemplateSchema.safeParse(body);

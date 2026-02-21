@@ -8,11 +8,10 @@ import type {
   Runbook,
   RunbookStep,
   RunbookExecution,
-  RunbookStepResult,
 } from '../types';
 import { enqueueAction } from './action-queue';
 import { scoreAction } from './blast-radius-scorer';
-import { generateJSON, generateText } from '@/lib/ai';
+import { generateJSON } from '@/lib/ai';
 
 // --- In-Memory Stores ---
 

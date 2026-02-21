@@ -89,7 +89,7 @@ export default function AttentionPage() {
         if (results[2].status === 'fulfilled' && results[2].value?.data) {
           setDndConfig(results[2].value.data);
         }
-      } catch (err) {
+      } catch {
         setError('Failed to load attention data');
       } finally {
         setLoading(false);

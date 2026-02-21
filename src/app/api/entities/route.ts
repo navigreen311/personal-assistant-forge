@@ -3,7 +3,7 @@ import { success, error, paginated } from '@/shared/utils/api-response';
 import { EntityService } from '@/modules/entities/entity.service';
 import { createEntitySchema, listEntitiesSchema } from '@/modules/entities/entity.validation';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 
 const entityService = new EntityService();
 
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
 
       const result = await entityService.listEntities(session.userId, parsed.data);
       return paginated(result.data, result.total, result.page, result.pageSize);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to list entities', 500);
     }
   });
@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
 
       const entity = await entityService.createEntity(session.userId, parsed.data);
       return success(entity, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create entity', 500);
     }
   });

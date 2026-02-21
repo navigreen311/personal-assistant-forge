@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { dragDropSchema } from '@/modules/calendar/calendar.validation';
 
@@ -26,7 +25,7 @@ export async function POST(
       const result = await schedulingService.rescheduleEvent(parsed.data, session.userId);
 
       return success(result);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to reschedule event', 500);
     }
   });

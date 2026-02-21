@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { NLPSchedulingService } from '@/modules/calendar/nlp.service';
 import { naturalLanguageSchema } from '@/modules/calendar/calendar.validation';
 
@@ -45,7 +44,7 @@ export async function POST(request: NextRequest) {
         resolvedTimeRanges: resolvedRanges,
         resolvedParticipants,
       });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to parse scheduling text', 500);
     }
   });

@@ -179,7 +179,7 @@ export async function suggestReengagement(contactId: string): Promise<Reengageme
 
   const preferences = (contact.preferences as Record<string, unknown>) ?? {};
   const preferredChannel = (preferences.preferredChannel as MessageChannel) ?? 'EMAIL';
-  const preferredTone = (preferences.preferredTone as Tone) ?? 'WARM';
+  const _preferredTone = (preferences.preferredTone as Tone) ?? 'WARM';
 
   const ghosting = await detectGhosting(contactId);
 

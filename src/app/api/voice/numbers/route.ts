@@ -4,7 +4,7 @@ import { listNumbers } from '@/modules/voiceforge/services/number-manager';
 import { withAuth } from '@/shared/middleware/auth';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const entityId = req.nextUrl.searchParams.get('entityId');
       if (!entityId) {

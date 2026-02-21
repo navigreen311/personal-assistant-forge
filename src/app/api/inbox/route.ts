@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
+
 import { InboxService } from '@/modules/inbox';
 import type { InboxListParams } from '@/modules/inbox/inbox.types';
 import { inboxListSchema } from '@/modules/inbox/inbox.validation';

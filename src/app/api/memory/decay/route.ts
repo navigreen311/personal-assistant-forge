@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { applyDecay } from '@/engines/memory/decay-service';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const DecaySchema = z.object({
   config: z

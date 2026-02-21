@@ -72,8 +72,8 @@ export async function calculateScore(delegateeId: string): Promise<DelegationSco
 }
 
 export async function getBestDelegate(
-  category: string,
-  entityId: string
+  _category: string,
+  _entityId: string
 ): Promise<{ delegateeId: string; score: number } | null> {
   const allDelegatees = new Set<string>();
   for (const d of delegationStore.values()) {
@@ -91,7 +91,7 @@ export async function getBestDelegate(
   return best;
 }
 
-export async function getScoreboard(entityId: string): Promise<DelegationScore[]> {
+export async function getScoreboard(_entityId: string): Promise<DelegationScore[]> {
   const allDelegatees = new Set<string>();
   for (const d of delegationStore.values()) {
     allDelegatees.add(d.delegatedTo);

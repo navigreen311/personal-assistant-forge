@@ -4,7 +4,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const userId = searchParams.get('userId');

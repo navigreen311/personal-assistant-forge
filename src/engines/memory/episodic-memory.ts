@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText, generateJSON } from '@/lib/ai';
-import type { MemoryEntry } from '@/shared/types';
+import type { MemoryEntry, MemoryType } from '@/shared/types';
 import type { MemorySearchResult } from './types';
 
 export async function storeEpisode(
@@ -83,9 +83,8 @@ export async function recallEpisode(
     ? getQuarterMonths(parseInt(quarterMatch[1]))
     : null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results: MemorySearchResult[] = episodes
-    .map((entry: any) => {
+    .map((entry) => {
       const contentLower = (entry.content as string).toLowerCase();
       const contextLower = (entry.context as string).toLowerCase();
       const matchedTerms: string[] = [];
@@ -183,12 +182,22 @@ function getQuarterMonths(quarter: number): number[] {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapPrismaMemory(raw: any): MemoryEntry {
+interface PrismaMemoryRecord {
+  id: string;
+  userId: string;
+  type: string;
+  content: string;
+  context: string;
+  strength: number;
+  lastAccessed: Date;
+  createdAt: Date;
+}
+
+function mapPrismaMemory(raw: PrismaMemoryRecord): MemoryEntry {
   return {
     id: raw.id,
     userId: raw.userId,
-    type: raw.type,
+    type: raw.type as MemoryType,
     content: raw.content,
     context: raw.context,
     strength: raw.strength,

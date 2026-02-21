@@ -166,7 +166,7 @@ function mapDbToLocal(db: PrismaSubscription): Subscription {
 }
 
 /** Normalize local status for DB storage: 'cancelled' -> 'canceled'. */
-function normalizeStatusForDb(status: string): string {
+function _normalizeStatusForDb(status: string): string {
   return status === 'cancelled' ? 'canceled' : status;
 }
 

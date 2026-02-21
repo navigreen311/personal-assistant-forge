@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import type { Entity, ProjectHealth } from '@/shared/types';
 import { EntityHealthBadge } from './EntityHealthBadge';
 
@@ -151,12 +152,12 @@ export function EntitySwitcher({
             ))}
           </ul>
           <div className="border-t border-gray-200 px-3 py-2">
-            <a
+            <Link
               href="/entities"
               className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
             >
               Manage Entities
-            </a>
+            </Link>
           </div>
         </div>
       )}

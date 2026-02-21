@@ -27,9 +27,6 @@ const STOP_WORDS = new Set([
   'is', 'are', 'was', 'were', 'been', 'has', 'had', 'did', 'does',
 ]);
 
-// In-memory embedding cache keyed by entry ID
-const embeddingCache = new Map<string, number[]>();
-
 const EMBED_DIMENSIONS = 256;
 
 /**
@@ -432,7 +429,7 @@ export async function search(
 // --- Embedding-based semantic search ---
 
 export interface SemanticSearchResult {
-  entry: any;
+  entry: KnowledgeEntry;
   similarity: number;
 }
 
@@ -446,7 +443,7 @@ export async function semanticSearch(
   userId: string,
   query: string,
   options?: { limit?: number; threshold?: number }
-): Promise<Array<{ entry: any; similarity: number }>>;
+): Promise<Array<{ entry: KnowledgeEntry; similarity: number }>>;
 
 /**
  * AI-powered re-ranking of keyword search results (legacy signature).
@@ -459,7 +456,7 @@ export async function semanticSearch(
   userIdOrRequest: string | SearchRequest,
   query?: string,
   options?: { limit?: number; threshold?: number }
-): Promise<Array<{ entry: any; similarity: number }> | SearchResponse> {
+): Promise<Array<{ entry: KnowledgeEntry; similarity: number }> | SearchResponse> {
   // Legacy signature: semanticSearch(request: SearchRequest)
   if (typeof userIdOrRequest !== 'string') {
     return semanticSearchLegacy(userIdOrRequest);
@@ -485,7 +482,7 @@ export async function semanticSearch(
 
     if (entries.length === 0) return [];
 
-    const results: Array<{ entry: any; similarity: number }> = [];
+    const results: Array<{ entry: KnowledgeEntry; similarity: number }> = [];
 
     for (const entry of entries) {
       const ke = entry as unknown as KnowledgeEntry;

@@ -7,7 +7,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; executionId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { executionId } = await params;
       const execution = await getExecution(executionId);
@@ -31,7 +31,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; executionId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { executionId } = await params;
       await cancelExecution(executionId);

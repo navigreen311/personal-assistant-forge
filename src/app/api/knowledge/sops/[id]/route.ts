@@ -25,7 +25,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { id } = await params;
       const sop = await getSOP(id);
@@ -35,7 +35,7 @@ export async function GET(
       }
 
       return success(sop);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get SOP', 500);
     }
   });
@@ -45,7 +45,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { id } = await params;
       const body = await req.json();

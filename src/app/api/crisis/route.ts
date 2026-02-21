@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityAccess } from '@/shared/middleware/auth';
+import { withAuth } from '@/shared/middleware/auth';
 import * as detectionService from '@/modules/crisis/services/detection-service';
 
 const createCrisisSchema = z.object({

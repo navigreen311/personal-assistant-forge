@@ -7,9 +7,8 @@ import EscalationTimeline from '@/modules/crisis/components/EscalationTimeline';
 import PlaybookProgress from '@/modules/crisis/components/PlaybookProgress';
 import WarRoomPanel from '@/modules/crisis/components/WarRoomPanel';
 import DeadManSwitchConfig from '@/modules/crisis/components/DeadManSwitchConfig';
-import PostIncidentReport from '@/modules/crisis/components/PostIncidentReport';
 import PhoneTreeVisualization from '@/modules/crisis/components/PhoneTreeVisualization';
-import type { CrisisEvent, DeadManSwitch, PostIncidentReview, PhoneTreeNode } from '@/modules/crisis/types';
+import type { CrisisEvent, DeadManSwitch, PhoneTreeNode } from '@/modules/crisis/types';
 
 // Fallback demo data for crisis if API fetch fails
 const sampleCrisis: CrisisEvent = {
@@ -97,7 +96,7 @@ export default function CrisisPage() {
         if (results[2].status === 'fulfilled' && results[2].value?.data) {
           setPhoneTree(results[2].value.data);
         }
-      } catch (err) {
+      } catch {
         setError('Failed to load crisis data');
       } finally {
         setLoading(false);

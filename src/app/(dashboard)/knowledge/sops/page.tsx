@@ -26,6 +26,7 @@ export default function SOPLibraryPage() {
   }, [filterStatus, searchTag]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetching data on mount is intentional
     loadSOPs();
   }, [loadSOPs]);
 

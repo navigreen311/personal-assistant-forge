@@ -11,7 +11,7 @@ const checkContentSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = checkContentSchema.safeParse(body);

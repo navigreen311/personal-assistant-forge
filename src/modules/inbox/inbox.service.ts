@@ -284,7 +284,7 @@ export class InboxService {
 
   async getMessageDetail(
     messageId: string,
-    userId: string
+    _userId: string
   ): Promise<InboxItem | null> {
     const msg = await prisma.message.findUnique({
       where: { id: messageId },
@@ -335,9 +335,11 @@ export class InboxService {
 
     return {
       message: mapMessageRow(msg),
-      senderName: (msg as any).contact?.name ?? msg.senderId,
-      senderContact: (msg as any).contact ? mapContactRow((msg as any).contact) : undefined,
-      entityName: (msg as any).entity?.name ?? msg.entityId,
+      senderName: (msg as unknown as Record<string, Record<string, unknown>>).contact?.name as string ?? msg.senderId,
+      senderContact: (msg as unknown as Record<string, unknown>).contact
+        ? mapContactRow((msg as unknown as Record<string, unknown>).contact)
+        : undefined,
+      entityName: (msg as unknown as Record<string, Record<string, unknown>>).entity?.name as string ?? msg.entityId,
       threadMessages,
       triageResult,
       isRead,
@@ -375,7 +377,7 @@ export class InboxService {
     });
   }
 
-  async sendDraft(messageId: string, userId: string): Promise<Message> {
+  async sendDraft(messageId: string, _userId: string): Promise<Message> {
     const msg = await prisma.message.findUnique({ where: { id: messageId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
     if (msg.draftStatus !== 'DRAFT' && msg.draftStatus !== 'APPROVED') {

@@ -5,7 +5,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import type { CaptureType } from '@/modules/knowledge/types';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const entityId = searchParams.get('entityId');
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
       });
 
       return success(result);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to search knowledge entries', 500);
     }
   });

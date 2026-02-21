@@ -126,7 +126,7 @@ export async function completeStep(
   return state;
 }
 
-export async function skipStep(userId: string, stepId: string): Promise<OnboardingState> {
+export async function skipStep(userId: string, _stepId: string): Promise<OnboardingState> {
   const state = await getOnboardingState(userId);
   state.currentStep = Math.min(state.currentStep + 1, state.totalSteps - 1);
   await saveOnboardingState(userId, state);

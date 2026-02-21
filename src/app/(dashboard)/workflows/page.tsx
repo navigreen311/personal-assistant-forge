@@ -46,6 +46,7 @@ export default function WorkflowsPage() {
   );
 
   const handleDuplicate = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async (workflowId: string) => {
       try {
         await fetch(`/api/workflows`, {

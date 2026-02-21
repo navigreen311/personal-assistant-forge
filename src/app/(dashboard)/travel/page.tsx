@@ -10,7 +10,7 @@ import type { Itinerary, TravelDocument, FlightAlert, VisaRequirement } from '@/
 export default function TravelDashboard() {
   const [itineraries, setItineraries] = useState<Itinerary[]>([]);
   const [alerts, setAlerts] = useState<FlightAlert[]>([]);
-  const [visaReqs, setVisaReqs] = useState<VisaRequirement[]>([]);
+  const [visaReqs] = useState<VisaRequirement[]>([]);
   const [documents, setDocuments] = useState<TravelDocument[]>([]);
   const [loading, setLoading] = useState(true);
 

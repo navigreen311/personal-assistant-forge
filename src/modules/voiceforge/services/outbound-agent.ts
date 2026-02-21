@@ -3,11 +3,9 @@
 // Orchestrates outbound calls with consent, guardrails, and logging
 // ============================================================================
 
-import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 import { MockVoiceProvider } from '@/lib/voice/mock-provider';
-import { checkConsentRequirements, verifyConsent } from '@/lib/voice/consent-manager';
 import { updateStats } from '@/modules/voiceforge/services/campaign-service';
 import { getPersona } from '@/modules/voiceforge/services/persona-service';
 import type {

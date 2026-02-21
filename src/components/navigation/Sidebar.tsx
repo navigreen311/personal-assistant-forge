@@ -3,7 +3,7 @@
 import { useSession, signOut } from 'next-auth/react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 
 // ---------------------------------------------------------------------------
 // Navigation structure – all 28 modules grouped by category
@@ -165,8 +165,6 @@ NAV_GROUPS[3].items[2] = {
 // Sidebar component
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = 'sidebar-collapsed';
-
 export function Sidebar({
   collapsed,
   onToggle,
@@ -183,8 +181,6 @@ export function Sidebar({
     });
     return initial;
   });
-  const [showUserMenu, setShowUserMenu] = useState(false);
-
   const isActive = useCallback(
     (href: string) => pathname === href || pathname.startsWith(href + '/'),
     [pathname],

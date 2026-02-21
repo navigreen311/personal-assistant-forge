@@ -4,7 +4,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import * as visaService from '@/modules/travel/services/visa-checker-service';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const { searchParams } = req.nextUrl;
       const citizenship = searchParams.get('citizenship');

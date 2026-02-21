@@ -125,8 +125,8 @@ export async function getOverdueCommitments(entityId: string): Promise<Commitmen
  */
 export async function extractCommitmentsFromText(
   text: string,
-  contactId: string,
-  entityId: string
+  _contactId: string,
+  _entityId: string
 ): Promise<Commitment[]> {
   const result = await generateJSON<{
     commitments: Array<{

@@ -109,7 +109,7 @@ export class CalendarAnalyticsService {
     }
 
     const totalScheduled = meetings + focusBlocks + travel + breaks + prep;
-    const totalPeriodHours = differenceInHours(period.end, period.start);
+    const _totalPeriodHours = differenceInHours(period.end, period.start);
     // Approximate business hours (8 per working day)
     const days = eachDayOfInterval({ start: period.start, end: period.end });
     const workingDays = days.filter((d) => {

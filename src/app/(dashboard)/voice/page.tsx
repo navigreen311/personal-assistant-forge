@@ -2,7 +2,6 @@
 
 import { useState, useCallback } from 'react';
 import type {
-  VoiceSession,
   WakeWordConfig,
   STTConfig,
   ParsedVoiceCommand,

@@ -180,7 +180,7 @@ function extractEntities(transcript: string): ExtractedEntity[] {
   let personMatch: RegExpExecArray | null;
   while ((personMatch = plainRe.exec(transcript)) !== null) {
     const matchStart = personMatch.index;
-    const matchEnd = matchStart + personMatch[0].length;
+    const _matchEnd = matchStart + personMatch[0].length;
     // Skip if this overlaps with a Dr. match
     const overlaps = drMatchedRanges.some(
       ([s, e]) => matchStart >= s && matchStart < e,

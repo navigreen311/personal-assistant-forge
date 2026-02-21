@@ -4,7 +4,6 @@ import { success, error, paginated } from '@/shared/utils/api-response';
 import { createMemory, getMemoriesByType } from '@/engines/memory/memory-service';
 import { prisma } from '@/lib/db';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 
 const CreateMemorySchema = z.object({
   type: z.enum(['SHORT_TERM', 'WORKING', 'LONG_TERM', 'EPISODIC']),

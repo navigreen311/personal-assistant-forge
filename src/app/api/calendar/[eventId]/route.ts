@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import type { CalendarEvent } from '@/shared/types';
@@ -12,7 +11,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ eventId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
       const { eventId } = await params;
       const event = await prisma.calendarEvent.findUnique({
@@ -40,7 +39,7 @@ export async function GET(
       };
 
       return success(result);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch event', 500);
     }
   });
@@ -57,7 +56,7 @@ export async function PATCH(
 
       const event = await schedulingService.updateEvent(eventId, body, session.userId);
       return success(event);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to update event', 500);
     }
   });
@@ -82,7 +81,7 @@ export async function PUT(
       const body = await req.json();
       const event = await schedulingService.updateEvent(eventId, body, session.userId);
       return success(event);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to update event', 500);
     }
   });
@@ -98,7 +97,7 @@ export async function DELETE(
 
       await schedulingService.deleteEvent(eventId, session.userId);
       return success({ deleted: true });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to delete event', 500);
     }
   });

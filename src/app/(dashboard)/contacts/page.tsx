@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import type { Contact, Commitment, MessageChannel, Tone } from '@/shared/types';
+import type { Contact, MessageChannel, Tone } from '@/shared/types';
 import RelationshipBadge from '@/modules/communication/components/RelationshipBadge';
 import CadenceIndicator from '@/modules/communication/components/CadenceIndicator';
 import CommitmentList from '@/modules/communication/components/CommitmentList';
@@ -229,7 +229,6 @@ function ScoreBar({ score }: { score: number }) {
 function ContactDetailSlideOut({
   contact,
   onClose,
-  onRefresh,
 }: {
   contact: Contact;
   onClose: () => void;

@@ -1,6 +1,7 @@
 'use client';
 
-import type { Contact, Commitment } from '@/shared/types';
+import { useState } from 'react';
+import type { Contact } from '@/shared/types';
 import RelationshipBadge from './RelationshipBadge';
 import CommitmentList from './CommitmentList';
 import CadenceIndicator from './CadenceIndicator';
@@ -18,8 +19,9 @@ export default function ContactDetailPanel({ contact, onClose }: ContactDetailPa
   const isEscalated = prefsRecord.escalated === true;
 
   // Simple ghosting estimation for display
+  const [now] = useState(() => Date.now());
   const daysSinceLastContact = contact.lastTouch
-    ? Math.floor((Date.now() - new Date(contact.lastTouch).getTime()) / (1000 * 60 * 60 * 24))
+    ? Math.floor((now - new Date(contact.lastTouch).getTime()) / (1000 * 60 * 60 * 24))
     : 999;
   const isGhosting = daysSinceLastContact > 28;
   const riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' = daysSinceLastContact > 28 ? 'HIGH' : daysSinceLastContact > 14 ? 'MEDIUM' : 'LOW';

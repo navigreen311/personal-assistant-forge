@@ -3,7 +3,6 @@
 // Script CRUD, execution, branch evaluation, and validation
 // ============================================================================
 
-import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import type {
   CallScript,
@@ -11,7 +10,7 @@ import type {
   ScriptBranch,
   ScriptExecution,
 } from '@/modules/voiceforge/types';
-import { generateJSON, generateText } from '@/lib/ai';
+import { generateJSON } from '@/lib/ai';
 
 const DOC_TYPE = 'CALL_SCRIPT';
 

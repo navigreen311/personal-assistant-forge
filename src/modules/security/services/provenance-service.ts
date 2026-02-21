@@ -12,7 +12,6 @@
 
 import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import type {
   ProvenanceRecord,
@@ -153,7 +152,7 @@ export class ProvenanceService {
           confidence: params.confidence,
         },
         timestamp: now,
-      } as any,
+      } as unknown as Parameters<typeof prisma.provenanceRecord.create>[0]['data'],
     });
 
     return rowToProvenanceRecord(row as unknown as PrismaRow);
@@ -311,7 +310,7 @@ export class ProvenanceService {
           userMetadata: metadata,
         },
         timestamp,
-      } as any,
+      } as unknown as Parameters<typeof prisma.provenanceRecord.create>[0]['data'],
     });
 
     return {

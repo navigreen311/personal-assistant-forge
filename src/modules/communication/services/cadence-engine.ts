@@ -7,7 +7,7 @@ import { prisma } from '@/lib/db';
 import { addDays, addWeeks, addMonths, isBefore } from 'date-fns';
 import type { CadenceFrequency, FollowUpCadence } from '@/modules/communication/types';
 
-const FREQUENCY_DAYS: Record<CadenceFrequency, number> = {
+const _FREQUENCY_DAYS: Record<CadenceFrequency, number> = {
   DAILY: 1,
   WEEKLY: 7,
   BIWEEKLY: 14,

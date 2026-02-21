@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
 
     // Strip hashedPassword from preferences before returning
     const prefs = user.preferences as Record<string, unknown>;
-    const { hashedPassword: _, ...safePrefs } = prefs;
+    const { hashedPassword: _hashedPassword, ...safePrefs } = prefs;
 
     return success({
       id: user.id,
@@ -83,7 +83,7 @@ export async function PATCH(req: NextRequest) {
       });
 
       const prefs = user.preferences as Record<string, unknown>;
-      const { hashedPassword: _, ...safePrefs } = prefs;
+      const { hashedPassword: _hashedPassword, ...safePrefs } = prefs;
 
       return success({
         id: user.id,

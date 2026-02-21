@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { format, addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, getHours } from 'date-fns';
-import type { CalendarViewMode, CalendarViewData, CalendarEventDisplay, EnergyMapping } from '../calendar.types';
+import type { CalendarViewMode, CalendarViewData, CalendarEventDisplay } from '../calendar.types';
 import { EventCard } from './EventCard';
 import { EnergyOverlay } from './EnergyOverlay';
 

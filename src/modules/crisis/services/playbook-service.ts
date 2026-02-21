@@ -118,7 +118,7 @@ export async function executePlaybookStep(
   return crisis;
 }
 
-export async function getCustomPlaybooks(userId: string): Promise<CrisisPlaybook[]> {
+export async function getCustomPlaybooks(_userId: string): Promise<CrisisPlaybook[]> {
   return Array.from(customPlaybooks.values());
 }
 

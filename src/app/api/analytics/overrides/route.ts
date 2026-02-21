@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
         parsed.data.reasonDetail
       );
       return success(record, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to record override', 500);
     }
   });

@@ -113,7 +113,7 @@ function buildDraftBody(intent: string, tone: Tone, channel: MessageChannel, con
  * Generate 2-3 draft variants for a communication request.
  */
 export async function generateDrafts(request: DraftRequest): Promise<DraftResponse> {
-  const { recipientId, entityId, channel, intent, tone, context, replyToMessageId } = request;
+  const { recipientId, entityId, channel, intent, tone, context, replyToMessageId: _replyToMessageId } = request;
 
   // Fetch recipient
   const contact = await prisma.contact.findUnique({ where: { id: recipientId } });

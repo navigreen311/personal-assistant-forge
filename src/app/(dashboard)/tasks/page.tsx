@@ -16,8 +16,8 @@ export default function TasksPage() {
   const [view, setView] = useState<TaskView>('LIST');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [dailyTop3, setDailyTop3] = useState<DailyTop3Type | null>(null);
-  const [alerts, setAlerts] = useState<ProcrastinationAlert[]>([]);
+  const [dailyTop3] = useState<DailyTop3Type | null>(null);
+  const [alerts] = useState<ProcrastinationAlert[]>([]);
   const [filters, setFilters] = useState<TaskFilters>({});
   const [sort, setSort] = useState<TaskSortOptions>({ field: 'priority', direction: 'asc' });
   const [isLoading, setIsLoading] = useState(true);

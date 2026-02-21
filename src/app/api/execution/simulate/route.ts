@@ -12,7 +12,7 @@ const SimulateRequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body: unknown = await req.json();
       const parsed = SimulateRequestSchema.safeParse(body);

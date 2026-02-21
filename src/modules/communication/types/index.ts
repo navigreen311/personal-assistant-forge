@@ -3,7 +3,7 @@
 // Module-specific types for AI Communication Hub + CRM
 // ============================================================================
 
-import type { MessageChannel, Tone, ComplianceProfile } from '@/shared/types';
+import type { MessageChannel, Tone } from '@/shared/types';
 
 // --- Relationship Intelligence ---
 

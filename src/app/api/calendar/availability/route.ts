@@ -1,7 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import type { AuthSession } from '@/lib/auth/types';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { z } from 'zod';
 
@@ -84,7 +83,7 @@ export async function GET(request: NextRequest) {
           eventId: e.id,
         })),
       });
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch availability', 500);
     }
   });

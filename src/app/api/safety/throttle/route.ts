@@ -10,7 +10,7 @@ const RecordSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const userId = searchParams.get('userId');
@@ -22,14 +22,14 @@ export async function GET(request: NextRequest) {
 
       const status = await checkThrottle(userId, actionType);
       return success(status);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to check throttle status', 500);
     }
   });
 }
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, session) => {
+  return withRole(request, ['admin'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RecordSchema.safeParse(body);
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
       await recordAction(parsed.data.userId, parsed.data.actionType);
       const status = await checkThrottle(parsed.data.userId, parsed.data.actionType);
       return success(status, 201);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to record action', 500);
     }
   });

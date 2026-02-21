@@ -1,4 +1,4 @@
-import { generateJSON, generateText } from '@/lib/ai';
+import { generateJSON } from '@/lib/ai';
 import type { IngestionRequest, IngestionResult, CapturedEntry } from '@/modules/knowledge/types';
 import { capture } from './capture-service';
 

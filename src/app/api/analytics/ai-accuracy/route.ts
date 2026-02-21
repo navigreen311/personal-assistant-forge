@@ -14,7 +14,7 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
         period
       );
       return success(metrics);
-    } catch (err) {
+    } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to get accuracy metrics', 500);
     }
   });
