@@ -29,11 +29,11 @@ export default function HouseholdDashboard() {
           fetch('/api/household/vehicles'),
         ]);
 
-        if (tasksRes.ok) setTasks(await tasksRes.json());
-        if (shoppingRes.ok) setShopping(await shoppingRes.json());
-        if (warrantiesRes.ok) setWarranties(await warrantiesRes.json());
-        if (subsRes.ok) setSubscriptions(await subsRes.json());
-        if (vehiclesRes.ok) setVehicles(await vehiclesRes.json());
+        if (tasksRes.ok) { const j = await tasksRes.json(); setTasks(j.data ?? []); }
+        if (shoppingRes.ok) { const j = await shoppingRes.json(); setShopping(j.data ?? []); }
+        if (warrantiesRes.ok) { const j = await warrantiesRes.json(); setWarranties(j.data ?? []); }
+        if (subsRes.ok) { const j = await subsRes.json(); setSubscriptions(j.data ?? []); }
+        if (vehiclesRes.ok) { const j = await vehiclesRes.json(); setVehicles(j.data ?? []); }
       } catch (err) {
         console.error('Failed to fetch household data:', err);
         setError('Failed to load household data. Please try again.');
