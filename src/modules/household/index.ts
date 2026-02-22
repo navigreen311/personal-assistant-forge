@@ -53,4 +53,6 @@ export type {
   SubscriptionRecord,
   VehicleRecord,
   FamilyMember,
+  Property,
+  InventoryItem,
 } from './types';
