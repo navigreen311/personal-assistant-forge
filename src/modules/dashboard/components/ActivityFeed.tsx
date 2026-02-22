@@ -110,7 +110,7 @@ export default function ActivityFeed({ activities }: ActivityFeedProps) {
 
             <div className="divide-y divide-gray-50">
               {activities.map((activity) => {
-                const styles = ACTOR_STYLES[activity.actor];
+                const styles = ACTOR_STYLES[activity.actor] ?? ACTOR_STYLES.SYSTEM;
 
                 return (
                   <div key={activity.id} className="flex gap-3 py-2.5 relative">

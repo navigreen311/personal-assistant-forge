@@ -1,141 +1,566 @@
 'use client';
 
-import React, { useState } from 'react';
-import type { DelegationTask, DelegationInboxItem, DelegationScore } from '@/modules/delegation/types';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import dynamic from 'next/dynamic';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 type Tab = 'inbox' | 'active' | 'scoreboard';
 
-export default function DelegationPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('inbox');
-  const [inbox] = useState<DelegationInboxItem[]>([]);
-  const [delegations] = useState<DelegationTask[]>([]);
-  const [scoreboard] = useState<DelegationScore[]>([]);
+interface EntityOption {
+  id: string;
+  name: string;
+  type: string;
+}
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'inbox', label: 'Delegation Inbox' },
-    { key: 'active', label: 'Active Delegations' },
-    { key: 'scoreboard', label: 'Scoreboard' },
-  ];
+interface DelegationStats {
+  activeDelegated: number;
+  completedThisWeek: number;
+  timeSavedHours: number;
+  pendingApproval: number;
+}
+
+// ---------------------------------------------------------------------------
+// Default Stats
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STATS: DelegationStats = {
+  activeDelegated: 0,
+  completedThisWeek: 0,
+  timeSavedHours: 0,
+  pendingApproval: 0,
+};
+
+// ---------------------------------------------------------------------------
+// Dynamic Imports with Graceful Fallbacks
+// ---------------------------------------------------------------------------
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const EnhancedDelegationInbox: any = dynamic(
+  () =>
+    import('@/modules/delegation/components/EnhancedDelegationInbox').catch(
+      () => import('@/modules/delegation/components/DelegationInbox')
+    ) as any,
+  {
+    ssr: false,
+    loading: () => <TabLoadingSkeleton label="Delegation Inbox" />,
+  }
+);
+
+const ActiveDelegationsTab: any = dynamic(
+  () =>
+    import('@/modules/delegation/components/ActiveDelegationsTab').catch(() => ({
+      default: ActiveDelegationsTabFallback,
+    })) as any,
+  {
+    ssr: false,
+    loading: () => <TabLoadingSkeleton label="Active Delegations" />,
+  }
+);
+
+const EnhancedScoreboard: any = dynamic(
+  () =>
+    import('@/modules/delegation/components/EnhancedScoreboard').catch(
+      () => import('@/modules/delegation/components/DelegationScoring')
+    ) as any,
+  {
+    ssr: false,
+    loading: () => <TabLoadingSkeleton label="Scoreboard" />,
+  }
+);
+
+const DelegateTaskModal: any = dynamic(
+  () =>
+    import('@/modules/delegation/components/DelegateTaskModal').catch(() => ({
+      default: DelegateTaskModalFallback,
+    })) as any,
+  {
+    ssr: false,
+    loading: () => (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+        <div className="bg-white rounded-xl p-8 shadow-lg animate-pulse">
+          <div className="h-6 bg-gray-200 rounded w-48 mb-4" />
+          <div className="h-4 bg-gray-100 rounded w-64 mb-2" />
+          <div className="h-4 bg-gray-100 rounded w-56" />
+        </div>
+      </div>
+    ),
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Loading Skeleton Components
+// ---------------------------------------------------------------------------
+
+function TabLoadingSkeleton({ label }: { label: string }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-6 animate-pulse">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="h-5 w-5 bg-gray-200 rounded" />
+        <div className="h-5 bg-gray-200 rounded w-40" />
+      </div>
+      <div className="space-y-4">
+        <div className="h-4 bg-gray-100 rounded w-full" />
+        <div className="h-4 bg-gray-100 rounded w-3/4" />
+        <div className="h-4 bg-gray-100 rounded w-5/6" />
+        <div className="h-10 bg-gray-100 rounded w-48 mt-4" />
+      </div>
+      <p className="sr-only">Loading {label}...</p>
+    </div>
+  );
+}
+
+function StatsBarSkeleton() {
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div
+          key={i}
+          className="bg-white border border-gray-200 rounded-xl p-4 animate-pulse"
+        >
+          <div className="h-3 bg-gray-100 rounded w-20 mb-3" />
+          <div className="h-7 bg-gray-200 rounded w-12" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PageSkeleton() {
+  return (
+    <div className="max-w-7xl mx-auto p-6 space-y-6">
+      <div className="animate-pulse">
+        <div className="h-8 bg-gray-200 rounded w-48 mb-2" />
+        <div className="h-4 bg-gray-100 rounded w-96 mb-4" />
+        <div className="h-10 bg-gray-100 rounded w-48" />
+      </div>
+      <StatsBarSkeleton />
+      <div className="border-b border-gray-200 animate-pulse">
+        <div className="flex gap-6">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-4 bg-gray-100 rounded w-32 mb-3" />
+          ))}
+        </div>
+      </div>
+      <div className="bg-white border border-gray-200 rounded-xl p-6 animate-pulse">
+        <div className="space-y-4">
+          <div className="h-4 bg-gray-100 rounded w-full" />
+          <div className="h-4 bg-gray-100 rounded w-3/4" />
+          <div className="h-4 bg-gray-100 rounded w-5/6" />
+          <div className="h-32 bg-gray-50 rounded w-full mt-4" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stat Card
+// ---------------------------------------------------------------------------
+
+function StatCard({
+  label,
+  value,
+  color,
+  bold = false,
+  suffix,
+}: {
+  label: string;
+  value: number;
+  color: string;
+  bold?: boolean;
+  suffix?: string;
+}) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-col gap-1">
+      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+        {label}
+      </span>
+      <span
+        className={`text-2xl ${bold ? 'font-bold' : 'font-semibold'} ${color}`}
+      >
+        {value}
+        {suffix && (
+          <span className="text-sm font-normal ml-0.5">{suffix}</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline Fallback Components
+// ---------------------------------------------------------------------------
+
+function ActiveDelegationsTabFallback({
+  entityId,
+}: {
+  entityId?: string;
+  onRefreshStats?: () => void;
+}) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-6">
+      <h3 className="text-lg font-semibold text-gray-900 mb-4">
+        Active Delegations
+      </h3>
+      <div className="text-center py-12">
+        <svg
+          className="mx-auto h-10 w-10 text-gray-300 mb-3"
+          fill="none"
+          viewBox="0 0 24 24"
+          strokeWidth={1.5}
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.5a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75"
+          />
+        </svg>
+        <p className="text-sm text-gray-500">
+          No active delegations{entityId ? ' for this entity' : ''}.
+        </p>
+        <p className="text-xs text-gray-400 mt-1">
+          Delegate tasks from the Inbox tab to see them tracked here.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function DelegateTaskModalFallback({
+  onClose,
+}: {
+  entityId?: string;
+  onClose: () => void;
+  onCreated?: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="bg-white rounded-xl p-6 shadow-lg max-w-md w-full mx-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Delegate a Task
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={1.5}
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+        <div className="text-center py-8">
+          <p className="text-sm text-gray-500">
+            Task delegation form coming soon.
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            Use the Inbox tab to delegate AI-suggested tasks in the meantime.
+          </p>
+        </div>
+        <div className="flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab Definitions
+// ---------------------------------------------------------------------------
+
+const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
+  {
+    key: 'inbox',
+    label: 'Delegation Inbox',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859m-17.5 0V6.108c0-1.135.845-2.098 1.976-2.192a48.424 48.424 0 0113.548 0c1.131.094 1.976 1.057 1.976 2.192V13.5M2.25 13.5V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.5" />
+      </svg>
+    ),
+  },
+  {
+    key: 'active',
+    label: 'Active Delegations',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
+      </svg>
+    ),
+  },
+  {
+    key: 'scoreboard',
+    label: 'Scoreboard',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.503-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.007 0H9.497m5.007 0a7.454 7.454 0 01-.982-3.172M9.497 14.25a7.454 7.454 0 00.981-3.172M5.25 4.236c-.982.143-1.954.317-2.916.52A6.003 6.003 0 007.73 9.728M5.25 4.236V4.5c0 2.108.966 3.99 2.48 5.228M5.25 4.236V2.721C7.456 2.41 9.71 2.25 12 2.25c2.291 0 4.545.16 6.75.47v1.516M18.75 4.236c.982.143 1.954.317 2.916.52A6.003 6.003 0 0016.27 9.728M18.75 4.236V4.5c0 2.108-.966 3.99-2.48 5.228m0 0a6.023 6.023 0 01-2.52.587 6.023 6.023 0 01-2.52-.587" />
+      </svg>
+    ),
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Main Page Component
+// ---------------------------------------------------------------------------
+
+export default function DelegationPage() {
+  // --- State ---
+  const [activeTab, setActiveTab] = useState<Tab>('inbox');
+  const [entities, setEntities] = useState<EntityOption[]>([]);
+  const [selectedEntityId, setSelectedEntityId] = useState<string>('');
+  const [stats, setStats] = useState<DelegationStats>(DEFAULT_STATS);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [showDelegateModal, setShowDelegateModal] = useState(false);
+
+  // --- Fetch Entities ---
+  useEffect(() => {
+    async function fetchEntities() {
+      try {
+        const res = await fetch('/api/entities').catch(() => null);
+        if (res?.ok) {
+          const data = await res.json();
+          const entityList: EntityOption[] = (data.data ?? []).map(
+            (e: { id: string; name: string; type?: string }) => ({
+              id: e.id,
+              name: e.name,
+              type: e.type ?? 'Unknown',
+            })
+          );
+          setEntities(entityList);
+        }
+      } catch (err) {
+        console.error('Failed to fetch entities:', err);
+      } finally {
+        setPageLoading(false);
+      }
+    }
+    fetchEntities();
+  }, []);
+
+  // --- Fetch Stats (re-fetches when entity changes) ---
+  const fetchStats = useCallback(async (entityId: string) => {
+    setStatsLoading(true);
+    try {
+      const params = entityId ? `?entityId=${entityId}` : '';
+      const res = await fetch(
+        `/api/delegation/stats${params}`
+      ).catch(() => null);
+      if (res?.ok) {
+        const data = await res.json();
+        setStats({
+          activeDelegated: data.data?.activeDelegated ?? 0,
+          completedThisWeek: data.data?.completedThisWeek ?? 0,
+          timeSavedHours: data.data?.timeSavedHours ?? 0,
+          pendingApproval: data.data?.pendingApproval ?? 0,
+        });
+      } else {
+        setStats(DEFAULT_STATS);
+      }
+    } catch (err) {
+      console.error('Failed to fetch delegation stats:', err);
+      setStats(DEFAULT_STATS);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!pageLoading) {
+      fetchStats(selectedEntityId);
+    }
+  }, [selectedEntityId, pageLoading, fetchStats]);
+
+  // --- Refresh stats callback for child components ---
+  const handleRefreshStats = useCallback(() => {
+    fetchStats(selectedEntityId);
+  }, [fetchStats, selectedEntityId]);
+
+  // --- Entity ID to pass to tabs ---
+  const entityIdProp = selectedEntityId || undefined;
+
+  // --- Render tab content ---
+  const tabContent = useMemo(() => {
+    switch (activeTab) {
+      case 'inbox':
+        return (
+          <EnhancedDelegationInbox
+            entityId={entityIdProp}
+            onDelegated={handleRefreshStats}
+          />
+        );
+      case 'active':
+        return (
+          <ActiveDelegationsTab
+            entityId={entityIdProp}
+            onRefreshStats={handleRefreshStats}
+          />
+        );
+      case 'scoreboard':
+        return (
+          <EnhancedScoreboard
+            entityId={entityIdProp}
+          />
+        );
+      default:
+        return null;
+    }
+  }, [activeTab, entityIdProp, handleRefreshStats]);
+
+  // --- Page Loading State ---
+  if (pageLoading) {
+    return <PageSkeleton />;
+  }
 
   return (
-    <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
-      <h1 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '24px' }}>Delegation</h1>
+    <div className="max-w-7xl mx-auto p-6 space-y-6">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Delegation</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Free up your focus time. AI identifies tasks you can hand off and
+            tracks delegate performance.
+          </p>
+        </div>
 
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid #e5e7eb' }}>
-        {tabs.map((tab) => (
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="delegation-entity-select"
+              className="text-sm font-medium text-gray-700 whitespace-nowrap"
+            >
+              Entity:
+            </label>
+            <select
+              id="delegation-entity-select"
+              value={selectedEntityId}
+              onChange={(e) => setSelectedEntityId(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[180px]"
+            >
+              <option value="">All Entities</option>
+              {entities.map((entity) => (
+                <option key={entity.id} value={entity.id}>
+                  {entity.name}
+                  {entity.type ? ` (${entity.type})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            style={{
-              padding: '10px 20px', border: 'none', cursor: 'pointer',
-              backgroundColor: 'transparent', fontWeight: activeTab === tab.key ? 600 : 400,
-              borderBottom: activeTab === tab.key ? '2px solid #3b82f6' : '2px solid transparent',
-              color: activeTab === tab.key ? '#3b82f6' : '#6b7280',
-            }}
+            onClick={() => setShowDelegateModal(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors"
           >
-            {tab.label}
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            Delegate Task
           </button>
-        ))}
+        </div>
       </div>
 
-      {activeTab === 'inbox' && (
-        <div>
-          <p style={{ color: '#6b7280', marginBottom: '16px' }}>
-            Tasks that can be delegated to free up your focus time.
-          </p>
-          {inbox.length === 0 ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: '#9ca3af' }}>
-              No delegation suggestions at this time.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {inbox.map((item) => (
-                <div key={item.taskId} style={{ padding: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ fontWeight: 600 }}>{item.taskTitle}</span>
-                    <span style={{
-                      padding: '2px 8px', borderRadius: '12px', fontSize: '12px',
-                      backgroundColor: item.priority === 'HIGH' ? '#fee2e2' : item.priority === 'MEDIUM' ? '#fef3c7' : '#dbeafe',
-                    }}>
-                      {item.priority}
-                    </span>
-                  </div>
-                  <p style={{ fontSize: '14px', color: '#6b7280' }}>{item.reason}</p>
-                  <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '8px' }}>
-                    Est. time saved: {item.estimatedTimeSavedMinutes}min | Confidence: {Math.round(item.confidence * 100)}%
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+      {/* Stats Bar */}
+      {statsLoading ? (
+        <StatsBarSkeleton />
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard
+            label="Active Delegated"
+            value={stats.activeDelegated}
+            color="text-blue-600"
+            bold={stats.activeDelegated > 0}
+          />
+          <StatCard
+            label="Completed This Week"
+            value={stats.completedThisWeek}
+            color="text-green-600"
+          />
+          <StatCard
+            label="Time Saved This Week"
+            value={stats.timeSavedHours}
+            color="text-purple-600"
+            suffix="hrs"
+          />
+          <StatCard
+            label="Pending Approval"
+            value={stats.pendingApproval}
+            color="text-amber-600"
+            bold={stats.pendingApproval > 0}
+          />
         </div>
       )}
 
-      {activeTab === 'active' && (
-        <div>
-          {delegations.length === 0 ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: '#9ca3af' }}>
-              No active delegations.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {delegations.map((d) => (
-                <div key={d.id} style={{ padding: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <span style={{ fontWeight: 600 }}>Task: {d.taskId}</span>
-                    <span style={{ padding: '2px 8px', borderRadius: '12px', fontSize: '12px', backgroundColor: '#f3f4f6' }}>
-                      {d.status}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '14px', color: '#6b7280' }}>
-                    Delegated to: {d.delegatedTo}
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                    {d.approvalChain.map((step) => (
-                      <span key={step.order} style={{
-                        padding: '2px 8px', borderRadius: '4px', fontSize: '11px',
-                        backgroundColor: step.status === 'APPROVED' ? '#dcfce7' : step.status === 'REJECTED' ? '#fee2e2' : '#f3f4f6',
-                      }}>
-                        {step.role}: {step.status}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Tab Bar */}
+      <div className="border-b border-gray-200">
+        <nav className="flex gap-1 -mb-px overflow-x-auto" role="tablist">
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                role="tab"
+                aria-selected={isActive}
+                aria-controls={`tabpanel-${tab.key}`}
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  isActive
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <span
+                  className={
+                    isActive ? 'text-blue-600' : 'text-gray-400'
+                  }
+                >
+                  {tab.icon}
+                </span>
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
 
-      {activeTab === 'scoreboard' && (
-        <div>
-          {scoreboard.length === 0 ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: '#9ca3af' }}>
-              No delegation scores yet.
-            </div>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
-                  <th style={{ textAlign: 'left', padding: '12px' }}>Delegate</th>
-                  <th style={{ textAlign: 'right', padding: '12px' }}>Score</th>
-                  <th style={{ textAlign: 'right', padding: '12px' }}>Tasks</th>
-                  <th style={{ textAlign: 'left', padding: '12px' }}>Best Category</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scoreboard.map((score) => (
-                  <tr key={score.delegateeId} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                    <td style={{ padding: '12px' }}>{score.delegateeName || score.delegateeId}</td>
-                    <td style={{ textAlign: 'right', padding: '12px', fontWeight: 600 }}>{score.overallScore}</td>
-                    <td style={{ textAlign: 'right', padding: '12px' }}>{score.totalTasksDelegated}</td>
-                    <td style={{ padding: '12px' }}>{score.bestCategory}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+      {/* Tab Content */}
+      <div
+        id={`tabpanel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={activeTab}
+      >
+        {tabContent}
+      </div>
+
+      {/* Delegate Task Modal */}
+      {showDelegateModal && (
+        <DelegateTaskModal
+          isOpen={showDelegateModal}
+          onClose={() => setShowDelegateModal(false)}
+          onDelegated={() => {
+            setShowDelegateModal(false);
+            handleRefreshStats();
+          }}
+        />
       )}
     </div>
   );

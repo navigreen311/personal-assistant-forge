@@ -96,11 +96,11 @@ export default function EnhancedTaskCreateModal({
     setIsParsing(true);
     try {
       const result = await onParse(nlpInput);
-      if (result?.title) setTitle(result.title);
-      if (result?.priority) setPriority(result.priority);
-      if (result?.dueDate) setDueDate(new Date(result.dueDate).toISOString().split('T')[0]);
-      if (result?.tags) setTags(result.tags);
-      if (result?.assigneeName) setAssignee(result.assigneeName);
+      if (result?.title) setTitle(String(result.title));
+      if (result?.priority) setPriority(result.priority as Priority);
+      if (result?.dueDate) setDueDate(new Date(String(result.dueDate)).toISOString().split('T')[0]);
+      if (result?.tags) setTags(result.tags as string[]);
+      if (result?.assigneeName) setAssignee(String(result.assigneeName));
     } catch {
       // Silently fail — user can fill in fields manually
     } finally {
