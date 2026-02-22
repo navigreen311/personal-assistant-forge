@@ -1,9 +1,19 @@
 'use client';
 
 import { useSession, signOut } from 'next-auth/react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+
+// ---------------------------------------------------------------------------
+// Lightweight Entity type for sidebar use
+// ---------------------------------------------------------------------------
+
+interface SidebarEntity {
+  id: string;
+  name: string;
+  type: string;
+}
 
 // ---------------------------------------------------------------------------
 // Navigation structure – all 28 modules grouped by category
@@ -176,8 +186,9 @@ export function Sidebar({
   onToggle: () => void;
   badges?: Record<string, number>;
 }) {
-  const { data: session } = useSession();
+  const { data: session, update: updateSession } = useSession();
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     NAV_GROUPS.forEach((g) => {
@@ -189,6 +200,85 @@ export function Sidebar({
     (href: string) => pathname === href || pathname.startsWith(href + '/'),
     [pathname],
   );
+
+  // --- Entity switcher state ---
+  const [entities, setEntities] = useState<SidebarEntity[]>([]);
+  const [entityDropdownOpen, setEntityDropdownOpen] = useState(false);
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const entityDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Fetch entities on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchEntities() {
+      try {
+        const res = await fetch('/api/entities?page=1&pageSize=100');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled && json.success && Array.isArray(json.data)) {
+          setEntities(json.data.map((e: SidebarEntity) => ({ id: e.id, name: e.name, type: e.type })));
+        }
+      } catch {
+        // Silently fail — entity list is non-critical
+      }
+    }
+    if (session?.user?.activeEntityId) {
+      fetchEntities();
+    }
+    return () => { cancelled = true; };
+  }, [session?.user?.activeEntityId]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (entityDropdownRef.current && !entityDropdownRef.current.contains(event.target as Node)) {
+        setEntityDropdownOpen(false);
+      }
+    }
+    if (entityDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [entityDropdownOpen]);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
+  const activeEntity = entities.find((e) => e.id === session?.user?.activeEntityId);
+
+  const handleSwitchEntity = async (entityId: string) => {
+    if (entityId === session?.user?.activeEntityId) {
+      setEntityDropdownOpen(false);
+      return;
+    }
+    setSwitchingTo(entityId);
+    try {
+      const res = await fetch('/api/auth/switch-entity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entityId }),
+      });
+      if (!res.ok) {
+        throw new Error('Failed to switch entity');
+      }
+      const targetEntity = entities.find((e) => e.id === entityId);
+      setEntityDropdownOpen(false);
+      setToastMessage(`Switched to ${targetEntity?.name ?? 'entity'}`);
+      // Refresh session and page to reflect new active entity
+      await updateSession();
+      router.refresh();
+    } catch {
+      setToastMessage('Failed to switch entity');
+    } finally {
+      setSwitchingTo(null);
+    }
+  };
 
   const toggleCategory = (cat: string) => {
     setCollapsedCategories((prev) => ({ ...prev, [cat]: !prev[cat] }));
@@ -320,25 +410,106 @@ export function Sidebar({
       {/* Entity Switcher */}
       {session?.user?.activeEntityId && (
         <div
-          className={`px-4 py-2 border-t border-gray-800 shrink-0 ${
+          ref={entityDropdownRef}
+          className={`relative px-4 py-2 border-t border-gray-800 shrink-0 ${
             collapsed ? 'px-2 text-center' : ''
           }`}
         >
           {collapsed ? (
-            <div
-              className="w-8 h-8 mx-auto rounded bg-gray-800 flex items-center justify-center text-xs text-gray-400"
-              title="Active Entity"
+            <button
+              onClick={() => setEntityDropdownOpen(!entityDropdownOpen)}
+              className="w-8 h-8 mx-auto rounded-full bg-blue-600 flex items-center justify-center text-xs text-white font-semibold"
+              title={activeEntity?.name ?? 'Active Entity'}
             >
-              E
-            </div>
+              {activeEntity?.name?.[0]?.toUpperCase() ?? 'E'}
+            </button>
           ) : (
-            <div className="text-xs text-gray-500">
-              <div className="text-gray-400 font-medium mb-0.5">Active Entity</div>
-              <div className="truncate text-gray-300">
-                {session.user.activeEntityId}
+            <div className="text-xs">
+              <div className="text-gray-500 font-medium mb-0.5">Active Entity</div>
+              <button
+                onClick={() => setEntityDropdownOpen(!entityDropdownOpen)}
+                className="w-full flex items-center justify-between gap-1 rounded px-1.5 py-1 text-gray-300 hover:bg-gray-800 transition-colors"
+              >
+                <span className="truncate text-sm font-medium">
+                  {activeEntity?.name ?? session.user.activeEntityId}
+                </span>
+                <svg
+                  width={12}
+                  height={12}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  className={`shrink-0 text-gray-500 transition-transform ${entityDropdownOpen ? 'rotate-180' : ''}`}
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </button>
+            </div>
+          )}
+
+          {/* Dropdown */}
+          {entityDropdownOpen && (
+            <div
+              className={`absolute z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 ${
+                collapsed
+                  ? 'left-full ml-2 bottom-0 w-56'
+                  : 'bottom-full mb-1 left-0 right-0'
+              }`}
+              role="listbox"
+              aria-label="Select entity"
+            >
+              <div className="max-h-48 overflow-y-auto">
+                {entities.map((entity) => {
+                  const isCurrentEntity = entity.id === session?.user?.activeEntityId;
+                  const isSwitching = switchingTo === entity.id;
+                  return (
+                    <button
+                      key={entity.id}
+                      role="option"
+                      aria-selected={isCurrentEntity}
+                      disabled={isSwitching}
+                      onClick={() => handleSwitchEntity(entity.id)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                        isCurrentEntity
+                          ? 'bg-gray-700 text-white'
+                          : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                      } ${isSwitching ? 'opacity-50' : ''}`}
+                    >
+                      <span className="truncate flex-1">{entity.name}</span>
+                      {isCurrentEntity && (
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} className="shrink-0 text-blue-400">
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                      )}
+                      {isSwitching && (
+                        <span className="shrink-0 text-gray-400 text-xs">...</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="border-t border-gray-700">
+                <Link
+                  href="/entities"
+                  onClick={() => setEntityDropdownOpen(false)}
+                  className="flex items-center gap-2 px-3 py-2 text-xs text-blue-400 hover:text-blue-300 hover:bg-gray-700 transition-colors"
+                >
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                  Create new entity
+                </Link>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Toast notification */}
+      {toastMessage && (
+        <div className="absolute bottom-20 left-4 right-4 z-50 bg-gray-700 text-white text-xs px-3 py-2 rounded-lg shadow-lg animate-pulse">
+          {toastMessage}
         </div>
       )}
 
