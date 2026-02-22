@@ -147,26 +147,51 @@ export default function TravelPreferencesTab({ entityId }: TravelPreferencesTabP
   const [isEditing, setIsEditing] = useState(false);
 
   const [homeAirport, setHomeAirport] = useState('LAS');
-  const [seatPreference, setSeatPreference] = useState<'Aisle' | 'Window' | 'No preference'>('Aisle');
+  const [seatPreference, setSeatPreference] = useState<'Aisle' | 'Window' | 'Middle' | 'No preference'>('Aisle');
   const [cabinClass, setCabinClass] = useState<'Economy' | 'Premium Economy' | 'Business' | 'First'>('Economy');
   const [airlines, setAirlines] = useState<RankedItem[]>(DEFAULT_AIRLINES);
   const [hotels, setHotels] = useState<RankedItem[]>(DEFAULT_HOTELS);
-  const [dietaryNeeds, setDietaryNeeds] = useState<'None' | 'Vegetarian' | 'Vegan' | 'Gluten-free' | 'Other'>('None');
+  const [dietaryNeeds, setDietaryNeeds] = useState<'None' | 'Vegetarian' | 'Vegan' | 'Gluten-free' | 'Kosher' | 'Halal' | 'Other'>('None');
   const [dietaryOther, setDietaryOther] = useState('');
   const [tsaPrecheck, setTsaPrecheck] = useState('');
   const [globalEntry, setGlobalEntry] = useState('');
   const [passportExpiry, setPassportExpiry] = useState('');
+  const [driversLicenseExpiry, setDriversLicenseExpiry] = useState('');
 
-  const handleSave = useCallback(() => {
-    console.log('Saving preferences for entity:', entityId, {
-      homeAirport, seatPreference, cabinClass,
-      airlines: airlines.map((a) => a.name),
-      hotels: hotels.map((h) => h.name),
-      dietaryNeeds: dietaryNeeds === 'Other' ? dietaryOther : dietaryNeeds,
-      tsaPrecheck, globalEntry, passportExpiry,
-    });
-    setIsEditing(false);
-  }, [entityId, homeAirport, seatPreference, cabinClass, airlines, hotels, dietaryNeeds, dietaryOther, tsaPrecheck, globalEntry, passportExpiry]);
+  // Defaults section state
+  const [defaultTripType, setDefaultTripType] = useState<'Business' | 'Personal'>('Business');
+  const [defaultEntity, setDefaultEntity] = useState<'MedLink Pro' | 'Personal'>('MedLink Pro');
+  const [autoPackingList, setAutoPackingList] = useState(true);
+  const [autoExpenseCategory, setAutoExpenseCategory] = useState(true);
+  const [monitorFlightStatus, setMonitorFlightStatus] = useState(true);
+
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      const payload = {
+        homeAirport, seatPreference, cabinClass,
+        airlines: airlines.map((a) => a.name),
+        hotels: hotels.map((h) => h.name),
+        dietaryNeeds: dietaryNeeds === 'Other' ? dietaryOther : dietaryNeeds,
+        tsaPrecheck, globalEntry, passportExpiry, driversLicenseExpiry,
+        defaultTripType, defaultEntity,
+        autoPackingList, autoExpenseCategory, monitorFlightStatus,
+      };
+      await fetch('/api/travel/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      console.log('Saved preferences for entity:', entityId, payload);
+      setIsEditing(false);
+    } catch (err) {
+      console.error('Failed to save preferences:', err);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [entityId, homeAirport, seatPreference, cabinClass, airlines, hotels, dietaryNeeds, dietaryOther, tsaPrecheck, globalEntry, passportExpiry, driversLicenseExpiry, defaultTripType, defaultEntity, autoPackingList, autoExpenseCategory, monitorFlightStatus]);
 
   const passportWarning = passportExpiry && isPassportExpiringSoon(passportExpiry);
   const passportExpired = passportExpiry && isPassportExpired(passportExpiry);
@@ -209,7 +234,7 @@ export default function TravelPreferencesTab({ entityId }: TravelPreferencesTabP
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Seat Preference</label>
           {isEditing ? (
             <div className="flex gap-3">
-              {(['Aisle', 'Window', 'No preference'] as const).map((option) => (
+              {(['Aisle', 'Window', 'Middle', 'No preference'] as const).map((option) => (
                 <label key={option} className={`flex items-center gap-2 border rounded-lg px-4 py-2 cursor-pointer transition-colors text-sm ${seatPreference === option ? 'border-blue-600 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-500' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                   <input type="radio" name="seatPreference" value={option} checked={seatPreference === option} onChange={() => setSeatPreference(option)} className="sr-only" />
                   {option}
@@ -284,7 +309,7 @@ export default function TravelPreferencesTab({ entityId }: TravelPreferencesTabP
           {isEditing ? (
             <div className="space-y-2">
               <select value={dietaryNeeds} onChange={(e) => setDietaryNeeds(e.target.value as typeof dietaryNeeds)} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                {(['None', 'Vegetarian', 'Vegan', 'Gluten-free', 'Other'] as const).map((opt) => (
+                {(['None', 'Vegetarian', 'Vegan', 'Gluten-free', 'Kosher', 'Halal', 'Other'] as const).map((opt) => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -327,7 +352,10 @@ export default function TravelPreferencesTab({ entityId }: TravelPreferencesTabP
         <div>
           <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Passport Expiry Date</label>
           {isEditing ? (
-            <input type="date" value={passportExpiry} onChange={(e) => setPassportExpiry(e.target.value)} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+            <div className="space-y-1">
+              <input type="date" value={passportExpiry} onChange={(e) => setPassportExpiry(e.target.value)} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+              <p className="text-xs text-gray-500 dark:text-gray-400">&#9888; You will be alerted 6 months before expiry</p>
+            </div>
           ) : (
             <p className="text-sm text-gray-800 dark:text-gray-200">
               {passportExpiry
@@ -353,15 +381,95 @@ export default function TravelPreferencesTab({ entityId }: TravelPreferencesTabP
             </div>
           )}
         </div>
+
+        {/* Driver's License Expiry */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Driver&apos;s License Expiry Date</label>
+          {isEditing ? (
+            <input type="date" value={driversLicenseExpiry} onChange={(e) => setDriversLicenseExpiry(e.target.value)} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+          ) : (
+            <p className="text-sm text-gray-800 dark:text-gray-200">
+              {driversLicenseExpiry
+                ? new Date(driversLicenseExpiry).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+                : <span className="text-gray-400 italic">Not set</span>}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Defaults Card */}
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6 space-y-5">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wide">Defaults</h4>
+
+        {/* Default Trip Type */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Default Trip Type</label>
+          {isEditing ? (
+            <select value={defaultTripType} onChange={(e) => setDefaultTripType(e.target.value as 'Business' | 'Personal')} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+              <option value="Business">Business</option>
+              <option value="Personal">Personal</option>
+            </select>
+          ) : (
+            <p className="text-sm text-gray-800 dark:text-gray-200">{defaultTripType}</p>
+          )}
+        </div>
+
+        {/* Default Entity */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Default Entity</label>
+          {isEditing ? (
+            <select value={defaultEntity} onChange={(e) => setDefaultEntity(e.target.value as 'MedLink Pro' | 'Personal')} className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+              <option value="MedLink Pro">MedLink Pro</option>
+              <option value="Personal">Personal</option>
+            </select>
+          ) : (
+            <p className="text-sm text-gray-800 dark:text-gray-200">{defaultEntity}</p>
+          )}
+        </div>
+
+        {/* Automation Checkboxes */}
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Automation</label>
+          <label className={`flex items-center gap-3 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}>
+            <input
+              type="checkbox"
+              checked={autoPackingList}
+              onChange={(e) => isEditing && setAutoPackingList(e.target.checked)}
+              disabled={!isEditing}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Auto-create packing list</span>
+          </label>
+          <label className={`flex items-center gap-3 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}>
+            <input
+              type="checkbox"
+              checked={autoExpenseCategory}
+              onChange={(e) => isEditing && setAutoExpenseCategory(e.target.checked)}
+              disabled={!isEditing}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Auto-add travel expense category</span>
+          </label>
+          <label className={`flex items-center gap-3 ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}>
+            <input
+              type="checkbox"
+              checked={monitorFlightStatus}
+              onChange={(e) => isEditing && setMonitorFlightStatus(e.target.checked)}
+              disabled={!isEditing}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-60"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Monitor flight status</span>
+          </label>
+        </div>
       </div>
 
       {/* Save Button */}
       {isEditing && (
         <div className="flex gap-3">
-          <button type="button" onClick={handleSave} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900">
-            Save Preferences
+          <button type="button" onClick={handleSave} disabled={isSaving} className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2.5 px-6 rounded-lg transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-900">
+            {isSaving ? 'Saving...' : 'Save Preferences'}
           </button>
-          <button type="button" onClick={() => setIsEditing(false)} className="px-6 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition-colors">
+          <button type="button" onClick={() => setIsEditing(false)} disabled={isSaving} className="px-6 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition-colors disabled:opacity-50">
             Cancel
           </button>
         </div>

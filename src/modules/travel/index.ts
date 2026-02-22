@@ -41,4 +41,5 @@ export type {
   DisruptionResponse,
   TimezoneAdjustment,
   VisaRequirement,
+  LoyaltyProgram,
 } from './types';

@@ -83,3 +83,16 @@ export interface VisaRequirement {
   documentRequired: string[];
   notes: string;
 }
+
+export interface LoyaltyProgram {
+  id: string;
+  userId: string;
+  programName: string;
+  accountNumber: string;
+  tier: string;
+  balance: number;
+  unit: 'miles' | 'points';
+  expiringAmount?: number;
+  expiringDate?: Date;
+  estimatedValue: number;
+}
