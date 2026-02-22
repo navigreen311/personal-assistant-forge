@@ -19,6 +19,20 @@ const updateSchema = z.object({
   dietary: z.array(z.string()).optional(),
   budgetPerDayUsd: z.number().optional(),
   preferredAirports: z.array(z.string()).optional(),
+  // Extended preferences fields
+  homeAirport: z.string().optional(),
+  seatPreference: z.string().optional(),
+  cabinClass: z.string().optional(),
+  dietaryNeeds: z.string().optional(),
+  tsaPrecheck: z.string().optional(),
+  globalEntry: z.string().optional(),
+  passportExpiry: z.string().optional(),
+  driversLicenseExpiry: z.string().optional(),
+  defaultTripType: z.enum(['Business', 'Personal']).optional(),
+  defaultEntity: z.string().optional(),
+  autoPackingList: z.boolean().optional(),
+  autoExpenseCategory: z.boolean().optional(),
+  monitorFlightStatus: z.boolean().optional(),
 });
 
 export async function GET(request: NextRequest) {
