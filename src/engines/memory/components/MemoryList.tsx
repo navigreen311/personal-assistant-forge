@@ -9,6 +9,8 @@ import { MemoryCard } from './MemoryCard';
 // ---------------------------------------------------------------------------
 export interface MemoryListProps {
   userId: string;
+  entityFilter?: string;
+  onRefresh?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -27,13 +29,14 @@ const TABS: { value: MemoryType | 'ALL'; label: string }[] = [
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
-export function MemoryList({ userId }: MemoryListProps) {
+export function MemoryList({ userId, entityFilter, onRefresh }: MemoryListProps) {
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<MemoryType | 'ALL'>('ALL');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -43,13 +46,16 @@ export function MemoryList({ userId }: MemoryListProps) {
 
     try {
       const params = new URLSearchParams({
-        userId,
         page: String(page),
         pageSize: String(PAGE_SIZE),
       });
 
       if (activeTab !== 'ALL') {
         params.set('type', activeTab);
+      }
+
+      if (entityFilter) {
+        params.set('entityId', entityFilter);
       }
 
       const res = await fetch(`/api/memory?${params.toString()}`);
@@ -72,7 +78,7 @@ export function MemoryList({ userId }: MemoryListProps) {
     } finally {
       setLoading(false);
     }
-  }, [userId, activeTab, page]);
+  }, [activeTab, page, entityFilter]);
 
   useEffect(() => {
     fetchEntries();
@@ -83,6 +89,76 @@ export function MemoryList({ userId }: MemoryListProps) {
     setActiveTab(tab);
     setPage(1);
   }, []);
+
+  // Reinforce a memory by calling GET /api/memory/[id] which triggers recallMemory
+  const handleReinforce = useCallback(async (id: string) => {
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/memory/${id}`);
+      if (!res.ok) throw new Error('Failed to reinforce memory');
+      const json = await res.json();
+      const updated = json.data;
+      if (updated) {
+        setEntries((prev) =>
+          prev.map((e) => (e.id === id ? { ...e, strength: updated.strength, lastAccessed: updated.lastAccessed } : e))
+        );
+      }
+      onRefresh?.();
+    } catch {
+      // Silently handle — user can retry
+    } finally {
+      setActionLoading(null);
+    }
+  }, [onRefresh]);
+
+  // Edit: update memory content via PUT /api/memory/[id]
+  const handleEdit = useCallback(async (id: string) => {
+    const entry = entries.find((e) => e.id === id);
+    if (!entry) return;
+
+    const newContent = window.prompt('Edit memory content:', entry.content);
+    if (newContent === null || newContent === entry.content) return;
+
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/memory/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent }),
+      });
+      if (!res.ok) throw new Error('Failed to update memory');
+      const json = await res.json();
+      const updated = json.data;
+      if (updated) {
+        setEntries((prev) =>
+          prev.map((e) => (e.id === id ? { ...e, content: updated.content } : e))
+        );
+      }
+      onRefresh?.();
+    } catch {
+      // Silently handle
+    } finally {
+      setActionLoading(null);
+    }
+  }, [entries, onRefresh]);
+
+  // Delete a memory
+  const handleDelete = useCallback(async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this memory?')) return;
+
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/memory/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete memory');
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+      setTotal((prev) => Math.max(0, prev - 1));
+      onRefresh?.();
+    } catch {
+      // Silently handle
+    } finally {
+      setActionLoading(null);
+    }
+  }, [onRefresh]);
 
   return (
     <div className="space-y-4">
@@ -139,7 +215,14 @@ export function MemoryList({ userId }: MemoryListProps) {
       {!loading && !error && entries.length > 0 && (
         <div className="space-y-3">
           {entries.map((entry) => (
-            <MemoryCard key={entry.id} entry={entry} />
+            <div key={entry.id} className={actionLoading === entry.id ? 'opacity-50 pointer-events-none' : ''}>
+              <MemoryCard
+                entry={entry}
+                onReinforce={handleReinforce}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+              />
+            </div>
           ))}
         </div>
       )}
