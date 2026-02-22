@@ -7,13 +7,16 @@ import { useState, useEffect, useCallback } from 'react';
 // ============================================================================
 
 type TabId =
+  | 'dashboard'
   | 'rbac'
   | 'audit'
+  | 'accesslog'
   | 'classification'
   | 'compliance'
   | 'consent'
   | 'encryption'
-  | 'threats';
+  | 'threats'
+  | 'backup';
 
 interface Tab {
   id: TabId;
@@ -99,11 +102,61 @@ interface ThreatEvent {
   details?: Record<string, unknown>;
 }
 
+interface ChecklistItem {
+  id: string;
+  label: string;
+  status: 'pass' | 'warning' | 'fail';
+  detail?: string;
+}
+
+interface SecurityEvent {
+  time: string;
+  event: string;
+  severity: 'info' | 'warning' | 'critical';
+  details: string;
+}
+
+interface AccessLogEntry {
+  id: string;
+  time: string;
+  user: string;
+  action: string;
+  ipAddress: string;
+  location: string;
+  status: 'success' | 'failed' | 'blocked';
+}
+
+interface AutoBlockRule {
+  id: string;
+  label: string;
+  enabled: boolean;
+}
+
+interface BackupEntry {
+  id: string;
+  date: string;
+  size: string;
+  duration: string;
+  status: 'completed' | 'failed' | 'in_progress';
+}
+
 // ============================================================================
 // Tab definitions
 // ============================================================================
 
 const TABS: Tab[] = [
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    icon: (
+      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" />
+        <rect x="14" y="3" width="7" height="7" />
+        <rect x="14" y="14" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
+      </svg>
+    ),
+  },
   {
     id: 'rbac',
     label: 'RBAC',
@@ -126,6 +179,17 @@ const TABS: Tab[] = [
         <line x1="16" y1="13" x2="8" y2="13" />
         <line x1="16" y1="17" x2="8" y2="17" />
         <line x1="10" y1="9" x2="8" y2="9" />
+      </svg>
+    ),
+  },
+  {
+    id: 'accesslog',
+    label: 'Access Log',
+    icon: (
+      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+        <polyline points="10 17 15 12 10 7" />
+        <line x1="15" y1="12" x2="3" y2="12" />
       </svg>
     ),
   },
@@ -176,6 +240,16 @@ const TABS: Tab[] = [
         <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
         <line x1="12" y1="9" x2="12" y2="13" />
         <line x1="12" y1="17" x2="12.01" y2="17" />
+      </svg>
+    ),
+  },
+  {
+    id: 'backup',
+    label: 'Backup & Recovery',
+    icon: (
+      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="1 4 1 10 7 10" />
+        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
       </svg>
     ),
   },
@@ -287,6 +361,60 @@ function generateMockVaultHealth(): VaultHealth {
     categoryCounts: { PASSWORD: 12, FINANCIAL: 8, MEDICAL: 6, LEGAL: 9, PERSONAL: 7, API_KEY: 5 },
     healthy: true,
   };
+}
+
+function generateMockChecklist(): ChecklistItem[] {
+  return [
+    { id: '1', label: 'Two-factor authentication enabled', status: 'pass' },
+    { id: '2', label: 'API keys stored in environment variables', status: 'pass' },
+    { id: '3', label: 'Database connection encrypted (SSL)', status: 'pass' },
+    { id: '4', label: 'Password last changed: 45 days ago', status: 'warning', detail: 'Recommend changing every 90 days' },
+    { id: '5', label: 'Backup encryption key configured', status: 'fail' },
+    { id: '6', label: 'Session timeout configured', status: 'fail' },
+  ];
+}
+
+function generateMockSecurityEvents(): SecurityEvent[] {
+  return [
+    { time: new Date().toISOString(), event: 'Login success', severity: 'info', details: 'IP: 72.x.x.x' },
+    { time: new Date(Date.now() - 2 * 86400000).toISOString(), event: 'Failed login', severity: 'warning', details: 'IP: 45.x.x.x' },
+    { time: new Date(Date.now() - 7 * 86400000).toISOString(), event: 'Breach detected', severity: 'critical', details: 'See Crisis module' },
+    { time: new Date(Date.now() - 10 * 86400000).toISOString(), event: 'Password changed', severity: 'info', details: 'User: alex@johnson.com' },
+    { time: new Date(Date.now() - 14 * 86400000).toISOString(), event: 'New device login', severity: 'warning', details: 'Device: MacBook Pro, IP: 98.x.x.x' },
+  ];
+}
+
+function generateMockAccessLog(): AccessLogEntry[] {
+  return [
+    { id: 'al-001', time: new Date().toISOString(), user: 'alex@johnson.com', action: 'Login', ipAddress: '72.134.22.91', location: 'San Francisco, US', status: 'success' },
+    { id: 'al-002', time: new Date(Date.now() - 300000).toISOString(), user: 'maria@johnson.com', action: 'Login', ipAddress: '98.45.12.78', location: 'Austin, US', status: 'success' },
+    { id: 'al-003', time: new Date(Date.now() - 1800000).toISOString(), user: 'unknown@attacker.com', action: 'Login attempt', ipAddress: '45.227.11.3', location: 'Sao Paulo, BR', status: 'blocked' },
+    { id: 'al-004', time: new Date(Date.now() - 3600000).toISOString(), user: 'david@johnson.com', action: 'Export data', ipAddress: '72.134.22.95', location: 'San Francisco, US', status: 'success' },
+    { id: 'al-005', time: new Date(Date.now() - 7200000).toISOString(), user: 'unknown@attacker.com', action: 'Login attempt', ipAddress: '45.227.11.3', location: 'Sao Paulo, BR', status: 'failed' },
+    { id: 'al-006', time: new Date(Date.now() - 10800000).toISOString(), user: 'sarah@johnson.com', action: 'Password change', ipAddress: '10.0.0.42', location: 'New York, US', status: 'success' },
+    { id: 'al-007', time: new Date(Date.now() - 14400000).toISOString(), user: 'alex@johnson.com', action: 'API key rotation', ipAddress: '72.134.22.91', location: 'San Francisco, US', status: 'success' },
+    { id: 'al-008', time: new Date(Date.now() - 86400000).toISOString(), user: 'unknown', action: 'Login attempt', ipAddress: '203.0.113.42', location: 'Beijing, CN', status: 'blocked' },
+    { id: 'al-009', time: new Date(Date.now() - 90000000).toISOString(), user: 'emily@davis.com', action: 'Login', ipAddress: '192.168.1.105', location: 'Chicago, US', status: 'success' },
+    { id: 'al-010', time: new Date(Date.now() - 172800000).toISOString(), user: 'unknown', action: 'Login attempt', ipAddress: '185.220.101.1', location: 'Moscow, RU', status: 'blocked' },
+  ];
+}
+
+function generateMockAutoBlockRules(): AutoBlockRule[] {
+  return [
+    { id: 'rule-1', label: 'Block IP after 5 failed login attempts', enabled: true },
+    { id: 'rule-2', label: 'Alert on login from new country', enabled: true },
+    { id: 'rule-3', label: 'Alert on login outside business hours', enabled: false },
+  ];
+}
+
+function generateMockBackups(): BackupEntry[] {
+  return [
+    { id: 'bk-001', date: new Date(Date.now() - 7200000).toISOString(), size: '2.4 GB', duration: '12 min', status: 'completed' },
+    { id: 'bk-002', date: new Date(Date.now() - 86400000).toISOString(), size: '2.3 GB', duration: '11 min', status: 'completed' },
+    { id: 'bk-003', date: new Date(Date.now() - 172800000).toISOString(), size: '2.3 GB', duration: '13 min', status: 'completed' },
+    { id: 'bk-004', date: new Date(Date.now() - 259200000).toISOString(), size: '2.2 GB', duration: '10 min', status: 'completed' },
+    { id: 'bk-005', date: new Date(Date.now() - 345600000).toISOString(), size: '2.2 GB', duration: '14 min', status: 'failed' },
+  ];
 }
 
 function generateMockThreats(): ThreatEvent[] {
@@ -854,11 +982,459 @@ function ThreatPanel() {
 }
 
 // ============================================================================
+// Security Dashboard Panel (Overview)
+// ============================================================================
+
+function SecurityDashboardPanel() {
+  const [checklist] = useState<ChecklistItem[]>(generateMockChecklist);
+  const [events] = useState<SecurityEvent[]>(generateMockSecurityEvents);
+
+  const passCount = checklist.filter(c => c.status === 'pass').length;
+  const securityScore = Math.round((passCount / checklist.length) * 100);
+
+  const statusIcon = (status: ChecklistItem['status']) => {
+    switch (status) {
+      case 'pass': return <span className="text-green-500 text-lg">&#10003;</span>;
+      case 'warning': return <span className="text-yellow-500 text-lg">&#9888;</span>;
+      case 'fail': return <span className="text-red-500 text-lg">&#10007;</span>;
+    }
+  };
+
+  const eventSeverityColor = (severity: SecurityEvent['severity']) => {
+    switch (severity) {
+      case 'info': return 'bg-blue-100 text-blue-800';
+      case 'warning': return 'bg-yellow-100 text-yellow-800';
+      case 'critical': return 'bg-red-100 text-red-800';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Security Score */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h3 className="text-md font-semibold text-gray-800 mb-4">Security Score</h3>
+          <div className="flex items-center justify-center">
+            <div className="relative flex items-center justify-center">
+              <svg className="h-32 w-32" viewBox="0 0 36 36">
+                <path
+                  d="M18 2.0845a 15.9155 15.9155 0 0 1 0 31.831a 15.9155 15.9155 0 0 1 0-31.831"
+                  fill="none"
+                  stroke="#e5e7eb"
+                  strokeWidth="3"
+                />
+                <path
+                  d="M18 2.0845a 15.9155 15.9155 0 0 1 0 31.831a 15.9155 15.9155 0 0 1 0-31.831"
+                  fill="none"
+                  stroke={securityScore >= 80 ? '#22c55e' : securityScore >= 50 ? '#eab308' : '#ef4444'}
+                  strokeWidth="3"
+                  strokeDasharray={`${securityScore}, 100`}
+                  strokeLinecap="round"
+                />
+              </svg>
+              <div className="absolute flex flex-col items-center">
+                <span className="text-3xl font-bold text-gray-900">{securityScore}</span>
+                <span className="text-xs text-gray-500">/100</span>
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+            <div>
+              <p className="text-lg font-bold text-green-600">{passCount}</p>
+              <p className="text-gray-500">Passed</p>
+            </div>
+            <div>
+              <p className="text-lg font-bold text-yellow-600">{checklist.filter(c => c.status === 'warning').length}</p>
+              <p className="text-gray-500">Warnings</p>
+            </div>
+            <div>
+              <p className="text-lg font-bold text-red-600">{checklist.filter(c => c.status === 'fail').length}</p>
+              <p className="text-gray-500">Failed</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Security Checklist */}
+        <div className="lg:col-span-2 rounded-xl border border-gray-200 bg-white p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-md font-semibold text-gray-800">Security Checklist</h3>
+            <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors">
+              Fix all issues
+            </button>
+          </div>
+          <div className="space-y-3">
+            {checklist.map((item) => (
+              <div key={item.id} className={`flex items-start gap-3 rounded-lg border p-3 ${
+                item.status === 'pass' ? 'border-green-200 bg-green-50' :
+                item.status === 'warning' ? 'border-yellow-200 bg-yellow-50' :
+                'border-red-200 bg-red-50'
+              }`}>
+                <div className="mt-0.5 shrink-0">{statusIcon(item.status)}</div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900">{item.label}</p>
+                  {item.detail && <p className="text-xs text-gray-500 mt-0.5">{item.detail}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Stats Row */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Failed Logins (30d)</p>
+          <p className="mt-2 text-2xl font-bold text-orange-600">3</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Active Sessions</p>
+          <p className="mt-2 text-2xl font-bold text-blue-600">1</p>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Last Backup</p>
+          <p className="mt-2 text-2xl font-bold text-green-600">2h ago</p>
+        </div>
+      </div>
+
+      {/* Recent Security Events */}
+      <div className="rounded-xl border border-gray-200 bg-white p-6">
+        <h3 className="text-md font-semibold text-gray-800 mb-4">Recent Security Events</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Time</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Event</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Severity</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Details</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {events.map((evt, idx) => (
+                <tr key={idx} className="hover:bg-gray-50">
+                  <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">{formatRelativeTime(evt.time)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">{evt.event}</td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${eventSeverityColor(evt.severity)}`}>
+                      {evt.severity.toUpperCase()}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{evt.details}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Access Log Panel
+// ============================================================================
+
+function AccessLogPanel() {
+  const [entries] = useState<AccessLogEntry[]>(generateMockAccessLog);
+  const [rules, setRules] = useState<AutoBlockRule[]>(generateMockAutoBlockRules);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [severityFilter, setSeverityFilter] = useState('');
+  const [dateRange, setDateRange] = useState('all');
+
+  const toggleRule = useCallback((ruleId: string) => {
+    setRules((prev) => prev.map((r) => r.id === ruleId ? { ...r, enabled: !r.enabled } : r));
+  }, []);
+
+  const accessStatusColor = (status: AccessLogEntry['status']) => {
+    switch (status) {
+      case 'success': return 'bg-green-100 text-green-800';
+      case 'failed': return 'bg-yellow-100 text-yellow-800';
+      case 'blocked': return 'bg-red-100 text-red-800';
+    }
+  };
+
+  const filteredEntries = entries.filter((entry) => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || entry.user.toLowerCase().includes(q) || entry.action.toLowerCase().includes(q) || entry.ipAddress.includes(q) || entry.location.toLowerCase().includes(q);
+    const matchesSeverity = !severityFilter || entry.status === severityFilter;
+    let matchesDate = true;
+    if (dateRange === '24h') {
+      matchesDate = Date.now() - new Date(entry.time).getTime() < 86400000;
+    } else if (dateRange === '7d') {
+      matchesDate = Date.now() - new Date(entry.time).getTime() < 7 * 86400000;
+    } else if (dateRange === '30d') {
+      matchesDate = Date.now() - new Date(entry.time).getTime() < 30 * 86400000;
+    }
+    return matchesSearch && matchesSeverity && matchesDate;
+  });
+
+  const exportCsv = useCallback(() => {
+    const headers = ['Time', 'User', 'Action', 'IP Address', 'Location', 'Status'];
+    const rows = filteredEntries.map(e => [
+      new Date(e.time).toISOString(), e.user, e.action, e.ipAddress, e.location, e.status,
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `access-log-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [filteredEntries]);
+
+  return (
+    <div className="space-y-6">
+      {/* Filters */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="flex-1">
+          <input type="text" placeholder="Search by user, action, IP, location..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500" />
+        </div>
+        <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value="">All Statuses</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="blocked">Blocked</option>
+        </select>
+        <select value={dateRange} onChange={(e) => setDateRange(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value="all">All Time</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+        </select>
+        <button onClick={exportCsv} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+          Export CSV
+        </button>
+      </div>
+
+      <p className="text-xs text-gray-500">Showing {filteredEntries.length} of {entries.length} entries</p>
+
+      {/* Access Log Table */}
+      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Time</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">User</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Action</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">IP Address</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Location</th>
+              <th className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {filteredEntries.map((entry) => (
+              <tr key={entry.id} className="hover:bg-gray-50">
+                <td className="whitespace-nowrap px-3 py-2.5 text-xs text-gray-500">{formatTimestamp(entry.time)}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-sm text-gray-900">{entry.user}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-sm text-gray-600">{entry.action}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-sm font-mono text-gray-600">{entry.ipAddress}</td>
+                <td className="whitespace-nowrap px-3 py-2.5 text-sm text-gray-600">{entry.location}</td>
+                <td className="whitespace-nowrap px-3 py-2.5">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${accessStatusColor(entry.status)}`}>
+                    {entry.status.toUpperCase()}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Auto-Block Rules */}
+      <div className="rounded-xl border border-gray-200 bg-white p-6">
+        <h3 className="text-md font-semibold text-gray-800 mb-4">Auto-Block Rules</h3>
+        <div className="space-y-3">
+          {rules.map((rule) => (
+            <label key={rule.id} className="flex items-center gap-3 cursor-pointer rounded-lg border border-gray-200 p-3 hover:bg-gray-50 transition-colors">
+              <input
+                type="checkbox"
+                checked={rule.enabled}
+                onChange={() => toggleRule(rule.id)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">{rule.label}</span>
+              <span className={`ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${rule.enabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                {rule.enabled ? 'Active' : 'Inactive'}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Backup & Recovery Panel
+// ============================================================================
+
+function BackupPanel() {
+  const [backups] = useState<BackupEntry[]>(generateMockBackups);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [frequency, setFrequency] = useState('daily');
+  const [retention, setRetention] = useState('30');
+  const [destination, setDestination] = useState('s3');
+
+  const handleRunBackup = useCallback(async () => {
+    setBackupRunning(true);
+    await new Promise((r) => setTimeout(r, 2000));
+    setBackupRunning(false);
+  }, []);
+
+  const backupStatusColor = (status: BackupEntry['status']) => {
+    switch (status) {
+      case 'completed': return 'bg-green-100 text-green-800';
+      case 'failed': return 'bg-red-100 text-red-800';
+      case 'in_progress': return 'bg-blue-100 text-blue-800';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Run Backup + Schedule */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h3 className="text-md font-semibold text-gray-800 mb-4">Run Backup</h3>
+          <p className="text-sm text-gray-600 mb-4">Trigger an immediate full backup of all data.</p>
+          <button
+            onClick={handleRunBackup}
+            disabled={backupRunning}
+            className="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {backupRunning ? 'Backup in progress...' : 'Run Backup Now'}
+          </button>
+          {backupRunning && (
+            <div className="mt-3">
+              <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+                <div className="h-full rounded-full bg-blue-500 animate-pulse" style={{ width: '60%' }} />
+              </div>
+              <p className="mt-1 text-xs text-gray-500">Backing up data...</p>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
+          <h3 className="text-md font-semibold text-gray-800 mb-4">Backup Schedule</h3>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Frequency</label>
+              <select value={frequency} onChange={(e) => setFrequency(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <option value="hourly">Hourly</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Retention Period</label>
+              <select value={retention} onChange={(e) => setRetention(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <option value="7">7 days</option>
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+                <option value="365">1 year</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Destination</label>
+              <select value={destination} onChange={(e) => setDestination(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <option value="s3">AWS S3</option>
+                <option value="gcs">Google Cloud Storage</option>
+                <option value="azure">Azure Blob Storage</option>
+                <option value="local">Local Storage</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 p-3">
+              <span className="inline-block h-3 w-3 rounded-full bg-green-500" />
+              <span className="text-sm text-green-800">Encryption enabled (AES-256)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Recent Backups Table */}
+      <div className="rounded-xl border border-gray-200 bg-white p-6">
+        <h3 className="text-md font-semibold text-gray-800 mb-4">Recent Backups</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Size</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Duration</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {backups.map((backup) => (
+                <tr key={backup.id} className="hover:bg-gray-50">
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{formatTimestamp(backup.date)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{backup.size}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">{backup.duration}</td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${backupStatusColor(backup.status)}`}>
+                      {backup.status.toUpperCase().replace('_', ' ')}
+                    </span>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <div className="flex gap-2">
+                      {backup.status === 'completed' && (
+                        <>
+                          <button className="rounded border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors">
+                            Restore
+                          </button>
+                          <button className="rounded border border-gray-200 bg-gray-50 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors">
+                            Download
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Disaster Recovery */}
+      <div className="rounded-xl border border-gray-200 bg-white p-6">
+        <h3 className="text-md font-semibold text-gray-800 mb-4">Disaster Recovery</h3>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-lg border border-gray-200 p-4">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-500">RPO (Recovery Point Objective)</p>
+            <p className="mt-2 text-lg font-bold text-gray-900">24 hours</p>
+            <p className="text-xs text-gray-500 mt-1">Maximum data loss tolerance</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 p-4">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-500">RTO (Recovery Time Objective)</p>
+            <p className="mt-2 text-lg font-bold text-gray-900">~15 minutes</p>
+            <p className="text-xs text-gray-500 mt-1">Target recovery time</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 p-4">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Last Recovery Test</p>
+            <p className="mt-2 text-lg font-bold text-gray-900">30 days ago</p>
+            <p className="text-xs text-green-600 mt-1">Result: Passed</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 p-4 flex flex-col justify-between">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-500">Recovery Drill</p>
+            <button className="mt-3 w-full rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-700 hover:bg-orange-100 transition-colors">
+              Run recovery drill
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // Main Page Component
 // ============================================================================
 
 export default function SecurityDashboardPage() {
-  const [activeTab, setActiveTab] = useState<TabId>('rbac');
+  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -902,13 +1478,16 @@ export default function SecurityDashboardPage() {
 
   const renderTabContent = () => {
     switch (activeTab) {
+      case 'dashboard': return <SecurityDashboardPanel />;
       case 'rbac': return <RBACPanel />;
       case 'audit': return <AuditLogViewer />;
+      case 'accesslog': return <AccessLogPanel />;
       case 'classification': return <ClassificationPanel />;
       case 'compliance': return <CompliancePanel />;
       case 'consent': return <ConsentPanel />;
       case 'encryption': return <EncryptionPanel />;
       case 'threats': return <ThreatPanel />;
+      case 'backup': return <BackupPanel />;
       default: return null;
     }
   };
@@ -919,7 +1498,7 @@ export default function SecurityDashboardPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Security Dashboard</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Monitor RBAC, audit logs, data classification, compliance, consent, encryption, and threats.
+            Monitor security posture, access logs, RBAC, data classification, compliance, consent, encryption, threats, and backups.
           </p>
         </div>
 
