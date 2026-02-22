@@ -190,8 +190,9 @@ export default function UpcomingTripsTab({ entityId, onPlanTrip }: UpcomingTrips
         if (entityId) params.set('entityId', entityId);
         const res = await fetch(`/api/travel/trips?${params.toString()}`);
         if (!res.ok) throw new Error('Failed to fetch trips');
-        const data = await res.json();
-        setTrips(data.trips ?? data);
+        const json = await res.json();
+        const tripsData = json.data?.trips ?? json.trips ?? [];
+        setTrips(Array.isArray(tripsData) ? tripsData : demoUpcomingTrips);
       } catch {
         setTrips(demoUpcomingTrips);
       } finally {
@@ -366,8 +367,9 @@ export function PastTripsTab({ entityId }: PastTripsTabProps) {
         if (entityId) params.set('entityId', entityId);
         const res = await fetch(`/api/travel/trips?${params.toString()}`);
         if (!res.ok) throw new Error('Failed to fetch past trips');
-        const data = await res.json();
-        setTrips(data.trips ?? data);
+        const json = await res.json();
+        const tripsData = json.data?.trips ?? json.trips ?? [];
+        setTrips(Array.isArray(tripsData) ? tripsData : demoPastTrips);
       } catch {
         setTrips(demoPastTrips);
       } finally {
