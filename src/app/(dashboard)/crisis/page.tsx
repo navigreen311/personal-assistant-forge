@@ -1,164 +1,746 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import CrisisAlertBanner from '@/modules/crisis/components/CrisisAlertBanner';
-import CrisisDashboard from '@/modules/crisis/components/CrisisDashboard';
-import EscalationTimeline from '@/modules/crisis/components/EscalationTimeline';
-import PlaybookProgress from '@/modules/crisis/components/PlaybookProgress';
-import WarRoomPanel from '@/modules/crisis/components/WarRoomPanel';
-import DeadManSwitchConfig from '@/modules/crisis/components/DeadManSwitchConfig';
-import PhoneTreeVisualization from '@/modules/crisis/components/PhoneTreeVisualization';
-import type { CrisisEvent, DeadManSwitch, PhoneTreeNode } from '@/modules/crisis/types';
+import React, { useEffect, useState, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 
-// Fallback demo data for crisis if API fetch fails
-const sampleCrisis: CrisisEvent = {
-  id: 'crisis-1',
-  userId: 'user-1',
-  entityId: 'entity-1',
-  type: 'DATA_BREACH',
-  severity: 'CRITICAL',
-  status: 'IN_PROGRESS',
-  title: 'Unauthorized Access to Customer Database',
-  description: 'Security team detected unauthorized access patterns to the customer database from an unknown IP address.',
-  detectedAt: new Date('2026-02-15T10:30:00'),
-  acknowledgedAt: new Date('2026-02-15T10:35:00'),
-  escalationChain: [
-    { order: 1, contactName: 'CTO', contactMethod: 'PHONE', escalateAfterMinutes: 5, status: 'ACKNOWLEDGED', notifiedAt: new Date('2026-02-15T10:31:00'), acknowledgedAt: new Date('2026-02-15T10:33:00') },
-    { order: 2, contactName: 'Security Team Lead', contactMethod: 'PHONE', escalateAfterMinutes: 10, status: 'NOTIFIED', notifiedAt: new Date('2026-02-15T10:31:00') },
-    { order: 3, contactName: 'Legal Counsel', contactMethod: 'PHONE', escalateAfterMinutes: 20, status: 'PENDING' },
-  ],
-  playbook: {
-    id: 'pb-1', name: 'Data Breach Response', crisisType: 'DATA_BREACH', estimatedResolutionHours: 72,
-    steps: [
-      { order: 1, title: 'Contain the breach', description: 'Isolate affected systems.', actionType: 'TECHNICAL', isAutomatable: true, isComplete: true, completedAt: new Date('2026-02-15T10:40:00') },
-      { order: 2, title: 'Assess scope', description: 'Determine impact.', actionType: 'TECHNICAL', isAutomatable: false, isComplete: false },
-      { order: 3, title: 'Notify legal', description: 'Inform legal counsel.', actionType: 'LEGAL', isAutomatable: true, isComplete: false },
-      { order: 4, title: 'Notify affected parties', description: 'Send notifications.', actionType: 'COMMUNICATION', isAutomatable: true, isComplete: false },
-      { order: 5, title: 'Regulatory filing', description: 'File regulatory notifications.', actionType: 'LEGAL', isAutomatable: false, isComplete: false },
-      { order: 6, title: 'Post-mortem', description: 'Conduct review.', actionType: 'DOCUMENTATION', isAutomatable: false, isComplete: false },
-    ],
-  },
-  warRoom: {
-    isActive: true,
-    activatedAt: new Date('2026-02-15T10:36:00'),
-    clearedCalendarEvents: ['team-standup', 'weekly-review'],
-    surfacedDocuments: ['incident-response-plan', 'data-breach-playbook'],
-    draftedComms: ['Initial breach notification draft', 'Customer communication template'],
-    participants: ['CTO', 'Security Team Lead'],
-  },
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type Tab = 'active' | 'playbooks' | 'history' | 'configuration';
+
+interface EntityOption {
+  id: string;
+  name: string;
+  type: string;
+}
+
+interface CrisisStats {
+  activeCrises: number;
+  daysSinceLastCrisis: number;
+  playbooksCount: number;
+  dmsStatus: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fallback components
+// ---------------------------------------------------------------------------
+
+function TabLoadingSkeleton() {
+  return (
+    <div style={{ padding: '24px' }}>
+      <div
+        style={{
+          height: '200px',
+          backgroundColor: '#f9fafb',
+          borderRadius: '8px',
+          border: '1px solid #e5e7eb',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <p style={{ color: '#9ca3af', fontSize: '14px' }}>Loading...</p>
+      </div>
+    </div>
+  );
+}
+
+function ActiveFallback() {
+  return (
+    <div
+      style={{
+        padding: '24px',
+        backgroundColor: '#f9fafb',
+        borderRadius: '8px',
+        border: '1px solid #e5e7eb',
+        textAlign: 'center',
+      }}
+    >
+      <p style={{ color: '#6b7280', fontWeight: 600, marginBottom: '4px' }}>
+        Active Crises
+      </p>
+      <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+        Enhanced active crisis view is not available. Showing placeholder.
+      </p>
+    </div>
+  );
+}
+
+function PlaybooksFallback() {
+  return (
+    <div
+      style={{
+        padding: '24px',
+        backgroundColor: '#f9fafb',
+        borderRadius: '8px',
+        border: '1px solid #e5e7eb',
+        textAlign: 'center',
+      }}
+    >
+      <p style={{ color: '#6b7280', fontWeight: 600, marginBottom: '4px' }}>
+        Crisis Playbooks
+      </p>
+      <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+        Playbook management is not available. Showing placeholder.
+      </p>
+    </div>
+  );
+}
+
+function HistoryFallback() {
+  return (
+    <div
+      style={{
+        padding: '24px',
+        backgroundColor: '#f9fafb',
+        borderRadius: '8px',
+        border: '1px solid #e5e7eb',
+        textAlign: 'center',
+      }}
+    >
+      <p style={{ color: '#6b7280', fontWeight: 600, marginBottom: '4px' }}>
+        Crisis History
+      </p>
+      <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+        Crisis history view is not available. Showing placeholder.
+      </p>
+    </div>
+  );
+}
+
+function ConfigFallback() {
+  return (
+    <div
+      style={{
+        padding: '24px',
+        backgroundColor: '#f9fafb',
+        borderRadius: '8px',
+        border: '1px solid #e5e7eb',
+        textAlign: 'center',
+      }}
+    >
+      <p style={{ color: '#6b7280', fontWeight: 600, marginBottom: '4px' }}>
+        Crisis Configuration
+      </p>
+      <p style={{ color: '#9ca3af', fontSize: '14px' }}>
+        Configuration panel is not available. Showing placeholder.
+      </p>
+    </div>
+  );
+}
+
+function ModalFallback() {
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic imports with catch fallbacks
+// ---------------------------------------------------------------------------
+
+const EnhancedActiveTab: any = dynamic(
+  () =>
+    import('@/modules/crisis/components/EnhancedActiveTab').catch(() => ({
+      default: ActiveFallback,
+    })) as any,
+  { ssr: false, loading: () => <TabLoadingSkeleton /> },
+);
+
+const CrisisPlaybooksTab: any = dynamic(
+  () =>
+    import('@/modules/crisis/components/CrisisPlaybooksTab').catch(() => ({
+      default: PlaybooksFallback,
+    })) as any,
+  { ssr: false, loading: () => <TabLoadingSkeleton /> },
+);
+
+const CrisisHistoryTab: any = dynamic(
+  () =>
+    import('@/modules/crisis/components/CrisisHistoryTab').catch(() => ({
+      default: HistoryFallback,
+    })) as any,
+  { ssr: false, loading: () => <TabLoadingSkeleton /> },
+);
+
+const CrisisConfigTab: any = dynamic(
+  () =>
+    import('@/modules/crisis/components/CrisisConfigTab').catch(() => ({
+      default: ConfigFallback,
+    })) as any,
+  { ssr: false, loading: () => <TabLoadingSkeleton /> },
+);
+
+const DeclareCrisisModal: any = dynamic(
+  () =>
+    import('@/modules/crisis/components/DeclareCrisisModal').catch(() => ({
+      default: ModalFallback,
+    })) as any,
+  { ssr: false },
+);
+
+// ---------------------------------------------------------------------------
+// Stats default
+// ---------------------------------------------------------------------------
+
+const DEFAULT_STATS: CrisisStats = {
+  activeCrises: 0,
+  daysSinceLastCrisis: 0,
+  playbooksCount: 0,
+  dmsStatus: 'Unknown',
 };
 
-const sampleDMS: DeadManSwitch = {
-  userId: 'user-1',
-  isEnabled: true,
-  checkInIntervalHours: 24,
-  lastCheckIn: new Date(),
-  missedCheckIns: 0,
-  triggerAfterMisses: 3,
-  protocols: [
-    { order: 1, action: 'Notify emergency contact', contactName: 'Jane Doe', message: 'User has not checked in for 72 hours.', delayHoursAfterTrigger: 0 },
-    { order: 2, action: 'Notify lawyer', contactName: 'Legal Counsel', message: 'Initiate emergency protocol.', delayHoursAfterTrigger: 24 },
-  ],
-};
-
-const samplePhoneTree: PhoneTreeNode[] = [
-  {
-    contactId: 'c-1', contactName: 'CTO', phone: '+1-555-0101', order: 1, role: 'Primary',
-    children: [
-      { contactId: 'c-2', contactName: 'Security Lead', phone: '+1-555-0102', order: 2, role: 'Backup', children: [] },
-      { contactId: 'c-3', contactName: 'Legal Counsel', phone: '+1-555-0103', order: 3, role: 'Legal', children: [] },
-    ],
-  },
-];
+// ---------------------------------------------------------------------------
+// Page Component
+// ---------------------------------------------------------------------------
 
 export default function CrisisPage() {
-  const [crises, setCrises] = useState<CrisisEvent[] | null>(null);
-  const [dms, setDms] = useState<DeadManSwitch | null>(null);
-  const [phoneTree, setPhoneTree] = useState<PhoneTreeNode[] | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>('active');
+  const [stats, setStats] = useState<CrisisStats>(DEFAULT_STATS);
+  const [entities, setEntities] = useState<EntityOption[]>([]);
+  const [selectedEntityId, setSelectedEntityId] = useState<string>('');
+  const [showDeclareModal, setShowDeclareModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        const results = await Promise.allSettled([
-          fetch('/api/crisis').then((r) => r.json()),
-          fetch('/api/crisis/dms').then((r) => r.json()),
-          fetch('/api/crisis/phone-tree').then((r) => r.json()),
-        ]);
+  // ---- Fetch stats from /api/crisis ----
+  const fetchStats = useCallback(async (entityId: string) => {
+    try {
+      const params = entityId ? `?entityId=${entityId}` : '';
+      const res = await fetch(`/api/crisis${params}`).catch(() => null);
 
-        if (results[0].status === 'fulfilled' && results[0].value?.data) {
-          setCrises(results[0].value.data);
+      if (!res || !res.ok) {
+        setStats(DEFAULT_STATS);
+        return;
+      }
+
+      const json = await res.json().catch(() => null);
+      const crises: any[] = json?.data ?? [];
+
+      // BUG FIX: Derive active count from actual API data, not hardcoded values.
+      // The old page fell back to sample demo data when the API returned an empty
+      // array, which caused the alert banner to always show an active crisis even
+      // when none existed. Now we use zero-defaults and only count real records.
+      const activeStatuses = ['DETECTED', 'ACKNOWLEDGED', 'IN_PROGRESS'];
+      const activeCrises = Array.isArray(crises)
+        ? crises.filter((c: any) => c && activeStatuses.includes(c.status)).length
+        : 0;
+
+      // Compute days since last crisis
+      let daysSinceLastCrisis = 0;
+      if (Array.isArray(crises) && crises.length > 0) {
+        const resolvedCrises = crises
+          .filter((c: any) => c?.resolvedAt)
+          .map((c: any) => new Date(c.resolvedAt).getTime())
+          .filter((t: number) => !isNaN(t));
+
+        if (resolvedCrises.length > 0) {
+          const mostRecent = Math.max(...resolvedCrises);
+          daysSinceLastCrisis = Math.floor(
+            (Date.now() - mostRecent) / (1000 * 60 * 60 * 24),
+          );
         }
-        if (results[1].status === 'fulfilled' && results[1].value?.data) {
-          setDms(results[1].value.data);
-        }
-        if (results[2].status === 'fulfilled' && results[2].value?.data) {
-          setPhoneTree(results[2].value.data);
+      }
+
+      // Fetch playbooks count
+      let playbooksCount = 0;
+      try {
+        const pbRes = await fetch('/api/crisis/playbooks').catch(() => null);
+        if (pbRes && pbRes.ok) {
+          const pbJson = await pbRes.json().catch(() => null);
+          const pbData = pbJson?.data;
+          playbooksCount = Array.isArray(pbData) ? pbData.length : 0;
         }
       } catch {
-        setError('Failed to load crisis data');
+        // Keep default
+      }
+
+      // Fetch DMS status
+      let dmsStatus = 'Unknown';
+      try {
+        const dmsRes = await fetch('/api/crisis/dms').catch(() => null);
+        if (dmsRes && dmsRes.ok) {
+          const dmsJson = await dmsRes.json().catch(() => null);
+          const dmsData = dmsJson?.data;
+          if (dmsData) {
+            dmsStatus = dmsData.isEnabled ? 'Active' : 'Disabled';
+          }
+        }
+      } catch {
+        // Keep default
+      }
+
+      setStats({
+        activeCrises,
+        daysSinceLastCrisis,
+        playbooksCount,
+        dmsStatus,
+      });
+    } catch {
+      setStats(DEFAULT_STATS);
+    }
+  }, []);
+
+  // ---- Fetch entities ----
+  useEffect(() => {
+    async function init() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        // Fetch entities for filter
+        try {
+          const res = await fetch('/api/entities').catch(() => null);
+          if (res && res.ok) {
+            const data = await res.json().catch(() => null);
+            const entityList: EntityOption[] = (data?.data ?? []).map(
+              (e: any) => ({
+                id: e?.id ?? '',
+                name: e?.name ?? 'Unknown',
+                type: e?.type ?? '',
+              }),
+            );
+            setEntities(entityList);
+          }
+        } catch {
+          // Entities are optional
+        }
+
+        // Fetch stats
+        await fetchStats('');
+      } catch {
+        setError('Failed to load crisis data. Please try again.');
       } finally {
         setLoading(false);
       }
     }
 
-    fetchData();
-  }, []);
+    init();
+  }, [fetchStats]);
 
-  // Fallback to demo data for sections that fail to load
-  const crisesData: CrisisEvent[] = crises ?? [sampleCrisis];
-  const activeCrisis: CrisisEvent = crisesData[0] ?? sampleCrisis;
-  const dmsData: DeadManSwitch = dms ?? sampleDMS;
-  const phoneTreeData: PhoneTreeNode[] = phoneTree ?? samplePhoneTree;
+  // ---- Refetch stats when entity changes ----
+  useEffect(() => {
+    if (!loading) {
+      fetchStats(selectedEntityId);
+    }
+  }, [selectedEntityId, loading, fetchStats]);
 
+  // ---- Refresh handler for child tabs ----
+  const handleRefresh = useCallback(() => {
+    fetchStats(selectedEntityId);
+  }, [fetchStats, selectedEntityId]);
+
+  // ---- Entity ID prop ----
+  const entityIdProp = selectedEntityId || undefined;
+
+  // ---- Tab definitions ----
+  const tabs: { key: Tab; label: string }[] = [
+    { key: 'active', label: 'Active' },
+    { key: 'playbooks', label: 'Playbooks' },
+    { key: 'history', label: 'History' },
+    { key: 'configuration', label: 'Configuration' },
+  ];
+
+  // ------- Loading skeleton -------
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-gray-500">Loading crisis data...</div>
+      <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+        <div
+          style={{
+            height: '28px',
+            width: '260px',
+            backgroundColor: '#e5e7eb',
+            borderRadius: '6px',
+            marginBottom: '8px',
+          }}
+        />
+        <div
+          style={{
+            height: '16px',
+            width: '420px',
+            backgroundColor: '#f3f4f6',
+            borderRadius: '4px',
+            marginBottom: '24px',
+          }}
+        />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              style={{
+                height: '80px',
+                backgroundColor: '#f3f4f6',
+                borderRadius: '8px',
+              }}
+            />
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              style={{
+                height: '36px',
+                width: '120px',
+                backgroundColor: '#f3f4f6',
+                borderRadius: '6px',
+              }}
+            />
+          ))}
+        </div>
+        <div
+          style={{
+            height: '200px',
+            backgroundColor: '#f9fafb',
+            borderRadius: '8px',
+            border: '1px solid #e5e7eb',
+          }}
+        />
       </div>
     );
   }
 
+  // ------- Error state -------
   if (error) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-red-500">{error}</div>
+      <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+        <h1 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '8px' }}>
+          Crisis Management
+        </h1>
+        <div
+          style={{
+            padding: '24px',
+            backgroundColor: '#fef2f2',
+            border: '1px solid #fecaca',
+            borderRadius: '8px',
+            color: '#dc2626',
+            textAlign: 'center',
+          }}
+        >
+          <p style={{ fontWeight: 600, marginBottom: '8px' }}>
+            Something went wrong
+          </p>
+          <p style={{ fontSize: '14px' }}>{error}</p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: '12px',
+              padding: '8px 16px',
+              backgroundColor: '#dc2626',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
 
+  // ------- Main render -------
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      <h1 className="text-2xl font-bold">Crisis Management</h1>
+    <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
+      {/* Header row */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+          marginBottom: '4px',
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '4px' }}>
+            Crisis Management
+          </h1>
+          <p style={{ fontSize: '14px', color: '#6b7280', marginBottom: '0' }}>
+            Detect, escalate, and resolve crises with automated playbooks.
+          </p>
+        </div>
 
-      <CrisisAlertBanner crisis={activeCrisis} />
-
-      <div className="bg-white rounded-lg shadow p-6">
-        <CrisisDashboard crises={crisesData} />
+        <button
+          onClick={() => setShowDeclareModal(true)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '10px 20px',
+            fontSize: '14px',
+            fontWeight: 600,
+            color: '#fff',
+            backgroundColor: '#dc2626',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+            transition: 'background-color 0.15s',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+          onMouseEnter={(e) =>
+            ((e.target as HTMLElement).style.backgroundColor = '#b91c1c')
+          }
+          onMouseLeave={(e) =>
+            ((e.target as HTMLElement).style.backgroundColor = '#dc2626')
+          }
+        >
+          🚨 Declare Crisis
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-6">
-          <EscalationTimeline steps={activeCrisis.escalationChain} />
+      {/* Entity filter */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          marginTop: '16px',
+          marginBottom: '20px',
+        }}
+      >
+        <label
+          htmlFor="crisis-entity-select"
+          style={{
+            fontSize: '14px',
+            fontWeight: 500,
+            color: '#374151',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Entity:
+        </label>
+        <select
+          id="crisis-entity-select"
+          value={selectedEntityId}
+          onChange={(e) => setSelectedEntityId(e.target.value)}
+          style={{
+            padding: '8px 12px',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            fontSize: '14px',
+            backgroundColor: '#fff',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+            minWidth: '180px',
+            outline: 'none',
+          }}
+        >
+          <option value="">All Entities</option>
+          {entities.map((entity) => (
+            <option key={entity.id} value={entity.id}>
+              {entity.name}
+              {entity.type ? ` (${entity.type})` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Stats bar */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: '16px',
+          marginBottom: '24px',
+        }}
+      >
+        {/* Active Crises */}
+        <div
+          style={{
+            padding: '16px',
+            borderRadius: '8px',
+            border: `1px solid ${stats.activeCrises > 0 ? '#fecaca' : '#e5e7eb'}`,
+            backgroundColor: stats.activeCrises > 0 ? '#fef2f2' : '#fff',
+          }}
+        >
+          <p
+            style={{
+              fontSize: '12px',
+              fontWeight: 500,
+              color: stats.activeCrises > 0 ? '#dc2626' : '#6b7280',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '4px',
+            }}
+          >
+            Active Crises
+          </p>
+          <p
+            style={{
+              fontSize: '28px',
+              fontWeight: 700,
+              color: stats.activeCrises > 0 ? '#dc2626' : '#111827',
+            }}
+          >
+            {stats.activeCrises}
+          </p>
         </div>
-        <div className="bg-white rounded-lg shadow p-6">
-          {activeCrisis.playbook && <PlaybookProgress playbook={activeCrisis.playbook} />}
+
+        {/* Days Since Last Crisis */}
+        <div
+          style={{
+            padding: '16px',
+            borderRadius: '8px',
+            border: '1px solid #e5e7eb',
+            backgroundColor: '#fff',
+          }}
+        >
+          <p
+            style={{
+              fontSize: '12px',
+              fontWeight: 500,
+              color: '#6b7280',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '4px',
+            }}
+          >
+            Days Since Last Crisis
+          </p>
+          <p style={{ fontSize: '28px', fontWeight: 700, color: '#111827' }}>
+            {stats.daysSinceLastCrisis}
+          </p>
+        </div>
+
+        {/* Playbooks */}
+        <div
+          style={{
+            padding: '16px',
+            borderRadius: '8px',
+            border: '1px solid #e5e7eb',
+            backgroundColor: '#fff',
+          }}
+        >
+          <p
+            style={{
+              fontSize: '12px',
+              fontWeight: 500,
+              color: '#6b7280',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '4px',
+            }}
+          >
+            Playbooks
+          </p>
+          <p style={{ fontSize: '28px', fontWeight: 700, color: '#111827' }}>
+            {stats.playbooksCount}
+          </p>
+        </div>
+
+        {/* Dead Man Switch */}
+        <div
+          style={{
+            padding: '16px',
+            borderRadius: '8px',
+            border: '1px solid #e5e7eb',
+            backgroundColor: '#fff',
+          }}
+        >
+          <p
+            style={{
+              fontSize: '12px',
+              fontWeight: 500,
+              color: '#6b7280',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: '4px',
+            }}
+          >
+            Dead Man Switch
+          </p>
+          <p
+            style={{
+              fontSize: '20px',
+              fontWeight: 700,
+              color:
+                stats.dmsStatus === 'Active'
+                  ? '#16a34a'
+                  : stats.dmsStatus === 'Disabled'
+                    ? '#9ca3af'
+                    : '#6b7280',
+            }}
+          >
+            {stats.dmsStatus}
+          </p>
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <WarRoomPanel state={activeCrisis.warRoom} />
+      {/* Tab bar */}
+      <div
+        style={{
+          display: 'flex',
+          gap: '4px',
+          marginBottom: '24px',
+          borderBottom: '1px solid #e5e7eb',
+        }}
+      >
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            style={{
+              padding: '10px 20px',
+              border: 'none',
+              cursor: 'pointer',
+              backgroundColor: 'transparent',
+              fontWeight: activeTab === tab.key ? 600 : 400,
+              borderBottom:
+                activeTab === tab.key
+                  ? '2px solid #3b82f6'
+                  : '2px solid transparent',
+              color: activeTab === tab.key ? '#3b82f6' : '#6b7280',
+              fontSize: '14px',
+              transition: 'color 0.15s, border-color 0.15s',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-6">
-          <DeadManSwitchConfig config={dmsData} onSave={() => {}} />
-        </div>
-        <div className="bg-white rounded-lg shadow p-6">
-          <PhoneTreeVisualization tree={phoneTreeData} />
-        </div>
-      </div>
+      {/* Tab content */}
+      {activeTab === 'active' && (
+        <EnhancedActiveTab
+          entityId={entityIdProp}
+          onRefresh={handleRefresh}
+        />
+      )}
+
+      {activeTab === 'playbooks' && (
+        <CrisisPlaybooksTab
+          entityId={entityIdProp}
+          onRefresh={handleRefresh}
+        />
+      )}
+
+      {activeTab === 'history' && (
+        <CrisisHistoryTab
+          entityId={entityIdProp}
+          onRefresh={handleRefresh}
+        />
+      )}
+
+      {activeTab === 'configuration' && (
+        <CrisisConfigTab
+          entityId={entityIdProp}
+          onRefresh={handleRefresh}
+        />
+      )}
+
+      {/* Declare Crisis Modal */}
+      {showDeclareModal && (
+        <DeclareCrisisModal
+          entityId={entityIdProp}
+          onClose={() => setShowDeclareModal(false)}
+          onSuccess={() => {
+            setShowDeclareModal(false);
+            handleRefresh();
+          }}
+        />
+      )}
     </div>
   );
 }
