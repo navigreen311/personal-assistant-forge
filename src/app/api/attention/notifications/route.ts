@@ -38,12 +38,12 @@ export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {
       // Attempt to load user notification preferences from DB
-      const prefs = await safeQuery(
+      const prefs: Record<string, unknown> | null = await safeQuery(
         () =>
           (prisma as any).notificationPreference.findUnique({
             where: { userId: session.userId },
           }),
-        null,
+        null as Record<string, unknown> | null,
       );
 
       if (prefs) {
