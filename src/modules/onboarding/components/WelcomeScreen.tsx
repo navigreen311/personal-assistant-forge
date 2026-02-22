@@ -8,28 +8,26 @@ interface Props {
 }
 
 export function WelcomeScreen({ userName, onStart }: Props) {
+  const hasRealName = userName && userName !== 'User';
+  const heading = hasRealName
+    ? `Welcome, ${userName}!`
+    : 'Welcome to PersonalAssistantForge!';
+
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      justifyContent: 'center', minHeight: '400px', textAlign: 'center', padding: '40px',
-    }}>
-      <h1 style={{ fontSize: '32px', fontWeight: 700, marginBottom: '12px' }}>
-        Welcome, {userName}!
+    <div className="flex flex-col items-center justify-center min-h-[400px] text-center px-10 py-10">
+      <h1 className="text-3xl font-bold mb-3">
+        {heading}
       </h1>
-      <p style={{ fontSize: '18px', color: '#6b7280', maxWidth: '500px', marginBottom: '32px', lineHeight: '1.6' }}>
+      <p className="text-lg text-gray-500 max-w-[500px] mb-8 leading-relaxed">
         Your personal assistant is ready to be configured. We will walk you through
         connecting your accounts, setting preferences, and personalizing your experience.
       </p>
-      <p style={{ fontSize: '14px', color: '#9ca3af', marginBottom: '24px' }}>
+      <p className="text-sm text-gray-400 mb-6">
         This setup takes approximately 30 minutes
       </p>
       <button
         onClick={onStart}
-        style={{
-          padding: '14px 40px', backgroundColor: '#3b82f6', color: 'white',
-          border: 'none', borderRadius: '10px', cursor: 'pointer',
-          fontSize: '16px', fontWeight: 600,
-        }}
+        className="px-10 py-3.5 bg-blue-500 text-white border-none rounded-xl cursor-pointer text-base font-semibold hover:bg-blue-600 transition-colors"
       >
         Get Started
       </button>
