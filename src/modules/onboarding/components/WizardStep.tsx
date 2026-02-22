@@ -7,48 +7,68 @@ interface Props {
   step: OnboardingStep;
   onComplete: () => void;
   onSkip: () => void;
+  onBack?: () => void;
+  isFirstStep?: boolean;
 }
 
-const categoryColors: Record<string, string> = {
-  CONNECT: '#3b82f6',
-  IMPORT: '#8b5cf6',
-  CONFIGURE: '#f59e0b',
-  LEARN: '#22c55e',
+const categoryConfig: Record<string, { color: string; bg: string; label: string }> = {
+  CONNECT: { color: 'text-blue-600', bg: 'bg-blue-100', label: 'CONNECT' },
+  IMPORT: { color: 'text-purple-600', bg: 'bg-purple-100', label: 'IMPORT' },
+  CONFIGURE: { color: 'text-amber-600', bg: 'bg-amber-100', label: 'CONFIGURE' },
+  LEARN: { color: 'text-green-600', bg: 'bg-green-100', label: 'LEARN' },
 };
 
-export function WizardStep({ step, onComplete, onSkip }: Props) {
+export function WizardStep({ step, onComplete, onSkip, onBack, isFirstStep }: Props) {
+  const cat = categoryConfig[step.category] || { color: 'text-gray-600', bg: 'bg-gray-100', label: step.category };
+
   return (
-    <div style={{ padding: '24px', border: '1px solid #e5e7eb', borderRadius: '12px', maxWidth: '600px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-        <span style={{
-          padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 500,
-          backgroundColor: `${categoryColors[step.category] || '#6b7280'}20`,
-          color: categoryColors[step.category] || '#6b7280',
-        }}>
-          {step.category}
+    <div className="p-8 border border-gray-200 rounded-2xl max-w-[600px] w-full bg-white shadow-sm">
+      {/* Header badges */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${cat.bg} ${cat.color}`}>
+          {cat.label}
         </span>
-        <span style={{ fontSize: '14px', color: '#6b7280' }}>Step {step.order}</span>
-        {step.isRequired && <span style={{ fontSize: '12px', color: '#ef4444' }}>Required</span>}
+        <span className="text-sm text-gray-500">
+          Step {step.order}
+        </span>
+        {step.isRequired ? (
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600">
+            Required
+          </span>
+        ) : (
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
+            Optional
+          </span>
+        )}
+        <span className="ml-auto text-xs text-gray-400">
+          ~{step.estimatedMinutes} min
+        </span>
       </div>
-      <h2 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '8px' }}>{step.title}</h2>
-      <p style={{ color: '#6b7280', marginBottom: '24px' }}>{step.description}</p>
-      <div style={{ display: 'flex', gap: '12px' }}>
+
+      {/* Title and description */}
+      <h2 className="text-xl font-semibold mb-2">{step.title}</h2>
+      <p className="text-gray-500 mb-8 leading-relaxed">{step.description}</p>
+
+      {/* Action buttons */}
+      <div className="flex gap-3 items-center">
+        {!isFirstStep && onBack && (
+          <button
+            onClick={onBack}
+            className="px-5 py-2.5 bg-transparent text-gray-500 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+          >
+            Back
+          </button>
+        )}
         <button
           onClick={onComplete}
-          style={{
-            padding: '10px 24px', backgroundColor: '#3b82f6', color: 'white',
-            border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 500,
-          }}
+          className="px-6 py-2.5 bg-blue-500 text-white border-none rounded-lg cursor-pointer font-medium hover:bg-blue-600 transition-colors"
         >
           Complete Step
         </button>
         {!step.isRequired && (
           <button
             onClick={onSkip}
-            style={{
-              padding: '10px 24px', backgroundColor: 'transparent', color: '#6b7280',
-              border: '1px solid #d1d5db', borderRadius: '8px', cursor: 'pointer',
-            }}
+            className="px-5 py-2.5 bg-transparent text-gray-500 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
           >
             Skip
           </button>

@@ -16,6 +16,7 @@ export interface OnboardingStep {
   category: 'CONNECT' | 'IMPORT' | 'CONFIGURE' | 'LEARN';
   status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETE' | 'SKIPPED';
   isRequired: boolean;
+  estimatedMinutes: number;
   completedAt?: Date;
 }
 
