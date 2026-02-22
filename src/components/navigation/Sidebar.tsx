@@ -138,8 +138,12 @@ const NAV_GROUPS: NavGroup[] = [
     category: 'ENGINES',
     defaultCollapsed: true,
     items: [
+      { href: '/engines/triage', label: 'Triage Engine', icon: <Icon d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z" /> },
+      { href: '/engines/draft', label: 'Draft Engine', icon: <Icon d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /> },
+      { href: '/engines/classification', label: 'Classification', icon: <Icon d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /> },
+      { href: '/engines/scheduling', label: 'Scheduling', icon: <Icon d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-1.5" /> },
+      { href: '/engines/voice', label: 'Voice Engine', icon: <Icon d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /> },
       { href: '/developer', label: 'Developer Tools', icon: <MIcon paths={['M16 18l6-6-6-6', 'M8 6l-6 6 6 6']} /> },
-      { href: '/settings', label: 'Settings', icon: <MIcon paths={['M4 21v-7', 'M4 10V3', 'M12 21v-9', 'M12 8V3', 'M20 21v-5', 'M20 12V3', 'M1 14h6', 'M9 8h6', 'M17 16h6']} /> },
     ],
   },
 ];
