@@ -8,6 +8,9 @@ import type { MemoryEntry, MemoryType } from '@/shared/types';
 // ---------------------------------------------------------------------------
 export interface MemoryCardProps {
   entry: MemoryEntry;
+  onReinforce?: (id: string) => void;
+  onEdit?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +50,7 @@ function formatDate(date: Date | string): string {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
-export function MemoryCard({ entry }: MemoryCardProps) {
+export function MemoryCard({ entry, onReinforce, onEdit, onDelete }: MemoryCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   const truncatedContent =
@@ -55,13 +58,16 @@ export function MemoryCard({ entry }: MemoryCardProps) {
 
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900">
-      {/* Header row: type badge + last accessed */}
+      {/* Header row: brain icon + type badge + last accessed */}
       <div className="mb-3 flex items-center justify-between">
-        <span
-          className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_BADGE_STYLES[entry.type]}`}
-        >
-          {TYPE_LABELS[entry.type]}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-lg" role="img" aria-label="brain">&#129504;</span>
+          <span
+            className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_BADGE_STYLES[entry.type]}`}
+          >
+            {TYPE_LABELS[entry.type]}
+          </span>
+        </div>
 
         <span className="text-xs text-zinc-500 dark:text-zinc-400">
           Last accessed {formatDate(entry.lastAccessed)}
@@ -105,10 +111,44 @@ export function MemoryCard({ entry }: MemoryCardProps) {
         </div>
       </div>
 
-      {/* Footer: created date */}
-      <p className="mt-3 text-[11px] text-zinc-400 dark:text-zinc-500">
-        Created {formatDate(entry.createdAt)}
-      </p>
+      {/* Metadata: Created date, Last accessed, Access count */}
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+        <span>Created {formatDate(entry.createdAt)}</span>
+        <span>Last accessed {formatDate(entry.lastAccessed)}</span>
+      </div>
+
+      {/* Actions */}
+      {(onReinforce || onEdit || onDelete) && (
+        <div className="mt-3 flex items-center gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+          {onReinforce && (
+            <button
+              type="button"
+              onClick={() => onReinforce(entry.id)}
+              className="rounded-md border border-green-300 px-3 py-1 text-xs font-medium text-green-700 transition-colors hover:bg-green-50 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-900/20"
+            >
+              Reinforce
+            </button>
+          )}
+          {onEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(entry.id)}
+              className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-900/20"
+            >
+              Edit
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={() => onDelete(entry.id)}
+              className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20"
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
