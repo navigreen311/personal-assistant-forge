@@ -1,23 +1,13 @@
 'use client';
 
 import { useState } from 'react';
+import type { ServiceProvider } from '../types';
+import AddProviderModal from './AddProviderModal';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-interface Provider {
-  id: string;
-  name: string;
-  category: string;
-  phone: string;
-  email: string;
-  website: string;
-  rating: number;
-  lastUsed: string;
-  notes: string;
-}
-
 interface HouseholdProvidersTabProps {
-  entityId?: string;
-  property?: string;
+  providers?: ServiceProvider[];
+  onAddProvider?: (provider: Partial<ServiceProvider>) => void;
   onRefresh?: () => void;
 }
 
@@ -26,49 +16,27 @@ const CATEGORIES = [
   'Plumbing',
   'Electrical',
   'HVAC',
-  'Lawn',
+  'Lawn Care',
   'Cleaning',
   'Pest Control',
   'Roofing',
   'Painting',
   'General Handyman',
+  'Appliance Repair',
 ] as const;
 
-const DEMO_PROVIDERS: Provider[] = [
-  {
-    id: '1',
-    name: 'ABC Services',
-    category: 'General Handyman',
-    phone: '702-555-0100',
-    email: 'info@abcservices.com',
-    website: 'https://abcservices.com',
-    rating: 4.8,
-    lastUsed: 'Feb 15',
-    notes: 'Reliable, fast turnaround',
-  },
-  {
-    id: '2',
-    name: 'Green Lawn Co',
-    category: 'Lawn',
-    phone: '702-555-0200',
-    email: 'contact@greenlawn.com',
-    website: 'https://greenlawn.com',
-    rating: 4.5,
-    lastUsed: 'Feb 14',
-    notes: 'Weekly mowing service',
-  },
-  {
-    id: '3',
-    name: "Mike's Plumbing",
-    category: 'Plumbing',
-    phone: '702-555-0300',
-    email: 'mike@mikesplumbing.com',
-    website: 'https://mikesplumbing.com',
-    rating: 4.2,
-    lastUsed: 'Jan 28',
-    notes: 'Emergency service available 24/7',
-  },
-];
+const CATEGORY_ICONS: Record<string, string> = {
+  'Plumbing': '🔧',
+  'Electrical': '⚡',
+  'HVAC': '🌡',
+  'Lawn Care': '🌿',
+  'Cleaning': '🧹',
+  'Pest Control': '🐛',
+  'Roofing': '🏗',
+  'Painting': '🎨',
+  'General Handyman': '🔨',
+  'Appliance Repair': '🏠',
+};
 
 const RATING_OPTIONS = [
   { label: 'All Ratings', value: 0 },
@@ -76,16 +44,68 @@ const RATING_OPTIONS = [
   { label: '4.5+ Stars', value: 4.5 },
 ];
 
-const EMPTY_FORM: Omit<Provider, 'id'> = {
-  name: '',
-  category: '',
-  phone: '',
-  email: '',
-  website: '',
-  rating: 0,
-  lastUsed: '',
-  notes: '',
-};
+const DEMO_PROVIDERS: ServiceProvider[] = [
+  {
+    id: 'p1',
+    userId: 'u1',
+    name: 'ABC Services',
+    category: 'General Handyman',
+    phone: '702-555-0100',
+    email: 'info@abcservices.com',
+    rating: 4.8,
+    lastUsed: new Date('2026-02-15'),
+    notes: 'Reliable, fast turnaround',
+    costHistory: [
+      { date: new Date('2026-02-15'), amount: 185, service: 'Faucet repair' },
+      { date: new Date('2026-01-10'), amount: 120, service: 'Doorknob replacement' },
+      { date: new Date('2025-11-05'), amount: 250, service: 'Drywall patching' },
+    ],
+  },
+  {
+    id: 'p2',
+    userId: 'u1',
+    name: 'Green Lawn Co',
+    category: 'Lawn Care',
+    phone: '702-555-0200',
+    email: 'contact@greenlawn.com',
+    rating: 4.5,
+    lastUsed: new Date('2026-02-20'),
+    notes: 'Active contract: Weekly mowing',
+    costHistory: [
+      { date: new Date('2026-02-20'), amount: 75, service: 'Weekly mowing' },
+      { date: new Date('2026-02-13'), amount: 75, service: 'Weekly mowing' },
+    ],
+  },
+  {
+    id: 'p3',
+    userId: 'u1',
+    name: 'Cool Air HVAC',
+    category: 'HVAC',
+    phone: '702-555-0300',
+    email: 'service@coolair.com',
+    rating: 4.7,
+    lastUsed: new Date('2025-12-01'),
+    notes: 'Licensed & insured, same-day emergency service',
+    costHistory: [
+      { date: new Date('2025-12-01'), amount: 250, service: 'AC tune-up' },
+    ],
+  },
+  {
+    id: 'p4',
+    userId: 'u1',
+    name: "Mike's Plumbing",
+    category: 'Plumbing',
+    phone: '702-555-0400',
+    email: 'mike@mikesplumbing.com',
+    rating: 4.2,
+    lastUsed: new Date('2026-02-18'),
+    notes: 'Emergency service available 24/7',
+    costHistory: [
+      { date: new Date('2026-02-18'), amount: 185, service: 'Kitchen faucet repair' },
+      { date: new Date('2025-08-10'), amount: 340, service: 'Water heater flush' },
+    ],
+  },
+];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function renderStars(rating: number) {
@@ -98,7 +118,7 @@ function renderStars(rating: number) {
   while (stars.length < 5) stars.push('☆');
 
   return (
-    <span className="text-yellow-400 tracking-wide" title={` / 5`}>
+    <span className="text-yellow-400 tracking-wide" title={`${rating.toFixed(1)} / 5`}>
       {stars.join('')}{' '}
       <span className="text-xs text-gray-500 dark:text-gray-400">
         {rating.toFixed(1)}
@@ -107,221 +127,219 @@ function renderStars(rating: number) {
   );
 }
 
-// ─── Component ──────────────────────────────────────────────────────────────
+function formatDate(date: Date | undefined): string {
+  if (!date) return 'Never';
+  return new Date(date).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function getCategoryIcon(category: string): string {
+  return CATEGORY_ICONS[category] ?? '🔨';
+}
+
+// ─── Provider Card ──────────────────────────────────────────────────────────
+function ProviderCard({ provider }: { provider: ServiceProvider }) {
+  const totalJobs = provider.costHistory.length;
+  const totalSpent = provider.costHistory.reduce((sum, c) => sum + c.amount, 0);
+
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm hover:shadow-md transition-shadow">
+      {/* Top row: Icon + Name + Rating */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-900/20 text-xl">
+            {getCategoryIcon(provider.category)}
+          </div>
+          <div>
+            <h4 className="font-medium text-gray-900 dark:text-gray-100">
+              {provider.name}
+            </h4>
+            <span className="inline-block rounded-full bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 mt-0.5">
+              {provider.category}
+            </span>
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          {renderStars(provider.rating)}
+        </div>
+      </div>
+
+      {/* Contact info */}
+      <div className="mt-3 space-y-1 text-sm text-gray-600 dark:text-gray-400">
+        {provider.phone && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs">📞</span>
+            <span className="font-mono text-xs">{provider.phone}</span>
+          </div>
+        )}
+        {provider.email && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs">📧</span>
+            <span className="text-xs">{provider.email}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Usage stats */}
+      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+        <span>Last used: {formatDate(provider.lastUsed)}</span>
+        <span className="text-gray-300 dark:text-gray-600">|</span>
+        <span>{totalJobs} job{totalJobs !== 1 ? 's' : ''}</span>
+        {totalSpent > 0 && (
+          <>
+            <span className="text-gray-300 dark:text-gray-600">|</span>
+            <span>${totalSpent.toLocaleString()} total</span>
+          </>
+        )}
+      </div>
+
+      {/* Notes */}
+      {provider.notes && (
+        <p className="mt-2 text-xs text-gray-400 dark:text-gray-500 italic">
+          {provider.notes}
+        </p>
+      )}
+
+      {/* Action buttons */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {provider.phone && (
+          <a
+            href={`tel:${provider.phone}`}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          >
+            📞 Call
+          </a>
+        )}
+        {provider.email && (
+          <a
+            href={`mailto:${provider.email}`}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          >
+            📧 Message
+          </a>
+        )}
+        <button className="inline-flex items-center gap-1 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors">
+          📅 Book
+        </button>
+        <button className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          ✏ Edit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ─────────────────────────────────────────────────────────
 export default function HouseholdProvidersTab({
-  entityId,
-  property,
+  providers: propProviders = [],
+  onAddProvider,
   onRefresh,
 }: HouseholdProvidersTabProps) {
-  const [providers, setProviders] = useState<Provider[]>(DEMO_PROVIDERS);
+  const [localProviders, setLocalProviders] = useState<ServiceProvider[]>(
+    propProviders.length > 0 ? propProviders : DEMO_PROVIDERS
+  );
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [ratingFilter, setRatingFilter] = useState(0);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [autoBook, setAutoBook] = useState(true);
-  const [newProvider, setNewProvider] = useState<Omit<Provider, 'id'>>(EMPTY_FORM);
+  const [showAddModal, setShowAddModal] = useState(false);
 
   // ── Filtering ─────────────────────────────────────────────────────────────
-  const filtered = providers.filter((p) => {
+  const filtered = localProviders.filter((p) => {
     const matchesSearch =
       !search ||
       p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.category.toLowerCase().includes(search.toLowerCase()) ||
-      p.phone.includes(search);
+      (p.phone && p.phone.includes(search));
     const matchesCategory = !categoryFilter || p.category === categoryFilter;
     const matchesRating = p.rating >= ratingFilter;
     return matchesSearch && matchesCategory && matchesRating;
   });
 
-  // ── Add Provider ──────────────────────────────────────────────────────────
-  function handleSave() {
-    if (!newProvider.name || !newProvider.category) return;
+  const isEmpty = localProviders.length === 0;
 
-    const provider: Provider = {
-      ...newProvider,
-      id: crypto.randomUUID(),
-      lastUsed: 'Never',
-      rating: newProvider.rating || 0,
+  // ── Add Provider Handler ──────────────────────────────────────────────────
+  function handleAddProvider(provider: Partial<ServiceProvider>) {
+    const newProvider: ServiceProvider = {
+      id: `p-${Date.now()}`,
+      userId: 'u1',
+      name: provider.name ?? 'Unnamed Provider',
+      category: provider.category ?? 'General Handyman',
+      phone: provider.phone,
+      email: provider.email,
+      rating: provider.rating ?? 0,
+      notes: provider.notes,
+      costHistory: [],
     };
-
-    setProviders((prev) => [...prev, provider]);
-    setNewProvider(EMPTY_FORM);
-    setShowAddForm(false);
-    onRefresh?.();
+    setLocalProviders((prev) => [...prev, newProvider]);
+    onAddProvider?.(provider);
   }
 
-  function handleCancel() {
-    setNewProvider(EMPTY_FORM);
-    setShowAddForm(false);
+  // ── Empty State ───────────────────────────────────────────────────────────
+  if (isEmpty) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+            Service Providers
+          </h2>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition-colors"
+          >
+            <span className="text-lg leading-none">+</span> Add Provider
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50/50 dark:bg-gray-800/50 py-16 px-6 text-center">
+          <div className="text-4xl mb-4">🔧</div>
+          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
+            No providers yet
+          </h3>
+          <p className="text-sm text-gray-500 dark:text-gray-400 max-w-md mb-6">
+            Add your service providers so AI can auto-book maintenance when due.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition-colors"
+            >
+              <span className="text-lg leading-none">+</span> Add Provider
+            </button>
+            <button className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20 px-4 py-2 text-sm font-medium text-purple-700 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors">
+              ✨ AI: Find providers in my area
+            </button>
+          </div>
+        </div>
+
+        <AddProviderModal
+          isOpen={showAddModal}
+          onClose={() => setShowAddModal(false)}
+          onSubmit={handleAddProvider}
+        />
+      </div>
+    );
   }
 
-  // ── Render ──────────────────────────────────────────────────────────────
+  // ── Main Render ───────────────────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
           Service Providers
         </h2>
         <button
-          onClick={() => setShowAddForm((v) => !v)}
+          onClick={() => setShowAddModal(true)}
           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition-colors"
         >
           <span className="text-lg leading-none">+</span> Add Provider
         </button>
       </div>
 
-      {/* ── Add Provider Form (slide-down) ─────────────────────────────────── */}
-      {showAddForm && (
-        <div className="border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 p-6 shadow-sm animate-in slide-in-from-top duration-200">
-          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">
-            New Provider
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {/* Name */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="Provider name"
-                value={newProvider.name}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, name: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-            </div>
-
-            {/* Category */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Category <span className="text-red-500">*</span>
-              </label>
-              <select
-                value={newProvider.category}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, category: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              >
-                <option value="">Select category</option>
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Phone */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Phone
-              </label>
-              <input
-                type="tel"
-                placeholder="702-555-0000"
-                value={newProvider.phone}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, phone: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-            </div>
-
-            {/* Email */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Email
-              </label>
-              <input
-                type="email"
-                placeholder="provider@email.com"
-                value={newProvider.email}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, email: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-            </div>
-
-            {/* Website */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Website
-              </label>
-              <input
-                type="url"
-                placeholder="https://example.com"
-                value={newProvider.website}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, website: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-            </div>
-
-            {/* Rating */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Rating
-              </label>
-              <input
-                type="number"
-                min="0"
-                max="5"
-                step="0.1"
-                placeholder="0.0 - 5.0"
-                value={newProvider.rating || ''}
-                onChange={(e) =>
-                  setNewProvider((p) => ({
-                    ...p,
-                    rating: parseFloat(e.target.value) || 0,
-                  }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-              />
-            </div>
-
-            {/* Notes - full width */}
-            <div className="sm:col-span-2 lg:col-span-3">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Notes
-              </label>
-              <textarea
-                rows={2}
-                placeholder="Any notes about this provider..."
-                value={newProvider.notes}
-                onChange={(e) =>
-                  setNewProvider((p) => ({ ...p, notes: e.target.value }))
-                }
-                className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none resize-none"
-              />
-            </div>
-          </div>
-
-          {/* Form actions */}
-          <div className="mt-4 flex items-center justify-end gap-3">
-            <button
-              onClick={handleCancel}
-              className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={!newProvider.name || !newProvider.category}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              Save Provider
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Filter Bar ─────────────────────────────────────────────────── */}
+      {/* ── Filter Bar ─────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
         {/* Search */}
         <div className="relative flex-1">
@@ -376,103 +394,37 @@ export default function HouseholdProvidersTab({
         </select>
       </div>
 
-      {/* ── Provider Table ─────────────────────────────────────────────── */}
-      <div className="border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
-              <tr>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400">
-                  Provider
-                </th>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400">
-                  Category
-                </th>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400">
-                  Phone
-                </th>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400">
-                  Rating
-                </th>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400">
-                  Last Used
-                </th>
-                <th className="px-4 py-3 font-medium text-gray-600 dark:text-gray-400 text-right">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-              {filtered.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className="px-4 py-8 text-center text-gray-400 dark:text-gray-500"
-                  >
-                    No providers match your filters.
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((p) => (
-                  <tr
-                    key={p.id}
-                    className="hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
-                  >
-                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">
-                      {p.name}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
-                      <span className="inline-block rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
-                        {p.category}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400 font-mono text-xs">
-                      {p.phone}
-                    </td>
-                    <td className="px-4 py-3">{renderStars(p.rating)}</td>
-                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
-                      {p.lastUsed}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-2">
-                        <a
-                          href={`tel:${p.phone}`}
-                          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-                          title={`Call ${p.name}`}
-                        >
-                          📞 Call
-                        </a>
-                        <a
-                          href={`mailto:${p.email}`}
-                          className="inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-                          title={`Email ${p.name}`}
-                        >
-                          📧 Email
-                        </a>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      {/* ── Provider Cards Grid ──────────────────────────────────────────── */}
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50/50 dark:bg-gray-800/50 py-12 px-6 text-center">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            No providers match your filters.
+          </p>
         </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {filtered.map((provider) => (
+            <ProviderCard key={provider.id} provider={provider} />
+          ))}
+        </div>
+      )}
+
+      {/* ── Summary ──────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-5 py-3 shadow-sm text-sm">
+        <span className="text-gray-500 dark:text-gray-400">
+          {localProviders.length} provider{localProviders.length !== 1 ? 's' : ''} total
+        </span>
+        <span className="text-gray-500 dark:text-gray-400">
+          Avg rating: {(localProviders.reduce((sum, p) => sum + p.rating, 0) / localProviders.length).toFixed(1)} / 5
+        </span>
       </div>
 
-      {/* ── Auto-book Toggle ───────────────────────────────────────────── */}
-      <div className="border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 px-4 py-3 shadow-sm">
-        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={autoBook}
-            onChange={(e) => setAutoBook(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
-          <span className="text-sm text-gray-700 dark:text-gray-300">
-            ☑ Auto-book via VoiceForge when maintenance is due
-          </span>
-        </label>
-      </div>
+      {/* ── Add Provider Modal ─────────────────────────────────────────────── */}
+      <AddProviderModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onSubmit={handleAddProvider}
+      />
     </div>
   );
 }
