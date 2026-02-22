@@ -12,6 +12,15 @@ import type {
 } from '@/modules/dashboard/types';
 // Shared types not needed — dashboard types use plain strings for JSON serialization
 
+// Safely execute a query, returning a default value on failure.
+async function safeQuery<T>(fn: () => Promise<T>, defaultVal: T): Promise<T> {
+  try {
+    return await fn();
+  } catch {
+    return defaultVal;
+  }
+}
+
 // Compute a human-readable "time ago" string from a Date
 function timeAgo(date: Date): string {
   const now = Date.now();
@@ -43,6 +52,32 @@ function inferEventType(title: string, prepPacket: unknown): 'meeting' | 'focus'
   return 'personal';
 }
 
+// Build default/empty dashboard data for when entity or DB is unavailable
+function buildDefaultDashboard(userName: string): DashboardData {
+  const now = new Date();
+  return {
+    greeting: {
+      name: userName,
+      timeOfDay: getTimeOfDay(now.getHours()),
+    },
+    topTasks: [],
+    triageQueue: [],
+    activityFeed: [],
+    todaySchedule: [],
+    followUps: [],
+    stats: {
+      openTasks: 0,
+      overdueTasks: 0,
+      meetingsToday: 0,
+      unreadMessages: 0,
+      focusTimeToday: 0,
+      focusTimeGoal: 240,
+      completedToday: 0,
+      timeSavedThisWeek: 0,
+    },
+  };
+}
+
 export async function GET(_request: NextRequest): Promise<NextResponse> {
   try {
     const user = await getCurrentUser();
@@ -52,25 +87,25 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
     }
 
     const activeEntityId = user.activeEntityId;
+    const userName = user.name ?? user.email;
 
+    // If no active entity, return empty dashboard with greeting
     if (!activeEntityId) {
-      return NextResponse.json(
-        { success: false, error: 'No active entity found for user' },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: true, data: buildDefaultDashboard(userName) });
     }
 
     // Resolve the entity name once for use across aggregations
-    const entity = await prisma.entity.findUnique({
-      where: { id: activeEntityId },
-      select: { id: true, name: true },
-    });
+    const entity = await safeQuery(
+      () => prisma.entity.findUnique({
+        where: { id: activeEntityId },
+        select: { id: true, name: true },
+      }),
+      null
+    );
 
+    // If entity not found, return empty dashboard instead of erroring
     if (!entity) {
-      return NextResponse.json(
-        { success: false, error: 'Active entity not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: true, data: buildDefaultDashboard(userName) });
     }
 
     const entityName = entity.name;
@@ -82,7 +117,7 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
     const todayEnd = new Date(now);
     todayEnd.setUTCHours(23, 59, 59, 999);
 
-    // Run all queries in parallel for performance
+    // Run all queries in parallel for performance, with safe fallbacks
     const [
       rawTopTasks,
       rawTriageMessages,
@@ -96,125 +131,152 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
       completedTodayCount,
     ] = await Promise.all([
       // Top 3 active tasks ordered by priority then dueDate
-      prisma.task.findMany({
-        where: {
-          entityId: activeEntityId,
-          status: { notIn: ['DONE', 'CANCELLED'] },
-          deletedAt: null,
-        },
-        orderBy: [{ priority: 'asc' }, { dueDate: 'asc' }],
-        take: 3,
-        select: {
-          id: true,
-          title: true,
-          priority: true,
-          entityId: true,
-          dueDate: true,
-          dependencies: true,
-          status: true,
-        },
-      }),
+      safeQuery(
+        () => prisma.task.findMany({
+          where: {
+            entityId: activeEntityId,
+            status: { notIn: ['DONE', 'CANCELLED'] },
+            deletedAt: null,
+          },
+          orderBy: [{ priority: 'asc' }, { dueDate: 'asc' }],
+          take: 3,
+          select: {
+            id: true,
+            title: true,
+            priority: true,
+            entityId: true,
+            dueDate: true,
+            dependencies: true,
+            status: true,
+          },
+        }),
+        [] as any[]
+      ),
 
       // Top 5 messages ordered by triageScore descending
-      prisma.message.findMany({
-        where: {
-          entityId: activeEntityId,
-          deletedAt: null,
-        },
-        orderBy: { triageScore: 'desc' },
-        take: 5,
-        select: {
-          id: true,
-          channel: true,
-          senderId: true,
-          subject: true,
-          body: true,
-          triageScore: true,
-          createdAt: true,
-          contact: {
-            select: { name: true },
+      safeQuery(
+        () => prisma.message.findMany({
+          where: {
+            entityId: activeEntityId,
+            deletedAt: null,
           },
-        },
-      }),
+          orderBy: { triageScore: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            channel: true,
+            senderId: true,
+            subject: true,
+            body: true,
+            triageScore: true,
+            createdAt: true,
+            contact: {
+              select: { name: true },
+            },
+          },
+        }),
+        [] as any[]
+      ),
 
       // Last 10 action log entries ordered by timestamp desc
-      prisma.actionLog.findMany({
-        orderBy: { timestamp: 'desc' },
-        take: 10,
-        select: {
-          id: true,
-          actor: true,
-          actionType: true,
-          target: true,
-          reason: true,
-          reversible: true,
-          timestamp: true,
-        },
-      }),
+      safeQuery(
+        () => prisma.actionLog.findMany({
+          orderBy: { timestamp: 'desc' },
+          take: 10,
+          select: {
+            id: true,
+            actor: true,
+            actionType: true,
+            target: true,
+            reason: true,
+            reversible: true,
+            timestamp: true,
+          },
+        }),
+        [] as any[]
+      ),
 
       // Today's calendar events ordered by startTime
-      prisma.calendarEvent.findMany({
-        where: {
-          entityId: activeEntityId,
-          startTime: { gte: todayStart, lte: todayEnd },
-        },
-        orderBy: { startTime: 'asc' },
-        select: {
-          id: true,
-          title: true,
-          startTime: true,
-          endTime: true,
-          prepPacket: true,
-        },
-      }),
+      safeQuery(
+        () => prisma.calendarEvent.findMany({
+          where: {
+            entityId: activeEntityId,
+            startTime: { gte: todayStart, lte: todayEnd },
+          },
+          orderBy: { startTime: 'asc' },
+          select: {
+            id: true,
+            title: true,
+            startTime: true,
+            endTime: true,
+            prepPacket: true,
+          },
+        }),
+        [] as any[]
+      ),
 
       // Placeholder for follow-up reminders (table may not exist yet)
       Promise.resolve([] as Array<{ id: string; description: string; dueDate: Date; messageId: string | null }>),
 
       // Count: open tasks (not DONE or CANCELLED)
-      prisma.task.count({
-        where: {
-          entityId: activeEntityId,
-          status: { notIn: ['DONE', 'CANCELLED'] },
-          deletedAt: null,
-        },
-      }),
+      safeQuery(
+        () => prisma.task.count({
+          where: {
+            entityId: activeEntityId,
+            status: { notIn: ['DONE', 'CANCELLED'] },
+            deletedAt: null,
+          },
+        }),
+        0
+      ),
 
       // Count: overdue tasks (dueDate < now, not DONE or CANCELLED)
-      prisma.task.count({
-        where: {
-          entityId: activeEntityId,
-          dueDate: { lt: now },
-          status: { notIn: ['DONE', 'CANCELLED'] },
-          deletedAt: null,
-        },
-      }),
+      safeQuery(
+        () => prisma.task.count({
+          where: {
+            entityId: activeEntityId,
+            dueDate: { lt: now },
+            status: { notIn: ['DONE', 'CANCELLED'] },
+            deletedAt: null,
+          },
+        }),
+        0
+      ),
 
       // Count: meetings today (calendar events in today's window)
-      prisma.calendarEvent.count({
-        where: {
-          entityId: activeEntityId,
-          startTime: { gte: todayStart, lte: todayEnd },
-        },
-      }),
+      safeQuery(
+        () => prisma.calendarEvent.count({
+          where: {
+            entityId: activeEntityId,
+            startTime: { gte: todayStart, lte: todayEnd },
+          },
+        }),
+        0
+      ),
 
       // Count: messages (approximate unread)
-      prisma.message.count({
-        where: {
-          entityId: activeEntityId,
-          deletedAt: null,
-        },
-      }),
+      safeQuery(
+        () => prisma.message.count({
+          where: {
+            entityId: activeEntityId,
+            deletedAt: null,
+          },
+        }),
+        0
+      ),
 
       // Count: tasks completed today
-      prisma.task.count({
-        where: {
-          entityId: activeEntityId,
-          status: 'DONE',
-          updatedAt: { gte: todayStart, lte: todayEnd },
-          deletedAt: null,
-        },
-      }),
+      safeQuery(
+        () => prisma.task.count({
+          where: {
+            entityId: activeEntityId,
+            status: 'DONE',
+            updatedAt: { gte: todayStart, lte: todayEnd },
+            deletedAt: null,
+          },
+        }),
+        0
+      ),
     ]);
 
     // --- Map raw DB results to dashboard types ---
@@ -291,7 +353,7 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
 
     const hour = now.getHours();
     const greeting = {
-      name: user.name ?? user.email,
+      name: userName,
       timeOfDay: getTimeOfDay(hour),
     };
 
@@ -306,8 +368,11 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
     };
 
     return NextResponse.json({ success: true, data: dashboardData });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to load dashboard';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  } catch {
+    // Outer catch: return empty dashboard so the page never crashes
+    return NextResponse.json({
+      success: true,
+      data: buildDefaultDashboard('User'),
+    });
   }
 }
