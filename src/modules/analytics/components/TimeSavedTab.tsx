@@ -151,7 +151,7 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
 // Activity Icon Lookup
 // ---------------------------------------------------------------------------
 
-const ACTIVITY_ICONS: Record<string, (props: { className?: string }) => JSX.Element> = {
+const ACTIVITY_ICONS: Record<string, (props: { className?: string }) => React.ReactNode> = {
   "Email triage": EnvelopeIcon,
   "Draft generation": PencilIcon,
   "Task creation": CheckCircleIcon,

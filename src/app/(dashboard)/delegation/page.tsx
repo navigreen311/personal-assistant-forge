@@ -37,44 +37,45 @@ const DEFAULT_STATS: DelegationStats = {
 // Dynamic Imports with Graceful Fallbacks
 // ---------------------------------------------------------------------------
 
-const EnhancedDelegationInbox = dynamic(
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const EnhancedDelegationInbox: any = dynamic(
   () =>
     import('@/modules/delegation/components/EnhancedDelegationInbox').catch(
       () => import('@/modules/delegation/components/DelegationInbox')
-    ),
+    ) as any,
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Delegation Inbox" />,
   }
 );
 
-const ActiveDelegationsTab = dynamic(
+const ActiveDelegationsTab: any = dynamic(
   () =>
     import('@/modules/delegation/components/ActiveDelegationsTab').catch(() => ({
       default: ActiveDelegationsTabFallback,
-    })),
+    })) as any,
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Active Delegations" />,
   }
 );
 
-const EnhancedScoreboard = dynamic(
+const EnhancedScoreboard: any = dynamic(
   () =>
     import('@/modules/delegation/components/EnhancedScoreboard').catch(
       () => import('@/modules/delegation/components/DelegationScoring')
-    ),
+    ) as any,
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Scoreboard" />,
   }
 );
 
-const DelegateTaskModal = dynamic(
+const DelegateTaskModal: any = dynamic(
   () =>
     import('@/modules/delegation/components/DelegateTaskModal').catch(() => ({
       default: DelegateTaskModalFallback,
-    })),
+    })) as any,
   {
     ssr: false,
     loading: () => (
@@ -404,7 +405,7 @@ export default function DelegationPage() {
         return (
           <EnhancedDelegationInbox
             entityId={entityIdProp}
-            onRefreshStats={handleRefreshStats}
+            onDelegated={handleRefreshStats}
           />
         );
       case 'active':
@@ -418,7 +419,6 @@ export default function DelegationPage() {
         return (
           <EnhancedScoreboard
             entityId={entityIdProp}
-            onRefreshStats={handleRefreshStats}
           />
         );
       default:
@@ -554,9 +554,9 @@ export default function DelegationPage() {
       {/* Delegate Task Modal */}
       {showDelegateModal && (
         <DelegateTaskModal
-          entityId={entityIdProp}
+          isOpen={showDelegateModal}
           onClose={() => setShowDelegateModal(false)}
-          onCreated={() => {
+          onDelegated={() => {
             setShowDelegateModal(false);
             handleRefreshStats();
           }}

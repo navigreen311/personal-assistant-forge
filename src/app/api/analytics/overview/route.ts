@@ -103,30 +103,22 @@ export async function GET(request: NextRequest) {
       let entityIds: string[] = [];
       if (entityId) {
         // Verify entity ownership
-        const entity = await safeQuery(
-          () =>
-            (prisma as any).entity.findUnique({
-              where: { id: entityId },
-              select: { id: true, userId: true },
-            }),
-          null
-        );
+        const entity = await prisma.entity.findFirst({
+          where: { id: entityId, userId: session.userId },
+        });
         if (!entity) {
-          return error('NOT_FOUND', 'Entity not found', 404);
-        }
-        if (entity.userId !== session.userId) {
-          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+          return error('NOT_FOUND', 'Entity not found or access denied', 404);
         }
         entityIds = [entityId];
       } else {
         // Get all entities for the authenticated user
         const entities = await safeQuery(
           () =>
-            (prisma as any).entity.findMany({
+            prisma.entity.findMany({
               where: { userId: session.userId },
               select: { id: true },
             }),
-          []
+          [] as { id: string }[]
         );
         entityIds = entities.map((e: { id: string }) => e.id);
       }
