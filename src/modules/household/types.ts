@@ -96,3 +96,38 @@ export interface FamilyMember {
   sharedTasks: boolean;
   sharedShopping: boolean;
 }
+
+export interface Property {
+  id: string;
+  userId: string;
+  name: string;
+  address: string;
+  city: string;
+  state: string;
+  type: 'PRIMARY' | 'RENTAL' | 'VACATION' | 'COMMERCIAL';
+  ownership: 'OWN' | 'RENT' | 'MANAGE';
+  moveInDate?: Date;
+  beds?: number;
+  baths?: number;
+  sqft?: number;
+  yearBuilt?: number;
+  monthlyCosts: { mortgage: number; insurance: number; utilities: number; hoa: number; maintenance: number };
+  activeTasks: number;
+  overdueTasks: number;
+  providerCount: number;
+}
+
+export interface InventoryItem {
+  id: string;
+  userId: string;
+  itemName: string;
+  propertyId: string;
+  propertyName: string;
+  category: 'APPLIANCE' | 'HVAC' | 'ELECTRONICS' | 'FURNITURE' | 'OUTDOOR' | 'OTHER';
+  purchaseDate: Date;
+  warrantyEndDate?: Date;
+  value: number;
+  serialNumber?: string;
+  modelNumber?: string;
+  notes?: string;
+}
