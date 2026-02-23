@@ -127,7 +127,8 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
         : '/api/delegation/inbox';
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Failed to load suggestions (${res.status})`);
-      const data: DelegationSuggestion[] = await res.json();
+      const json = await res.json();
+      const data: DelegationSuggestion[] = Array.isArray(json) ? json : (json.data ?? []);
       setSuggestions(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred');

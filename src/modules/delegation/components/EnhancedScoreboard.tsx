@@ -100,9 +100,10 @@ export default function EnhancedScoreboard({ entityId }: EnhancedScoreboardProps
         if (!res.ok) throw new Error(`Failed to fetch scores (${res.status})`);
         return res.json();
       })
-      .then((json: ScoreboardData) => {
+      .then((json) => {
         if (!cancelled) {
-          setData(json);
+          const payload: ScoreboardData = json.data ?? json;
+          setData(payload);
           setLoading(false);
         }
       })

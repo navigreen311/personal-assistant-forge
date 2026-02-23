@@ -231,7 +231,8 @@ export default function EnhancedGatesTab({ entityId }: EnhancedGatesTabProps) {
       const res = await fetch(`/api/execution/gates?${params.toString()}`);
       if (!res.ok) throw new Error(`Failed to fetch gates: ${res.statusText}`);
 
-      const body: ExecutionGate[] = await res.json();
+      const json = await res.json();
+      const body: ExecutionGate[] = Array.isArray(json) ? json : (Array.isArray(json.data) ? json.data : []);
 
       if (body.length === 0) {
         setGates(DEFAULT_GATES);

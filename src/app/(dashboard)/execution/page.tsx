@@ -195,10 +195,16 @@ export default function ExecutionPage() {
       const params = new URLSearchParams();
       if (selectedEntityId !== 'all') params.set('entityId', selectedEntityId);
 
-      const statsRes = await fetch(`/api/execution/queue/stats?${params.toString()}`);
+      const statsRes = await fetch(`/api/execution/stats?${params.toString()}`);
       if (statsRes.ok) {
-        const body: QueueStatsResponse = await statsRes.json();
-        setStats(body);
+        const body = await statsRes.json();
+        const data = body.data ?? body;
+        setStats({
+          pending: data.pending ?? 0,
+          executedToday: data.executedToday ?? 0,
+          rolledBack: data.rolledBack ?? 0,
+          totalCostToday: data.totalCostToday ?? data.costToday ?? 0,
+        });
         return;
       }
 
