@@ -110,9 +110,9 @@ export default function OperatorConsole({ entityId }: OperatorConsoleProps) {
 
       const res = await fetch(`/api/execution/timeline?${params.toString()}`);
       if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.statusText}`);
-      const body: TimelineApiResponse = await res.json();
-      setEntries(body.data);
-      setTotal(body.total);
+      const body = await res.json();
+      setEntries(body.data ?? []);
+      setTotal(body.meta?.total ?? body.total ?? 0);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');

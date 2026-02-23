@@ -206,14 +206,14 @@ export default function EnhancedOperatorConsole({
         );
         if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.statusText}`);
 
-        const body: TimelineApiResponse = await res.json();
+        const body = await res.json();
 
         if (append) {
-          setEntries((prev) => [...prev, ...body.data]);
+          setEntries((prev) => [...prev, ...(body.data ?? [])]);
         } else {
-          setEntries(body.data);
+          setEntries(body.data ?? []);
         }
-        setTotal(body.total);
+        setTotal(body.meta?.total ?? body.total ?? 0);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');

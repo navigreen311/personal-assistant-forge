@@ -185,7 +185,8 @@ export function InsightsTab({ entityId, period: initialPeriod }: Props) {
 
       const res = await fetch(`/api/attention/budget?${query.toString()}`);
       if (!res.ok) throw new Error('API error');
-      const json: InsightsData = await res.json();
+      const raw = await res.json();
+      const json: InsightsData = raw.data ?? raw;
       setData(json);
     } catch {
       // Fallback to demo data on any error

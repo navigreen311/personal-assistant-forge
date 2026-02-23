@@ -139,7 +139,8 @@ export function EnhancedOverviewTab({ entityId, period }: Props) {
       const qs = params.toString();
       const res = await fetch(`/api/attention/budget${qs ? `?${qs}` : ''}`);
       if (!res.ok) throw new Error(`Budget fetch failed (${res.status})`);
-      const data: BudgetResponse = await res.json();
+      const json = await res.json();
+      const data: BudgetResponse = json.data ?? json;
       setBudgetData(data);
       setDailyLimit(data?.budget?.dailyBudget ?? 10);
     } catch (err: unknown) {
@@ -161,7 +162,8 @@ export function EnhancedOverviewTab({ entityId, period }: Props) {
       const qs = params.toString();
       const res = await fetch(`/api/attention/dnd${qs ? `?${qs}` : ''}`);
       if (!res.ok) throw new Error(`DND fetch failed (${res.status})`);
-      const data: ExtendedDNDConfig = await res.json();
+      const json = await res.json();
+      const data: ExtendedDNDConfig = json.data ?? json;
       setDndConfig(data);
     } catch (err: unknown) {
       setDndError(err instanceof Error ? err.message : 'Failed to load DND config');
