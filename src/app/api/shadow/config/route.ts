@@ -90,6 +90,31 @@ const DEFAULT_PROACTIVE_PREFS = {
 };
 
 // ---------------------------------------------------------------------------
+// Hardcoded metadata for permission actions (not user-editable)
+// ---------------------------------------------------------------------------
+
+const ACTIONS_METADATA: Record<string, { reversible: boolean; blastRadius: string }> = {
+  navigate: { reversible: true, blastRadius: 'self' },
+  read_data: { reversible: true, blastRadius: 'self' },
+  classify_email: { reversible: true, blastRadius: 'self' },
+  search_knowledge: { reversible: true, blastRadius: 'self' },
+  create_task: { reversible: true, blastRadius: 'self' },
+  draft_email: { reversible: true, blastRadius: 'self' },
+  modify_calendar: { reversible: true, blastRadius: 'self' },
+  complete_task: { reversible: true, blastRadius: 'self' },
+  create_invoice: { reversible: true, blastRadius: 'entity' },
+  send_email: { reversible: false, blastRadius: 'external' },
+  send_invoice: { reversible: false, blastRadius: 'external' },
+  trigger_workflow: { reversible: false, blastRadius: 'entity' },
+  place_call: { reversible: false, blastRadius: 'external' },
+  bulk_email: { reversible: false, blastRadius: 'external' },
+  declare_crisis: { reversible: false, blastRadius: 'entity' },
+  delete_data: { reversible: false, blastRadius: 'entity' },
+  activate_phone_tree: { reversible: false, blastRadius: 'external' },
+  make_payment: { reversible: false, blastRadius: 'external' },
+};
+
+// ---------------------------------------------------------------------------
 // Helpers: read preferences from ShadowPreference table
 // ---------------------------------------------------------------------------
 
@@ -147,7 +172,7 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
     const userId = session.userId;
 
     // Load all config sections in parallel
-    const [generalPrefs, voicePhonePrefs, safetyConfig, proactiveConfig, permissionPrefs, proactivePrefs] =
+    const [generalPrefs, voicePhonePrefs, safetyConfig, proactiveConfig, permissionPrefs, proactivePrefs, safetyPrefs] =
       await Promise.all([
         readPreferences(userId, 'general', GENERAL_PREF_KEYS),
         readPreferences(userId, 'voicePhone', VOICE_PHONE_PREF_KEYS),
@@ -155,6 +180,7 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
         prisma.shadowProactiveConfig.findUnique({ where: { userId } }),
         readPreferences(userId, 'permissions', ['autonomyLevel', 'actions']),
         readPreferences(userId, 'proactive', PROACTIVE_PREF_KEYS),
+        readPreferences(userId, 'safety', ['pinSetDate', 'requirePinForDataDeletion', 'financialThreshold', 'alwaysAnnounceCost', 'alwaysAnnounceIrreversibility']),
       ]);
 
     // Build response
@@ -169,11 +195,13 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
           requirePinForFinancial: safetyConfig.requirePinForFinancial,
           requirePinForExternal: safetyConfig.requirePinForExternal,
           requirePinForCrisis: safetyConfig.requirePinForCrisis,
+          requirePinForDataDeletion: (safetyPrefs.requirePinForDataDeletion as boolean) ?? true,
           blastRadiusThreshold: safetyConfig.maxBlastRadiusWithoutPin,
-          financialThreshold: 500, // Not stored in current schema; default
+          financialThreshold: (safetyPrefs.financialThreshold as number) ?? 500,
           alwaysAnnounceAffectedCount: safetyConfig.alwaysAnnounceBlastRadius,
-          alwaysAnnounceCost: true,
-          alwaysAnnounceIrreversibility: true,
+          alwaysAnnounceCost: (safetyPrefs.alwaysAnnounceCost as boolean) ?? true,
+          alwaysAnnounceIrreversibility: (safetyPrefs.alwaysAnnounceIrreversibility as boolean) ?? true,
+          pinSetDate: (safetyPrefs.pinSetDate as string) ?? null,
         }
       : undefined;
 
@@ -220,15 +248,22 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
         }
       : undefined;
 
+    const rawActions = permissionPrefs.actions as Array<{
+      action: string;
+      label: string;
+      defaultLevel: string;
+      override: string;
+    }> | undefined;
+
+    const enrichedActions = rawActions?.map((a) => ({
+      ...a,
+      ...(ACTIONS_METADATA[a.action] ?? {}),
+    }));
+
     const permissions = permissionPrefs.autonomyLevel
       ? {
           autonomyLevel: permissionPrefs.autonomyLevel as string,
-          actions: permissionPrefs.actions as Array<{
-            action: string;
-            label: string;
-            defaultLevel: string;
-            override: string;
-          }> | undefined,
+          actions: enrichedActions,
         }
       : undefined;
 
@@ -294,13 +329,22 @@ async function handlePut(req: NextRequest, session: AuthSession): Promise<Respon
         update: upsertData as Parameters<typeof prisma.shadowSafetyConfig.update>[0]['data'],
       });
 
-      // Store financial threshold and other fields not in the safety schema as preferences
+      // Store fields not in the safety schema as preferences
+      const safetyPrefsToWrite: Record<string, unknown> = {};
       if (safetyData.financialThreshold !== undefined) {
-        await writePreferences(userId, 'safety', {
-          financialThreshold: safetyData.financialThreshold,
-          alwaysAnnounceCost: safetyData.alwaysAnnounceCost ?? true,
-          alwaysAnnounceIrreversibility: safetyData.alwaysAnnounceIrreversibility ?? true,
-        });
+        safetyPrefsToWrite.financialThreshold = safetyData.financialThreshold;
+      }
+      if (safetyData.alwaysAnnounceCost !== undefined) {
+        safetyPrefsToWrite.alwaysAnnounceCost = safetyData.alwaysAnnounceCost;
+      }
+      if (safetyData.alwaysAnnounceIrreversibility !== undefined) {
+        safetyPrefsToWrite.alwaysAnnounceIrreversibility = safetyData.alwaysAnnounceIrreversibility;
+      }
+      if (safetyData.requirePinForDataDeletion !== undefined) {
+        safetyPrefsToWrite.requirePinForDataDeletion = safetyData.requirePinForDataDeletion;
+      }
+      if (Object.keys(safetyPrefsToWrite).length > 0) {
+        await writePreferences(userId, 'safety', safetyPrefsToWrite);
       }
 
       updates.safety = body.safety;

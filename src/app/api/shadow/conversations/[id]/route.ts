@@ -21,19 +21,40 @@ export async function GET(
         return error('FORBIDDEN', 'You do not have access to this conversation', 403);
       }
 
-      // Fetch all messages for the session
-      const messages = await prisma.shadowMessage.findMany({
-        where: { sessionId: id },
-        orderBy: { createdAt: 'asc' },
-      });
+      // Fetch all related data in parallel
+      const [messages, outcome, consentReceipts, entityRecord] = await Promise.all([
+        // Full message transcript with timestamps
+        prisma.shadowMessage.findMany({
+          where: { sessionId: id },
+          orderBy: { createdAt: 'asc' },
+        }),
+        // Structured outcome
+        prisma.shadowSessionOutcome.findUnique({
+          where: { sessionId: id },
+        }),
+        // Consent receipts for the session
+        prisma.shadowConsentReceipt.findMany({
+          where: { sessionId: id },
+          orderBy: { executedAt: 'asc' },
+        }),
+        // Entity name lookup (if entityId exists on the session)
+        voiceSession.activeEntityId
+          ? prisma.entity.findUnique({
+              where: { id: voiceSession.activeEntityId },
+              select: { id: true, name: true },
+            })
+          : Promise.resolve(null),
+      ]);
 
-      // Fetch the outcome if it exists
-      const outcome = await prisma.shadowSessionOutcome.findUnique({
-        where: { sessionId: id },
-      });
+      // Count actions (messages with non-empty toolsUsed)
+      const actionsCount = messages.filter(
+        (m) => Array.isArray(m.toolsUsed) && (m.toolsUsed as unknown[]).length > 0,
+      ).length;
 
       return success({
         ...voiceSession,
+        entityName: entityRecord?.name ?? null,
+        actionsCount,
         messages: messages.map((m) => ({
           id: m.id,
           sessionId: m.sessionId,
@@ -51,6 +72,41 @@ export async function GET(
           createdAt: m.createdAt,
         })),
         outcome: outcome ?? null,
+        consentReceipts: consentReceipts.map((cr) => ({
+          id: cr.id,
+          sessionId: cr.sessionId,
+          messageId: cr.messageId,
+          actionType: cr.actionType,
+          actionDescription: cr.actionDescription,
+          triggerSource: cr.triggerSource,
+          triggerReferenceType: cr.triggerReferenceType,
+          triggerReferenceId: cr.triggerReferenceId,
+          reasoning: cr.reasoning,
+          sourcesCited: cr.sourcesCited,
+          confirmationLevel: cr.confirmationLevel,
+          confirmationMethod: cr.confirmationMethod,
+          blastRadius: cr.blastRadius,
+          affectedCount: cr.affectedCount,
+          financialImpact: cr.financialImpact,
+          reversible: cr.reversible,
+          rollbackPath: cr.rollbackPath,
+          aiCost: cr.aiCost,
+          telephonyCost: cr.telephonyCost,
+          entityId: cr.entityId,
+          executedAt: cr.executedAt,
+          rolledBackAt: cr.rolledBackAt,
+          rolledBackBy: cr.rolledBackBy,
+        })),
+        actions: consentReceipts.map((cr) => ({
+          id: cr.id,
+          actionType: cr.actionType,
+          actionDescription: cr.actionDescription,
+          confirmationLevel: cr.confirmationLevel,
+          confirmationMethod: cr.confirmationMethod,
+          blastRadius: cr.blastRadius,
+          reversible: cr.reversible,
+          executedAt: cr.executedAt,
+        })),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to get conversation';
