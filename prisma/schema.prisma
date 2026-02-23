@@ -14,35 +14,43 @@ datasource db {
 // === CORE ENTITIES ===
 
 model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  hashedPassword String?   // bcrypt hash for credentials auth, null for OAuth-only users
-  preferences  Json     @default("{}")
-  timezone     String   @default("America/Chicago")
-  chronotype   String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  name           String
+  email          String   @unique
+  hashedPassword String? // bcrypt hash for credentials auth, null for OAuth-only users
+  preferences    Json     @default("{}")
+  timezone       String   @default("America/Chicago")
+  chronotype     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  entities     Entity[]
-  tasks        Task[]     @relation("TaskAssignee")
-  actionLogs   ActionLog[]
-  memories     MemoryEntry[]
-  notifications Notification[]
-  attentionBudgets AttentionBudget[]
-  adoptionProgress AdoptionProgress?
-  goalEntries    GoalEntry[]
-  vaultEntries     VaultEntry[]
-  vaultSecrets     VaultSecret[]
-  vaultKeys        VaultKey[]
-  provenanceRecords ProvenanceRecord[]
-  webhookConfigs   WebhookConfig[]
-  pluginRecords    PluginRecord[]
-  dndConfig        DNDConfig?
-  permissionGrants PermissionGrant[]
-  voiceConsents    VoiceConsent[]
-  followUpReminders FollowUpReminder[]
-  cannedResponses   CannedResponse[]
+  entities                   Entity[]
+  tasks                      Task[]                       @relation("TaskAssignee")
+  actionLogs                 ActionLog[]
+  memories                   MemoryEntry[]
+  notifications              Notification[]
+  attentionBudgets           AttentionBudget[]
+  adoptionProgress           AdoptionProgress?
+  goalEntries                GoalEntry[]
+  vaultEntries               VaultEntry[]
+  vaultSecrets               VaultSecret[]
+  vaultKeys                  VaultKey[]
+  provenanceRecords          ProvenanceRecord[]
+  webhookConfigs             WebhookConfig[]
+  pluginRecords              PluginRecord[]
+  dndConfig                  DNDConfig?
+  permissionGrants           PermissionGrant[]
+  voiceConsents              VoiceConsent[]
+  followUpReminders          FollowUpReminder[]
+  cannedResponses            CannedResponse[]
+  shadowSessions             ShadowVoiceSession[]
+  shadowTrustedDevices       ShadowTrustedDevice[]
+  shadowSafetyConfig         ShadowSafetyConfig?
+  shadowProactiveConfig      ShadowProactiveConfig?
+  shadowChannelEffectiveness ShadowChannelEffectiveness[]
+  shadowTriggers             ShadowTrigger[]
+  shadowPreferences          ShadowPreference[]
+  shadowOutreach             ShadowOutreach[]
 }
 
 model Entity {
@@ -57,52 +65,58 @@ model Entity {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  user              User     @relation(fields: [userId], references: [id])
-  contacts          Contact[]
-  tasks             Task[]
-  projects          Project[]
-  events            CalendarEvent[]
-  messages          Message[]
-  documents         Document[]
-  knowledgeEntries  KnowledgeEntry[]
-  workflows         Workflow[]
-  calls             Call[]
-  rules             Rule[]
-  financialRecords  FinancialRecord[]
-  decisions         Decision[]
-  budgets           Budget[]
-  notifications     Notification[]
-  voicePersonas     VoicePersona[]
-  runbooks          Runbook[]
-  subscriptions     Subscription[]
-  usageRecords      UsageRecord[]
-  habitEntries      HabitEntry[]
-  healthMetrics     HealthMetric[]
-  legalHolds        LegalHold[]
-  retentionPolicies RetentionPolicy[]
+  user                     User                      @relation(fields: [userId], references: [id])
+  contacts                 Contact[]
+  tasks                    Task[]
+  projects                 Project[]
+  events                   CalendarEvent[]
+  messages                 Message[]
+  documents                Document[]
+  knowledgeEntries         KnowledgeEntry[]
+  workflows                Workflow[]
+  calls                    Call[]
+  rules                    Rule[]
+  financialRecords         FinancialRecord[]
+  decisions                Decision[]
+  budgets                  Budget[]
+  notifications            Notification[]
+  voicePersonas            VoicePersona[]
+  runbooks                 Runbook[]
+  subscriptions            Subscription[]
+  usageRecords             UsageRecord[]
+  habitEntries             HabitEntry[]
+  healthMetrics            HealthMetric[]
+  legalHolds               LegalHold[]
+  retentionPolicies        RetentionPolicy[]
+  shadowVoiceSessions      ShadowVoiceSession[]
+  shadowEntityProfile      ShadowEntityProfile?
+  shadowRetentionConfig    ShadowRetentionConfig?
+  voiceforgeCallPlaybooks  VoiceforgeCallPlaybook[]
+  voiceforgeConsentConfigs VoiceforgeConsentConfig[]
 
   @@index([userId])
 }
 
 model Contact {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   entityId          String
   name              String
   email             String?
   phone             String?
-  channels          Json     @default("[]")
-  relationshipScore Int      @default(50)
+  channels          Json      @default("[]")
+  relationshipScore Int       @default(50)
   lastTouch         DateTime?
-  commitments       Json     @default("[]")
-  preferences       Json     @default("{}")
-  tags              String[] @default([])
+  commitments       Json      @default("[]")
+  preferences       Json      @default("{}")
+  tags              String[]  @default([])
   deletedAt         DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  entity            Entity   @relation(fields: [entityId], references: [id])
-  messages          Message[] @relation("ContactMessages")
-  calls             Call[]
+  entity         Entity                 @relation(fields: [entityId], references: [id])
+  messages       Message[]              @relation("ContactMessages")
+  calls          Call[]
+  callPreference ContactCallPreference?
 
   @@index([entityId])
   @@index([email])
@@ -110,25 +124,25 @@ model Contact {
 }
 
 model Task {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   title        String
   description  String?
   entityId     String
   projectId    String?
-  priority     String   @default("P1")
-  status       String   @default("TODO")
+  priority     String    @default("P1")
+  status       String    @default("TODO")
   dueDate      DateTime?
-  dependencies String[] @default([])
+  dependencies String[]  @default([])
   assigneeId   String?
   createdFrom  Json?
-  tags         String[] @default([])
+  tags         String[]  @default([])
   deletedAt    DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  entity       Entity   @relation(fields: [entityId], references: [id])
-  project      Project? @relation(fields: [projectId], references: [id])
-  assignee     User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  entity   Entity   @relation(fields: [entityId], references: [id])
+  project  Project? @relation(fields: [projectId], references: [id])
+  assignee User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
 
   @@index([entityId])
   @@index([projectId])
@@ -149,55 +163,55 @@ model Project {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  entity      Entity   @relation(fields: [entityId], references: [id])
-  tasks       Task[]
+  entity Entity @relation(fields: [entityId], references: [id])
+  tasks  Task[]
 
   @@index([entityId])
 }
 
 model CalendarEvent {
-  id            String   @id @default(cuid())
-  title         String
-  entityId      String
+  id             String   @id @default(cuid())
+  title          String
+  entityId       String
   participantIds String[] @default([])
-  startTime     DateTime
-  endTime       DateTime
-  bufferBefore  Int?
-  bufferAfter   Int?
-  prepPacket    Json?
-  meetingNotes  String?
-  recurrence    String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  startTime      DateTime
+  endTime        DateTime
+  bufferBefore   Int?
+  bufferAfter    Int?
+  prepPacket     Json?
+  meetingNotes   String?
+  recurrence     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  entity        Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
   @@index([startTime])
 }
 
 model Message {
-  id           String   @id @default(cuid())
-  channel      String
-  senderId     String
-  recipientId  String
-  entityId     String
-  threadId     String?
-  subject      String?
-  body         String
-  triageScore  Int      @default(5)
-  intent       String?
-  sensitivity  String   @default("INTERNAL")
-  draftStatus  String?
-  read         Boolean  @default(false)
-  starred      Boolean  @default(false)
-  attachments  Json     @default("[]")
-  deletedAt    DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String    @id @default(cuid())
+  channel     String
+  senderId    String
+  recipientId String
+  entityId    String
+  threadId    String?
+  subject     String?
+  body        String
+  triageScore Int       @default(5)
+  intent      String?
+  sensitivity String    @default("INTERNAL")
+  draftStatus String?
+  read        Boolean   @default(false)
+  starred     Boolean   @default(false)
+  attachments Json      @default("[]")
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  entity       Entity   @relation(fields: [entityId], references: [id])
-  contact      Contact? @relation("ContactMessages", fields: [senderId], references: [id])
+  entity  Entity   @relation(fields: [entityId], references: [id])
+  contact Contact? @relation("ContactMessages", fields: [senderId], references: [id])
 
   @@index([entityId])
   @@index([threadId])
@@ -208,20 +222,20 @@ model Message {
 }
 
 model Document {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   title      String
   entityId   String
   type       String
-  version    Int      @default(1)
+  version    Int       @default(1)
   templateId String?
-  citations  Json     @default("[]")
+  citations  Json      @default("[]")
   content    String?
-  status     String   @default("DRAFT")
+  status     String    @default("DRAFT")
   deletedAt  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  entity     Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
   @@index([type])
@@ -239,48 +253,48 @@ model KnowledgeEntry {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  entity         Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
   @@index([content])
 }
 
 model Workflow {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   name        String
   entityId    String
-  triggers    Json     @default("[]")
-  steps       Json     @default("[]")
-  status      String   @default("DRAFT")
+  triggers    Json      @default("[]")
+  steps       Json      @default("[]")
+  status      String    @default("DRAFT")
   lastRun     DateTime?
-  successRate Float    @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  successRate Float     @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  entity      Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
   @@index([status])
 }
 
 model Call {
-  id          String   @id @default(cuid())
-  entityId    String
-  contactId   String?
-  direction   String
-  personaId   String?
-  scriptId    String?
-  outcome     String?
-  transcript  String?
+  id           String   @id @default(cuid())
+  entityId     String
+  contactId    String?
+  direction    String
+  personaId    String?
+  scriptId     String?
+  outcome      String?
+  transcript   String?
   recordingUrl String?
-  sentiment   Float?
-  duration    Int?
-  actionItems Json     @default("[]")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  sentiment    Float?
+  duration     Int?
+  actionItems  Json     @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  entity      Entity   @relation(fields: [entityId], references: [id])
-  contact     Contact? @relation(fields: [contactId], references: [id])
+  entity  Entity   @relation(fields: [entityId], references: [id])
+  contact Contact? @relation(fields: [contactId], references: [id])
 
   @@index([entityId])
   @@index([contactId])
@@ -300,7 +314,7 @@ model Rule {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  entity     Entity?  @relation(fields: [entityId], references: [id])
+  entity Entity? @relation(fields: [entityId], references: [id])
 
   @@index([scope])
   @@index([isActive])
@@ -320,7 +334,7 @@ model ActionLog {
   cost         Float?
   timestamp    DateTime @default(now())
 
-  user         User?    @relation(fields: [actorId], references: [id])
+  user User? @relation(fields: [actorId], references: [id])
 
   @@index([actor])
   @@index([actionType])
@@ -328,20 +342,20 @@ model ActionLog {
 }
 
 model FinancialRecord {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   entityId    String
   type        String
   amount      Float
-  currency    String   @default("USD")
-  status      String   @default("PENDING")
+  currency    String    @default("USD")
+  status      String    @default("PENDING")
   dueDate     DateTime?
   category    String
   vendor      String?
   description String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  entity      Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
 
   @@index([entityId])
   @@index([type])
@@ -349,15 +363,15 @@ model FinancialRecord {
 }
 
 model ConsentReceipt {
-  id          String   @id @default(cuid())
-  actionId    String
-  description String
-  reason      String
-  impacted    String[] @default([])
-  reversible  Boolean  @default(true)
+  id           String   @id @default(cuid())
+  actionId     String
+  description  String
+  reason       String
+  impacted     String[] @default([])
+  reversible   Boolean  @default(true)
   rollbackLink String?
-  confidence  Float    @default(0.5)
-  timestamp   DateTime @default(now())
+  confidence   Float    @default(0.5)
+  timestamp    DateTime @default(now())
 
   @@index([actionId])
 }
@@ -372,7 +386,7 @@ model MemoryEntry {
   lastAccessed DateTime @default(now())
   createdAt    DateTime @default(now())
 
-  user         User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([type])
@@ -381,22 +395,22 @@ model MemoryEntry {
 // === PHASE 2 MODELS ===
 
 model Decision {
-  id          String   @id @default(cuid())
-  entityId    String
-  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  title       String
-  type        String   // e.g., "strategic", "operational", "financial", "hiring", "product"
-  status      String   @default("open") // "open", "in_review", "decided", "deferred", "cancelled"
-  options     Json     // Array of option objects: [{ id, label, description, pros, cons, score }]
-  matrix      Json?    // Decision matrix: { criteria: [...], weights: [...], scores: {...} }
-  outcome     String?  // Selected option or final decision text
-  rationale   String?  // Why this decision was made
-  deadline    DateTime?
-  decidedAt   DateTime?
-  decidedBy   String?
-  stakeholders Json?   // Array of { userId, role, vote }
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String    @id @default(cuid())
+  entityId     String
+  entity       Entity    @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  title        String
+  type         String // e.g., "strategic", "operational", "financial", "hiring", "product"
+  status       String    @default("open") // "open", "in_review", "decided", "deferred", "cancelled"
+  options      Json // Array of option objects: [{ id, label, description, pros, cons, score }]
+  matrix       Json? // Decision matrix: { criteria: [...], weights: [...], scores: {...} }
+  outcome      String? // Selected option or final decision text
+  rationale    String? // Why this decision was made
+  deadline     DateTime?
+  decidedAt    DateTime?
+  decidedBy    String?
+  stakeholders Json? // Array of { userId, role, vote }
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([entityId])
   @@index([status])
@@ -404,21 +418,21 @@ model Decision {
 }
 
 model Budget {
-  id          String   @id @default(cuid())
-  entityId    String
-  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  name        String
-  amount      Float    // total budget amount in cents
-  spent       Float    @default(0) // amount spent so far
-  period      String   // "monthly", "quarterly", "yearly", "project"
-  category    String   // e.g., "marketing", "engineering", "operations", "travel"
-  startDate   DateTime?
-  endDate     DateTime?
-  alerts      Json?    // Array of { threshold: number, type: "percentage"|"absolute", notified: boolean }
-  notes       String?
-  status      String   @default("active") // "active", "paused", "exhausted", "closed"
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String    @id @default(cuid())
+  entityId  String
+  entity    Entity    @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name      String
+  amount    Float // total budget amount in cents
+  spent     Float     @default(0) // amount spent so far
+  period    String // "monthly", "quarterly", "yearly", "project"
+  category  String // e.g., "marketing", "engineering", "operations", "travel"
+  startDate DateTime?
+  endDate   DateTime?
+  alerts    Json? // Array of { threshold: number, type: "percentage"|"absolute", notified: boolean }
+  notes     String?
+  status    String    @default("active") // "active", "paused", "exhausted", "closed"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@index([entityId])
   @@index([category])
@@ -426,21 +440,21 @@ model Budget {
 }
 
 model Notification {
-  id          String   @id @default(cuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entityId    String?
-  entity      Entity?  @relation(fields: [entityId], references: [id], onDelete: SetNull)
-  type        String   // "task_due", "message_received", "workflow_completed", "alert", "payment", "system"
-  title       String
-  body        String
-  read        Boolean  @default(false)
-  readAt      DateTime?
-  actionUrl   String?  // URL to navigate to when notification is clicked
-  metadata    Json?    // Additional context data
-  priority    String   @default("normal") // "low", "normal", "high", "urgent"
-  expiresAt   DateTime?
-  createdAt   DateTime @default(now())
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId  String?
+  entity    Entity?   @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  type      String // "task_due", "message_received", "workflow_completed", "alert", "payment", "system"
+  title     String
+  body      String
+  read      Boolean   @default(false)
+  readAt    DateTime?
+  actionUrl String? // URL to navigate to when notification is clicked
+  metadata  Json? // Additional context data
+  priority  String    @default("normal") // "low", "normal", "high", "urgent"
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
 
   @@index([userId])
   @@index([entityId])
@@ -452,38 +466,38 @@ model VoicePersona {
   id          String   @id @default(cuid())
   entityId    String
   entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  name        String   // Display name (e.g., "Professional", "Casual", "Executive")
-  voiceId     String   // External TTS voice ID (e.g., ElevenLabs voice ID)
+  name        String // Display name (e.g., "Professional", "Casual", "Executive")
+  voiceId     String // External TTS voice ID (e.g., ElevenLabs voice ID)
   provider    String   @default("elevenlabs") // "elevenlabs", "azure", "google", "amazon"
-  settings    Json     // { speed, pitch, stability, similarity, style, speakerBoost }
-  description String?  // When to use this persona
+  settings    Json // { speed, pitch, stability, similarity, style, speakerBoost }
+  description String? // When to use this persona
   isDefault   Boolean  @default(false)
-  sampleUrl   String?  // URL to a sample audio clip
+  sampleUrl   String? // URL to a sample audio clip
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([entityId])
   @@unique([entityId, name])
+  @@index([entityId])
 }
 
 model Runbook {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   entityId    String
-  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  entity      Entity    @relation(fields: [entityId], references: [id], onDelete: Cascade)
   name        String
   description String?
-  steps       Json     // Array of { id, order, action, params, onSuccess, onFailure, timeout }
-  variables   Json?    // Array of { name, type, defaultValue, required, description }
-  category    String   // "incident", "onboarding", "deployment", "maintenance", "compliance"
-  trigger     String?  // "manual", "scheduled", "event", "condition"
-  schedule    String?  // Cron expression if trigger is "scheduled"
-  isActive    Boolean  @default(true)
+  steps       Json // Array of { id, order, action, params, onSuccess, onFailure, timeout }
+  variables   Json? // Array of { name, type, defaultValue, required, description }
+  category    String // "incident", "onboarding", "deployment", "maintenance", "compliance"
+  trigger     String? // "manual", "scheduled", "event", "condition"
+  schedule    String? // Cron expression if trigger is "scheduled"
+  isActive    Boolean   @default(true)
   lastRunAt   DateTime?
-  runCount    Int      @default(0)
-  version     Int      @default(1)
+  runCount    Int       @default(0)
+  version     Int       @default(1)
   createdBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([entityId])
   @@index([category])
@@ -496,7 +510,7 @@ model Subscription {
   id                   String   @id @default(cuid())
   entityId             String
   entity               Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  planId               String   // "free", "starter", "professional", "enterprise"
+  planId               String // "free", "starter", "professional", "enterprise"
   status               String   @default("active") // "active", "past_due", "canceled", "trialing"
   currentPeriodStart   DateTime
   currentPeriodEnd     DateTime
@@ -516,11 +530,11 @@ model UsageRecord {
   id           String   @id @default(cuid())
   entityId     String
   entity       Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  model        String   // AI model used (e.g., "claude-sonnet-4-5-20250929")
+  model        String // AI model used (e.g., "claude-sonnet-4-5-20250929")
   inputTokens  Int
   outputTokens Int
-  cost         Float    // cost in USD
-  module       String   // which module made the call (e.g., "inbox", "calendar")
+  cost         Float // cost in USD
+  module       String // which module made the call (e.g., "inbox", "calendar")
   userId       String?
   metadata     Json?
   createdAt    DateTime @default(now())
@@ -531,35 +545,35 @@ model UsageRecord {
 }
 
 model HabitEntry {
-  id             String   @id @default(cuid())
-  entityId       String
-  entity         Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  name           String
-  description    String?
-  frequency      String   // "daily", "weekly", "weekdays", "custom"
-  targetPerPeriod Int     @default(1)
-  streak         Int      @default(0)
-  longestStreak  Int      @default(0)
-  completedDates Json     @default("[]") // Array of ISO date strings
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(cuid())
+  entityId        String
+  entity          Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  frequency       String // "daily", "weekly", "weekdays", "custom"
+  targetPerPeriod Int      @default(1)
+  streak          Int      @default(0)
+  longestStreak   Int      @default(0)
+  completedDates  Json     @default("[]") // Array of ISO date strings
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([entityId])
   @@index([isActive])
 }
 
 model HealthMetric {
-  id          String   @id @default(cuid())
-  entityId    String
-  entity      Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  type        String   // "sleep", "stress", "energy", "heart_rate", "steps", "weight"
-  value       Float
-  unit        String   // "hours", "score", "bpm", "steps", "kg"
-  source      String   @default("manual") // "manual", "apple_health", "fitbit", "oura", "whoop", "garmin"
-  metadata    Json?    // Additional data (e.g., sleep stages, stress factors)
-  recordedAt  DateTime
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  entityId   String
+  entity     Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  type       String // "sleep", "stress", "energy", "heart_rate", "steps", "weight"
+  value      Float
+  unit       String // "hours", "score", "bpm", "steps", "kg"
+  source     String   @default("manual") // "manual", "apple_health", "fitbit", "oura", "whoop", "garmin"
+  metadata   Json? // Additional data (e.g., sleep stages, stress factors)
+  recordedAt DateTime
+  createdAt  DateTime @default(now())
 
   @@index([entityId])
   @@index([type])
@@ -578,8 +592,8 @@ model AttentionBudget {
   consumedMinutes Int      @default(0)
   resetAt         DateTime
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, date])
   @@index([userId])
@@ -597,8 +611,8 @@ model AdoptionProgress {
   startedAt      DateTime  @default(now())
   completedAt    DateTime?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@index([phase])
@@ -624,8 +638,8 @@ model GoalEntry {
   linkedWorkflowIds Json      @default("[]")
   deadline          DateTime?
 
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@index([entityId])
@@ -681,18 +695,18 @@ model VaultKey {
 }
 
 model ProvenanceRecord {
-  id              String   @id @default(cuid())
-  userId          String
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entityId        String?
-  targetType      String?
-  targetId        String?
-  inputHash       String
-  outputHash      String
-  modelId         String
-  promptTemplate  String?
-  metadata        Json?
-  timestamp       DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityId       String?
+  targetType     String?
+  targetId       String?
+  inputHash      String
+  outputHash     String
+  modelId        String
+  promptTemplate String?
+  metadata       Json?
+  timestamp      DateTime @default(now())
 
   @@index([userId])
   @@index([outputHash])
@@ -717,16 +731,16 @@ model WebhookConfig {
 }
 
 model WebhookEvent {
-  id              String    @id @default(cuid())
+  id              String        @id @default(cuid())
   webhookConfigId String
   webhookConfig   WebhookConfig @relation(fields: [webhookConfigId], references: [id], onDelete: Cascade)
   event           String
   payload         Json
-  status          String    @default("PENDING")
+  status          String        @default("PENDING")
   response        Json?
-  attempts        Int       @default(0)
+  attempts        Int           @default(0)
   lastAttemptAt   DateTime?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime      @default(now())
 
   @@index([webhookConfigId])
   @@index([status])
@@ -752,17 +766,17 @@ model PluginRecord {
 }
 
 model PluginReview {
-  id              String    @id @default(cuid())
-  pluginRecordId  String
-  pluginRecord    PluginRecord @relation(fields: [pluginRecordId], references: [id], onDelete: Cascade)
-  reviewerId      String
-  status          String    @default("PENDING")
-  findings        Json
-  riskScore       Float?
-  reviewedAt      DateTime?
-  revokedAt       DateTime?
-  affectedUsers   Int       @default(0)
-  createdAt       DateTime  @default(now())
+  id             String       @id @default(cuid())
+  pluginRecordId String
+  pluginRecord   PluginRecord @relation(fields: [pluginRecordId], references: [id], onDelete: Cascade)
+  reviewerId     String
+  status         String       @default("PENDING")
+  findings       Json
+  riskScore      Float?
+  reviewedAt     DateTime?
+  revokedAt      DateTime?
+  affectedUsers  Int          @default(0)
+  createdAt      DateTime     @default(now())
 
   @@index([pluginRecordId])
 }
@@ -783,15 +797,15 @@ model DNDConfig {
 }
 
 model PermissionGrant {
-  id         String    @id @default(cuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  resource   String
-  actions    Json
-  grantedBy  String?
-  grantedAt  DateTime  @default(now())
-  expiresAt  DateTime?
-  revoked    Boolean   @default(false)
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource  String
+  actions   Json
+  grantedBy String?
+  grantedAt DateTime  @default(now())
+  expiresAt DateTime?
+  revoked   Boolean   @default(false)
 
   @@unique([userId, resource])
   @@index([userId])
@@ -803,7 +817,7 @@ model VoiceConsent {
   user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   voiceCloneId     String
   consentGiven     Boolean   @default(true)
-  consentTimestamp  DateTime  @default(now())
+  consentTimestamp DateTime  @default(now())
   revokedAt        DateTime?
 
   @@unique([userId, voiceCloneId])
@@ -812,18 +826,19 @@ model VoiceConsent {
 // === INBOX & COMPLIANCE PERSISTENCE MODELS ===
 
 model FollowUpReminder {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   userId      String
   messageId   String?
   description String
   dueDate     DateTime
-  priority    String   @default("NORMAL")
-  completed   Boolean  @default(false)
+  priority    String    @default("NORMAL")
+  completed   Boolean   @default(false)
   completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  user        User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
   @@index([userId])
   @@index([dueDate])
 }
@@ -838,42 +853,382 @@ model CannedResponse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user      User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
   @@unique([userId, title])
   @@index([userId])
 }
 
 model LegalHold {
-  id          String    @id @default(cuid())
-  entityId    String
-  reason      String
-  scope       Json
-  status      String    @default("ACTIVE")
-  createdBy   String
-  releasedBy  String?
-  createdAt   DateTime  @default(now())
-  releasedAt  DateTime?
-  updatedAt   DateTime  @updatedAt
+  id         String    @id @default(cuid())
+  entityId   String
+  reason     String
+  scope      Json
+  status     String    @default("ACTIVE")
+  createdBy  String
+  releasedBy String?
+  createdAt  DateTime  @default(now())
+  releasedAt DateTime?
+  updatedAt  DateTime  @updatedAt
 
-  entity      Entity    @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
+
   @@index([entityId])
   @@index([status])
 }
 
 model RetentionPolicy {
-  id             String   @id @default(cuid())
-  entityId       String
-  dataType       String
-  action         String   @default("ARCHIVE")
-  retentionDays  Int
-  schedule       String   @default("DAILY")
-  isActive       Boolean  @default(true)
-  lastExecutedAt DateTime?
-  executionHistory Json   @default("[]")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id               String    @id @default(cuid())
+  entityId         String
+  dataType         String
+  action           String    @default("ARCHIVE")
+  retentionDays    Int
+  schedule         String    @default("DAILY")
+  isActive         Boolean   @default(true)
+  lastExecutedAt   DateTime?
+  executionHistory Json      @default("[]")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  entity         Entity   @relation(fields: [entityId], references: [id])
+  entity Entity @relation(fields: [entityId], references: [id])
+
   @@unique([entityId, dataType])
   @@index([entityId])
+}
+
+// === SHADOW VOICE AGENT MODELS ===
+
+model ShadowVoiceSession {
+  id                   String    @id @default(cuid())
+  userId               String
+  status               String    @default("active")
+  currentChannel       String
+  channelHistory       Json      @default("[]")
+  activeEntityId       String?
+  currentPage          String?
+  currentWorkflowId    String?
+  currentWorkflowStep  Int?
+  recordingUrls        Json      @default("[]")
+  fullTranscript       String?
+  aiSummary            String?
+  approvals            Json      @default("[]")
+  startedAt            DateTime  @default(now())
+  lastActivityAt       DateTime  @default(now())
+  endedAt              DateTime?
+  totalDurationSeconds Int       @default(0)
+  messageCount         Int       @default(0)
+
+  user            User                   @relation(fields: [userId], references: [id])
+  entity          Entity?                @relation(fields: [activeEntityId], references: [id])
+  messages        ShadowMessage[]
+  outcome         ShadowSessionOutcome?
+  consentReceipts ShadowConsentReceipt[]
+  authEvents      ShadowAuthEvent[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([activeEntityId])
+}
+
+model ShadowMessage {
+  id           String   @id @default(cuid())
+  sessionId    String
+  role         String
+  content      String
+  contentType  String   @default("TEXT")
+  intent       String?
+  toolsUsed    Json     @default("[]")
+  actionsTaken Json     @default("[]")
+  audioUrl     String?
+  channel      String
+  confidence   Float?
+  latencyMs    Int?
+  telemetry    Json?
+  createdAt    DateTime @default(now())
+
+  session ShadowVoiceSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([createdAt])
+}
+
+model ShadowConsentReceipt {
+  id                   String    @id @default(cuid())
+  sessionId            String?
+  messageId            String?
+  actionType           String
+  actionDescription    String
+  triggerSource        String
+  triggerReferenceType String?
+  triggerReferenceId   String?
+  reasoning            String?
+  sourcesCited         Json      @default("[]")
+  confirmationLevel    String
+  confirmationMethod   String?
+  blastRadius          String
+  affectedCount        Int       @default(0)
+  financialImpact      Float     @default(0)
+  reversible           Boolean   @default(false)
+  rollbackPath         String?
+  aiCost               Float     @default(0)
+  telephonyCost        Float     @default(0)
+  entityId             String?
+  executedAt           DateTime  @default(now())
+  rolledBackAt         DateTime?
+  rolledBackBy         String?
+
+  session ShadowVoiceSession? @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([actionType])
+  @@index([entityId])
+  @@index([executedAt])
+}
+
+model ShadowSessionOutcome {
+  id                   String   @id @default(cuid())
+  sessionId            String   @unique
+  decisionsMade        Json     @default("[]")
+  commitments          Json     @default("[]")
+  deadlinesSet         Json     @default("[]")
+  followUps            Json     @default("[]")
+  recordsCreated       Json     @default("[]")
+  recordsUpdated       Json     @default("[]")
+  recordsLinked        Json     @default("[]")
+  extractionConfidence Float?
+  userVerified         Boolean  @default(false)
+  createdAt            DateTime @default(now())
+
+  session ShadowVoiceSession @relation(fields: [sessionId], references: [id])
+}
+
+model ShadowTrustedDevice {
+  id                String    @id @default(cuid())
+  userId            String
+  deviceType        String
+  deviceFingerprint String?
+  phoneNumber       String?
+  name              String
+  verifiedAt        DateTime  @default(now())
+  lastUsedAt        DateTime?
+  isActive          Boolean   @default(true)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([phoneNumber])
+}
+
+model ShadowAuthEvent {
+  id              String   @id @default(cuid())
+  sessionId       String?
+  method          String
+  result          String
+  riskLevel       String?
+  actionAttempted String?
+  createdAt       DateTime @default(now())
+
+  session ShadowVoiceSession? @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+}
+
+model ShadowSafetyConfig {
+  userId                    String  @id
+  voicePin                  String?
+  requirePinForFinancial    Boolean @default(true)
+  requirePinForExternal     Boolean @default(false)
+  requirePinForCrisis       Boolean @default(true)
+  maxBlastRadiusWithoutPin  String  @default("entity")
+  phoneConfirmationMode     String  @default("voice_pin")
+  alwaysAnnounceBlastRadius Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model ShadowEntityProfile {
+  id                      String  @id @default(cuid())
+  entityId                String  @unique
+  voicePersona            String  @default("default")
+  tone                    String  @default("professional-friendly")
+  signature               String?
+  greeting                String?
+  disclaimers             Json    @default("[]")
+  allowedDisclosures      Json    @default("[]")
+  neverDisclose           Json    @default("[]")
+  complianceProfiles      Json    @default("[]")
+  vipContacts             Json    @default("[]")
+  proactiveEnabled        Boolean @default(true)
+  financialPinThreshold   Float   @default(500)
+  blastRadiusPinThreshold String  @default("external")
+
+  entity Entity @relation(fields: [entityId], references: [id])
+}
+
+model ShadowProactiveConfig {
+  userId              String  @id
+  briefingEnabled     Boolean @default(true)
+  briefingTime        String  @default("08:00")
+  briefingChannel     String  @default("in_app")
+  briefingContent     Json    @default("[]")
+  callTriggers        Json?
+  vipBreakoutContacts Json    @default("[]")
+  callWindowStart     String  @default("09:00")
+  callWindowEnd       String  @default("18:00")
+  quietHoursStart     String  @default("22:00")
+  quietHoursEnd       String  @default("07:00")
+  cooldownMinutes     Int     @default(60)
+  maxCallsPerDay      Int     @default(5)
+  maxCallsPerHour     Int     @default(2)
+  digestEnabled       Boolean @default(false)
+  digestTime          String?
+  escalationConfig    Json?
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model ShadowChannelEffectiveness {
+  id              String @id @default(cuid())
+  userId          String
+  channel         String
+  triggerType     String
+  attempts        Int    @default(0)
+  responses       Int    @default(0)
+  avgResponseTime Float?
+  responseRate    Float  @default(0)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, channel, triggerType])
+  @@index([userId])
+}
+
+model ShadowTrigger {
+  id              String    @id @default(cuid())
+  userId          String
+  triggerName     String
+  triggerType     String
+  conditions      Json
+  action          Json
+  enabled         Boolean   @default(true)
+  cooldownMinutes Int       @default(60)
+  lastTriggered   DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([enabled])
+}
+
+model ShadowPreference {
+  id              String   @id @default(cuid())
+  userId          String
+  preferenceKey   String
+  preferenceValue String
+  learnedFrom     String   @default("explicit")
+  confidence      Float    @default(1.0)
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, preferenceKey])
+}
+
+model ShadowOverrideLog {
+  id                String   @id @default(cuid())
+  sessionId         String?
+  messageId         String?
+  suggestionType    String
+  suggestionContent String?
+  overrideReason    String?
+  overrideDetail    String?
+  alternativeAction String?
+  createdAt         DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+model ShadowRetentionConfig {
+  id                      String  @id @default(cuid())
+  entityId                String  @unique
+  channel                 String?
+  storeRecordings         Boolean @default(true)
+  storeTranscripts        Boolean @default(true)
+  storeMessages           Boolean @default(true)
+  recordingRetentionDays  Int     @default(90)
+  transcriptRetentionDays Int     @default(365)
+  messageRetentionDays    Int     @default(365)
+  consentRetentionDays    Int     @default(2555)
+  noRecordingMode         Boolean @default(false)
+  ephemeralMode           Boolean @default(false)
+
+  entity Entity @relation(fields: [entityId], references: [id])
+}
+
+model ShadowOutreach {
+  id           String   @id @default(cuid())
+  userId       String
+  triggerType  String
+  triggerEvent String?
+  channel      String
+  status       String   @default("pending")
+  content      String?
+  userResponse String?
+  actionsTaken Json     @default("[]")
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model VoiceforgeCallPlaybook {
+  id                 String  @id @default(cuid())
+  name               String
+  entityId           String
+  scenario           String
+  openingScript      String?
+  dataAllowed        Json    @default("[]")
+  neverDisclose      Json    @default("[]")
+  escalationTriggers Json    @default("[]")
+  escalationAction   String?
+  maxDuration        Int     @default(300)
+  outcomeFields      Json    @default("[]")
+
+  entity Entity @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+}
+
+model VoiceforgeConsentConfig {
+  id                    String  @id @default(cuid())
+  entityId              String
+  jurisdiction          String
+  consentType           String  @default("two_party")
+  consentScript         String?
+  perContactTypeToggles Json    @default("{}")
+  storageToggles        Json    @default("{}")
+  autoDeleteAfterDays   Int?
+  redactionToggles      Json    @default("{}")
+
+  entity Entity @relation(fields: [entityId], references: [id])
+
+  @@index([entityId])
+  @@index([jurisdiction])
+}
+
+model ContactCallPreference {
+  id               String    @id @default(cuid())
+  contactId        String    @unique
+  doNotCall        Boolean   @default(false)
+  preferredChannel String    @default("phone")
+  quietHoursStart  String?
+  quietHoursEnd    String?
+  maxCallsPerWeek  Int       @default(3)
+  callsThisWeek    Int       @default(0)
+  lastCalledAt     DateTime?
+
+  contact Contact @relation(fields: [contactId], references: [id])
 }

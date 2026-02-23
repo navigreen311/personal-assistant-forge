@@ -29,6 +29,26 @@ async function main() {
 
   // -- Clear existing data (reverse dependency order) --
   log('Clearing existing data...');
+  // Shadow Voice Agent tables (must delete before User/Entity/Contact)
+  await prisma.contactCallPreference.deleteMany();
+  await prisma.voiceforgeConsentConfig.deleteMany();
+  await prisma.voiceforgeCallPlaybook.deleteMany();
+  await prisma.shadowOutreach.deleteMany();
+  await prisma.shadowRetentionConfig.deleteMany();
+  await prisma.shadowOverrideLog.deleteMany();
+  await prisma.shadowPreference.deleteMany();
+  await prisma.shadowTrigger.deleteMany();
+  await prisma.shadowChannelEffectiveness.deleteMany();
+  await prisma.shadowProactiveConfig.deleteMany();
+  await prisma.shadowEntityProfile.deleteMany();
+  await prisma.shadowSafetyConfig.deleteMany();
+  await prisma.shadowAuthEvent.deleteMany();
+  await prisma.shadowTrustedDevice.deleteMany();
+  await prisma.shadowSessionOutcome.deleteMany();
+  await prisma.shadowConsentReceipt.deleteMany();
+  await prisma.shadowMessage.deleteMany();
+  await prisma.shadowVoiceSession.deleteMany();
+  // Core tables
   await prisma.runbook.deleteMany();
   await prisma.voicePersona.deleteMany();
   await prisma.notification.deleteMany();
@@ -1560,6 +1580,424 @@ async function main() {
   log(`done (${createdRunbooks.length} created)`);
 
   // =========================================================================
+  // SHADOW VOICE AGENT TABLES
+  // =========================================================================
+  log('Seeding Shadow Voice Agent tables...');
+
+  // --- ShadowSafetyConfig for both users ---
+  const marcusSafetyConfig = await prisma.shadowSafetyConfig.upsert({
+    where: { userId: marcus.id },
+    update: {},
+    create: {
+      userId: marcus.id,
+      voicePin: '7742',
+      requirePinForFinancial: true,
+      requirePinForExternal: true,
+      requirePinForCrisis: true,
+      maxBlastRadiusWithoutPin: 'entity',
+      phoneConfirmationMode: 'voice_pin',
+      alwaysAnnounceBlastRadius: true,
+    },
+  });
+
+  const sarahSafetyConfig = await prisma.shadowSafetyConfig.upsert({
+    where: { userId: sarah.id },
+    update: {},
+    create: {
+      userId: sarah.id,
+      voicePin: '3319',
+      requirePinForFinancial: true,
+      requirePinForExternal: false,
+      requirePinForCrisis: true,
+      maxBlastRadiusWithoutPin: 'internal',
+      phoneConfirmationMode: 'voice_pin',
+      alwaysAnnounceBlastRadius: false,
+    },
+  });
+
+  log('  ShadowSafetyConfig: 2 created');
+
+  // --- ShadowProactiveConfig for both users ---
+  const marcusProactiveConfig = await prisma.shadowProactiveConfig.upsert({
+    where: { userId: marcus.id },
+    update: {},
+    create: {
+      userId: marcus.id,
+      briefingEnabled: true,
+      briefingTime: '06:30',
+      briefingChannel: 'in_app',
+      briefingContent: ['tasks_due', 'calendar_summary', 'financial_alerts', 'vip_messages'],
+      callTriggers: { urgentTask: true, vipMessage: true, financialThreshold: 1000 },
+      vipBreakoutContacts: [],
+      callWindowStart: '07:00',
+      callWindowEnd: '20:00',
+      quietHoursStart: '21:00',
+      quietHoursEnd: '06:00',
+      cooldownMinutes: 30,
+      maxCallsPerDay: 8,
+      maxCallsPerHour: 3,
+      digestEnabled: true,
+      digestTime: '18:00',
+      escalationConfig: { levels: ['in_app', 'sms', 'call'], delayMinutes: [0, 5, 15] },
+    },
+  });
+
+  const sarahProactiveConfig = await prisma.shadowProactiveConfig.upsert({
+    where: { userId: sarah.id },
+    update: {},
+    create: {
+      userId: sarah.id,
+      briefingEnabled: true,
+      briefingTime: '09:00',
+      briefingChannel: 'in_app',
+      briefingContent: ['tasks_due', 'calendar_summary'],
+      vipBreakoutContacts: [],
+      callWindowStart: '10:00',
+      callWindowEnd: '22:00',
+      quietHoursStart: '23:00',
+      quietHoursEnd: '09:00',
+      cooldownMinutes: 60,
+      maxCallsPerDay: 5,
+      maxCallsPerHour: 2,
+      digestEnabled: false,
+    },
+  });
+
+  log('  ShadowProactiveConfig: 2 created');
+
+  // --- ShadowEntityProfile for all 3 entities ---
+  const medlinkProfile = await prisma.shadowEntityProfile.upsert({
+    where: { entityId: medlink.id },
+    update: {},
+    create: {
+      entityId: medlink.id,
+      voicePersona: 'professional-healthcare',
+      tone: 'professional-empathetic',
+      signature: 'MedLink Pro - Your Healthcare Partner',
+      greeting: 'Hello, this is Shadow calling on behalf of MedLink Pro.',
+      disclaimers: ['This call may be recorded for quality assurance.', 'HIPAA-compliant communication protocols are in effect.'],
+      allowedDisclosures: ['appointment_details', 'general_availability', 'public_contact_info'],
+      neverDisclose: ['patient_records', 'diagnosis_info', 'billing_details', 'ssn'],
+      complianceProfiles: ['HIPAA', 'GDPR'],
+      vipContacts: [],
+      proactiveEnabled: true,
+      financialPinThreshold: 250,
+      blastRadiusPinThreshold: 'external',
+    },
+  });
+
+  const creForgeProfile = await prisma.shadowEntityProfile.upsert({
+    where: { entityId: creForge.id },
+    update: {},
+    create: {
+      entityId: creForge.id,
+      voicePersona: 'confident-business',
+      tone: 'confident-friendly',
+      signature: 'CRE Forge - Commercial Real Estate',
+      greeting: 'Hi, this is Shadow calling from CRE Forge.',
+      disclaimers: ['This call may be recorded for quality and training purposes.'],
+      allowedDisclosures: ['property_listings', 'market_data', 'appointment_availability'],
+      neverDisclose: ['financial_terms', 'tenant_details', 'internal_valuations'],
+      complianceProfiles: ['REAL_ESTATE', 'SOX'],
+      vipContacts: [],
+      proactiveEnabled: true,
+      financialPinThreshold: 500,
+      blastRadiusPinThreshold: 'external',
+    },
+  });
+
+  const personalProfile = await prisma.shadowEntityProfile.upsert({
+    where: { entityId: personal.id },
+    update: {},
+    create: {
+      entityId: personal.id,
+      voicePersona: 'casual-assistant',
+      tone: 'warm-casual',
+      greeting: 'Hey, this is Shadow.',
+      disclaimers: [],
+      allowedDisclosures: [],
+      neverDisclose: [],
+      complianceProfiles: ['GENERAL'],
+      vipContacts: [],
+      proactiveEnabled: true,
+      financialPinThreshold: 500,
+      blastRadiusPinThreshold: 'external',
+    },
+  });
+
+  log('  ShadowEntityProfile: 3 created');
+
+  // --- ShadowRetentionConfig for all 3 entities ---
+  const medlinkRetention = await prisma.shadowRetentionConfig.upsert({
+    where: { entityId: medlink.id },
+    update: {},
+    create: {
+      entityId: medlink.id,
+      storeRecordings: true,
+      storeTranscripts: true,
+      storeMessages: true,
+      recordingRetentionDays: 365,
+      transcriptRetentionDays: 2555,
+      messageRetentionDays: 2555,
+      consentRetentionDays: 2555,
+      noRecordingMode: false,
+      ephemeralMode: false,
+    },
+  });
+
+  const creForgeRetention = await prisma.shadowRetentionConfig.upsert({
+    where: { entityId: creForge.id },
+    update: {},
+    create: {
+      entityId: creForge.id,
+      storeRecordings: true,
+      storeTranscripts: true,
+      storeMessages: true,
+      recordingRetentionDays: 180,
+      transcriptRetentionDays: 365,
+      messageRetentionDays: 365,
+      consentRetentionDays: 2555,
+      noRecordingMode: false,
+      ephemeralMode: false,
+    },
+  });
+
+  const personalRetention = await prisma.shadowRetentionConfig.upsert({
+    where: { entityId: personal.id },
+    update: {},
+    create: {
+      entityId: personal.id,
+      storeRecordings: false,
+      storeTranscripts: true,
+      storeMessages: true,
+      recordingRetentionDays: 30,
+      transcriptRetentionDays: 90,
+      messageRetentionDays: 90,
+      consentRetentionDays: 365,
+      noRecordingMode: true,
+      ephemeralMode: false,
+    },
+  });
+
+  log('  ShadowRetentionConfig: 3 created');
+
+  // --- ShadowTrustedDevice entries ---
+  const trustedDevices = await Promise.all([
+    prisma.shadowTrustedDevice.create({
+      data: {
+        userId: marcus.id,
+        deviceType: 'mobile',
+        deviceFingerprint: 'fp_iphone15pro_marcus_001',
+        phoneNumber: '+15559990001',
+        name: "Marcus's iPhone 15 Pro",
+        isActive: true,
+      },
+    }),
+    prisma.shadowTrustedDevice.create({
+      data: {
+        userId: marcus.id,
+        deviceType: 'desktop',
+        deviceFingerprint: 'fp_macbookpro_marcus_001',
+        name: "Marcus's MacBook Pro",
+        isActive: true,
+      },
+    }),
+    prisma.shadowTrustedDevice.create({
+      data: {
+        userId: sarah.id,
+        deviceType: 'mobile',
+        deviceFingerprint: 'fp_pixel8_sarah_001',
+        phoneNumber: '+15559990002',
+        name: "Sarah's Pixel 8",
+        isActive: true,
+      },
+    }),
+  ]);
+
+  log(`  ShadowTrustedDevice: ${trustedDevices.length} created`);
+
+  // --- VoiceforgeCallPlaybook entries ---
+  const callPlaybooks = await Promise.all([
+    prisma.voiceforgeCallPlaybook.create({
+      data: {
+        name: 'Appointment Confirmation',
+        entityId: medlink.id,
+        scenario: 'Confirm upcoming appointments with patients or providers',
+        openingScript: 'Hello, this is Shadow calling on behalf of MedLink Pro. I am calling to confirm your upcoming appointment.',
+        dataAllowed: ['appointment_date', 'appointment_time', 'provider_name', 'location'],
+        neverDisclose: ['diagnosis', 'treatment_details', 'billing_info'],
+        escalationTriggers: ['patient_distress', 'medical_emergency', 'complaint'],
+        escalationAction: 'transfer_to_human',
+        maxDuration: 180,
+        outcomeFields: ['confirmed', 'rescheduled', 'cancelled', 'no_answer'],
+      },
+    }),
+    prisma.voiceforgeCallPlaybook.create({
+      data: {
+        name: 'Property Showing Follow-Up',
+        entityId: creForge.id,
+        scenario: 'Follow up with prospects after a property showing',
+        openingScript: 'Hi, this is Shadow calling from CRE Forge. I wanted to follow up on your recent property viewing.',
+        dataAllowed: ['property_address', 'listing_price', 'showing_date', 'agent_name'],
+        neverDisclose: ['seller_motivation', 'other_offers', 'internal_valuation'],
+        escalationTriggers: ['serious_buyer_interest', 'legal_question', 'complaint'],
+        escalationAction: 'transfer_to_agent',
+        maxDuration: 300,
+        outcomeFields: ['interested', 'not_interested', 'wants_callback', 'made_offer'],
+      },
+    }),
+    prisma.voiceforgeCallPlaybook.create({
+      data: {
+        name: 'Vendor Payment Reminder',
+        entityId: creForge.id,
+        scenario: 'Remind vendors about upcoming or overdue invoices',
+        openingScript: 'Hello, this is Shadow calling from CRE Forge regarding an outstanding invoice.',
+        dataAllowed: ['invoice_number', 'amount_due', 'due_date'],
+        neverDisclose: ['internal_budget', 'other_vendor_rates', 'project_financials'],
+        escalationTriggers: ['dispute', 'payment_plan_request', 'legal_threat'],
+        escalationAction: 'transfer_to_accounts',
+        maxDuration: 240,
+        outcomeFields: ['payment_confirmed', 'dispute_raised', 'payment_plan', 'no_answer'],
+      },
+    }),
+  ]);
+
+  log(`  VoiceforgeCallPlaybook: ${callPlaybooks.length} created`);
+
+  // --- VoiceforgeConsentConfig entries ---
+  const consentConfigs = await Promise.all([
+    prisma.voiceforgeConsentConfig.create({
+      data: {
+        entityId: medlink.id,
+        jurisdiction: 'US-TX',
+        consentType: 'one_party',
+        consentScript: 'This call may be recorded for quality assurance and compliance purposes. By continuing, you consent to recording.',
+        perContactTypeToggles: { patient: true, provider: true, vendor: true, insurance: true },
+        storageToggles: { recording: true, transcript: true, summary: true },
+        autoDeleteAfterDays: 2555,
+        redactionToggles: { ssn: true, dob: true, medical_record_number: true },
+      },
+    }),
+    prisma.voiceforgeConsentConfig.create({
+      data: {
+        entityId: creForge.id,
+        jurisdiction: 'US-TX',
+        consentType: 'one_party',
+        consentScript: 'This call may be recorded for quality and training purposes.',
+        perContactTypeToggles: { client: true, vendor: true, prospect: true },
+        storageToggles: { recording: true, transcript: true, summary: true },
+        autoDeleteAfterDays: 365,
+        redactionToggles: { ssn: true, bank_account: true },
+      },
+    }),
+  ]);
+
+  log(`  VoiceforgeConsentConfig: ${consentConfigs.length} created`);
+
+  // --- ShadowPreference entries ---
+  const shadowPreferences = await Promise.all([
+    prisma.shadowPreference.create({
+      data: {
+        userId: marcus.id,
+        preferenceKey: 'voice_speed',
+        preferenceValue: '1.1',
+        learnedFrom: 'explicit',
+        confidence: 1.0,
+      },
+    }),
+    prisma.shadowPreference.create({
+      data: {
+        userId: marcus.id,
+        preferenceKey: 'summary_length',
+        preferenceValue: 'concise',
+        learnedFrom: 'explicit',
+        confidence: 1.0,
+      },
+    }),
+    prisma.shadowPreference.create({
+      data: {
+        userId: marcus.id,
+        preferenceKey: 'notification_channel',
+        preferenceValue: 'sms',
+        learnedFrom: 'observed',
+        confidence: 0.85,
+      },
+    }),
+    prisma.shadowPreference.create({
+      data: {
+        userId: sarah.id,
+        preferenceKey: 'voice_speed',
+        preferenceValue: '1.0',
+        learnedFrom: 'explicit',
+        confidence: 1.0,
+      },
+    }),
+    prisma.shadowPreference.create({
+      data: {
+        userId: sarah.id,
+        preferenceKey: 'summary_length',
+        preferenceValue: 'detailed',
+        learnedFrom: 'explicit',
+        confidence: 1.0,
+      },
+    }),
+  ]);
+
+  log(`  ShadowPreference: ${shadowPreferences.length} created`);
+
+  // --- ShadowTrigger entries ---
+  const shadowTriggers = await Promise.all([
+    prisma.shadowTrigger.create({
+      data: {
+        userId: marcus.id,
+        triggerName: 'VIP Message Alert',
+        triggerType: 'message_received',
+        conditions: { contactTags: ['VIP'], triageScoreMin: 8 },
+        action: { type: 'notify', channel: 'sms', template: 'vip_message_alert' },
+        enabled: true,
+        cooldownMinutes: 15,
+      },
+    }),
+    prisma.shadowTrigger.create({
+      data: {
+        userId: marcus.id,
+        triggerName: 'Overdue Task Escalation',
+        triggerType: 'task_overdue',
+        conditions: { overdueDays: 2, priorityMin: 'P1' },
+        action: { type: 'call', template: 'overdue_task_reminder', maxRetries: 2 },
+        enabled: true,
+        cooldownMinutes: 120,
+      },
+    }),
+    prisma.shadowTrigger.create({
+      data: {
+        userId: marcus.id,
+        triggerName: 'Financial Threshold Alert',
+        triggerType: 'financial_event',
+        conditions: { amountMin: 5000, types: ['INVOICE', 'PAYMENT'] },
+        action: { type: 'notify', channel: 'in_app', template: 'financial_alert' },
+        enabled: true,
+        cooldownMinutes: 60,
+      },
+    }),
+    prisma.shadowTrigger.create({
+      data: {
+        userId: sarah.id,
+        triggerName: 'Calendar Conflict Alert',
+        triggerType: 'calendar_conflict',
+        conditions: { windowMinutes: 30 },
+        action: { type: 'notify', channel: 'in_app', template: 'calendar_conflict' },
+        enabled: true,
+        cooldownMinutes: 30,
+      },
+    }),
+  ]);
+
+  log(`  ShadowTrigger: ${shadowTriggers.length} created`);
+
+  log('Shadow Voice Agent seeding complete.');
+
+  // =========================================================================
   // Summary
   // =========================================================================
   console.log('\n✅ Seed complete! Summary:');
@@ -1581,6 +2019,16 @@ async function main() {
   console.log(`   Notifications:     ${createdNotifications.length}`);
   console.log(`   Voice Personas:    ${createdVoicePersonas.length}`);
   console.log(`   Runbooks:          ${createdRunbooks.length}`);
+  console.log('   --- Shadow Voice Agent ---');
+  console.log(`   Safety Configs:    ${2}`);
+  console.log(`   Proactive Configs: ${2}`);
+  console.log(`   Entity Profiles:   ${3}`);
+  console.log(`   Retention Configs: ${3}`);
+  console.log(`   Trusted Devices:   ${trustedDevices.length}`);
+  console.log(`   Call Playbooks:    ${callPlaybooks.length}`);
+  console.log(`   Consent Configs:   ${consentConfigs.length}`);
+  console.log(`   Preferences:       ${shadowPreferences.length}`);
+  console.log(`   Triggers:          ${shadowTriggers.length}`);
 }
 
 // ---------------------------------------------------------------------------
