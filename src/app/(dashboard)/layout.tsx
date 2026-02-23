@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, useCallback } from 'react';
 import { Sidebar, Header, Breadcrumbs } from '@/components/navigation';
+import { ShadowAssistant } from '@/components/shadow';
 
 export default function DashboardLayout({
   children,
@@ -76,6 +77,9 @@ export default function DashboardLayout({
           {children}
         </main>
       </div>
+
+      {/* Shadow Voice Assistant - persists across page navigation */}
+      <ShadowAssistant />
     </div>
   );
 }
