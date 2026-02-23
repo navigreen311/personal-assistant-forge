@@ -436,7 +436,7 @@ export function Sidebar({
                 className="w-full flex items-center justify-between gap-1 rounded px-1.5 py-1 text-gray-300 hover:bg-gray-800 transition-colors"
               >
                 <span className="truncate text-sm font-medium">
-                  {activeEntity?.name ?? session.user.activeEntityId}
+                  {activeEntity?.name ?? (entities.length > 0 ? 'Unknown Entity' : 'Loading...')}
                 </span>
                 <svg
                   width={12}

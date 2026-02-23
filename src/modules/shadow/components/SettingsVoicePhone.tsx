@@ -1,11 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import TrustedDevicesList, { TrustedDevice } from './TrustedDevicesList';
+import AudioQualitySettings from './AudioQualitySettings';
 
 export interface VoicePhoneSettings {
   voicePersona: string;
   speechSpeed: number;
   language: string;
+  secondaryLanguage: string;
   shadowPhoneNumber: string;
   userPhoneNumbers: string[];
   inboundCalls: boolean;
@@ -13,12 +16,20 @@ export interface VoicePhoneSettings {
   voicemail: boolean;
   autoRecording: boolean;
   autoTranscribe: boolean;
+  carplayBluetooth: boolean;
+  smsCompanion: boolean;
+  callSummary: boolean;
+  noiseCancellation: boolean;
+  echoSuppression: boolean;
+  autoSwitchOnPoorConnection: boolean;
+  vadSensitivity: string;
 }
 
 const DEFAULT_VOICE_PHONE: VoicePhoneSettings = {
   voicePersona: 'default',
   speechSpeed: 1.0,
-  language: 'en',
+  language: 'en-US',
+  secondaryLanguage: '',
   shadowPhoneNumber: '+1 (555) 0100-SHADOW',
   userPhoneNumbers: [],
   inboundCalls: true,
@@ -26,7 +37,35 @@ const DEFAULT_VOICE_PHONE: VoicePhoneSettings = {
   voicemail: true,
   autoRecording: false,
   autoTranscribe: true,
+  carplayBluetooth: false,
+  smsCompanion: true,
+  callSummary: true,
+  noiseCancellation: true,
+  echoSuppression: true,
+  autoSwitchOnPoorConnection: true,
+  vadSensitivity: 'normal',
 };
+
+const VOICE_PERSONA_OPTIONS = [
+  { value: 'default', label: 'Default (current voice)' },
+  { value: 'professional-male', label: 'Professional Male' },
+  { value: 'professional-female', label: 'Professional Female' },
+  { value: 'warm-male', label: 'Warm Male' },
+  { value: 'warm-female', label: 'Warm Female' },
+  { value: 'authoritative', label: 'Authoritative' },
+  { value: 'calm', label: 'Calm & Reassuring' },
+  { value: 'custom', label: 'Custom...' },
+];
+
+const LANGUAGE_OPTIONS = [
+  { value: 'en-US', label: 'English (US)' },
+  { value: 'en-GB', label: 'English (UK)' },
+  { value: 'en-AU', label: 'English (Australian)' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'es-MX', label: 'Spanish (Mexico)' },
+  { value: 'fr', label: 'French' },
+  { value: 'de', label: 'German' },
+];
 
 interface SettingsVoicePhoneProps {
   initialData?: Partial<VoicePhoneSettings>;
@@ -38,16 +77,48 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
     ...DEFAULT_VOICE_PHONE,
     ...initialData,
   });
-  const [newPhoneNumber, setNewPhoneNumber] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [testingVoice, setTestingVoice] = useState(false);
+  const [previewingPersona, setPreviewingPersona] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // Trusted devices state (converted from userPhoneNumbers)
+  const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>(() => {
+    const phones = initialData?.userPhoneNumbers ?? DEFAULT_VOICE_PHONE.userPhoneNumbers;
+    return phones.map((phone, i) => ({
+      id: `device-${i}-${Date.now()}`,
+      phoneNumber: phone,
+      label: 'Mobile',
+      isPrimary: i === 0,
+      dateAdded: new Date().toLocaleDateString(),
+    }));
+  });
 
   useEffect(() => {
     if (initialData) {
       setSettings((prev) => ({ ...prev, ...initialData }));
+      if (initialData.userPhoneNumbers) {
+        setTrustedDevices(
+          initialData.userPhoneNumbers.map((phone, i) => ({
+            id: `device-${i}-${Date.now()}`,
+            phoneNumber: phone,
+            label: 'Mobile',
+            isPrimary: i === 0,
+            dateAdded: new Date().toLocaleDateString(),
+          }))
+        );
+      }
     }
   }, [initialData]);
+
+  // Keep userPhoneNumbers in sync with trusted devices
+  useEffect(() => {
+    setSettings((prev) => ({
+      ...prev,
+      userPhoneNumbers: trustedDevices.map((d) => d.phoneNumber),
+    }));
+  }, [trustedDevices]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -61,30 +132,90 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
     }
   };
 
-  const handleAddPhoneNumber = () => {
-    const trimmed = newPhoneNumber.trim();
-    if (trimmed && !settings.userPhoneNumbers.includes(trimmed)) {
-      setSettings({
-        ...settings,
-        userPhoneNumbers: [...settings.userPhoneNumbers, trimmed],
-      });
-      setNewPhoneNumber('');
-    }
-  };
-
-  const handleRemovePhoneNumber = (index: number) => {
-    setSettings({
-      ...settings,
-      userPhoneNumbers: settings.userPhoneNumbers.filter((_, i) => i !== index),
-    });
-  };
-
   const handleTestVoice = () => {
     setTestingVoice(true);
-    // Simulate voice test with a short delay
     setTimeout(() => {
       setTestingVoice(false);
     }, 2000);
+  };
+
+  const handlePreviewPersona = () => {
+    setPreviewingPersona(true);
+    setTimeout(() => {
+      setPreviewingPersona(false);
+    }, 2000);
+  };
+
+  const handleCopyNumber = async () => {
+    try {
+      await navigator.clipboard.writeText(settings.shadowPhoneNumber);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = settings.shadowPhoneNumber;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleDownloadVCard = () => {
+    const vcard = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Shadow (PAF)',
+      'N:Shadow;(PAF);;;',
+      `TEL;TYPE=VOICE:${settings.shadowPhoneNumber}`,
+      'NOTE:Shadow Personal Assistant - PersonalAssistantForge',
+      'END:VCARD',
+    ].join('\n');
+
+    const blob = new Blob([vcard], { type: 'text/vcard;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'Shadow-PAF.vcf';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAddDevice = (device: Omit<TrustedDevice, 'id' | 'dateAdded'>) => {
+    const newDevice: TrustedDevice = {
+      ...device,
+      id: `device-${Date.now()}`,
+      dateAdded: new Date().toLocaleDateString(),
+    };
+    // If the new device is primary, unset others
+    if (device.isPrimary) {
+      setTrustedDevices((prev) => [
+        ...prev.map((d) => ({ ...d, isPrimary: false })),
+        newDevice,
+      ]);
+    } else {
+      setTrustedDevices((prev) => [...prev, newDevice]);
+    }
+  };
+
+  const handleRemoveDevice = (id: string) => {
+    setTrustedDevices((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  const handleEditDevice = (id: string, updates: Partial<TrustedDevice>) => {
+    setTrustedDevices((prev) => {
+      let updated = prev.map((d) => (d.id === id ? { ...d, ...updates } : d));
+      // If setting a new primary, unset others
+      if (updates.isPrimary) {
+        updated = updated.map((d) => (d.id === id ? d : { ...d, isPrimary: false }));
+      }
+      return updated;
+    });
   };
 
   return (
@@ -101,18 +232,44 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
               Choose the voice style for Shadow&apos;s spoken responses.
             </p>
-            <select
-              value={settings.voicePersona}
-              onChange={(e) => setSettings({ ...settings, voicePersona: e.target.value })}
-              className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-            >
-              <option value="default">Default</option>
-              <option value="professional">Professional</option>
-              <option value="warm">Warm</option>
-              <option value="energetic">Energetic</option>
-              <option value="calm">Calm</option>
-              <option value="authoritative">Authoritative</option>
-            </select>
+            <div className="flex items-center gap-2">
+              <select
+                value={settings.voicePersona}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === 'custom') {
+                    // Navigate to VoiceForge persona builder
+                    window.location.href = '/voiceforge';
+                    return;
+                  }
+                  setSettings({ ...settings, voicePersona: value });
+                }}
+                className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              >
+                {VOICE_PERSONA_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {settings.voicePersona !== 'custom' && (
+                <button
+                  onClick={handlePreviewPersona}
+                  disabled={previewingPersona}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                  {previewingPersona ? 'Playing...' : 'Preview'}
+                </button>
+              )}
+            </div>
+            {settings.voicePersona && settings.voicePersona !== 'custom' && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                This persona will be used for all voice interactions and phone calls. Entity profiles can override this.
+              </p>
+            )}
           </div>
 
           {/* Speech Speed */}
@@ -141,7 +298,7 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
             </p>
           </div>
 
-          {/* Language */}
+          {/* Primary Language */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Language
@@ -154,10 +311,33 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
               onChange={(e) => setSettings({ ...settings, language: e.target.value })}
               className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             >
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Secondary Language */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Secondary Language
+            </label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Shadow can understand both languages. Responds in whichever you speak.
+            </p>
+            <select
+              value={settings.secondaryLanguage}
+              onChange={(e) => setSettings({ ...settings, secondaryLanguage: e.target.value })}
+              className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            >
+              <option value="">None</option>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -194,58 +374,55 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
               The number Shadow uses for calls and SMS.
             </p>
-            <div className="inline-flex items-center px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md">
-              <span className="text-sm font-mono text-gray-900 dark:text-white">
-                {settings.shadowPhoneNumber}
-              </span>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md">
+                <span className="text-sm font-mono text-gray-900 dark:text-white">
+                  {settings.shadowPhoneNumber}
+                </span>
+              </div>
+              <button
+                onClick={handleCopyNumber}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                {copied ? (
+                  <>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    Copy
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handleDownloadVCard}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="8.5" cy="7" r="4" />
+                  <line x1="20" y1="8" x2="20" y2="14" />
+                  <line x1="23" y1="11" x2="17" y2="11" />
+                </svg>
+                Add to contacts
+              </button>
             </div>
           </div>
 
-          {/* Your Phone Numbers */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Your Phone Numbers
-            </label>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-              Numbers that Shadow can call you on or accept calls from.
-            </p>
-            <div className="space-y-2">
-              {settings.userPhoneNumbers.map((phone, index) => (
-                <div key={index} className="inline-flex items-center gap-2 mr-2">
-                  <span className="inline-flex items-center px-3 py-1.5 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-sm font-mono text-gray-900 dark:text-white">
-                    {phone}
-                    <button
-                      onClick={() => handleRemovePhoneNumber(index)}
-                      className="ml-2 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
-                      aria-label={`Remove ${phone}`}
-                    >
-                      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  </span>
-                </div>
-              ))}
-              <div className="flex items-center gap-2 max-w-sm">
-                <input
-                  type="tel"
-                  value={newPhoneNumber}
-                  onChange={(e) => setNewPhoneNumber(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddPhoneNumber()}
-                  className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                  placeholder="+1 (555) 123-4567"
-                />
-                <button
-                  onClick={handleAddPhoneNumber}
-                  disabled={!newPhoneNumber.trim()}
-                  className="px-3 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-600 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  + Add
-                </button>
-              </div>
-            </div>
-          </div>
+          {/* Trusted Devices (replaces simple phone number list) */}
+          <TrustedDevicesList
+            devices={trustedDevices}
+            onAdd={handleAddDevice}
+            onRemove={handleRemoveDevice}
+            onEdit={handleEditDevice}
+          />
         </div>
       </div>
 
@@ -347,8 +524,74 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
               <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
             </label>
           </div>
+
+          {/* CarPlay / Bluetooth */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">CarPlay / Bluetooth</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Enable hands-free Shadow calls via CarPlay, Android Auto, or Bluetooth devices.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.carplayBluetooth}
+                onChange={(e) => setSettings({ ...settings, carplayBluetooth: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
+            </label>
+          </div>
+
+          {/* SMS Companion */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">SMS Companion</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Send supporting SMS during phone calls (links, confirmations, summaries).
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.smsCompanion}
+                onChange={(e) => setSettings({ ...settings, smsCompanion: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
+            </label>
+          </div>
+
+          {/* Call Summary */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Call Summary</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Automatically send SMS summary after each phone call ends.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.callSummary}
+                onChange={(e) => setSettings({ ...settings, callSummary: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
+            </label>
+          </div>
         </div>
       </div>
+
+      {/* Audio Quality */}
+      <AudioQualitySettings
+        noiseCancellation={settings.noiseCancellation}
+        echoSuppression={settings.echoSuppression}
+        autoSwitchOnPoorConnection={settings.autoSwitchOnPoorConnection}
+        vadSensitivity={settings.vadSensitivity}
+        onChange={(updates) => setSettings((prev) => ({ ...prev, ...updates }))}
+      />
 
       {/* Save Button */}
       <div className="flex items-center gap-3">

@@ -11,6 +11,7 @@ interface HeaderProps {
 export function Header({ onMenuToggle }: HeaderProps) {
   const { data: session } = useSession();
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchValue, setSearchValue] = useState('');
   const [quickActionsOpen, setQuickActionsOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const quickActionsRef = useRef<HTMLDivElement>(null);
@@ -100,6 +101,10 @@ export function Header({ onMenuToggle }: HeaderProps) {
           <input
             type="text"
             placeholder="Search across all modules..."
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            autoComplete="off"
+            name="paf-search"
             className={`w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
               searchFocused ? 'bg-white' : 'bg-gray-50'
             }`}
