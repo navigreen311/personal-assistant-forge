@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 
 export interface GeneralSettings {
   name: string;
   tone: string;
+  customTone: string;
   verbosity: number;
   proactivityLevel: number;
   floatingBubble: boolean;
@@ -12,13 +14,18 @@ export interface GeneralSettings {
   autoSpeakResponses: boolean;
   wakeWordEnabled: boolean;
   wakeWord: string;
+  useCustomWakeWord: boolean;
   keyboardShortcut: string;
   sidekickMode: boolean;
+  sidekickAutoActivate: boolean;
+  sidekickObservationFrequency: string;
+  sidekickNotificationThreshold: string;
 }
 
 const DEFAULT_GENERAL: GeneralSettings = {
   name: 'Shadow',
   tone: 'professional-friendly',
+  customTone: '',
   verbosity: 3,
   proactivityLevel: 3,
   floatingBubble: true,
@@ -26,14 +33,43 @@ const DEFAULT_GENERAL: GeneralSettings = {
   autoSpeakResponses: false,
   wakeWordEnabled: false,
   wakeWord: 'Hey Shadow',
+  useCustomWakeWord: false,
   keyboardShortcut: 'Ctrl+Shift+S',
   sidekickMode: false,
+  sidekickAutoActivate: true,
+  sidekickObservationFrequency: 'normal',
+  sidekickNotificationThreshold: 'p0-only',
 };
 
 interface SettingsGeneralProps {
   initialData?: Partial<GeneralSettings>;
   onSave: (data: GeneralSettings) => Promise<void>;
 }
+
+const VERBOSITY_DESCRIPTIONS: Record<number, { name: string; description: string }> = {
+  1: { name: 'Minimal', description: 'Short, direct answers. No explanations unless asked.' },
+  2: { name: 'Concise', description: 'Brief answers with key context. 1-2 sentences.' },
+  3: { name: 'Balanced', description: 'Clear answers with relevant background. Default.' },
+  4: { name: 'Detailed', description: 'Thorough responses with reasoning and alternatives.' },
+  5: { name: 'Comprehensive', description: 'Full analysis, citations, and recommendations.' },
+};
+
+const PROACTIVITY_DESCRIPTIONS: Record<number, { name: string; description: string }> = {
+  1: { name: 'Silent', description: 'Only responds when addressed. No suggestions.' },
+  2: { name: 'Reactive', description: 'Responds to requests. Rare suggestions for critical items only.' },
+  3: { name: 'Balanced', description: 'Occasional suggestions. Morning briefing. P0 alerts. Default.' },
+  4: { name: 'Proactive', description: 'Regular suggestions. Pattern-based coaching. Calls for urgent items.' },
+  5: { name: 'Full Assistant', description: 'Constant awareness. Calls proactively. Daily briefings. Coaching tips throughout day.' },
+};
+
+const TONE_OPTIONS: { value: string; label: string; description: string }[] = [
+  { value: 'professional-friendly', label: 'Professional-Friendly', description: 'Warm but businesslike. Clear and direct with a human touch.' },
+  { value: 'professional-formal', label: 'Professional-Formal', description: 'Corporate tone. No contractions. Precise language.' },
+  { value: 'casual', label: 'Casual', description: 'Relaxed and conversational. Like talking to a friend.' },
+  { value: 'direct', label: 'Direct', description: 'Minimal pleasantries. Straight to the point.' },
+  { value: 'warm', label: 'Warm', description: 'Empathetic and supportive. Extra encouragement.' },
+  { value: 'custom', label: 'Custom', description: 'Use your own custom tone description.' },
+];
 
 export default function SettingsGeneral({ initialData, onSave }: SettingsGeneralProps) {
   const [settings, setSettings] = useState<GeneralSettings>({
@@ -42,6 +78,8 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [wakeWordTesting, setWakeWordTesting] = useState(false);
+  const [wakeWordTestSeconds, setWakeWordTestSeconds] = useState(0);
 
   useEffect(() => {
     if (initialData) {
@@ -61,11 +99,51 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
     }
   };
 
-  const verbosityLabels = ['', 'Concise', 'Brief', 'Balanced', 'Detailed', 'Verbose'];
-  const proactivityLabels = ['', 'Reactive', 'Mostly Reactive', 'Balanced', 'Mostly Proactive', 'Proactive'];
+  const handleTestWakeWord = () => {
+    setWakeWordTesting(true);
+    setWakeWordTestSeconds(3);
+    const interval = setInterval(() => {
+      setWakeWordTestSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setWakeWordTesting(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const currentToneOption = TONE_OPTIONS.find((t) => t.value === settings.tone);
 
   return (
     <div className="space-y-6">
+      {/* Entity-Specific Override Notice */}
+      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-start gap-3">
+        <svg
+          className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0"
+          fill="currentColor"
+          viewBox="0 0 20 20"
+        >
+          <path
+            fillRule="evenodd"
+            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+            clipRule="evenodd"
+          />
+        </svg>
+        <div>
+          <p className="text-sm text-blue-800 dark:text-blue-300">
+            These are your global Shadow settings. Individual entities can override tone, voice, and proactivity in their entity profile.{' '}
+            <Link
+              href="/entities"
+              className="font-medium underline hover:text-blue-900 dark:hover:text-blue-200"
+            >
+              Manage entity profiles
+            </Link>
+          </p>
+        </div>
+      </div>
+
       {/* Assistant Name */}
       <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">Identity</h3>
@@ -99,11 +177,31 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
               onChange={(e) => setSettings({ ...settings, tone: e.target.value })}
               className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
             >
-              <option value="professional">Professional</option>
-              <option value="friendly">Friendly</option>
-              <option value="professional-friendly">Professional-Friendly</option>
-              <option value="casual">Casual</option>
+              {TONE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
+            {currentToneOption && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                {currentToneOption.description}
+              </p>
+            )}
+            {settings.tone === 'custom' && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Custom Tone Description
+                </label>
+                <textarea
+                  value={settings.customTone}
+                  onChange={(e) => setSettings({ ...settings, customTone: e.target.value })}
+                  rows={3}
+                  className="w-full max-w-md px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none"
+                  placeholder="Describe how you'd like Shadow to communicate..."
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -134,7 +232,10 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
               <span className="text-xs text-gray-500 dark:text-gray-400 w-16 text-right">Detailed</span>
             </div>
             <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-              Level {settings.verbosity}: {verbosityLabels[settings.verbosity]}
+              Level {settings.verbosity}: {VERBOSITY_DESCRIPTIONS[settings.verbosity]?.name}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              {VERBOSITY_DESCRIPTIONS[settings.verbosity]?.description}
             </p>
           </div>
 
@@ -160,7 +261,10 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
               <span className="text-xs text-gray-500 dark:text-gray-400 w-16 text-right">Proactive</span>
             </div>
             <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-              Level {settings.proactivityLevel}: {proactivityLabels[settings.proactivityLevel]}
+              Level {settings.proactivityLevel}: {PROACTIVITY_DESCRIPTIONS[settings.proactivityLevel]?.name}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              {PROACTIVITY_DESCRIPTIONS[settings.proactivityLevel]?.description}
             </p>
           </div>
         </div>
@@ -259,14 +363,43 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
             </label>
           </div>
           {settings.wakeWordEnabled && (
-            <div className="ml-4">
-              <input
-                type="text"
-                value={settings.wakeWord}
-                onChange={(e) => setSettings({ ...settings, wakeWord: e.target.value })}
-                className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                placeholder="Hey Shadow"
-              />
+            <div className="ml-4 space-y-3">
+              <div>
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Default phrase: <span className="font-semibold">&quot;Hey Shadow&quot;</span>
+                </p>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.useCustomWakeWord}
+                  onChange={(e) => setSettings({ ...settings, useCustomWakeWord: e.target.checked })}
+                  className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:bg-gray-700 dark:border-gray-600"
+                />
+                <span className="text-xs text-gray-700 dark:text-gray-300">Use custom wake phrase</span>
+              </label>
+              {settings.useCustomWakeWord && (
+                <input
+                  type="text"
+                  value={settings.wakeWord}
+                  onChange={(e) => setSettings({ ...settings, wakeWord: e.target.value })}
+                  className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  placeholder="Hey Shadow"
+                />
+              )}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Requires microphone permission. Works in browser only.
+              </p>
+              <button
+                type="button"
+                onClick={handleTestWakeWord}
+                disabled={wakeWordTesting}
+                className="px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                {wakeWordTesting
+                  ? `Listening... ${wakeWordTestSeconds}s`
+                  : 'Test wake word'}
+              </button>
             </div>
           )}
 
@@ -301,6 +434,62 @@ export default function SettingsGeneral({ initialData, onSave }: SettingsGeneral
               <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
             </label>
           </div>
+          {settings.sidekickMode && (
+            <div className="ml-4 space-y-4 pt-1">
+              {/* Auto-activate during focus blocks */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Auto-activate during focus blocks</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Automatically enter sidekick mode when a focus block is active.
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.sidekickAutoActivate}
+                    onChange={(e) => setSettings({ ...settings, sidekickAutoActivate: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:after:border-gray-500 peer-checked:bg-blue-600" />
+                </label>
+              </div>
+
+              {/* Observation Frequency */}
+              <div>
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Observation Frequency</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  How often Shadow checks in on your workflow.
+                </p>
+                <select
+                  value={settings.sidekickObservationFrequency}
+                  onChange={(e) => setSettings({ ...settings, sidekickObservationFrequency: e.target.value })}
+                  className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                >
+                  <option value="frequent">Frequent</option>
+                  <option value="normal">Normal</option>
+                  <option value="rare">Rare</option>
+                </select>
+              </div>
+
+              {/* Notification Threshold */}
+              <div>
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Notification Threshold</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  Which priority levels trigger notifications during sidekick mode.
+                </p>
+                <select
+                  value={settings.sidekickNotificationThreshold}
+                  onChange={(e) => setSettings({ ...settings, sidekickNotificationThreshold: e.target.value })}
+                  className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                >
+                  <option value="p0-only">P0 only</option>
+                  <option value="p0-vip">P0 + VIP</option>
+                  <option value="p0-p1">P0 + P1</option>
+                </select>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

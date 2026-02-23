@@ -11,6 +11,7 @@ import type { AuthSession } from '@/lib/auth/types';
 const DEFAULT_GENERAL = {
   name: 'Shadow',
   tone: 'professional-friendly',
+  customTone: '',
   verbosity: 3,
   proactivityLevel: 3,
   floatingBubble: true,
@@ -18,14 +19,19 @@ const DEFAULT_GENERAL = {
   autoSpeakResponses: false,
   wakeWordEnabled: false,
   wakeWord: 'Hey Shadow',
+  useCustomWakeWord: false,
   keyboardShortcut: 'Ctrl+Shift+S',
   sidekickMode: false,
+  sidekickAutoActivate: true,
+  sidekickObservationFrequency: 'normal',
+  sidekickNotificationThreshold: 'p0_only',
 };
 
 const DEFAULT_VOICE_PHONE = {
   voicePersona: 'default',
   speechSpeed: 1.0,
   language: 'en',
+  secondaryLanguage: '',
   shadowPhoneNumber: '+1 (555) 0100-SHADOW',
   userPhoneNumbers: [],
   inboundCalls: true,
@@ -33,20 +39,55 @@ const DEFAULT_VOICE_PHONE = {
   voicemail: true,
   autoRecording: false,
   autoTranscribe: true,
+  carplayBluetooth: false,
+  smsCompanion: true,
+  callSummary: true,
+  noiseCancellation: true,
+  echoSuppression: true,
+  autoSwitchOnPoorConnection: true,
+  vadSensitivity: 'normal',
 };
 
 // Keys for general and voicePhone that map to ShadowPreference rows
 const GENERAL_PREF_KEYS = [
-  'name', 'tone', 'verbosity', 'proactivityLevel', 'floatingBubble',
+  'name', 'tone', 'customTone', 'verbosity', 'proactivityLevel', 'floatingBubble',
   'defaultInputMode', 'autoSpeakResponses', 'wakeWordEnabled', 'wakeWord',
-  'keyboardShortcut', 'sidekickMode',
+  'useCustomWakeWord', 'keyboardShortcut', 'sidekickMode',
+  'sidekickAutoActivate', 'sidekickObservationFrequency', 'sidekickNotificationThreshold',
 ];
 
 const VOICE_PHONE_PREF_KEYS = [
-  'voicePersona', 'speechSpeed', 'language', 'shadowPhoneNumber',
-  'userPhoneNumbers', 'inboundCalls', 'outboundCalls', 'voicemail',
-  'autoRecording', 'autoTranscribe',
+  'voicePersona', 'speechSpeed', 'language', 'secondaryLanguage',
+  'shadowPhoneNumber', 'userPhoneNumbers', 'inboundCalls', 'outboundCalls',
+  'voicemail', 'autoRecording', 'autoTranscribe',
+  'carplayBluetooth', 'smsCompanion', 'callSummary',
+  'noiseCancellation', 'echoSuppression', 'autoSwitchOnPoorConnection', 'vadSensitivity',
 ];
+
+const PROACTIVE_PREF_KEYS = [
+  'endOfDayEnabled', 'endOfDayTime', 'endOfDayChannel', 'endOfDayContent',
+  'briefingEntityScope', 'briefingLength',
+  'activeDays', 'emergencyOverride',
+  'vipKeywords', 'digestMinItems',
+  'escalationAttempts', 'escalationWaitMinutes', 'escalationFinalFallback', 'phoneTreeContacts',
+];
+
+const DEFAULT_PROACTIVE_PREFS = {
+  endOfDayEnabled: false,
+  endOfDayTime: '17:00',
+  endOfDayChannel: 'in_app',
+  endOfDayContent: [] as string[],
+  briefingEntityScope: 'all',
+  briefingLength: 'standard',
+  activeDays: ['mon', 'tue', 'wed', 'thu', 'fri'] as string[],
+  emergencyOverride: true,
+  vipKeywords: [] as string[],
+  digestMinItems: 3,
+  escalationAttempts: 3,
+  escalationWaitMinutes: 15,
+  escalationFinalFallback: 'sms',
+  phoneTreeContacts: [] as string[],
+};
 
 // ---------------------------------------------------------------------------
 // Helpers: read preferences from ShadowPreference table
@@ -106,13 +147,14 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
     const userId = session.userId;
 
     // Load all config sections in parallel
-    const [generalPrefs, voicePhonePrefs, safetyConfig, proactiveConfig, permissionPrefs] =
+    const [generalPrefs, voicePhonePrefs, safetyConfig, proactiveConfig, permissionPrefs, proactivePrefs] =
       await Promise.all([
         readPreferences(userId, 'general', GENERAL_PREF_KEYS),
         readPreferences(userId, 'voicePhone', VOICE_PHONE_PREF_KEYS),
         prisma.shadowSafetyConfig.findUnique({ where: { userId } }),
         prisma.shadowProactiveConfig.findUnique({ where: { userId } }),
         readPreferences(userId, 'permissions', ['autonomyLevel', 'actions']),
+        readPreferences(userId, 'proactive', PROACTIVE_PREF_KEYS),
       ]);
 
     // Build response
@@ -135,15 +177,21 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
         }
       : undefined;
 
+    // Merge proactive preferences with defaults
+    const mergedProactivePrefs = { ...DEFAULT_PROACTIVE_PREFS, ...proactivePrefs };
+
     const proactive = proactiveConfig
       ? {
           briefingEnabled: proactiveConfig.briefingEnabled,
           briefingTime: proactiveConfig.briefingTime,
           briefingChannel: proactiveConfig.briefingChannel,
           briefingContent: proactiveConfig.briefingContent as string[],
-          endOfDayEnabled: false,
-          endOfDayTime: '17:00',
-          endOfDayChannel: 'in_app',
+          endOfDayEnabled: mergedProactivePrefs.endOfDayEnabled as boolean,
+          endOfDayTime: mergedProactivePrefs.endOfDayTime as string,
+          endOfDayChannel: mergedProactivePrefs.endOfDayChannel as string,
+          endOfDayContent: mergedProactivePrefs.endOfDayContent as string[],
+          briefingEntityScope: mergedProactivePrefs.briefingEntityScope as string,
+          briefingLength: mergedProactivePrefs.briefingLength as string,
           callTriggers: proactiveConfig.callTriggers as Array<{
             name: string;
             label: string;
@@ -161,6 +209,14 @@ async function handleGet(_req: NextRequest, session: AuthSession): Promise<Respo
           vipContacts: proactiveConfig.vipBreakoutContacts as string[],
           digestEnabled: proactiveConfig.digestEnabled,
           digestTime: proactiveConfig.digestTime ?? '18:00',
+          activeDays: mergedProactivePrefs.activeDays as string[],
+          emergencyOverride: mergedProactivePrefs.emergencyOverride as boolean,
+          vipKeywords: mergedProactivePrefs.vipKeywords as string[],
+          digestMinItems: mergedProactivePrefs.digestMinItems as number,
+          escalationAttempts: mergedProactivePrefs.escalationAttempts as number,
+          escalationWaitMinutes: mergedProactivePrefs.escalationWaitMinutes as number,
+          escalationFinalFallback: mergedProactivePrefs.escalationFinalFallback as string,
+          phoneTreeContacts: mergedProactivePrefs.phoneTreeContacts as string[],
         }
       : undefined;
 
@@ -292,13 +348,43 @@ async function handlePut(req: NextRequest, session: AuthSession): Promise<Respon
         },
       });
 
-      // Store end-of-day settings in preferences (not in proactive schema)
+      // Store proactive preference fields (not in proactive schema)
+      const proactivePrefsToWrite: Record<string, unknown> = {};
+      const proactivePrefFields: Array<{ key: string; fallback: unknown }> = [
+        { key: 'endOfDayEnabled', fallback: undefined },
+        { key: 'endOfDayTime', fallback: '17:00' },
+        { key: 'endOfDayChannel', fallback: 'in_app' },
+        { key: 'endOfDayContent', fallback: undefined },
+        { key: 'briefingEntityScope', fallback: undefined },
+        { key: 'briefingLength', fallback: undefined },
+        { key: 'activeDays', fallback: undefined },
+        { key: 'emergencyOverride', fallback: undefined },
+        { key: 'vipKeywords', fallback: undefined },
+        { key: 'digestMinItems', fallback: undefined },
+        { key: 'escalationAttempts', fallback: undefined },
+        { key: 'escalationWaitMinutes', fallback: undefined },
+        { key: 'escalationFinalFallback', fallback: undefined },
+        { key: 'phoneTreeContacts', fallback: undefined },
+      ];
+      for (const { key, fallback } of proactivePrefFields) {
+        if (p[key] !== undefined) {
+          proactivePrefsToWrite[key] = p[key];
+        } else if (fallback !== undefined && proactivePrefsToWrite[key] === undefined) {
+          // Only apply fallback if a related field is being written
+          // (e.g., endOfDayTime defaults when endOfDayEnabled is set)
+        }
+      }
+      // If endOfDayEnabled is set, ensure time/channel have defaults
       if (p.endOfDayEnabled !== undefined) {
-        await writePreferences(userId, 'proactive', {
-          endOfDayEnabled: p.endOfDayEnabled,
-          endOfDayTime: p.endOfDayTime ?? '17:00',
-          endOfDayChannel: p.endOfDayChannel ?? 'in_app',
-        });
+        if (proactivePrefsToWrite.endOfDayTime === undefined) {
+          proactivePrefsToWrite.endOfDayTime = '17:00';
+        }
+        if (proactivePrefsToWrite.endOfDayChannel === undefined) {
+          proactivePrefsToWrite.endOfDayChannel = 'in_app';
+        }
+      }
+      if (Object.keys(proactivePrefsToWrite).length > 0) {
+        await writePreferences(userId, 'proactive', proactivePrefsToWrite);
       }
 
       updates.proactive = body.proactive;

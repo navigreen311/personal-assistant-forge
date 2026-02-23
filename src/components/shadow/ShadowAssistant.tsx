@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { usePathname } from 'next/navigation';
 import { useShadowContext } from '@/hooks/useShadowContext';
 import { ShadowBubble } from './ShadowBubble';
 import { ShadowPanel } from './ShadowPanel';
@@ -13,6 +14,8 @@ export function ShadowAssistant() {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const pathname = usePathname();
+  const isOnSettingsPage = pathname === '/shadow';
 
   const {
     messages,
@@ -107,6 +110,7 @@ export function ShadowAssistant() {
         pendingCount={pendingCount}
         isSidekick={isSidekick}
         isSessionActive={isSessionActive}
+        isOnSettingsPage={isOnSettingsPage}
       />
 
       {/* Chat panel */}
