@@ -23,6 +23,16 @@ async function processWithAgent(params: {
   channel: string;
   entityId?: string;
 }): Promise<AgentResponse> {
+  // Check if Anthropic API key is configured
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || apiKey === 'YOUR_ANTHROPIC_API_KEY_HERE' || apiKey.length < 10) {
+    return {
+      text: `Hey! Shadow here. I received your message: "${params.message}". I'm currently running in offline mode because the AI backend hasn't been configured yet. To enable full AI responses, add a valid ANTHROPIC_API_KEY to your .env.local file.`,
+      contentType: 'text',
+      confidence: 1.0,
+    };
+  }
+
   try {
     const agentModule = await import('@/modules/shadow/agent/core').catch(
       () => null,
@@ -39,8 +49,14 @@ async function processWithAgent(params: {
       });
       return result as AgentResponse;
     }
-  } catch {
-    // Agent module not available — fall through
+  } catch (err) {
+    // Agent module failed — return a helpful message instead of crashing
+    const detail = err instanceof Error ? err.message : 'Unknown error';
+    return {
+      text: `I received your message but encountered an issue processing it: ${detail}. I'll try again next time.`,
+      contentType: 'text',
+      confidence: 0.5,
+    };
   }
 
   return {
