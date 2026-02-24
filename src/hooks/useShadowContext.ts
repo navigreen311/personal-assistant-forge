@@ -261,12 +261,11 @@ export function useShadowContext(): ShadowContext {
       if (json.success && json.data) {
         setSession({
           id: json.data.id,
-          entityId: json.data.entityId,
+          entityId: json.data.entityId ?? json.data.activeEntityId,
           entityName: json.data.entityName,
           startedAt: new Date(json.data.startedAt || Date.now()),
-          status: 'active',
+          status: json.data.status === 'active' ? 'active' : 'active',
         });
-        setMessages([]);
         setPendingCount(0);
 
         // Add welcome message

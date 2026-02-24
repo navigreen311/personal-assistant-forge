@@ -213,26 +213,39 @@ export function Sidebar({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const entityDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fetch entities on mount
+  // Fetch entities on mount (and when session changes)
   useEffect(() => {
     let cancelled = false;
-    async function fetchEntities() {
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    async function fetchEntities(attempt = 0) {
       try {
         const res = await fetch('/api/entities?page=1&pageSize=100');
-        if (!res.ok) return;
+        if (!res.ok) {
+          // Retry once after 2s on failure
+          if (!cancelled && attempt < 1) {
+            retryTimer = setTimeout(() => fetchEntities(attempt + 1), 2000);
+          }
+          return;
+        }
         const json = await res.json();
         if (!cancelled && json.success && Array.isArray(json.data)) {
           setEntities(json.data.map((e: SidebarEntity) => ({ id: e.id, name: e.name, type: e.type })));
         }
       } catch {
-        // Silently fail — entity list is non-critical
+        // Retry once after 2s on network error
+        if (!cancelled && attempt < 1) {
+          retryTimer = setTimeout(() => fetchEntities(attempt + 1), 2000);
+        }
       }
     }
-    if (session?.user?.activeEntityId) {
+    if (session?.user) {
       fetchEntities();
     }
-    return () => { cancelled = true; };
-  }, [session?.user?.activeEntityId]);
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [session?.user]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -436,7 +449,7 @@ export function Sidebar({
                 className="w-full flex items-center justify-between gap-1 rounded px-1.5 py-1 text-gray-300 hover:bg-gray-800 transition-colors"
               >
                 <span className="truncate text-sm font-medium">
-                  {activeEntity?.name ?? (entities.length > 0 ? 'Unknown Entity' : 'Loading...')}
+                  {activeEntity?.name ?? (entities.length > 0 ? 'Select Entity' : 'No Entity')}
                 </span>
                 <svg
                   width={12}
