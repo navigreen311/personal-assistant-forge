@@ -8,7 +8,12 @@ export async function withAuth(
   req: NextRequest,
   handler: (req: NextRequest, session: AuthSession) => Promise<Response>
 ): Promise<Response> {
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  let token;
+  try {
+    token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  } catch {
+    return error('AUTH_ERROR', 'Failed to verify authentication token', 401);
+  }
 
   if (!token?.userId) {
     return error('UNAUTHORIZED', 'Authentication required', 401);
