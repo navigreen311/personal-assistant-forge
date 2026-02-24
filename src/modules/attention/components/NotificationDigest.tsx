@@ -19,7 +19,7 @@ export function NotificationDigest({ bundles }: Props) {
     });
   };
 
-  if (bundles.length === 0) {
+  if (!bundles || bundles.length === 0) {
     return <div style={{ padding: '16px', color: '#6b7280' }}>No notifications</div>;
   }
 

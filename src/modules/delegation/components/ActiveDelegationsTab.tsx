@@ -292,13 +292,36 @@ export default function ActiveDelegationsTab({
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ status: 'active' });
+      const params = new URLSearchParams({ direction: 'delegated_by' });
       if (entityId) params.set('entityId', entityId);
 
       const res = await fetch(`/api/delegation?${params.toString()}`);
       if (!res.ok) throw new Error(`Failed to fetch delegations (${res.status})`);
-      const data = await res.json();
-      setDelegations(data);
+      const json = await res.json();
+      const raw = Array.isArray(json) ? json : (json.data ?? []);
+      // Transform API DelegationTask shape to ActiveDelegation shape
+      const STATUS_MAP: Record<string, DelegationStatus> = {
+        PENDING: 'Not Started',
+        IN_REVIEW: 'Waiting Approval',
+        APPROVED: 'In Progress',
+        REJECTED: 'Blocked',
+        COMPLETED: 'Complete',
+      };
+      const list: ActiveDelegation[] = raw.map((item: any) => ({
+        id: item.id,
+        task: item.taskId ?? item.task ?? 'Untitled Task',
+        assignee: item.delegatedTo ?? item.assignee ?? 'Unknown',
+        entity: item.entityId ?? item.entity ?? '',
+        status: STATUS_MAP[item.status] ?? item.status ?? 'Not Started',
+        dueDate: item.completedAt ?? item.dueDate ?? item.delegatedAt ?? new Date().toISOString(),
+        progress: item.status === 'COMPLETED' ? 100 : item.status === 'APPROVED' ? 50 : item.progress ?? 0,
+        contextPack: item.contextPack ? {
+          summary: item.contextPack.summary ?? '',
+          relevantDocuments: item.contextPack.relevantDocuments ?? [],
+          notes: item.contextPack.notes ?? '',
+        } : undefined,
+      }));
+      setDelegations(list);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -314,7 +337,9 @@ export default function ActiveDelegationsTab({
   async function handleApprove(delegationId: string) {
     try {
       const res = await fetch(`/api/delegation/${delegationId}/approve`, {
-        method: 'PUT',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stepOrder: 1, status: 'APPROVED' }),
       });
       if (!res.ok) throw new Error(`Approval failed (${res.status})`);
       await fetchDelegations();
@@ -330,9 +355,9 @@ export default function ActiveDelegationsTab({
     if (search.trim()) {
       const q = search.toLowerCase();
       const matches =
-        d.task.toLowerCase().includes(q) ||
-        d.assignee.toLowerCase().includes(q) ||
-        d.entity.toLowerCase().includes(q);
+        (d.task ?? '').toLowerCase().includes(q) ||
+        (d.assignee ?? '').toLowerCase().includes(q) ||
+        (d.entity ?? '').toLowerCase().includes(q);
       if (!matches) return false;
     }
 
@@ -441,7 +466,7 @@ export default function ActiveDelegationsTab({
             <tbody className="divide-y divide-gray-100">
               {filtered.map((delegation) => {
                 const isExpanded = expandedId === delegation.id;
-                const overdue = isDueDateOverdue(delegation.dueDate);
+                const overdue = delegation.dueDate ? isDueDateOverdue(delegation.dueDate) : false;
 
                 return (
                   <tr key={delegation.id} className="group">

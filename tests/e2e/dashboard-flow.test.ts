@@ -281,9 +281,7 @@ describe('Dashboard Flow E2E Tests', () => {
       mockGetUnifiedDashboard.mockResolvedValue(mockDashboard);
 
       const req = createGetRequest('/api/finance/dashboard', {
-        userId: 'user-1',
-        startDate: '2026-01-01T00:00:00.000Z',
-        endDate: '2026-03-31T23:59:59.999Z',
+        period: 'this_quarter',
       });
 
       const res = await financeDashboardGetHandler(req);
@@ -789,9 +787,7 @@ describe('Dashboard Flow E2E Tests', () => {
       });
 
       const finReq = createGetRequest('/api/finance/dashboard', {
-        userId: 'user-1',
-        startDate: '2026-02-01T00:00:00.000Z',
-        endDate: '2026-02-28T23:59:59.999Z',
+        period: 'this_month',
       });
 
       const finRes = await financeDashboardGetHandler(finReq);
@@ -852,9 +848,7 @@ describe('Dashboard Flow E2E Tests', () => {
       mockedGetToken.mockResolvedValue(null);
 
       const req = createGetRequest('/api/finance/dashboard', {
-        userId: 'user-1',
-        startDate: '2026-01-01T00:00:00.000Z',
-        endDate: '2026-03-31T23:59:59.999Z',
+        period: 'this_quarter',
       });
       const res = await financeDashboardGetHandler(req);
 
@@ -963,9 +957,7 @@ describe('Dashboard Flow E2E Tests', () => {
       });
 
       const req = createGetRequest('/api/finance/dashboard', {
-        userId: 'user-1',
-        startDate: '2026-01-01T00:00:00.000Z',
-        endDate: '2026-03-31T23:59:59.999Z',
+        period: 'this_quarter',
       });
 
       const res = await financeDashboardGetHandler(req);

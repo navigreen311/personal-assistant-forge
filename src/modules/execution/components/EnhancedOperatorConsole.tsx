@@ -198,8 +198,8 @@ export default function EnhancedOperatorConsole({
         if (moduleFilter) params.set('module', moduleFilter);
 
         const dateRange = getDateRangeFromPreset(dateRangePreset);
-        if (dateRange.from) params.set('dateFrom', dateRange.from);
-        if (dateRange.to) params.set('dateTo', dateRange.to);
+        if (dateRange.from) params.set('from', dateRange.from);
+        if (dateRange.to) params.set('to', dateRange.to);
 
         const res = await fetch(
           `/api/execution/timeline?${params.toString()}`

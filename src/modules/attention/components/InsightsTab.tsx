@@ -180,13 +180,42 @@ export function InsightsTab({ entityId, period: initialPeriod }: Props) {
   const fetchInsights = useCallback(async () => {
     setLoading(true);
     try {
-      const query = new URLSearchParams({ period });
-      if (entityId) query.set('entityId', entityId);
+      const periodMap: Record<string, string> = { 'This Week': 'thisWeek', 'This Month': 'thisMonth', 'This Quarter': 'thisQuarter' };
+      const query = new URLSearchParams({
+        period: periodMap[period] ?? period,
+        ...(entityId ? { entityId } : {}),
+      });
 
-      const res = await fetch(`/api/attention/budget?${query.toString()}`);
+      const res = await fetch(`/api/attention/insights?${query.toString()}`);
       if (!res.ok) throw new Error('API error');
       const raw = await res.json();
-      const json: InsightsData = raw.data ?? raw;
+      const apiData = raw.data ?? raw;
+      // Transform API shape to component shape
+      const DAYS_MAP = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const heatmapCells: HeatmapCell[] = [];
+      if (Array.isArray(apiData.heatmap)) {
+        apiData.heatmap.forEach((row: number[], hour: number) => {
+          if (Array.isArray(row)) {
+            row.forEach((count: number, dayIdx: number) => {
+              heatmapCells.push({ day: DAYS_MAP[dayIdx] ?? `Day${dayIdx}`, hour, count });
+            });
+          }
+        });
+      }
+      const json: InsightsData = {
+        stats: {
+          totalInterrupts: apiData.totalInterrupts ?? apiData.stats?.totalInterrupts ?? 0,
+          blockedDND: apiData.blockedDND ?? apiData.stats?.blockedDND ?? 0,
+          avgFocusSessionMinutes: apiData.avgFocusSession ?? apiData.avgFocusSessionMinutes ?? apiData.stats?.avgFocusSessionMinutes ?? 0,
+          attentionScore: apiData.attentionScore ?? apiData.stats?.attentionScore ?? 0,
+        },
+        heatmap: heatmapCells.length > 0 ? heatmapCells : (apiData.heatmap && !Array.isArray(apiData.heatmap?.[0]) ? apiData.heatmap : []),
+        interrupters: apiData.topInterrupters ?? apiData.interrupters ?? [],
+        recommendations: (apiData.recommendations ?? []).map((r: any, i: number) => ({
+          id: r.id ?? `rec-${i}`,
+          text: r.text ?? r,
+        })),
+      };
       setData(json);
     } catch {
       // Fallback to demo data on any error
@@ -519,3 +548,5 @@ export function InsightsTab({ entityId, period: initialPeriod }: Props) {
     </div>
   );
 }
+
+export default InsightsTab;

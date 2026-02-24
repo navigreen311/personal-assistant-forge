@@ -234,7 +234,7 @@ export default function PriorityRoutingTab({ entityId, period }: PriorityRouting
         if (entityId) params.set('entityId', entityId);
         if (period) params.set('period', period);
 
-        const res = await fetch(`/api/attention/routing?${params}`);
+        const res = await fetch(`/api/attention?${params}`);
         if (res.ok) {
           const json = await res.json();
           if (json.data) {
@@ -376,8 +376,8 @@ export default function PriorityRoutingTab({ entityId, period }: PriorityRouting
     setIsSaving(true);
     setSaveMessage(null);
     try {
-      const res = await fetch('/api/attention/routing', {
-        method: 'PUT',
+      const res = await fetch('/api/attention', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entityId, period, ...state }),
       });

@@ -140,7 +140,8 @@ export function EnhancedOverviewTab({ entityId, period }: Props) {
       const res = await fetch(`/api/attention/budget${qs ? `?${qs}` : ''}`);
       if (!res.ok) throw new Error(`Budget fetch failed (${res.status})`);
       const json = await res.json();
-      const data: BudgetResponse = json.data ?? json;
+      const budgetObj = json.data ?? json;
+      const data: BudgetResponse = budgetObj.budget ? budgetObj : { budget: budgetObj };
       setBudgetData(data);
       setDailyLimit(data?.budget?.dailyBudget ?? 10);
     } catch (err: unknown) {
@@ -185,7 +186,7 @@ export function EnhancedOverviewTab({ entityId, period }: Props) {
     setDndConfig(next);
     try {
       const res = await fetch('/api/attention/dnd', {
-        method: 'PUT',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next),
       });
@@ -517,3 +518,5 @@ export function EnhancedOverviewTab({ entityId, period }: Props) {
     </div>
   );
 }
+
+export default EnhancedOverviewTab;

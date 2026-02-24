@@ -102,8 +102,22 @@ export default function EnhancedScoreboard({ entityId }: EnhancedScoreboardProps
       })
       .then((json) => {
         if (!cancelled) {
-          const payload: ScoreboardData = json.data ?? json;
+          const scores = json.data ?? json;
+          const payload: ScoreboardData = Array.isArray(scores) ? {
+            delegates: scores.map((s: any) => ({
+              id: s.delegateeId,
+              name: s.delegateeName,
+              role: s.bestCategory ?? 'General',
+              isAI: false,
+              tasksDone: s.totalTasksDelegated ?? 0,
+              avgSpeedMinutes: 0,
+              quality: s.overallScore ?? 0,
+              onTimePercent: 0,
+            })),
+            insight: scores.length > 0 ? `Top performer: ${scores[0]?.delegateeName}` : 'No delegation data yet',
+          } : scores;
           setData(payload);
+          setError(null);
           setLoading(false);
         }
       })
