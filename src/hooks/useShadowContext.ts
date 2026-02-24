@@ -163,13 +163,22 @@ export function useShadowContext(): ShadowContext {
         const json = await res.json();
 
         if (json.success && json.data) {
+          // Update sessionId if one was created server-side
+          if (json.data.sessionId && !session?.id) {
+            setSession({
+              id: json.data.sessionId,
+              startedAt: new Date(),
+              status: 'active',
+            });
+          }
+
           const shadowMessage: ShadowMessage = {
-            id: json.data.id || generateId(),
+            id: json.data.messageId || json.data.id || generateId(),
             role: 'shadow',
-            content: json.data.content || '',
-            contentType: json.data.contentType || 'TEXT',
+            content: json.data.response?.text || json.data.content || '',
+            contentType: (json.data.response?.contentType?.toUpperCase() || json.data.contentType || 'TEXT') as ContentType,
             timestamp: new Date(json.data.timestamp || Date.now()),
-            metadata: json.data.metadata,
+            metadata: json.data.response ?? json.data.metadata,
           };
           setMessages((prev) => [...prev, shadowMessage]);
 
@@ -241,7 +250,7 @@ export function useShadowContext(): ShadowContext {
       const res = await fetch('/api/shadow/session/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entityId }),
+        body: JSON.stringify({ entityId, channel: 'web' }),
       });
 
       if (!res.ok) {
