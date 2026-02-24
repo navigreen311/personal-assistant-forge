@@ -41,7 +41,7 @@ const DEFAULT_STATS: DelegationStats = {
 const EnhancedDelegationInbox: any = dynamic(
   () =>
     import('@/modules/delegation/components/EnhancedDelegationInbox').catch(
-      () => import('@/modules/delegation/components/DelegationInbox')
+      () => import('@/modules/delegation/components/DelegationInbox').then(m => ({ default: m.DelegationInbox }))
     ) as any,
   {
     ssr: false,
@@ -63,7 +63,7 @@ const ActiveDelegationsTab: any = dynamic(
 const EnhancedScoreboard: any = dynamic(
   () =>
     import('@/modules/delegation/components/EnhancedScoreboard').catch(
-      () => import('@/modules/delegation/components/DelegationScoring')
+      () => import('@/modules/delegation/components/DelegationScoring').then(m => ({ default: m.DelegationScoring }))
     ) as any,
   {
     ssr: false,

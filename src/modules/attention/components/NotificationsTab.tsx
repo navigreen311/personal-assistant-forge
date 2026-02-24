@@ -540,3 +540,5 @@ export function NotificationsTab({ entityId, period }: Props) {
     </div>
   );
 }
+
+export default NotificationsTab;

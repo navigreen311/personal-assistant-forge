@@ -128,7 +128,22 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Failed to load suggestions (${res.status})`);
       const json = await res.json();
-      const data: DelegationSuggestion[] = Array.isArray(json) ? json : (json.data ?? []);
+      const items = Array.isArray(json) ? json : (json.data ?? []);
+      const data: DelegationSuggestion[] = items.map((item: any) => ({
+        taskId: item.taskId,
+        taskTitle: item.taskTitle,
+        entityId: entityId ?? '',
+        entityName: '',
+        priority: item.priority === 'HIGH' ? 'P0' : item.priority === 'MEDIUM' ? 'P1' : 'P2',
+        estimatedEffort: item.estimatedTimeSavedMinutes ? `${item.estimatedTimeSavedMinutes}m` : 'N/A',
+        reason: item.reason,
+        suggestedAssignee: {
+          id: item.suggestedDelegatee ?? 'unknown',
+          name: item.suggestedDelegatee ?? 'Unknown',
+          role: 'Delegatee',
+          score: item.confidence ?? 0,
+        },
+      }));
       setSuggestions(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred');
@@ -149,7 +164,7 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           taskId: suggestion.taskId,
-          assigneeId,
+          delegatedTo: assigneeId,
           entityId: suggestion.entityId,
         }),
       });
@@ -171,7 +186,7 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           taskId: suggestion.taskId,
-          autoAssign: true,
+          delegatedTo: suggestion.suggestedAssignee?.id ?? 'auto',
         }),
       });
       if (!res.ok) throw new Error('Auto-assign failed');
@@ -423,6 +438,8 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
 /* ------------------------------------------------------------------ */
 /*  Header sub-component                                               */
 /* ------------------------------------------------------------------ */
+
+export default EnhancedDelegationInbox;
 
 function Header({ onRefresh }: { onRefresh: () => void }) {
   return (

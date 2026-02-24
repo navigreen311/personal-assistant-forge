@@ -20,7 +20,7 @@ export function PriorityRoutingConfig({ config, onChange }: Props) {
     <div style={{ padding: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
       <h3 style={{ fontWeight: 600, marginBottom: '12px' }}>Priority Routing Rules</h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {config.map((rule, index) => (
+        {(config ?? []).map((rule, index) => (
           <div key={rule.priority} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '8px', backgroundColor: '#f9fafb', borderRadius: '4px' }}>
             <span style={{ fontWeight: 600, minWidth: '40px' }}>{rule.priority}</span>
             <select

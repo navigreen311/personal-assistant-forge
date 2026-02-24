@@ -186,8 +186,7 @@ export default function DelegateTaskModal({
       const body: Record<string, any> = {
         taskId: selectedTask?.id ?? undefined,
         newTaskTitle: isCreatingNewTask ? newTaskTitle.trim() : undefined,
-        assigneeId: selectedAssignee!.id,
-        assigneeType: selectedAssignee!.type,
+        delegatedTo: selectedAssignee!.id,
         entityId,
         priority,
         dueDate: dueDate || undefined,

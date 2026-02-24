@@ -8,6 +8,8 @@ interface Props {
 }
 
 export function NotificationLearningPanel({ learning }: Props) {
+  if (!learning) return <div className="text-gray-500 text-center py-8">No learning data available.</div>;
+
   return (
     <div style={{ padding: '16px', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
       <h3 style={{ fontWeight: 600, marginBottom: '12px' }}>Notification Patterns</h3>

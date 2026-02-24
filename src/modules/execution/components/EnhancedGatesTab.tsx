@@ -321,7 +321,8 @@ export default function EnhancedGatesTab({ entityId }: EnhancedGatesTabProps) {
 
       if (!res.ok) throw new Error('Failed to create gate');
 
-      const created: ExecutionGate = await res.json();
+      const json = await res.json();
+      const created: ExecutionGate = json.data ?? json;
 
       const displayGate: DisplayGate = {
         ...created,

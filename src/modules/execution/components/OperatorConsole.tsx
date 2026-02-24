@@ -105,8 +105,8 @@ export default function OperatorConsole({ entityId }: OperatorConsoleProps) {
       if (actorFilter) params.set('actor', actorFilter);
       if (blastRadiusFilter) params.set('blastRadius', blastRadiusFilter);
       if (search) params.set('search', search);
-      if (dateFrom) params.set('dateFrom', dateFrom);
-      if (dateTo) params.set('dateTo', dateTo);
+      if (dateFrom) params.set('from', dateFrom);
+      if (dateTo) params.set('to', dateTo);
 
       const res = await fetch(`/api/execution/timeline?${params.toString()}`);
       if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.statusText}`);
@@ -130,7 +130,8 @@ export default function OperatorConsole({ entityId }: OperatorConsoleProps) {
       });
       const res = await fetch(`/api/execution/timeline/summary?${params.toString()}`);
       if (!res.ok) return;
-      const body: ActivitySummary = await res.json();
+      const json = await res.json();
+      const body: ActivitySummary = json.data ?? json;
       setSummary(body);
     } catch {
       // Summary is non-critical; silently ignore.
