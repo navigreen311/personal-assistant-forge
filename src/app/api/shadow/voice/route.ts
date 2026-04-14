@@ -88,7 +88,14 @@ export async function POST(request: NextRequest) {
 
         // If we got an audio response, stream it back as audio/mpeg
         if (result.audioResponse && result.audioResponse.length > 0) {
-          return new NextResponse(result.audioResponse, {
+          // Next 16's NextResponse BodyInit requires ArrayBuffer — Node's
+          // Buffer<ArrayBufferLike> isn't directly assignable. Build a
+          // tight ArrayBuffer copy of the audio bytes.
+          const audioBody = result.audioResponse.buffer.slice(
+            result.audioResponse.byteOffset,
+            result.audioResponse.byteOffset + result.audioResponse.byteLength,
+          ) as ArrayBuffer;
+          return new NextResponse(audioBody, {
             status: 200,
             headers: {
               'Content-Type': 'audio/mpeg',

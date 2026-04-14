@@ -245,11 +245,12 @@ export class ShadowAgent {
           name: t.name,
           description: t.description,
           input_schema: t.input_schema,
-        })) as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>,
-        messages: conversationMessages as Array<{
-          role: 'user' | 'assistant';
-          content: string | Array<{ type: string; [key: string]: unknown }>;
-        }>,
+        })) as unknown as Parameters<
+          typeof anthropic.messages.create
+        >[0]['tools'],
+        messages: conversationMessages as unknown as Parameters<
+          typeof anthropic.messages.create
+        >[0]['messages'],
       });
 
       totalTokensIn += response.usage?.input_tokens ?? 0;

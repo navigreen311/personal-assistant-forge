@@ -38,6 +38,7 @@ function createDefaultSteps(): OnboardingStep[] {
     category: def.category,
     status: 'PENDING' as const,
     isRequired: def.isRequired,
+    estimatedMinutes: 3,
   }));
 }
 
