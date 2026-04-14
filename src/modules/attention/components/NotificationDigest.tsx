@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import type { NotificationBundle } from '../types';
+import { TalkMeThroughButton } from '@/components/notifications/TalkMeThroughButton';
 
 interface Props {
   bundles: NotificationBundle[];
@@ -47,7 +48,15 @@ export function NotificationDigest({ bundles }: Props) {
             <div style={{ padding: '8px 16px' }}>
               {bundle.items.map((item) => (
                 <div key={item.id} style={{ padding: '8px 0', borderBottom: '1px solid #f3f4f6' }}>
-                  <div style={{ fontWeight: 500 }}>{item.title}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ fontWeight: 500 }}>{item.title}</div>
+                    <TalkMeThroughButton
+                      notificationId={item.id}
+                      title={item.title}
+                      description={item.body ?? ''}
+                      priority={bundle.priority}
+                    />
+                  </div>
                   <div style={{ fontSize: '14px', color: '#6b7280' }}>{item.body}</div>
                 </div>
               ))}
