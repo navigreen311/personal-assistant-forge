@@ -37,7 +37,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: paf-init
-    command: npx prisma migrate deploy
+    command: npx -y prisma@6.19.2 db push --skip-generate --accept-data-loss
     environment:
       - DATABASE_URL=postgresql://paf_user:paf_password@postgres:5432/paf_dev
     depends_on:
