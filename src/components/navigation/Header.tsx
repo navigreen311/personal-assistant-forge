@@ -3,6 +3,7 @@
 import { useSession, signOut } from 'next-auth/react';
 import Link from 'next/link';
 import { useState, useRef, useEffect } from 'react';
+import { ShadowNavButtonConnected } from '@/components/shadow/ShadowNavButtonConnected';
 
 interface HeaderProps {
   onMenuToggle: () => void;
@@ -116,6 +117,9 @@ export function Header({ onMenuToggle }: HeaderProps) {
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2 ml-4">
+        {/* Shadow voice assistant */}
+        <ShadowNavButtonConnected />
+
         {/* Notification bell */}
         <button
           className="relative p-2 rounded-md hover:bg-gray-100 text-gray-500 transition-colors"
