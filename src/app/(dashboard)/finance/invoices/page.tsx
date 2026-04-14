@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useShadowPageMap } from '@/hooks/useShadowPageMap';
 import InvoiceForm from '@/modules/finance/components/InvoiceForm';
 import AgingBar from '@/modules/finance/components/AgingBar';
 import type { Invoice, AgingReport } from '@/modules/finance/types';
@@ -81,6 +82,27 @@ function TableRowSkeleton() {
 export default function InvoicesPage() {
   // Data state
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+
+  useShadowPageMap({
+    pageId: 'finance.invoices',
+    title: 'Invoices',
+    description: 'Invoice list, aging, overdue tracking',
+    visibleObjects: invoices.slice(0, 20).map((inv) => ({
+      id: inv.id,
+      type: 'invoice',
+      label: `${inv.invoiceNumber ?? inv.id} — $${inv.amount}`,
+      status: inv.status,
+      selector: `[data-invoice-id="${inv.id}"]`,
+      deepLink: `/finance/invoices/${inv.id}`,
+    })),
+    availableActions: [
+      { id: 'show_overdue', label: 'Overdue invoices', voiceTriggers: ['overdue invoices', 'show overdue'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'create_invoice', label: 'Create invoice', voiceTriggers: ['create invoice', 'new invoice'], confirmationLevel: 'tap', reversible: true, blastRadius: 'self' },
+      { id: 'send_reminder', label: 'Send payment reminder', voiceTriggers: ['send reminder', 'remind them', 'follow up on invoice'], confirmationLevel: 'confirm_phrase', reversible: false, blastRadius: 'external' },
+    ],
+    activeFilters: {},
+    activeEntity: null,
+  });
   const [aging, setAging] = useState<AgingReport | null>(null);
   const [entities, setEntities] = useState<Entity[]>([]);
 

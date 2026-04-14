@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useShadowPageMap } from '@/hooks/useShadowPageMap';
 import DashboardHeader from '@/modules/dashboard/components/DashboardHeader';
 import DailyTop3Card from '@/modules/dashboard/components/DailyTop3Card';
 import { TriageQueueCard } from '@/modules/dashboard/components/TriageQueueCard';
@@ -14,6 +15,19 @@ export default function DashboardPage() {
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useShadowPageMap({
+    pageId: 'dashboard',
+    title: 'Dashboard',
+    description: 'Daily briefing, priority tasks, triage queue, schedule',
+    visibleObjects: [],
+    availableActions: [
+      { id: 'morning_briefing', label: 'Morning briefing', voiceTriggers: ['briefing', 'morning update'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'show_priorities', label: "Today's priorities", voiceTriggers: ['priorities', 'top 3'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+    ],
+    activeFilters: {},
+    activeEntity: null,
+  });
 
   useEffect(() => {
     const fetchDashboard = async () => {

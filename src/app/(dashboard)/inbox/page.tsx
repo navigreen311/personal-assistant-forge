@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
+import { useShadowPageMap } from '@/hooks/useShadowPageMap';
 import { InboxList } from '@/modules/inbox/components/InboxList';
 import { InboxFilters } from '@/modules/inbox/components/InboxFilters';
 import { MessageDetail } from '@/modules/inbox/components/MessageDetail';
@@ -83,6 +84,20 @@ const SORT_OPTIONS: { value: SortBy; label: string }[] = [
 
 export default function InboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
+
+  useShadowPageMap({
+    pageId: 'inbox',
+    title: 'Inbox',
+    description: 'Unified inbox — triage, drafting, follow-ups',
+    visibleObjects: [],
+    availableActions: [
+      { id: 'triage', label: 'Triage inbox', voiceTriggers: ['triage', 'help me triage'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'draft_responses', label: 'Draft responses', voiceTriggers: ['draft replies', 'draft responses'], confirmationLevel: 'tap', reversible: true, blastRadius: 'self' },
+      { id: 'show_urgent', label: 'Show urgent', voiceTriggers: ['urgent', 'important emails'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+    ],
+    activeFilters: {},
+    activeEntity: null,
+  });
   const [stats, setStats] = useState<InboxStats | null>(null);
   const [filters, setFilters] = useState<InboxFiltersType>({});
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
