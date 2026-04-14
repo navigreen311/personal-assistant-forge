@@ -9,12 +9,16 @@ services:
     container_name: paf-app
     ports:
       - "3000:3000"
+    env_file:
+      - .env.local
     environment:
       - DATABASE_URL=postgresql://paf_user:paf_password@postgres:5432/paf_dev
       - REDIS_URL=redis://redis:6379
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret-change-in-production}
       - NEXTAUTH_URL=http://localhost:3000
       - NODE_ENV=production
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     depends_on:
       init:
         condition: service_completed_successfully

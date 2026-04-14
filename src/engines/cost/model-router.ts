@@ -10,7 +10,7 @@ const TIER_PRICING: Record<ModelTier, { inputPer1M: number; outputPer1M: number 
 
 const MODEL_MAP: Record<ModelTier, string> = {
   FAST: 'claude-haiku-4-5-20251001',
-  BALANCED: 'claude-sonnet-4-5-20250929',
+  BALANCED: 'claude-sonnet-4-6',
   POWERFUL: 'claude-opus-4-6',
 };
 

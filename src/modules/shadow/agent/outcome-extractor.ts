@@ -45,7 +45,7 @@ export async function extractOutcomes(transcript: string): Promise<ExtractedOutc
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       temperature: 0,
       system: EXTRACTION_SYSTEM_PROMPT,

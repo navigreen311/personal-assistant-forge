@@ -12,13 +12,13 @@ export interface ModelPricing {
 }
 
 export const MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-sonnet-4-5-20250929': { inputPerMillion: 3, outputPerMillion: 15 },
+  'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15 },
   'claude-haiku-3-5-20241022': { inputPerMillion: 0.8, outputPerMillion: 4 },
   'claude-opus-4-20250514': { inputPerMillion: 15, outputPerMillion: 75 },
 };
 
 // Default pricing used when a model is not found in the registry
-const DEFAULT_PRICING: ModelPricing = MODEL_PRICING['claude-sonnet-4-5-20250929'];
+const DEFAULT_PRICING: ModelPricing = MODEL_PRICING['claude-sonnet-4-6'];
 
 export interface UsageRecord {
   id: string;

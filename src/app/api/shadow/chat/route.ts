@@ -20,8 +20,9 @@ async function processWithAgent(params: {
   sessionId: string;
   userId: string;
   message: string;
-  channel: string;
+  channel: SessionChannel;
   entityId?: string;
+  currentPage?: string;
 }): Promise<AgentResponse> {
   // Check if Anthropic API key is configured
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -45,7 +46,8 @@ async function processWithAgent(params: {
         userId: params.userId,
         message: params.message,
         channel: params.channel,
-        entityId: params.entityId,
+        activeEntityId: params.entityId,
+        currentPage: params.currentPage,
       });
       return result as AgentResponse;
     }
@@ -130,6 +132,7 @@ export async function POST(request: NextRequest) {
         message,
         channel: voiceSession.currentChannel,
         entityId: voiceSession.activeEntityId ?? authSession.activeEntityId,
+        currentPage,
       });
       const latencyMs = Date.now() - startTime;
 
