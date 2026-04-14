@@ -61,6 +61,7 @@ export function ShadowAssistant() {
     return () => window.removeEventListener('shadow:toggle', handleToggle);
   }, []);
 
+
   // --------------------------------------------------
   // Handlers
   // --------------------------------------------------
@@ -98,6 +99,19 @@ export function ShadowAssistant() {
     },
     [session, startSession, sendMessage],
   );
+
+  // Accept seed messages from other parts of the app
+  // (e.g. TalkMeThroughButton on a notification card).
+  useEffect(() => {
+    const handleSeed = (e: Event) => {
+      const detail = (e as CustomEvent<{ text?: string }>).detail;
+      if (detail?.text) {
+        void handleSendMessage(detail.text);
+      }
+    };
+    window.addEventListener('shadow:seed-message', handleSeed);
+    return () => window.removeEventListener('shadow:seed-message', handleSeed);
+  }, [handleSendMessage]);
 
   const handleSendActionResponse = useCallback(
     async (actionId: string, response: string) => {
