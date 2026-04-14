@@ -17,8 +17,8 @@ const updateTriggerSchema = z.object({
       'vip_email',
     ])
     .optional(),
-  conditions: z.record(z.unknown()).optional(),
-  action: z.record(z.unknown()).optional(),
+  conditions: z.record(z.string(), z.unknown()).optional(),
+  action: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
   cooldownMinutes: z.number().int().min(0).optional(),
 });
@@ -59,7 +59,9 @@ export async function PUT(
 
       const updated = await prisma.shadowTrigger.update({
         where: { id },
-        data,
+        data: data as unknown as Parameters<
+          typeof prisma.shadowTrigger.update
+        >[0]['data'],
       });
 
       return success(updated);
