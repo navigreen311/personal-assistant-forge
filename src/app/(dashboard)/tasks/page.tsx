@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useShadowPageMap } from '@/hooks/useShadowPageMap';
 import type { Task, TaskStatus, Priority } from '@/shared/types';
 import type {
   TaskFilters,
@@ -232,6 +233,28 @@ function sortTasksByField(tasks: Task[], field: SortField, direction: 'asc' | 'd
 export default function TasksPage() {
   // ── Core state ───────────────────────────────────────────────────────────────
   const [tasks, setTasks] = useState<Task[]>([]);
+
+  useShadowPageMap({
+    pageId: 'tasks',
+    title: 'Tasks',
+    description: 'Task list, priorities, deadlines, assignments',
+    visibleObjects: tasks.slice(0, 20).map((t) => ({
+      id: t.id,
+      type: 'task',
+      label: t.title,
+      status: t.status,
+      priority: t.priority,
+      selector: `[data-task-id="${t.id}"]`,
+      deepLink: `/tasks/${t.id}`,
+    })),
+    availableActions: [
+      { id: 'create_task', label: 'Create task', voiceTriggers: ['create task', 'new task', 'add task'], confirmationLevel: 'tap', reversible: true, blastRadius: 'self' },
+      { id: 'show_overdue', label: 'Show overdue', voiceTriggers: ['overdue', 'late tasks'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'show_today', label: "What's due today", voiceTriggers: ['today', 'due today'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+    ],
+    activeFilters: {},
+    activeEntity: null,
+  });
   const [view, setView] = useState<ExtendedTaskView>('LIST');
   const [activeTab, setActiveTab] = useState<ActiveTab>('tasks');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useShadowPageMap } from '@/hooks/useShadowPageMap';
 import { format, isSameDay, differenceInMinutes, startOfDay, endOfDay } from 'date-fns';
 import { CalendarView } from '@/modules/calendar/components/CalendarView';
 import { EventDetailPanel } from '@/modules/calendar/components/EventDetailPanel';
@@ -136,6 +137,20 @@ function AgendaSidebar({ date, events, onEventClick }: AgendaSidebarProps) {
 
 export default function CalendarPage() {
   const [viewMode, setViewMode] = useState<CalendarViewMode>('week');
+
+  useShadowPageMap({
+    pageId: 'calendar',
+    title: 'Calendar',
+    description: 'Events, schedule, availability, meeting prep',
+    visibleObjects: [],
+    availableActions: [
+      { id: 'show_today', label: "Today's schedule", voiceTriggers: ["what's on my calendar", 'today'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'find_free_time', label: 'Find free time', voiceTriggers: ['find free time', 'when am i free'], confirmationLevel: 'none', reversible: true, blastRadius: 'self' },
+      { id: 'create_event', label: 'Create event', voiceTriggers: ['create event', 'schedule meeting', 'new event'], confirmationLevel: 'tap', reversible: true, blastRadius: 'self' },
+    ],
+    activeFilters: {},
+    activeEntity: null,
+  });
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedEvent, setSelectedEvent] = useState<CalendarEventDisplay | null>(null);
   const [showScheduleWizard, setShowScheduleWizard] = useState(false);
