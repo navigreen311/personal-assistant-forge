@@ -118,7 +118,7 @@ Classify this message.`;
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-sonnet-4-6',
       max_tokens: 256,
       temperature: 0,
       system: CLASSIFICATION_SYSTEM_PROMPT,

@@ -20,7 +20,7 @@ import { generateResponse } from './response-generator';
 import { computeRiskScore, isBusinessHours } from './risk-scorer';
 
 const MAX_TOOL_ITERATIONS = 5;
-const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
+const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 export class ShadowAgent {
   private toolRouter: ToolRouter;
