@@ -12,7 +12,7 @@ const updateProactiveConfigSchema = z.object({
     .optional(),
   briefingChannel: z.enum(['in_app', 'push', 'sms', 'phone', 'email']).optional(),
   briefingContent: z.array(z.string()).optional(),
-  callTriggers: z.record(z.unknown()).optional(),
+  callTriggers: z.record(z.string(), z.unknown()).optional(),
   vipBreakoutContacts: z.array(z.string()).optional(),
   callWindowStart: z
     .string()
@@ -39,7 +39,7 @@ const updateProactiveConfigSchema = z.object({
     .regex(/^\d{2}:\d{2}$/, 'Must be in HH:MM format')
     .nullable()
     .optional(),
-  escalationConfig: z.record(z.unknown()).nullable().optional(),
+  escalationConfig: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -93,15 +93,23 @@ export async function PUT(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
+      // Prisma's InputJsonValue rejects Record<string, unknown>; the JSON
+      // columns here store opaque config blobs, so cast at the boundary.
+      const createData = {
+        ...parsed.data,
+        userId: session.userId,
+        briefingContent: parsed.data.briefingContent ?? [],
+        vipBreakoutContacts: parsed.data.vipBreakoutContacts ?? [],
+      } as unknown as Parameters<
+        typeof prisma.shadowProactiveConfig.upsert
+      >[0]['create'];
+      const updateData = parsed.data as unknown as Parameters<
+        typeof prisma.shadowProactiveConfig.upsert
+      >[0]['update'];
       const config = await prisma.shadowProactiveConfig.upsert({
         where: { userId: session.userId },
-        create: {
-          userId: session.userId,
-          ...parsed.data,
-          briefingContent: parsed.data.briefingContent ?? [],
-          vipBreakoutContacts: parsed.data.vipBreakoutContacts ?? [],
-        },
-        update: parsed.data,
+        create: createData,
+        update: updateData,
       });
 
       return success(config);

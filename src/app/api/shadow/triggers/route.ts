@@ -15,8 +15,8 @@ const createTriggerSchema = z.object({
     'eod_summary',
     'vip_email',
   ]),
-  conditions: z.record(z.unknown()),
-  action: z.record(z.unknown()),
+  conditions: z.record(z.string(), z.unknown()),
+  action: z.record(z.string(), z.unknown()),
   enabled: z.boolean().optional().default(true),
   cooldownMinutes: z.number().int().min(0).optional().default(60),
 });
@@ -58,8 +58,14 @@ export async function POST(request: NextRequest) {
           userId: session.userId,
           triggerName: parsed.data.triggerName,
           triggerType: parsed.data.triggerType,
-          conditions: parsed.data.conditions,
-          action: parsed.data.action,
+          // JSON columns — Prisma's InputJsonValue rejects
+          // Record<string, unknown> without an explicit cast.
+          conditions: parsed.data.conditions as unknown as Parameters<
+            typeof prisma.shadowTrigger.create
+          >[0]['data']['conditions'],
+          action: parsed.data.action as unknown as Parameters<
+            typeof prisma.shadowTrigger.create
+          >[0]['data']['action'],
           enabled,
           cooldownMinutes: parsed.data.cooldownMinutes,
         },
