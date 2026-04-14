@@ -2,8 +2,9 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  // TODO: remove once zod v4 migration is complete — see src/app/api/shadow/config/proactive/route.ts
+  // and other files still using v3-style z.enum() calls.
   typescript: { ignoreBuildErrors: true },
-  eslint: { ignoreDuringBuilds: true },
   // Image optimization
   images: {
     remotePatterns: [

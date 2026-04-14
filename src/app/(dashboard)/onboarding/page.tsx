@@ -22,7 +22,9 @@ const INITIAL_STEPS = [
   { id: 's10', order: 10, title: 'Review & Launch', description: 'Review your setup and launch your personal assistant', category: 'LEARN' as const, status: 'PENDING' as const, isRequired: true, estimatedMinutes: 3 },
 ];
 
-function computeEstimatedMinutes(steps: typeof INITIAL_STEPS): number {
+function computeEstimatedMinutes(
+  steps: ReadonlyArray<{ status: string; estimatedMinutes: number }>,
+): number {
   return steps
     .filter((s) => s.status === 'PENDING' || s.status === 'IN_PROGRESS')
     .reduce((sum, s) => sum + s.estimatedMinutes, 0);

@@ -49,7 +49,12 @@ async function processWithAgent(params: {
         activeEntityId: params.entityId,
         currentPage: params.currentPage,
       });
-      return result as AgentResponse;
+      return {
+        ...result,
+        contentType: result.contentType
+          ? (result.contentType.toLowerCase() as AgentResponse['contentType'])
+          : 'text',
+      } as AgentResponse;
     }
   } catch (err) {
     // Agent module failed — return a helpful message instead of crashing
