@@ -1,16 +1,20 @@
 import { prisma } from '@/lib/db';
 
+/**
+ * Per-user Shadow config loaded from the DB.
+ *
+ * Field shape follows the actual Prisma schema (ShadowSafetyConfig,
+ * ShadowProactiveConfig). Several fields the spec mentions
+ * (requirePinForDeletion, financialThreshold, blastRadiusThreshold)
+ * aren't modeled yet — they'll appear as new columns are added.
+ */
 export interface ShadowSafetyDefaults {
   requirePinForFinancial: boolean;
   requirePinForExternal: boolean;
   requirePinForCrisis: boolean;
-  requirePinForDeletion: boolean;
-  maxBlastRadiusWithoutPin: number;
-  financialThreshold: number;
-  blastRadiusThreshold: string;
-  alwaysAnnounceAffectedCount: boolean;
-  alwaysAnnounceCost: boolean;
-  alwaysAnnounceIrreversibility: boolean;
+  maxBlastRadiusWithoutPin: string;
+  phoneConfirmationMode: string;
+  alwaysAnnounceBlastRadius: boolean;
 }
 
 export interface ShadowProactiveDefaults {
@@ -18,8 +22,15 @@ export interface ShadowProactiveDefaults {
   briefingTime: string;
   briefingChannel: string;
   briefingContent: string[];
-  eodEnabled: boolean;
-  eodTime: string;
+  callWindowStart: string;
+  callWindowEnd: string;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  cooldownMinutes: number;
+  maxCallsPerDay: number;
+  maxCallsPerHour: number;
+  digestEnabled: boolean;
+  digestTime: string | null;
 }
 
 export interface ShadowConfig {
@@ -35,9 +46,6 @@ export async function getShadowConfig(userId: string): Promise<ShadowConfig> {
     prisma.shadowProactiveConfig.findUnique({ where: { userId } }),
     prisma.shadowPreference.findMany({ where: { userId } }),
   ]);
-  // ShadowPermissionOverride table not yet modeled in schema — overrides
-  // come back empty until that model is added.
-  const overrides: Array<{ actionType: string; overrideLevel: string | null }> = [];
 
   return {
     safety: safety
@@ -45,31 +53,35 @@ export async function getShadowConfig(userId: string): Promise<ShadowConfig> {
           requirePinForFinancial: safety.requirePinForFinancial,
           requirePinForExternal: safety.requirePinForExternal,
           requirePinForCrisis: safety.requirePinForCrisis,
-          requirePinForDeletion: safety.requirePinForDeletion,
           maxBlastRadiusWithoutPin: safety.maxBlastRadiusWithoutPin,
-          financialThreshold: Number(safety.financialThreshold),
-          blastRadiusThreshold: safety.blastRadiusThreshold,
-          alwaysAnnounceAffectedCount: safety.alwaysAnnounceAffectedCount,
-          alwaysAnnounceCost: safety.alwaysAnnounceCost,
-          alwaysAnnounceIrreversibility: safety.alwaysAnnounceIrreversibility,
+          phoneConfirmationMode: safety.phoneConfirmationMode,
+          alwaysAnnounceBlastRadius: safety.alwaysAnnounceBlastRadius,
         }
       : defaultSafety(),
     proactive: proactive
       ? {
           briefingEnabled: proactive.briefingEnabled,
-          briefingTime: proactive.briefingTime?.toString() ?? '08:00',
+          briefingTime: proactive.briefingTime,
           briefingChannel: proactive.briefingChannel,
-          briefingContent: (proactive.briefingContent as string[]) ?? [],
-          eodEnabled: proactive.eodEnabled,
-          eodTime: proactive.eodTime?.toString() ?? '18:00',
+          briefingContent: Array.isArray(proactive.briefingContent)
+            ? (proactive.briefingContent as string[])
+            : [],
+          callWindowStart: proactive.callWindowStart,
+          callWindowEnd: proactive.callWindowEnd,
+          quietHoursStart: proactive.quietHoursStart,
+          quietHoursEnd: proactive.quietHoursEnd,
+          cooldownMinutes: proactive.cooldownMinutes,
+          maxCallsPerDay: proactive.maxCallsPerDay,
+          maxCallsPerHour: proactive.maxCallsPerHour,
+          digestEnabled: proactive.digestEnabled,
+          digestTime: proactive.digestTime,
         }
       : defaultProactive(),
     preferences: Object.fromEntries(
       preferences.map((p) => [p.preferenceKey, p.preferenceValue]),
     ),
-    overrides: Object.fromEntries(
-      overrides.map((o) => [o.actionType, o.overrideLevel ?? 'none']),
-    ),
+    // ShadowPermissionOverride isn't modeled in the schema yet.
+    overrides: {},
   };
 }
 
@@ -78,13 +90,9 @@ function defaultSafety(): ShadowSafetyDefaults {
     requirePinForFinancial: true,
     requirePinForExternal: false,
     requirePinForCrisis: true,
-    requirePinForDeletion: true,
-    maxBlastRadiusWithoutPin: 5,
-    financialThreshold: 500,
-    blastRadiusThreshold: 'entity',
-    alwaysAnnounceAffectedCount: true,
-    alwaysAnnounceCost: true,
-    alwaysAnnounceIrreversibility: true,
+    maxBlastRadiusWithoutPin: 'entity',
+    phoneConfirmationMode: 'voice_pin',
+    alwaysAnnounceBlastRadius: true,
   };
 }
 
@@ -94,7 +102,14 @@ function defaultProactive(): ShadowProactiveDefaults {
     briefingTime: '08:00',
     briefingChannel: 'in_app',
     briefingContent: ['calendar', 'inbox', 'tasks'],
-    eodEnabled: false,
-    eodTime: '18:00',
+    callWindowStart: '09:00',
+    callWindowEnd: '18:00',
+    quietHoursStart: '22:00',
+    quietHoursEnd: '07:00',
+    cooldownMinutes: 60,
+    maxCallsPerDay: 5,
+    maxCallsPerHour: 2,
+    digestEnabled: false,
+    digestTime: null,
   };
 }

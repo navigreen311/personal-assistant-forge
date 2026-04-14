@@ -95,13 +95,13 @@ export async function saveSessionOutcome(
     await prisma.shadowSessionOutcome.update({
       where: { sessionId },
       data: {
-        decisionsMade: outcome.decisionsMade as unknown as Record<string, unknown>[],
-        commitments: outcome.commitments as unknown as Record<string, unknown>[],
-        deadlinesSet: outcome.deadlinesSet as unknown as Record<string, unknown>[],
-        followUps: outcome.followUps as unknown as Record<string, unknown>[],
-        recordsCreated: outcome.recordsCreated as unknown as Record<string, unknown>[],
-        recordsUpdated: outcome.recordsUpdated as unknown as Record<string, unknown>[],
-        recordsLinked: outcome.recordsLinked as unknown as Record<string, unknown>[],
+        decisionsMade: outcome.decisionsMade as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        commitments: outcome.commitments as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        deadlinesSet: outcome.deadlinesSet as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        followUps: outcome.followUps as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        recordsCreated: outcome.recordsCreated as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        recordsUpdated: outcome.recordsUpdated as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        recordsLinked: outcome.recordsLinked as unknown as import('@prisma/client').Prisma.InputJsonValue,
         extractionConfidence: confidence ?? null,
       },
     });
@@ -111,13 +111,13 @@ export async function saveSessionOutcome(
   const record = await prisma.shadowSessionOutcome.create({
     data: {
       sessionId,
-      decisionsMade: outcome.decisionsMade as unknown as Record<string, unknown>[],
-      commitments: outcome.commitments as unknown as Record<string, unknown>[],
-      deadlinesSet: outcome.deadlinesSet as unknown as Record<string, unknown>[],
-      followUps: outcome.followUps as unknown as Record<string, unknown>[],
-      recordsCreated: outcome.recordsCreated as unknown as Record<string, unknown>[],
-      recordsUpdated: outcome.recordsUpdated as unknown as Record<string, unknown>[],
-      recordsLinked: outcome.recordsLinked as unknown as Record<string, unknown>[],
+      decisionsMade: outcome.decisionsMade as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      commitments: outcome.commitments as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      deadlinesSet: outcome.deadlinesSet as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      followUps: outcome.followUps as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      recordsCreated: outcome.recordsCreated as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      recordsUpdated: outcome.recordsUpdated as unknown as import('@prisma/client').Prisma.InputJsonValue,
+      recordsLinked: outcome.recordsLinked as unknown as import('@prisma/client').Prisma.InputJsonValue,
       extractionConfidence: confidence ?? null,
     },
   });

@@ -90,7 +90,7 @@ export default function InvoicesPage() {
     visibleObjects: invoices.slice(0, 20).map((inv) => ({
       id: inv.id,
       type: 'invoice',
-      label: `${inv.invoiceNumber ?? inv.id} — $${inv.amount}`,
+      label: `${inv.invoiceNumber ?? inv.id} — $${inv.total}`,
       status: inv.status,
       selector: `[data-invoice-id="${inv.id}"]`,
       deepLink: `/finance/invoices/${inv.id}`,

@@ -87,7 +87,12 @@ export class ShadowMemory {
         channel: message.channel,
         confidence: message.confidence ?? null,
         latencyMs: message.latencyMs ?? null,
-        telemetry: message.telemetry ?? null,
+        // Prisma's JSON column rejects Record<string, unknown> directly
+        // because `unknown` values could be non-serializable. The payload
+        // is always a shallow JSON-safe object, so cast at the boundary.
+        telemetry: message.telemetry as Parameters<
+          typeof prisma.shadowMessage.create
+        >[0]['data']['telemetry'],
       },
     });
 
