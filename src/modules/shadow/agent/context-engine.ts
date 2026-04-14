@@ -3,6 +3,7 @@
 
 import { prisma } from '@/lib/db';
 import type { AgentContext } from '../types';
+import { getShadowConfig } from '@/lib/shadow/config';
 
 /**
  * Build a complete agent context from the database and environment.
@@ -19,11 +20,12 @@ export async function buildContext(params: {
   activeEntityId?: string;
 }): Promise<AgentContext> {
   // Run all queries in parallel for speed
-  const [user, entity, recentMessages, recentActions] = await Promise.all([
+  const [user, entity, recentMessages, recentActions, shadowConfig] = await Promise.all([
     fetchUser(params.userId),
     params.activeEntityId ? fetchEntity(params.activeEntityId) : null,
     fetchRecentMessages(params.sessionId),
     fetchRecentActions(params.userId),
+    getShadowConfig(params.userId).catch(() => undefined),
   ]);
 
   if (!user) {
@@ -60,6 +62,7 @@ export async function buildContext(params: {
     timeOfDay,
     dayOfWeek,
     channel: params.channel,
+    shadowConfig,
   };
 }
 

@@ -119,6 +119,30 @@ export interface AgentContext {
   timeOfDay: string;
   dayOfWeek: string;
   channel: string;
+  shadowConfig?: {
+    safety: {
+      requirePinForFinancial: boolean;
+      requirePinForExternal: boolean;
+      requirePinForCrisis: boolean;
+      requirePinForDeletion: boolean;
+      maxBlastRadiusWithoutPin: number;
+      financialThreshold: number;
+      blastRadiusThreshold: string;
+      alwaysAnnounceAffectedCount: boolean;
+      alwaysAnnounceCost: boolean;
+      alwaysAnnounceIrreversibility: boolean;
+    };
+    proactive: {
+      briefingEnabled: boolean;
+      briefingTime: string;
+      briefingChannel: string;
+      briefingContent: string[];
+      eodEnabled: boolean;
+      eodTime: string;
+    };
+    preferences: Record<string, unknown>;
+    overrides: Record<string, string>;
+  };
 }
 
 // ─── Tool System ────────────────────────────────────────────────────────────

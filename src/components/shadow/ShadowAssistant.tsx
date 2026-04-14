@@ -48,6 +48,19 @@ export function ShadowAssistant() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Allow other parts of the app (e.g. the top-nav Shadow button) to toggle
+  // the panel via `window.dispatchEvent(new CustomEvent('shadow:toggle'))`.
+  useEffect(() => {
+    const handleToggle = () => {
+      setIsOpen((prev) => {
+        if (!prev) setIsMinimized(false);
+        return !prev;
+      });
+    };
+    window.addEventListener('shadow:toggle', handleToggle);
+    return () => window.removeEventListener('shadow:toggle', handleToggle);
+  }, []);
+
   // --------------------------------------------------
   // Handlers
   // --------------------------------------------------

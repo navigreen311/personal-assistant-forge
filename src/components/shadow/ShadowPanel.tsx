@@ -6,6 +6,7 @@ import { ShadowActionCard } from './ShadowActionCard';
 import { ShadowNavigationCard } from './ShadowNavigationCard';
 import { ShadowDecisionCard } from './ShadowDecisionCard';
 import { ShadowConfirmCard } from './ShadowConfirmCard';
+import { ShadowQuickActions } from './ShadowQuickActions';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -313,8 +314,12 @@ export function ShadowPanel({
       </div>
 
       {/* ---- Footer / Input ---- */}
-      <div className="shrink-0 border-t border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-900">
-        <div className="flex items-center gap-2">
+      <div className="shrink-0 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+        <ShadowQuickActions
+          onSend={onSendMessage}
+          hasMessages={messages.length > 0}
+        />
+        <div className="flex items-center gap-2 px-4 py-3">
           <input
             ref={inputRef}
             type="text"
