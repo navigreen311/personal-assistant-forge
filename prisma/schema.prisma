@@ -51,6 +51,7 @@ model User {
   shadowTriggers             ShadowTrigger[]
   shadowPreferences          ShadowPreference[]
   shadowOutreach             ShadowOutreach[]
+  vafIntegrationConfig       VafIntegrationConfig?
 }
 
 model Entity {
@@ -944,6 +945,11 @@ model ShadowMessage {
   confidence   Float?
   latencyMs    Int?
   telemetry    Json?
+  // VAF integration fields (additive, all nullable)
+  sttProvider  String?  @map("stt_provider") @db.VarChar(20)
+  ttsProvider  String?  @map("tts_provider") @db.VarChar(20)
+  audioQuality Json?    @map("audio_quality")
+  sentiment    Json?
   createdAt    DateTime @default(now())
 
   session ShadowVoiceSession @relation(fields: [sessionId], references: [id])
@@ -1231,4 +1237,51 @@ model ContactCallPreference {
   lastCalledAt     DateTime?
 
   contact Contact @relation(fields: [contactId], references: [id])
+}
+
+// === VAF (VisionAudioForge) Integration ===
+// Per-user configuration for the VAF microservice integration.
+// Stores user preferences for STT/TTS providers, voiceprint enrollment,
+// sentiment analysis, meeting intelligence, vision, and translation features.
+// All fields default to safe values so existing users have a working config.
+model VafIntegrationConfig {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+
+  // Voice pipeline
+  sttProvider       String  @default("vaf") @map("stt_provider") @db.VarChar(20)
+  ttsProvider       String  @default("vaf") @map("tts_provider") @db.VarChar(20)
+  audioEnhancement  Boolean @default(true) @map("audio_enhancement")
+  noiseCancellation Boolean @default(true) @map("noise_cancellation")
+  echoSuppression   Boolean @default(true) @map("echo_suppression")
+
+  // Voiceprint
+  voiceprintEnrolled   Boolean   @default(false) @map("voiceprint_enrolled")
+  voiceprintEnrolledAt DateTime? @map("voiceprint_enrolled_at")
+  voiceprintUseForAuth Boolean   @default(false) @map("voiceprint_use_for_auth")
+
+  // Sentiment
+  sentimentOnVoiceforgeCalls Boolean @default(true) @map("sentiment_on_voiceforge_calls")
+  sentimentAlertThreshold    Float   @default(0.8) @map("sentiment_alert_threshold")
+
+  // Meeting intelligence
+  autoProcessMeetings    Boolean @default(false) @map("auto_process_meetings")
+  autoExtractActionItems Boolean @default(true) @map("auto_extract_action_items")
+  autoCreateTasks        Boolean @default(true) @map("auto_create_tasks")
+
+  // Vision
+  documentAnalysisEnabled Boolean @default(true) @map("document_analysis_enabled")
+  screenVisionFallback    Boolean @default(false) @map("screen_vision_fallback")
+
+  // Translation
+  primaryLanguage    String  @default("en-US") @map("primary_language") @db.VarChar(10)
+  secondaryLanguage  String? @map("secondary_language") @db.VarChar(10)
+  autoDetectLanguage Boolean @default(false) @map("auto_detect_language")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("vaf_integration_config")
 }
