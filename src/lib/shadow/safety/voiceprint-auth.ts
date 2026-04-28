@@ -97,10 +97,11 @@ export async function verifyVoiceprint(
   if (!result.antiSpoofResult.isLiveVoice || !result.antiSpoofResult.isNotSynthesized) {
     await prisma.shadowAuthEvent.create({
       data: {
+        userId,
         method: 'voiceprint',
         result: 'fail',
         riskLevel: 'high',
-        actionAttempted: `voiceprint_spoof_detected:${userId}`,
+        actionAttempted: 'voiceprint_spoof_detected',
       },
     });
 
@@ -116,10 +117,11 @@ export async function verifyVoiceprint(
   if (result.match && result.confidence >= result.threshold) {
     await prisma.shadowAuthEvent.create({
       data: {
+        userId,
         method: 'voiceprint',
         result: 'pass',
         riskLevel: actionRiskLevel,
-        actionAttempted: `voiceprint_verified:${userId}`,
+        actionAttempted: 'voiceprint_verified',
       },
     });
 
@@ -134,10 +136,11 @@ export async function verifyVoiceprint(
   // 5. Live voice but not a match.
   await prisma.shadowAuthEvent.create({
     data: {
+      userId,
       method: 'voiceprint',
       result: 'fail',
       riskLevel: actionRiskLevel,
-      actionAttempted: `voiceprint_mismatch:${userId}`,
+      actionAttempted: 'voiceprint_mismatch',
     },
   });
 

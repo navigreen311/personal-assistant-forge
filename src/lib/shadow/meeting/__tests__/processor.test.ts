@@ -130,7 +130,8 @@ describe('MeetingProcessor', () => {
     mockEventFindUniqueOrThrow.mockResolvedValue({
       id: 'evt-1',
       entityId: 'entity-9',
-      meetingNotes: 'Discussion topics. recordingUrl: https://r.example/audio.mp3',
+      recordingUrl: 'https://r.example/audio.mp3',
+      meetingNotes: 'Discussion topics.',
     });
     mockEventUpdate.mockResolvedValue({ id: 'evt-1' });
 
