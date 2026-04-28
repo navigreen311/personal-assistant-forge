@@ -33,6 +33,7 @@
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
     "stripe": "^20.3.1",
+    "html2canvas": "^1.4.1",
     "twilio": "^5.12.1",
     "uuid": "^13.0.0",
     "zod": "^4.3.6"
