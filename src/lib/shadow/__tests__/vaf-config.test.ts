@@ -3,19 +3,17 @@
  *
  * Mocks `@/lib/db` with an in-memory prisma stub so the helpers can be
  * exercised without a real database. Verifies:
- *   - getVafConfig returns defaults when no row exists
- *   - getVafConfig returns the stored row when it does
+ *   - getVafConfig auto-creates a default row on first read (upsert)
+ *   - getVafConfig returns the stored row when it already exists
  *   - updateVafConfig upserts and only writes patchable fields
  *   - updateVafConfig drops malformed input (wrong types, out-of-range)
  */
 
-const mockFindUnique = jest.fn();
 const mockUpsert = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
     vafIntegrationConfig: {
-      findUnique: (...args: unknown[]) => mockFindUnique(...args),
       upsert: (...args: unknown[]) => mockUpsert(...args),
     },
   },
@@ -55,22 +53,41 @@ const STORED_ROW = {
 };
 
 beforeEach(() => {
-  mockFindUnique.mockReset();
   mockUpsert.mockReset();
 });
 
 describe('getVafConfig', () => {
-  it('returns defaults blended with userId when no row exists', async () => {
-    mockFindUnique.mockResolvedValueOnce(null);
+  it('auto-creates a default row when none exists and returns the new row', async () => {
+    // Simulate Prisma's upsert behavior: when the row is missing, the
+    // create branch fires and returns a fresh row populated from the
+    // create payload (plus DB-side timestamps).
+    mockUpsert.mockImplementationOnce(async (args: { create: Record<string, unknown> }) => ({
+      id: 'cfg-new',
+      ...args.create,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
 
     const result = await getVafConfig(USER_ID);
 
-    expect(mockFindUnique).toHaveBeenCalledWith({ where: { userId: USER_ID } });
-    expect(result).toEqual({ ...DEFAULT_VAF_CONFIG, userId: USER_ID });
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    const call = mockUpsert.mock.calls[0][0];
+    expect(call.where).toEqual({ userId: USER_ID });
+    // Auto-create branch must seed the full default config.
+    expect(call.create).toEqual({ userId: USER_ID, ...DEFAULT_VAF_CONFIG });
+    // Empty update — we do not touch existing values on read.
+    expect(call.update).toEqual({});
+
+    // Returned shape mirrors the defaults.
+    expect(result.userId).toBe(USER_ID);
+    expect(result.sttProvider).toBe(DEFAULT_VAF_CONFIG.sttProvider);
+    expect(result.ttsProvider).toBe(DEFAULT_VAF_CONFIG.ttsProvider);
+    expect(result.audioEnhancement).toBe(DEFAULT_VAF_CONFIG.audioEnhancement);
+    expect(result.voiceprintEnrolled).toBe(false);
   });
 
-  it('returns the stored row when one exists', async () => {
-    mockFindUnique.mockResolvedValueOnce(STORED_ROW);
+  it('returns the stored row when one already exists (upsert update branch is a no-op)', async () => {
+    mockUpsert.mockResolvedValueOnce(STORED_ROW);
 
     const result = await getVafConfig(USER_ID);
 
@@ -86,25 +103,27 @@ describe('getVafConfig', () => {
 
 describe('updateVafConfig', () => {
   it('upserts the row using a sanitized patch and returns the post-update config', async () => {
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce({
-      ...STORED_ROW,
-      sttProvider: 'whisper',
-      audioEnhancement: false,
-    });
+    // First call: write upsert. Second call: read upsert (no-op update).
+    mockUpsert
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        ...STORED_ROW,
+        sttProvider: 'whisper',
+        audioEnhancement: false,
+      });
 
     const patch = { sttProvider: 'whisper', audioEnhancement: false };
     const result = await updateVafConfig(USER_ID, patch);
 
-    expect(mockUpsert).toHaveBeenCalledTimes(1);
-    const call = mockUpsert.mock.calls[0][0];
-    expect(call.where).toEqual({ userId: USER_ID });
-    expect(call.create).toEqual({
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
+    const writeCall = mockUpsert.mock.calls[0][0];
+    expect(writeCall.where).toEqual({ userId: USER_ID });
+    expect(writeCall.create).toEqual({
       userId: USER_ID,
       sttProvider: 'whisper',
       audioEnhancement: false,
     });
-    expect(call.update).toEqual({
+    expect(writeCall.update).toEqual({
       sttProvider: 'whisper',
       audioEnhancement: false,
     });
@@ -113,8 +132,9 @@ describe('updateVafConfig', () => {
   });
 
   it('drops fields with the wrong type (string for boolean, etc.)', async () => {
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce(STORED_ROW);
+    mockUpsert
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(STORED_ROW);
 
     await updateVafConfig(USER_ID, {
       audioEnhancement: 'yes', // wrong type
@@ -133,8 +153,9 @@ describe('updateVafConfig', () => {
   });
 
   it('ignores fields that are not on the patchable allowlist', async () => {
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce(STORED_ROW);
+    mockUpsert
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(STORED_ROW);
 
     await updateVafConfig(USER_ID, {
       voiceprintEnrolled: true, // not patchable — server-side only
@@ -149,8 +170,9 @@ describe('updateVafConfig', () => {
   });
 
   it('accepts null / empty string for nullable secondaryLanguage', async () => {
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce({ ...STORED_ROW, secondaryLanguage: null });
+    mockUpsert
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ ...STORED_ROW, secondaryLanguage: null });
 
     await updateVafConfig(USER_ID, { secondaryLanguage: null });
 
@@ -158,22 +180,10 @@ describe('updateVafConfig', () => {
     expect(call.update).toEqual({ secondaryLanguage: null });
   });
 
-  it('returns defaults blended with userId if the post-update read finds no row', async () => {
-    // (Edge case: row gets deleted between upsert and read — the helper
-    // shouldn't blow up.)
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce(null);
-
-    const result = await updateVafConfig(USER_ID, { autoDetectLanguage: true });
-
-    expect(result.userId).toBe(USER_ID);
-    // Defaults — because findUnique returned null after the upsert.
-    expect(result.autoDetectLanguage).toBe(false);
-  });
-
   it('returns gracefully on a non-object patch', async () => {
-    mockUpsert.mockResolvedValueOnce({});
-    mockFindUnique.mockResolvedValueOnce(STORED_ROW);
+    mockUpsert
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(STORED_ROW);
 
     await updateVafConfig(USER_ID, 'not an object');
 

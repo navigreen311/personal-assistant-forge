@@ -76,18 +76,20 @@ export type PatchableVafField = (typeof PATCHABLE_VAF_FIELDS)[number];
 export type VafConfigPatch = Partial<Pick<VafConfigShape, PatchableVafField>>;
 
 /**
- * Read the user's VAF config row. If no row exists, returns the
- * defaults blended with the user id (no DB write — lazy creation
- * happens on first PATCH).
+ * Read the user's VAF config row. If no row exists, lazy-creates one
+ * with the default values via upsert so existing and new users alike
+ * always have a persistent config row backing the settings UI.
+ *
+ * Lazy-create on first read (rather than at signup time) covers users
+ * who registered before the VAF integration shipped, without the need
+ * for a backfill migration.
  */
 export async function getVafConfig(userId: string): Promise<VafConfigShape & { userId: string }> {
-  const row = await prisma.vafIntegrationConfig.findUnique({
+  const row = await prisma.vafIntegrationConfig.upsert({
     where: { userId },
+    create: { userId, ...DEFAULT_VAF_CONFIG },
+    update: {},
   });
-
-  if (!row) {
-    return { ...DEFAULT_VAF_CONFIG, userId };
-  }
 
   return {
     userId: row.userId,
