@@ -9,6 +9,12 @@ import { randomBytes } from 'crypto';
 import { prisma } from '@/lib/db';
 import { classifyAction } from './action-classifier';
 import type { BlastRadiusScope } from './action-classifier';
+import {
+  verifyVoiceprint,
+  getAuthRequirements,
+  type ActionRiskLevel,
+  type VoiceprintVerifyResult,
+} from '@/lib/shadow/safety/voiceprint-auth';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +51,28 @@ export interface DetermineAuthParams {
   riskScore: number;
   channel: string;
   deviceIdentifier?: string;
+  /**
+   * Optional flag indicating whether the caller has already passed a
+   * voiceprint check for this request. When `true` and the user has
+   * `vafIntegrationConfig.voiceprintUseForAuth` enabled, voiceprint
+   * verification can substitute for SMS at high risk and PIN at medium
+   * risk. Per spec, PIN is ALWAYS required for high risk regardless.
+   *
+   * If omitted (the default), behavior is identical to pre-VAF.
+   */
+  voiceprintVerified?: boolean;
+}
+
+export interface VerifyVoiceprintForActionParams {
+  userId: string;
+  audioSample: Buffer;
+  riskLevel: ActionRiskLevel;
+}
+
+export interface VerifyVoiceprintForActionResult {
+  verified: boolean;
+  confidence: number;
+  antiSpoofPassed: boolean;
 }
 
 interface StoredSmsCode {
@@ -308,6 +336,35 @@ export class ShadowAuthManager {
   }
 
   // =========================================================================
+  // Voiceprint Verification (thin wrapper)
+  // =========================================================================
+
+  /**
+   * Verify a user's voiceprint for an action. Thin wrapper around
+   * `verifyVoiceprint` from @/lib/shadow/safety/voiceprint-auth so that
+   * callers can route everything voice-auth-related through the
+   * `ShadowAuthManager` seam without importing the lib helper directly.
+   *
+   * Anti-spoof short-circuits inside the underlying helper; this wrapper
+   * passes the result through unchanged.
+   */
+  async verifyVoiceprintForAction(
+    params: VerifyVoiceprintForActionParams
+  ): Promise<VerifyVoiceprintForActionResult> {
+    const { userId, audioSample, riskLevel } = params;
+    const result: VoiceprintVerifyResult = await verifyVoiceprint(
+      userId,
+      audioSample,
+      riskLevel
+    );
+    return {
+      verified: result.verified,
+      confidence: result.confidence,
+      antiSpoofPassed: result.antiSpoofPassed,
+    };
+  }
+
+  // =========================================================================
   // Dynamic Auth Determination
   // =========================================================================
 
@@ -317,7 +374,7 @@ export class ShadowAuthManager {
    * channel, and device trust status.
    */
   async determineAuthRequired(params: DetermineAuthParams): Promise<AuthRequirement> {
-    const { userId, action, riskScore, channel, deviceIdentifier } = params;
+    const { userId, action, riskScore, channel, deviceIdentifier, voiceprintVerified } = params;
 
     // Classify the action
     const classification = classifyAction(action);
@@ -408,6 +465,52 @@ export class ShadowAuthManager {
       requiresSmsCode = false;
       requiresPin = true;
       reasons.push('Trusted device: SMS downgraded to PIN only');
+    }
+
+    // -----------------------------------------------------------------------
+    // Voiceprint downgrade (gated behind vafIntegrationConfig.voiceprintUseForAuth)
+    // -----------------------------------------------------------------------
+    // STRICTLY ADDITIVE: only runs when the caller passes voiceprintVerified
+    // AND the user has explicitly opted in via vafIntegrationConfig.
+    if (voiceprintVerified === true) {
+      // vafIntegrationConfig is defined in schema.prisma but the generated
+      // Prisma client types in this repo don't always include it until
+      // `prisma generate` runs in CI. Cast through unknown to avoid a
+      // tsc error in this changed file; runtime behavior is unchanged.
+      const vafConfig = await (
+        prisma as unknown as {
+          vafIntegrationConfig: {
+            findUnique: (args: {
+              where: { userId: string };
+            }) => Promise<{ voiceprintUseForAuth?: boolean } | null>;
+          };
+        }
+      ).vafIntegrationConfig.findUnique({
+        where: { userId },
+      });
+
+      if (vafConfig?.voiceprintUseForAuth === true) {
+        // Map riskScore back to the low/medium/high bucket the matrix uses.
+        const computedRiskLevel: ActionRiskLevel =
+          riskScore >= RISK_THRESHOLD_SMS
+            ? 'high'
+            : riskScore >= RISK_THRESHOLD_PIN
+              ? 'medium'
+              : 'low';
+
+        // High risk: PIN stays mandatory; voiceprint replaces SMS only.
+        // Medium risk: voiceprint replaces PIN.
+        // Low risk: nothing to drop.
+        if (computedRiskLevel === 'high' && requiresPin && requiresSmsCode) {
+          const matrix = getAuthRequirements('high', true, safetyConfig);
+          requiresSmsCode = matrix.requireSmsCode; // false
+          reasons.push('Voiceprint verified: SMS dropped (PIN still required for high risk)');
+        } else if (computedRiskLevel === 'medium' && requiresPin && !requiresSmsCode) {
+          const matrix = getAuthRequirements('medium', true, safetyConfig);
+          requiresPin = matrix.requirePin; // false
+          reasons.push('Voiceprint verified: PIN dropped at medium risk');
+        }
+      }
     }
 
     // If no specific reason triggered, and classification level is TAP,
