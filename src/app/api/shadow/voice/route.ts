@@ -106,7 +106,10 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Otherwise return JSON with transcript and text response
+        // Otherwise return JSON with transcript and text response.
+        // When the pipeline detected unusable audio quality, surface
+        // switchToText: true so the client can swap to keyboard input
+        // instead of treating the empty transcript as a silent turn.
         return success({
           transcript: result.transcript,
           response: result.response
@@ -119,6 +122,11 @@ export async function POST(request: NextRequest) {
             : null,
           sessionId,
           idlePrompt: idlePrompt ?? undefined,
+          switchToText: result.switchToText ?? false,
+          switchToTextMessage: result.switchToTextMessage,
+          sttProvider: result.sttProvider,
+          ttsProvider: result.ttsProvider,
+          audioQuality: result.audioQuality ?? undefined,
         });
       }
 

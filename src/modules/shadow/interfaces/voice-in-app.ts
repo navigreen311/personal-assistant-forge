@@ -3,9 +3,20 @@
 // STT/TTS pipeline with failover chains:
 //   STT: Whisper API -> Deepgram -> error fallback
 //   TTS: ElevenLabs -> Google TTS -> text-only fallback
+//
+// VAF integration (WS07):
+//   When the user's VafIntegrationConfig.sttProvider === 'vaf', STT and
+//   audio-quality analysis are routed through ShadowVoicePipeline, which
+//   gracefully falls back to the legacy chain if VAF is unavailable.
+//   When .ttsProvider === 'vaf', TTS is also routed through the pipeline.
+//   Per-message provider/quality telemetry is persisted on ShadowMessage.
 // ============================================================================
 
 import type { ShadowResponse } from '../types';
+import { prisma } from '@/lib/db';
+import { getVafConfig } from '@/lib/shadow/vaf-config';
+import { ShadowVoicePipeline } from '@/lib/shadow/voice/pipeline';
+import type { AudioQualityReport } from '@/lib/vaf/audio-quality-client';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +33,31 @@ export interface AudioInputResult {
   transcript: string;
   response: ShadowResponse | null;
   audioResponse?: Buffer;
+  /**
+   * Provider that handled STT for this turn. Mirrors the value persisted
+   * onto ShadowMessage.stt_provider for the user-input row.
+   */
+  sttProvider?: 'vaf' | 'browser' | 'whisper' | 'deepgram' | 'none';
+  /**
+   * Provider that handled TTS for this turn. Mirrors the value persisted
+   * onto ShadowMessage.tts_provider for the assistant-response row.
+   */
+  ttsProvider?: 'vaf' | 'browser' | 'elevenlabs' | 'google' | 'none';
+  /**
+   * VAF AudioQualityReport for the user-input audio, when available.
+   * Persisted onto ShadowMessage.audio_quality (user-input row only).
+   */
+  audioQuality?: AudioQualityReport | null;
+  /**
+   * True when audio quality is too poor to transcribe reliably and the
+   * client should switch to text input instead of sending the (empty)
+   * transcript through the agent.
+   */
+  switchToText?: boolean;
+  /**
+   * Friendly user-facing message accompanying switchToText.
+   */
+  switchToTextMessage?: string;
 }
 
 export interface TTSParams {
@@ -111,25 +147,172 @@ function estimateAudioDurationMs(buffer: Buffer, format: string): number {
 // VoiceInAppHandler
 // ---------------------------------------------------------------------------
 
+export interface VoiceInAppHandlerDeps {
+  /**
+   * Optional ShadowVoicePipeline injection. Used when the user's VAF
+   * config selects 'vaf' as STT or TTS provider. If not supplied, a
+   * default singleton is constructed lazily on first use. Tests inject
+   * a stubbed pipeline directly.
+   */
+  pipeline?: ShadowVoicePipeline;
+  /**
+   * Optional override for VAF config lookup. Production uses the real
+   * `getVafConfig`; tests pass a stub.
+   */
+  vafConfigLoader?: (userId: string) => Promise<{
+    sttProvider: string;
+    ttsProvider: string;
+  }>;
+}
+
+const SWITCH_TO_TEXT_MESSAGE =
+  "It's hard to hear you. Let me switch to text.";
+
 export class VoiceInAppHandler {
+  private readonly pipelineOverride?: ShadowVoicePipeline;
+  private pipelineCached?: ShadowVoicePipeline;
+  private pipelineInitialized = false;
+  private readonly vafConfigLoader: (userId: string) => Promise<{
+    sttProvider: string;
+    ttsProvider: string;
+  }>;
+
+  constructor(deps?: VoiceInAppHandlerDeps) {
+    this.pipelineOverride = deps?.pipeline;
+    this.vafConfigLoader =
+      deps?.vafConfigLoader ??
+      (async (userId: string) => {
+        const cfg = await getVafConfig(userId);
+        return { sttProvider: cfg.sttProvider, ttsProvider: cfg.ttsProvider };
+      });
+  }
+
+  /**
+   * Lazily build (and initialize once) the ShadowVoicePipeline. Reused
+   * across requests on the same handler instance. If initialization
+   * throws (e.g., VAF probe fails), the pipeline still works in
+   * fallback mode — `isUsingVAF()` will return false and the legacy
+   * paths take over.
+   */
+  private async getPipeline(): Promise<ShadowVoicePipeline> {
+    if (this.pipelineOverride) {
+      // Test injection — assume caller pre-initialized.
+      return this.pipelineOverride;
+    }
+    if (!this.pipelineCached) {
+      this.pipelineCached = new ShadowVoicePipeline();
+    }
+    if (!this.pipelineInitialized) {
+      try {
+        await this.pipelineCached.initialize({
+          voicePersona: 'default',
+          speechSpeed: 1.0,
+        });
+      } catch {
+        // Initialization is best-effort. Pipeline remains usable in
+        // browser/fallback mode.
+      }
+      this.pipelineInitialized = true;
+    }
+    return this.pipelineCached;
+  }
+
   // -------------------------------------------------------------------------
   // processAudioInput — Full pipeline: STT -> process -> TTS
   // -------------------------------------------------------------------------
 
   async processAudioInput(params: AudioInputParams): Promise<AudioInputResult> {
-    const { audioBuffer, sessionId, format = 'webm' } = params;
+    const { audioBuffer, sessionId, userId, format = 'webm' } = params;
 
-    // 1. Speech-to-text
-    const sttResult = await this.speechToText({
-      audio: audioBuffer,
-      format,
-      language: DEFAULT_LANGUAGE,
-    });
+    // Resolve VAF config to choose providers. Falls back to legacy
+    // behavior on any failure (non-breaking).
+    let sttProviderPref = 'whisper';
+    let ttsProviderPref = 'elevenlabs';
+    try {
+      const cfg = await this.vafConfigLoader(userId);
+      sttProviderPref = cfg.sttProvider;
+      ttsProviderPref = cfg.ttsProvider;
+    } catch {
+      // Treat as legacy.
+    }
 
-    if (!sttResult.transcript || sttResult.transcript.trim().length === 0) {
+    // 1. Speech-to-text + audio quality
+    let transcript = '';
+    let sttProviderUsed: AudioInputResult['sttProvider'] = 'none';
+    let audioQuality: AudioQualityReport | null = null;
+    let switchToText = false;
+
+    if (sttProviderPref === 'vaf') {
+      const pipeline = await this.getPipeline();
+      try {
+        const vafResult = await pipeline.processUserAudio(audioBuffer);
+        audioQuality = vafResult.report ?? null;
+        if (vafResult.quality === 'poor') {
+          // Persist provider/quality telemetry, then bail out without
+          // running the agent.
+          switchToText = true;
+          sttProviderUsed = 'vaf';
+          await this.persistUserMessage({
+            sessionId,
+            transcript: '',
+            sttProvider: 'vaf',
+            audioQuality,
+          });
+          return {
+            transcript: '',
+            response: null,
+            sttProvider: 'vaf',
+            audioQuality,
+            switchToText,
+            switchToTextMessage: SWITCH_TO_TEXT_MESSAGE,
+          };
+        }
+        if (vafResult.provider === 'vaf' && vafResult.transcript) {
+          transcript = vafResult.transcript;
+          sttProviderUsed = 'vaf';
+        }
+      } catch {
+        // Pipeline failure — fall through to legacy STT.
+      }
+    }
+
+    if (!transcript) {
+      // Legacy STT path (unchanged when sttProviderPref is not 'vaf',
+      // OR a fallback when VAF couldn't transcribe).
+      const sttResult = await this.speechToText({
+        audio: audioBuffer,
+        format,
+        language: DEFAULT_LANGUAGE,
+      });
+      transcript = sttResult.transcript;
+      // The legacy path tries Whisper first; we cannot perfectly know
+      // which provider succeeded without surfacing it from
+      // speechToText. Mark as 'whisper' if an OpenAI key is configured,
+      // else 'deepgram', else 'none'.
+      if (sttProviderUsed === 'none') {
+        if (transcript) {
+          sttProviderUsed = process.env.OPENAI_API_KEY
+            ? 'whisper'
+            : process.env.DEEPGRAM_API_KEY
+              ? 'deepgram'
+              : 'none';
+        }
+      }
+    }
+
+    if (!transcript || transcript.trim().length === 0) {
+      await this.persistUserMessage({
+        sessionId,
+        transcript: '',
+        sttProvider: sttProviderUsed,
+        audioQuality,
+      });
       return {
         transcript: '',
         response: null,
+        sttProvider: sttProviderUsed,
+        audioQuality,
+        switchToText: false,
       };
     }
 
@@ -139,26 +322,143 @@ export class VoiceInAppHandler {
     //    placeholder that the caller (API route) should replace with
     //    the real agent response.
     const response: ShadowResponse = {
-      text: `Received: "${sttResult.transcript}"`,
+      text: `Received: "${transcript}"`,
       contentType: 'TEXT',
       sessionId,
     };
 
+    // Persist the user-input message with provider + quality telemetry
+    // BEFORE generating TTS so the user row exists even if TTS hangs.
+    await this.persistUserMessage({
+      sessionId,
+      transcript,
+      sttProvider: sttProviderUsed,
+      audioQuality,
+    });
+
     // 3. Generate TTS for the response text
     let audioResponse: Buffer | undefined;
-    try {
-      const ttsResult = await this.textToSpeech({ text: response.text });
-      audioResponse = ttsResult.audio;
-    } catch {
-      // TTS failed entirely — continue without audio
-      audioResponse = undefined;
+    let ttsProviderUsed: AudioInputResult['ttsProvider'] = 'none';
+
+    if (ttsProviderPref === 'vaf') {
+      const pipeline = await this.getPipeline();
+      try {
+        const speakResult = await pipeline.speak(response.text);
+        if (speakResult.audioBuffer && speakResult.audioBuffer.byteLength > 0) {
+          audioResponse = Buffer.from(speakResult.audioBuffer);
+          ttsProviderUsed = speakResult.provider;
+        } else if (speakResult.provider === 'vaf') {
+          // VAF returned no audio — treat as failure, fall through.
+        } else {
+          // Browser fallback returned nothing (server has no Web Speech).
+        }
+      } catch {
+        // Fall through to legacy TTS.
+      }
     }
 
+    if (!audioResponse) {
+      try {
+        const ttsResult = await this.textToSpeech({ text: response.text });
+        if (ttsResult.audio.length > 0) {
+          audioResponse = ttsResult.audio;
+          ttsProviderUsed = process.env.ELEVENLABS_API_KEY
+            ? 'elevenlabs'
+            : process.env.GOOGLE_TTS_API_KEY
+              ? 'google'
+              : 'none';
+        }
+      } catch {
+        // TTS failed entirely — continue without audio
+        audioResponse = undefined;
+      }
+    }
+
+    // Persist the assistant-response message with TTS provider only
+    // (audioQuality lives on the user-input row).
+    await this.persistAssistantMessage({
+      sessionId,
+      text: response.text,
+      ttsProvider: ttsProviderUsed,
+    });
+
     return {
-      transcript: sttResult.transcript,
+      transcript,
       response,
       audioResponse,
+      sttProvider: sttProviderUsed,
+      ttsProvider: ttsProviderUsed,
+      audioQuality,
+      switchToText: false,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Persistence helpers — write provider/quality telemetry onto
+  // ShadowMessage rows. Best-effort: any DB error is swallowed to avoid
+  // breaking the voice request path.
+  // -------------------------------------------------------------------------
+
+  private async persistUserMessage(args: {
+    sessionId: string;
+    transcript: string;
+    sttProvider: AudioInputResult['sttProvider'];
+    audioQuality: AudioQualityReport | null;
+  }): Promise<void> {
+    try {
+      // Only persist if the session row actually exists. The voice
+      // route creates client-side ad-hoc session ids like
+      // `voice_<ts>` for unauthenticated/local dev paths; writing
+      // those would violate the FK to ShadowVoiceSession.
+      const session = await prisma.shadowVoiceSession.findUnique({
+        where: { id: args.sessionId },
+        select: { id: true, currentChannel: true },
+      });
+      if (!session) return;
+
+      await prisma.shadowMessage.create({
+        data: {
+          sessionId: session.id,
+          role: 'user',
+          content: args.transcript,
+          contentType: 'TEXT',
+          channel: session.currentChannel,
+          sttProvider: args.sttProvider ?? null,
+          // Cast: prisma's Json input type is fiddly across versions;
+          // AudioQualityReport is a plain JSON-compatible object.
+          audioQuality: (args.audioQuality ?? null) as unknown as never,
+        },
+      });
+    } catch (err) {
+      console.warn('[VoiceInApp] persistUserMessage failed:', err);
+    }
+  }
+
+  private async persistAssistantMessage(args: {
+    sessionId: string;
+    text: string;
+    ttsProvider: AudioInputResult['ttsProvider'];
+  }): Promise<void> {
+    try {
+      const session = await prisma.shadowVoiceSession.findUnique({
+        where: { id: args.sessionId },
+        select: { id: true, currentChannel: true },
+      });
+      if (!session) return;
+
+      await prisma.shadowMessage.create({
+        data: {
+          sessionId: session.id,
+          role: 'assistant',
+          content: args.text,
+          contentType: 'TEXT',
+          channel: session.currentChannel,
+          ttsProvider: args.ttsProvider ?? null,
+        },
+      });
+    } catch (err) {
+      console.warn('[VoiceInApp] persistAssistantMessage failed:', err);
+    }
   }
 
   // -------------------------------------------------------------------------
