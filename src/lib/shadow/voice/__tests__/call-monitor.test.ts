@@ -5,6 +5,13 @@
 // and a fake WebSocket factory so no real network is involved.
 // ============================================================================
 
+const mockWriteSentimentToMessage = jest.fn();
+
+jest.mock('@/lib/shadow/voice/sentiment-storage', () => ({
+  writeSentimentToMessage: (...args: unknown[]) =>
+    mockWriteSentimentToMessage(...args),
+}));
+
 import {
   monitorCallSentiment,
   __setSentimentAnalyzerForTesting,
@@ -81,6 +88,8 @@ let lastWS: FakeWS | null = null;
 
 beforeEach(() => {
   lastWS = null;
+  mockWriteSentimentToMessage.mockReset();
+  mockWriteSentimentToMessage.mockResolvedValue(undefined);
   __setSentimentAnalyzerForTesting(makeAnalyzerStub());
   __setWebSocketFactoryForTesting((url) => {
     lastWS = new FakeWS(url);
@@ -192,5 +201,84 @@ describe('monitorCallSentiment', () => {
     expect(() => lastWS!.emitRaw('not json')).not.toThrow();
     expect(onEscalation).not.toHaveBeenCalled();
     expect(onInsight).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Optional ShadowMessage persistence (messageId branch)
+  // -------------------------------------------------------------------------
+
+  it('does NOT call writeSentimentToMessage when messageId is omitted', async () => {
+    const onEscalation = jest.fn();
+    const onInsight = jest.fn();
+
+    await monitorCallSentiment('call-1', null, onEscalation, onInsight);
+    lastWS!.emit(buildSentiment({ overall: 'positive' }));
+
+    expect(mockWriteSentimentToMessage).not.toHaveBeenCalled();
+  });
+
+  it('calls writeSentimentToMessage with messageId + sentiment when provided', async () => {
+    const onEscalation = jest.fn();
+    const onInsight = jest.fn();
+
+    await monitorCallSentiment(
+      'call-1',
+      null,
+      onEscalation,
+      onInsight,
+      'msg-42',
+    );
+
+    const sentiment = buildSentiment({ overall: 'positive' });
+    lastWS!.emit(sentiment);
+
+    expect(mockWriteSentimentToMessage).toHaveBeenCalledTimes(1);
+    expect(mockWriteSentimentToMessage).toHaveBeenCalledWith(
+      'msg-42',
+      expect.objectContaining({ overall: 'positive' }),
+    );
+  });
+
+  it('still dispatches escalation/insight when persistence rejects', async () => {
+    mockWriteSentimentToMessage.mockRejectedValueOnce(new Error('db down'));
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const onEscalation = jest.fn();
+    const onInsight = jest.fn();
+
+    await monitorCallSentiment(
+      'call-1',
+      null,
+      onEscalation,
+      onInsight,
+      'msg-42',
+    );
+
+    lastWS!.emit(buildSentiment({ overall: 'hostile' }));
+
+    expect(onEscalation).toHaveBeenCalledWith(
+      'caller_hostile',
+      expect.any(Object),
+    );
+
+    // Allow the rejected promise to settle so the warn is captured.
+    await new Promise((resolve) => setImmediate(resolve));
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT call writeSentimentToMessage on malformed messages', async () => {
+    const onEscalation = jest.fn();
+    const onInsight = jest.fn();
+
+    await monitorCallSentiment(
+      'call-1',
+      null,
+      onEscalation,
+      onInsight,
+      'msg-42',
+    );
+    lastWS!.emitRaw('not json');
+
+    expect(mockWriteSentimentToMessage).not.toHaveBeenCalled();
   });
 });

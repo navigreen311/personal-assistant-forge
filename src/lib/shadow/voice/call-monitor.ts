@@ -11,6 +11,7 @@ import {
   VAFSentimentAnalyzer,
   type SentimentResult,
 } from '@/lib/vaf/sentiment-client';
+import { writeSentimentToMessage } from '@/lib/shadow/voice/sentiment-storage';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -99,6 +100,11 @@ const SATISFACTION_INSIGHT_THRESHOLD = 0.8;
  * @param onEscalation Fired for events that should change call control flow:
  *                     hostility, threats, or VAF's own transfer recommendation.
  * @param onInsight    Fired for coaching cues: caller confusion or satisfaction.
+ * @param messageId    OPTIONAL ShadowMessage id to persist each incoming
+ *                     sentiment frame onto. When omitted, no DB write happens
+ *                     and behavior is identical to the original signature.
+ *                     Persistence failures are logged and swallowed — they
+ *                     never block escalation/insight dispatch.
  * @returns A handle exposing the VAF sessionId and a `close()` to tear down
  *          the websocket.
  */
@@ -107,6 +113,7 @@ export async function monitorCallSentiment(
   playbook: unknown,
   onEscalation: EscalationCallback,
   onInsight: InsightCallback,
+  messageId?: string,
 ): Promise<CallMonitorHandle> {
   // `playbook` is reserved for future per-playbook escalation overrides.
   void playbook;
@@ -124,6 +131,18 @@ export async function monitorCallSentiment(
       return;
     }
     if (!sentiment || typeof sentiment !== 'object') return;
+
+    // --- Best-effort persistence ------------------------------------------
+    // When a messageId is supplied, persist this frame to the ShadowMessage
+    // row. Fire-and-forget: do NOT await, do NOT block escalation dispatch.
+    if (messageId) {
+      void writeSentimentToMessage(messageId, sentiment).catch((err) => {
+        console.warn(
+          `[call-monitor] failed to persist sentiment for message ${messageId}:`,
+          (err as Error).message,
+        );
+      });
+    }
 
     // --- Escalation triggers ----------------------------------------------
     if (
