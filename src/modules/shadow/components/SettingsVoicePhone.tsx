@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import TrustedDevicesList, { TrustedDevice } from './TrustedDevicesList';
 import AudioQualitySettings from './AudioQualitySettings';
+import AdvancedVoiceSettings from '@/components/shadow/settings/AdvancedVoiceSettings';
 
 export interface VoicePhoneSettings {
   voicePersona: string;
@@ -592,6 +593,15 @@ export default function SettingsVoicePhone({ initialData, onSave }: SettingsVoic
         vadSensitivity={settings.vadSensitivity}
         onChange={(updates) => setSettings((prev) => ({ ...prev, ...updates }))}
       />
+
+      {/* Advanced Voice Settings (Powered by VisionAudioForge)
+       *
+       * Self-fetches its current state from /api/shadow/vaf-config and
+       * self-PATCHes on changes — keeps it independent of this form's
+       * Save button. Rendered as a collapsible section near the bottom
+       * so the panel doesn't dominate the page on first load.
+       */}
+      <AdvancedVoiceSettings defaultCollapsed />
 
       {/* Save Button */}
       <div className="flex items-center gap-3">
