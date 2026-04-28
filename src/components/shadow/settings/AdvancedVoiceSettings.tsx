@@ -6,13 +6,10 @@
  * Powered by VisionAudioForge (VAF). This is a presentational + state-managed
  * component. Persistence is delegated to the parent (or to /api/shadow/vaf-config
  * when used standalone) via the onChange callback.
- *
- * Where the spec calls for the voiceprint enrollment subsection, we render a
- * <div data-vaf-voiceprint-slot /> placeholder. WS02 will replace that with
- * its <VoiceprintEnrollmentSection /> after WS04 is merged.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import VoiceprintEnrollmentSection from '@/components/shadow/safety/VoiceprintEnrollmentSection';
 
 // ---- Types --------------------------------------------------------------
 
@@ -328,18 +325,23 @@ export default function AdvancedVoiceSettings({
             onChange={(v) => apply({ autoDetectLanguage: v })}
           />
 
-          {/* Voiceprint enrollment slot — owned by WS02. */}
-          {/* TODO(ws02): Replace this slot with <VoiceprintEnrollmentSection />
-              once WS02 is merged. The component will live at
-              src/components/shadow/settings/VoiceprintEnrollmentSection.tsx. */}
-          <div
-            data-vaf-voiceprint-slot
-            className="border border-dashed border-gray-300 dark:border-gray-600 rounded-md p-4 text-xs text-gray-500 dark:text-gray-400"
-            role="note"
-          >
-            Voiceprint enrollment will appear here once VAF&rsquo;s biometric
-            authentication module is enabled.
-          </div>
+          <VoiceprintEnrollmentSection
+            initialEnrolled={config.voiceprintEnrolled}
+            onEnrollmentChange={(enrolled) =>
+              apply({
+                voiceprintEnrolled: enrolled,
+                voiceprintEnrolledAt: enrolled ? new Date().toISOString() : null,
+              })
+            }
+          />
+          <ToggleRow
+            id="vaf-voiceprint-use-for-auth"
+            label="Use voiceprint for auth"
+            description="Reduce PIN prompts on medium-risk actions when your voiceprint matches. PIN is still required for high-risk actions."
+            checked={config.voiceprintUseForAuth}
+            onChange={(v) => apply({ voiceprintUseForAuth: v })}
+            disabled={!config.voiceprintEnrolled}
+          />
 
           {/* Call Sentiment Analysis */}
           <div className="space-y-3">
@@ -458,15 +460,17 @@ function ToggleRow({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   id: string;
   label: string;
   description: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div className={`flex items-start justify-between gap-4 ${disabled ? 'opacity-50' : ''}`}>
       <div className="flex-1 min-w-0">
         <label
           htmlFor={id}
@@ -482,8 +486,9 @@ function ToggleRow({
         type="button"
         aria-checked={checked}
         aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+        disabled={disabled}
+        onClick={() => !disabled && onChange(!checked)}
+        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed ${
           checked ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
         }`}
       >

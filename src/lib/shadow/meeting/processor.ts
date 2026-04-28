@@ -50,10 +50,6 @@ function mapPriority(p: 'high' | 'medium' | 'low'): Priority {
   }
 }
 
-// Resolve the recording URL for a given calendar event. The calendar
-// schema doesn't store a dedicated `recordingUrl` column, so callers can
-// pass one explicitly or stash it in `meetingNotes` under a
-// `recordingUrl:` line. If neither is present we throw.
 async function resolveRecordingUrl(
   eventId: string,
   override?: string
@@ -62,16 +58,13 @@ async function resolveRecordingUrl(
     where: { id: eventId },
   });
 
-  if (override) return { audioUrl: override, entityId: event.entityId };
-
-  const notes = event.meetingNotes ?? '';
-  const match = notes.match(/recordingUrl:\s*(\S+)/i);
-  if (!match) {
+  const audioUrl = override ?? event.recordingUrl ?? null;
+  if (!audioUrl) {
     throw new Error(
-      `No recording URL available for event ${eventId} — pass audioUrl explicitly`
+      `No recording URL available for event ${eventId} — pass audioUrl explicitly or set recordingUrl on the event`
     );
   }
-  return { audioUrl: match[1], entityId: event.entityId };
+  return { audioUrl, entityId: event.entityId };
 }
 
 export class MeetingProcessor {

@@ -9,7 +9,7 @@
  *   - all configurable controls are present
  *   - toggles fire the expected onChange patches
  *   - selects fire the expected onChange patches
- *   - the voiceprint slot placeholder is rendered for WS02
+ *   - the voiceprint enrollment section is mounted
  *   - the service-status row renders an X when the health check fails
  *     (fail-closed behavior)
  */
@@ -55,10 +55,10 @@ describe('AdvancedVoiceSettings — controls render', () => {
     expect(screen.getByRole('switch', { name: 'Document Analysis' })).toBeTruthy();
   });
 
-  it('renders the WS02 voiceprint slot placeholder', () => {
-    const { container } = render(<AdvancedVoiceSettings onChange={() => {}} />);
-    const slot = container.querySelector('[data-vaf-voiceprint-slot]');
-    expect(slot).not.toBeNull();
+  it('mounts the voiceprint enrollment section', () => {
+    render(<AdvancedVoiceSettings onChange={() => {}} />);
+    expect(screen.getByText(/Voiceprint Verification/i)).toBeTruthy();
+    expect(screen.getByRole('switch', { name: /Use voiceprint for auth/i })).toBeTruthy();
   });
 
   it('starts collapsed when defaultCollapsed is true', () => {

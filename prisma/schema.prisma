@@ -181,6 +181,7 @@ model CalendarEvent {
   bufferAfter    Int?
   prepPacket     Json?
   meetingNotes   String?
+  recordingUrl   String?
   recurrence     String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -1027,6 +1028,7 @@ model ShadowTrustedDevice {
 
 model ShadowAuthEvent {
   id              String   @id @default(cuid())
+  userId          String?
   sessionId       String?
   method          String
   result          String
@@ -1036,6 +1038,7 @@ model ShadowAuthEvent {
 
   session ShadowVoiceSession? @relation(fields: [sessionId], references: [id])
 
+  @@index([userId])
   @@index([sessionId])
 }
 

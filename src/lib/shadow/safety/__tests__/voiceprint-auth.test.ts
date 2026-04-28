@@ -100,10 +100,11 @@ describe('verifyVoiceprint', () => {
     expect(mockedAuthEventCreate).toHaveBeenCalledTimes(1);
     expect(mockedAuthEventCreate).toHaveBeenCalledWith({
       data: {
+        userId,
         method: 'voiceprint',
         result: 'fail',
         riskLevel: 'high',
-        actionAttempted: `voiceprint_spoof_detected:${userId}`,
+        actionAttempted: 'voiceprint_spoof_detected',
       },
     });
   });
@@ -148,10 +149,11 @@ describe('verifyVoiceprint', () => {
 
     expect(mockedAuthEventCreate).toHaveBeenCalledWith({
       data: {
+        userId,
         method: 'voiceprint',
         result: 'pass',
         riskLevel: 'medium',
-        actionAttempted: `voiceprint_verified:${userId}`,
+        actionAttempted: 'voiceprint_verified',
       },
     });
   });
@@ -174,10 +176,11 @@ describe('verifyVoiceprint', () => {
     expect(result.antiSpoofPassed).toBe(true);
     expect(mockedAuthEventCreate).toHaveBeenCalledWith({
       data: {
+        userId,
         method: 'voiceprint',
         result: 'fail',
         riskLevel: 'medium',
-        actionAttempted: `voiceprint_mismatch:${userId}`,
+        actionAttempted: 'voiceprint_mismatch',
       },
     });
   });
