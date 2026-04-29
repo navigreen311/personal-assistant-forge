@@ -10,6 +10,16 @@ export interface VAFTranscriptionRequest {
   model: 'fast' | 'accurate' | 'realtime';
   speakerId?: string;
   vocabulary?: string[];
+  /**
+   * Optional compliance flags (e.g. ['HIPAA'], ['PCI'], ['HIPAA','GDPR'])
+   * forwarded to the VAF batch transcribe endpoint as a `complianceMode`
+   * form field. Mirrors the existing `entityCompliance` option on
+   * createStreamingSession so the same upstream concept reaches both the
+   * batch and streaming code paths. The mock VAF service (WS10) accepts
+   * arbitrary form fields, so this is forward-compatible without a server
+   * change.
+   */
+  complianceMode?: string[];
   streaming: boolean;
 }
 
@@ -91,6 +101,12 @@ export class VAFSpeechToText {
     }
     if (request.speakerId) {
       formData.append('speakerId', request.speakerId);
+    }
+    if (request.complianceMode && request.complianceMode.length > 0) {
+      // Send as a JSON-encoded array string for parity with the
+      // streaming endpoint's `complianceMode` body field. The mock VAF
+      // service treats unknown form fields as opaque metadata.
+      formData.append('complianceMode', JSON.stringify(request.complianceMode));
     }
 
     const res = await fetch(`${vafBaseUrl()}/api/v1/stt/transcribe`, {

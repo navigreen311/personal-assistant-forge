@@ -41,6 +41,7 @@ import {
 } from '@/modules/shadow/interfaces/voice-in-app';
 import { ShadowVoicePipeline } from '@/lib/shadow/voice/pipeline';
 import type { AudioQualityReport } from '@/lib/vaf/audio-quality-client';
+import { VAFTranslation } from '@/lib/vaf/translation-client';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -306,5 +307,319 @@ describe('VoiceInAppHandler — ad-hoc session id (no DB row)', () => {
 
     expect(result.transcript).toBe('hello');
     expect(mockShadowMessageCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS18 — entity compliance forwarded to STT
+// ---------------------------------------------------------------------------
+
+describe('VoiceInAppHandler — entity compliance (WS18)', () => {
+  it('passes entityCompliance options to processUserAudio when entityId is set', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: false,
+      secondaryLanguage: null,
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'patient ok',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(8),
+      duration: 0.3,
+      latencyMs: 12,
+      provider: 'vaf',
+    });
+
+    const complianceLoader = jest
+      .fn<Promise<string[]>, [string]>()
+      .mockResolvedValue(['HIPAA']);
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      complianceLoader,
+    });
+
+    await handler.processAudioInput(
+      makeAudioParams({ entityId: 'ent-medical' }),
+    );
+
+    expect(complianceLoader).toHaveBeenCalledWith('ent-medical');
+    expect(pipeline.processUserAudio).toHaveBeenCalledTimes(1);
+    expect(pipeline.processUserAudio).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      { entityCompliance: ['HIPAA'] },
+    );
+  });
+
+  it('omits the options arg when no entity is set (legacy preservation)', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: false,
+      secondaryLanguage: null,
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'hello',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(4),
+      duration: 0.1,
+      latencyMs: 5,
+      provider: 'vaf',
+    });
+
+    const complianceLoader = jest.fn();
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      complianceLoader,
+    });
+
+    await handler.processAudioInput(makeAudioParams());
+
+    expect(complianceLoader).not.toHaveBeenCalled();
+    // Single-arg call — exact match on Buffer only.
+    expect(pipeline.processUserAudio).toHaveBeenCalledWith(expect.any(Buffer));
+  });
+
+  it('omits compliance flag when complianceLoader returns []', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: false,
+      secondaryLanguage: null,
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'hi',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(4),
+      duration: 0.1,
+      latencyMs: 5,
+      provider: 'vaf',
+    });
+
+    const complianceLoader = jest
+      .fn<Promise<string[]>, [string]>()
+      .mockResolvedValue([]);
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      complianceLoader,
+    });
+
+    await handler.processAudioInput(
+      makeAudioParams({ entityId: 'ent-personal' }),
+    );
+
+    // Empty compliance list → call site falls back to single-arg form.
+    expect(pipeline.processUserAudio).toHaveBeenCalledWith(expect.any(Buffer));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS18 — translation flow (autoDetectLanguage + secondaryLanguage)
+// ---------------------------------------------------------------------------
+
+describe('VoiceInAppHandler — translation flow (WS18)', () => {
+  function makeTranslationStub() {
+    return {
+      translateSpeech: jest.fn(),
+    } as unknown as jest.Mocked<Pick<VAFTranslation, 'translateSpeech'>>;
+  }
+
+  it('uses translatedText as transcript when source is non-English', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: true,
+      secondaryLanguage: 'es',
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(8),
+      duration: 0.5,
+      latencyMs: 10,
+      provider: 'vaf',
+    });
+
+    const translation = makeTranslationStub();
+    translation.translateSpeech.mockResolvedValue({
+      sourceText: 'hola shadow',
+      translatedText: 'hello shadow',
+      sourceLanguage: 'es',
+      confidence: 0.95,
+    });
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      translation: translation as unknown as VAFTranslation,
+    });
+
+    const result = await handler.processAudioInput(makeAudioParams());
+
+    expect(translation.translateSpeech).toHaveBeenCalledTimes(1);
+    expect(translation.translateSpeech).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      { sourceLanguage: 'auto', targetLanguage: 'en' },
+    );
+    // STT was skipped — translation produced the transcript.
+    expect(pipeline.processUserAudio).not.toHaveBeenCalled();
+
+    expect(result.transcript).toBe('hello shadow');
+    expect(result.sourceLanguage).toBe('es');
+    expect(result.translated).toBe(true);
+    expect(result.sttProvider).toBe('vaf');
+
+    // speak() called with sourceLanguage so TTS replies in Spanish.
+    expect(pipeline.speak).toHaveBeenCalledTimes(1);
+    expect(pipeline.speak).toHaveBeenCalledWith(
+      expect.any(String),
+      { sourceLanguage: 'es' },
+    );
+  });
+
+  it('falls through to normal STT when detected source IS English', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: true,
+      secondaryLanguage: 'es',
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'hello shadow',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(8),
+      duration: 0.5,
+      latencyMs: 10,
+      provider: 'vaf',
+    });
+
+    const translation = makeTranslationStub();
+    translation.translateSpeech.mockResolvedValue({
+      sourceText: 'hello shadow',
+      translatedText: 'hello shadow',
+      sourceLanguage: 'en',
+      confidence: 0.9,
+    });
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      translation: translation as unknown as VAFTranslation,
+    });
+    const result = await handler.processAudioInput(makeAudioParams());
+
+    expect(translation.translateSpeech).toHaveBeenCalledTimes(1);
+    // Normal STT still ran because source was English.
+    expect(pipeline.processUserAudio).toHaveBeenCalledTimes(1);
+    expect(result.transcript).toBe('hello shadow');
+    expect(result.translated).toBeUndefined();
+    expect(result.sourceLanguage).toBeUndefined();
+    // speak() called WITHOUT sourceLanguage option (preserves WS07 shape).
+    expect(pipeline.speak).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+    );
+  });
+
+  it('does NOT translate when autoDetectLanguage=false (default)', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: false,
+      secondaryLanguage: 'es',
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'hello',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(4),
+      duration: 0.1,
+      latencyMs: 5,
+      provider: 'vaf',
+    });
+
+    const translation = makeTranslationStub();
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      translation: translation as unknown as VAFTranslation,
+    });
+    await handler.processAudioInput(makeAudioParams());
+
+    expect(translation.translateSpeech).not.toHaveBeenCalled();
+    expect(pipeline.processUserAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to STT when translateSpeech throws (non-fatal)', async () => {
+    mockGetVafConfig.mockResolvedValue({
+      sttProvider: 'vaf',
+      ttsProvider: 'vaf',
+      autoDetectLanguage: true,
+      secondaryLanguage: 'es',
+    });
+
+    const pipeline = makePipelineStub();
+    pipeline.processUserAudio.mockResolvedValue({
+      transcript: 'hello',
+      quality: 'good',
+      enhanced: false,
+      provider: 'vaf',
+      report: GOOD_QUALITY_REPORT,
+    });
+    pipeline.speak.mockResolvedValue({
+      audioBuffer: new ArrayBuffer(4),
+      duration: 0.1,
+      latencyMs: 5,
+      provider: 'vaf',
+    });
+
+    const translation = makeTranslationStub();
+    translation.translateSpeech.mockRejectedValue(new Error('vaf down'));
+
+    const handler = new VoiceInAppHandler({
+      pipeline: pipeline as unknown as ShadowVoicePipeline,
+      translation: translation as unknown as VAFTranslation,
+    });
+    const result = await handler.processAudioInput(makeAudioParams());
+
+    expect(translation.translateSpeech).toHaveBeenCalledTimes(1);
+    expect(pipeline.processUserAudio).toHaveBeenCalledTimes(1);
+    expect(result.transcript).toBe('hello');
+    expect(result.translated).toBeUndefined();
   });
 });

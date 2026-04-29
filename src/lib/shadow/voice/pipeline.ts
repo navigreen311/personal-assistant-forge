@@ -106,7 +106,10 @@ export class ShadowVoicePipeline {
     return this.useVAF;
   }
 
-  async transcribeAudio(audioBlob: Blob): Promise<TranscribeResult> {
+  async transcribeAudio(
+    audioBlob: Blob,
+    options?: { entityCompliance?: string[]; language?: string }
+  ): Promise<TranscribeResult> {
     if (this.useVAF) {
       try {
         const buffer = Buffer.from(await audioBlob.arrayBuffer());
@@ -114,9 +117,10 @@ export class ShadowVoicePipeline {
           audio: buffer,
           format: 'webm',
           sampleRate: 48000,
-          language: 'en-US',
+          language: options?.language ?? 'en-US',
           model: 'accurate',
           vocabulary: this.entityVocabulary,
+          complianceMode: options?.entityCompliance,
           streaming: false,
         });
         return {
@@ -133,22 +137,34 @@ export class ShadowVoicePipeline {
     return this.transcribeWithBrowser();
   }
 
-  async speak(text: string, options?: { emotion?: string }): Promise<SpeakResult> {
+  async speak(
+    text: string,
+    options?: { emotion?: string; sourceLanguage?: string }
+  ): Promise<SpeakResult> {
     const cleanText = text.replace(CARD_MARKER_RE, '').trim();
     if (!cleanText) return { duration: 0, latencyMs: 0, provider: this.useVAF ? 'vaf' : 'browser' };
 
     if (this.useVAF) {
       try {
-        const result = await this.tts.synthesize({
+        // Build the synthesize request. When the caller passes a
+        // `sourceLanguage` (e.g. translation flow replying in Spanish),
+        // we attach it as an opaque `language` field. The mock VAF TTS
+        // service accepts arbitrary JSON keys; the typed
+        // VAFSpeechRequest interface intentionally omits it for now.
+        const synthRequest = {
           text: cleanText,
           voice: this.voicePersona,
           speed: this.speechSpeed,
           pitch: 0,
           emotion: options?.emotion ?? 'neutral',
-          format: 'mp3',
+          format: 'mp3' as const,
           sampleRate: 24000,
           streaming: false,
-        });
+          ...(options?.sourceLanguage
+            ? { language: options.sourceLanguage }
+            : {}),
+        };
+        const result = await this.tts.synthesize(synthRequest);
         return {
           audioBuffer: result.audio,
           duration: result.duration,
@@ -185,7 +201,17 @@ export class ShadowVoicePipeline {
   // is expected to be on a server / Node path where audio is already
   // captured. Returns {transcript:'', quality:'poor'} when VAF reports
   // the audio is unusable, signalling the UI to switch to text.
-  async processUserAudio(audioBuffer: Buffer): Promise<ProcessUserAudioResult> {
+  //
+  // Optional per-call options (additive — pre-WS18 callers pass nothing
+  // and behaviour is unchanged):
+  //   - entityCompliance: forwarded to the STT call as `complianceMode`
+  //     so PHI-aware transcription engages for medical entities.
+  //   - language: overrides the default 'en-US' STT language. Used by
+  //     the translation flow when pre-translated text already exists.
+  async processUserAudio(
+    audioBuffer: Buffer,
+    options?: { entityCompliance?: string[]; language?: string }
+  ): Promise<ProcessUserAudioResult> {
     if (!this.useVAF) {
       return { transcript: '', quality: 'unavailable', enhanced: false, provider: 'none' };
     }
@@ -211,9 +237,10 @@ export class ShadowVoicePipeline {
       audio: audioForStt,
       format: 'wav',
       sampleRate: 48000,
-      language: 'en-US',
+      language: options?.language ?? 'en-US',
       model: 'accurate',
       vocabulary: this.entityVocabulary,
+      complianceMode: options?.entityCompliance,
       streaming: false,
     });
 

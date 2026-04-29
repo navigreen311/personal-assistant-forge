@@ -51,6 +51,13 @@ interface AdvancedVoiceSettingsProps {
   defaultCollapsed?: boolean;
   /** VAF service URL — used for the health check. Falls back to env. */
   vafServiceUrl?: string;
+  /**
+   * WS18: Pre-resolved compliance modes for the active entity (e.g.
+   * `['HIPAA']`). When present, the component shows a small read-only
+   * badge. When omitted, the component fetches the status itself from
+   * `/api/shadow/compliance/status` on mount.
+   */
+  complianceModes?: string[];
 }
 
 interface ServiceStatus {
@@ -144,6 +151,21 @@ const TTS_PROVIDERS = [
   { value: 'browser', label: 'Browser (SpeechSynthesis)' },
 ];
 
+// WS18: Secondary language picker. The 10 most common non-English
+// targets that VAF supports. Codes follow IETF BCP-47 short forms.
+const SECONDARY_LANGUAGES: Array<{ value: string; label: string }> = [
+  { value: 'es', label: 'Spanish' },
+  { value: 'fr', label: 'French' },
+  { value: 'de', label: 'German' },
+  { value: 'zh-CN', label: 'Chinese (Simplified)' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'pt', label: 'Portuguese' },
+  { value: 'ar', label: 'Arabic' },
+  { value: 'ru', label: 'Russian' },
+  { value: 'hi', label: 'Hindi' },
+  { value: 'ko', label: 'Korean' },
+];
+
 const SENTIMENT_THRESHOLDS = [
   { value: 0.6, label: '0.6 — Sensitive (more alerts)' },
   { value: 0.7, label: '0.7' },
@@ -211,6 +233,7 @@ export default function AdvancedVoiceSettings({
   onChange,
   defaultCollapsed = false,
   vafServiceUrl,
+  complianceModes,
 }: AdvancedVoiceSettingsProps) {
   const [config, setConfig] = useState<VafConfigShape>(() => ({
     ...DEFAULT_CONFIG,
@@ -220,6 +243,12 @@ export default function AdvancedVoiceSettings({
   const [status, setStatus] = useState<ServiceStatus | null>(null);
   const [voices, setVoices] = useState<{ id: string; name: string }[]>(
     STATIC_VOICE_FALLBACK
+  );
+  // WS18: When the parent didn't supply complianceModes, we lazy-fetch
+  // them from /api/shadow/compliance/status. `null` means "still
+  // loading / not yet resolved".
+  const [resolvedCompliance, setResolvedCompliance] = useState<string[] | null>(
+    complianceModes ?? null
   );
 
   // Populate the Shadow Voice dropdown from VAF on mount. Cached at the
@@ -281,6 +310,40 @@ export default function AdvancedVoiceSettings({
       clearInterval(interval);
     };
   }, [baseUrl]);
+
+  // WS18: Fetch compliance status when the parent didn't pre-supply it.
+  // Best-effort — failures leave the badge hidden.
+  useEffect(() => {
+    if (complianceModes !== undefined) {
+      // Sync prop → state without an extra cascade: only update when the
+      // value actually differs from what's already stored.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setResolvedCompliance((prev) =>
+        prev === complianceModes ? prev : complianceModes
+      );
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/shadow/compliance/status', {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          data?: { complianceModes?: string[] };
+        };
+        if (!cancelled && Array.isArray(json.data?.complianceModes)) {
+          setResolvedCompliance(json.data!.complianceModes ?? []);
+        }
+      } catch {
+        // Swallow — badge simply won't render.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [complianceModes]);
 
   const apply = useCallback(
     async (patch: VafConfigPatch) => {
@@ -433,6 +496,74 @@ export default function AdvancedVoiceSettings({
             checked={config.autoDetectLanguage}
             onChange={(v) => apply({ autoDetectLanguage: v })}
           />
+
+          {/* WS18: Secondary language picker — only relevant when
+              auto-detect is enabled. Choosing a language here is what
+              activates the translation flow in the voice route. */}
+          {config.autoDetectLanguage && (
+            <div data-testid="vaf-secondary-language-row">
+              <label
+                htmlFor="vaf-secondary-language"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                Secondary Language
+              </label>
+              <select
+                id="vaf-secondary-language"
+                value={config.secondaryLanguage ?? ''}
+                onChange={(e) =>
+                  apply({
+                    secondaryLanguage:
+                      e.target.value === '' ? null : e.target.value,
+                  })
+                }
+                className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              >
+                <option value="">— None —</option>
+                {SECONDARY_LANGUAGES.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                When you speak this language, Shadow will translate and
+                reply in the same language.
+              </p>
+            </div>
+          )}
+
+          {/* WS18: Compliance badge — read-only. Renders only when the
+              active entity has at least one compliance flag. Never an
+              input control; clicking does nothing. */}
+          {resolvedCompliance && resolvedCompliance.length > 0 && (
+            <div
+              data-testid="vaf-compliance-badge"
+              className="flex items-center gap-2 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-2"
+              role="status"
+              aria-label="Active compliance mode"
+            >
+              <span
+                className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold"
+                aria-hidden="true"
+              >
+                !
+              </span>
+              <p className="text-xs text-amber-900 dark:text-amber-100">
+                {resolvedCompliance.includes('HIPAA') && (
+                  <span className="font-medium">HIPAA mode active</span>
+                )}
+                {!resolvedCompliance.includes('HIPAA') && (
+                  <span className="font-medium">
+                    {resolvedCompliance.join(' + ')} mode active
+                  </span>
+                )}
+                <span className="ml-1 font-normal">
+                  — voice transcripts handled with extra protections.
+                </span>
+              </p>
+            </div>
+          )}
 
           <VoiceprintEnrollmentSection
             initialEnrolled={config.voiceprintEnrolled}
