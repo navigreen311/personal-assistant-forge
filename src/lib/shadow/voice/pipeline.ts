@@ -15,6 +15,17 @@ import {
   type AudioQualityReport,
 } from '@/lib/vaf/audio-quality-client';
 import { isVAFAvailable } from '@/lib/vaf/health';
+import {
+  openSttStream,
+  type SttStreamHandle,
+  type SttStreamCallbacks,
+} from '@/lib/vaf/streaming/stt-stream';
+import {
+  openTtsStream,
+  type TtsStreamHandle,
+  type TtsStreamCallbacks,
+} from '@/lib/vaf/streaming/tts-stream';
+import { StreamingPlayer } from '@/lib/vaf/streaming/audio-playback';
 
 const CARD_MARKER_RE =
   /\[(?:ACTION_CARD|NAV_CARD|DECISION_CARD|CONFIRM_CARD)\][\s\S]*?\[\/(?:ACTION_CARD|NAV_CARD|DECISION_CARD|CONFIRM_CARD)\]/g;
@@ -253,6 +264,89 @@ export class ShadowVoicePipeline {
     };
   }
 
+  /**
+   * Open a streaming STT session. The caller is responsible for pushing
+   * audio chunks into `handle.send()` (typically from a MediaRecorder
+   * `dataavailable` event). Returns null when VAF is unavailable —
+   * streaming has no batch fallback, the UI should fall back to the
+   * non-streaming `transcribeAudio()` path.
+   */
+  async startStreamingTranscribe(
+    callbacks: SttStreamCallbacks,
+  ): Promise<SttStreamHandle | null> {
+    if (!this.useVAF) return null;
+    try {
+      return await openSttStream(
+        {
+          language: 'en-US',
+          vocabulary: this.entityVocabulary,
+        },
+        callbacks,
+        { stt: this.stt },
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Open a streaming TTS session, queue the supplied text for synthesis,
+   * and return both the stream handle and a `StreamingPlayer` already
+   * wired to enqueue inbound audio chunks. Caller is responsible for
+   * calling `stream.close()` and `player.close()` when the response
+   * finishes (typically on the `onComplete` callback they pass via
+   * `extraCallbacks`, or after the next user turn begins).
+   *
+   * Falls back to a one-shot batch `speak()` if VAF is unavailable; in
+   * that case the returned `stream`/`player` are no-op shims so the
+   * caller doesn't have to branch on null.
+   */
+  async startStreamingSpeak(
+    text: string,
+    voice?: string,
+    extraCallbacks?: Partial<TtsStreamCallbacks>,
+  ): Promise<{ stream: TtsStreamHandle; player: StreamingPlayer }> {
+    const cleanText = text.replace(CARD_MARKER_RE, '').trim();
+
+    if (!this.useVAF) {
+      // No streaming fallback exists — degrade to batch and return shims.
+      await this.speak(cleanText);
+      return { stream: noopTtsStream(), player: new StreamingPlayer() };
+    }
+
+    const player = new StreamingPlayer();
+    const callbacks: TtsStreamCallbacks = {
+      onAudioChunk: (chunk) => {
+        player.enqueue(chunk);
+        extraCallbacks?.onAudioChunk?.(chunk);
+      },
+      onComplete: () => {
+        extraCallbacks?.onComplete?.();
+      },
+      onError: (err) => {
+        extraCallbacks?.onError?.(err);
+      },
+    };
+
+    try {
+      const stream = await openTtsStream(
+        {
+          voice: voice ?? this.voicePersona,
+          speed: this.speechSpeed,
+        },
+        callbacks,
+        { tts: this.tts },
+      );
+      if (cleanText) stream.speak(cleanText);
+      return { stream, player };
+    } catch {
+      await player.close();
+      // Same degradation path as VAF-unavailable.
+      await this.speak(cleanText);
+      return { stream: noopTtsStream(), player: new StreamingPlayer() };
+    }
+  }
+
   private transcribeWithBrowser(): Promise<TranscribeResult> {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
@@ -292,4 +386,12 @@ export class ShadowVoicePipeline {
       window.speechSynthesis.speak(utterance);
     });
   }
+}
+
+function noopTtsStream(): TtsStreamHandle {
+  return {
+    sessionId: '',
+    speak: () => {},
+    close: () => {},
+  };
 }
