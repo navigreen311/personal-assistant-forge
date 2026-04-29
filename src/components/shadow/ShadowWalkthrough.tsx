@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { resolveElementWithFallback } from '@/lib/shadow/element-resolver';
 
 interface ShadowWalkthroughProps {
   targetSelector: string;
@@ -10,6 +11,18 @@ interface ShadowWalkthroughProps {
   onNext: () => void;
   onSkip: () => void;
   onDoItForMe: () => void;
+  /**
+   * Human-readable label for the target element. Used as the fallback
+   * descriptor sent to VAF Vision when `targetSelector` no longer
+   * resolves. Falls back to `instruction` if not provided.
+   */
+  fallbackLabel?: string;
+  /**
+   * Mirrors `vafConfig.screenVisionFallback`. When true, a stale
+   * selector triggers a vision-based screen analysis to locate the
+   * target element. Default false (per VAF default config).
+   */
+  screenVisionFallbackEnabled?: boolean;
 }
 
 interface TargetRect {
@@ -27,42 +40,78 @@ export function ShadowWalkthrough({
   onNext,
   onSkip,
   onDoItForMe,
+  fallbackLabel,
+  screenVisionFallbackEnabled = false,
 }: ShadowWalkthroughProps) {
   const [targetRect, setTargetRect] = useState<TargetRect | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState<'bottom' | 'top'>('bottom');
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  const updateTargetRect = useCallback(() => {
-    const element = document.querySelector(targetSelector);
-    if (element) {
-      const rect = element.getBoundingClientRect();
-      setTargetRect({
-        top: rect.top,
-        left: rect.left,
-        width: rect.width,
-        height: rect.height,
-      });
-
-      // Decide tooltip position based on available space
-      const spaceBelow = window.innerHeight - rect.bottom;
-      setTooltipPosition(spaceBelow > 200 ? 'bottom' : 'top');
-    } else {
+  // Synchronous CSS-only rect lookup for the live scroll/resize listeners.
+  // Vision fallback is intentionally NOT in this hot path — it's async,
+  // costs a screenshot + network round-trip, and only needs to run once
+  // when the selector is initially stale.
+  const updateRectFromElement = useCallback((element: Element | null) => {
+    if (!element) {
       setTargetRect(null);
+      return;
     }
-  }, [targetSelector]);
+    const rect = element.getBoundingClientRect();
+    setTargetRect({
+      top: rect.top,
+      left: rect.left,
+      width: rect.width,
+      height: rect.height,
+    });
+    const spaceBelow = window.innerHeight - rect.bottom;
+    setTooltipPosition(spaceBelow > 200 ? 'bottom' : 'top');
+  }, []);
 
+  const updateTargetRect = useCallback(() => {
+    updateRectFromElement(document.querySelector(targetSelector));
+  }, [targetSelector, updateRectFromElement]);
+
+  // Initial resolution: try CSS, then (if enabled) ask Vision.
   useEffect(() => {
-    updateTargetRect();
+    let cancelled = false;
 
-    // Recalculate on scroll/resize
+    void (async () => {
+      const result = await resolveElementWithFallback(
+        targetSelector,
+        fallbackLabel ?? instruction,
+        { screenVisionFallback: screenVisionFallbackEnabled },
+      );
+      if (cancelled) return;
+
+      if (result.found && result.method === 'css') {
+        updateRectFromElement(result.element);
+      } else if (result.found && result.method === 'vision') {
+        // Vision returned a synthetic selector; try to resolve it on
+        // the live DOM. If it doesn't resolve we leave targetRect null
+        // and the "Target element not found" fallback UI renders.
+        updateRectFromElement(document.querySelector(result.selector));
+      } else {
+        setTargetRect(null);
+      }
+    })();
+
+    // Recalculate on scroll/resize using the cheap CSS-only path.
     window.addEventListener('scroll', updateTargetRect, true);
     window.addEventListener('resize', updateTargetRect);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('scroll', updateTargetRect, true);
       window.removeEventListener('resize', updateTargetRect);
     };
-  }, [updateTargetRect]);
+  }, [
+    targetSelector,
+    fallbackLabel,
+    instruction,
+    screenVisionFallbackEnabled,
+    updateRectFromElement,
+    updateTargetRect,
+  ]);
 
   // Close on Escape
   useEffect(() => {
