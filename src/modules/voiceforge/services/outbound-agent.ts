@@ -8,6 +8,11 @@ import { generateText } from '@/lib/ai';
 import { MockVoiceProvider } from '@/lib/voice/mock-provider';
 import { updateStats } from '@/modules/voiceforge/services/campaign-service';
 import { getPersona } from '@/modules/voiceforge/services/persona-service';
+import {
+  emitCallStart,
+  emitCallEnd,
+} from '@/modules/voiceforge/services/call-lifecycle';
+import { getPendingEscalation } from '@/modules/voiceforge/services/sentiment-integration';
 import type {
   OutboundCallRequest,
   OutboundCallResult,
@@ -69,6 +74,20 @@ export async function initiateOutboundCall(
 
   logCallEvent(call.id, 'CONNECTED', { status: currentStatus });
 
+  // Notify lifecycle subscribers (sentiment monitor in WS13, voiceprint in
+  // WS16, etc.) that a live call has begun. Errors in subscribers do NOT
+  // abort the call.
+  await emitCallStart({
+    callId: call.id,
+    userId: request.userId,
+    entityId: request.entityId,
+    contactId: request.contactId,
+    personaId: request.personaId,
+    scriptId: request.scriptId,
+    playbook: { scriptId: request.scriptId, guardrails: request.guardrails, purpose: request.purpose },
+    messageId: request.messageId,
+  });
+
   // Check for voicemail
   const isVoicemail = await detectVoicemail(session.callSid);
 
@@ -86,6 +105,7 @@ export async function initiateOutboundCall(
     });
 
     logCallEvent(call.id, 'COMPLETED', { outcome: 'VOICEMAIL', voicemailDropped: true });
+    await emitCallEnd({ callId: call.id, outcome: 'VOICEMAIL', duration: 0 });
 
     return {
       callId: call.id,
@@ -104,7 +124,28 @@ export async function initiateOutboundCall(
   // In production, duration comes from the telephony provider's webhook
   const duration = simulateCallDuration(currentStatus);
   const sentiment = simulateCallSentiment(currentStatus);
-  const outcome = deriveOutcome(sentiment, currentStatus);
+  let outcome = deriveOutcome(sentiment, currentStatus);
+
+  // Inspect escalation flags set by the sentiment monitor (if subscribed).
+  // A 'caller_threatening' event sets `endCall=true` and forces NOT_INTERESTED
+  // outcome with an escalation flag on the result. 'transfer' / 'deEscalate'
+  // surface as `escalationReason` so downstream code can route accordingly.
+  const escalation = getPendingEscalation(call.id);
+  let escalated = false;
+  let escalationReason: string | undefined;
+  if (escalation) {
+    if (escalation.endCall) {
+      outcome = 'NOT_INTERESTED';
+      escalated = true;
+      escalationReason = 'caller_threatening';
+    } else if (escalation.transfer) {
+      escalated = true;
+      escalationReason = 'ai_recommends_human_transfer';
+    } else if (escalation.deEscalate) {
+      escalated = true;
+      escalationReason = 'caller_hostile';
+    }
+  }
 
   // Update call record with final results
   await prisma.call.update({
@@ -117,7 +158,8 @@ export async function initiateOutboundCall(
     },
   });
 
-  logCallEvent(call.id, 'COMPLETED', { outcome, duration, sentiment });
+  logCallEvent(call.id, 'COMPLETED', { outcome, duration, sentiment, escalated, escalationReason });
+  await emitCallEnd({ callId: call.id, outcome, duration });
 
   return {
     callId: call.id,
@@ -128,7 +170,8 @@ export async function initiateOutboundCall(
     actionItems: [],
     nextSteps: [],
     sentiment,
-    escalated: false,
+    escalated,
+    ...(escalationReason ? { escalationReason } : {}),
   };
 }
 
