@@ -364,6 +364,7 @@ export class VoiceInAppHandler {
 
     if (!transcript && sttProviderPref === 'vaf') {
       const pipeline = await this.getPipeline();
+      pipeline.setUserContext?.(userId);
       try {
         // Only pass the options object when at least one option is set.
         // Keeping the no-options call site identical to pre-WS18 means
@@ -470,6 +471,7 @@ export class VoiceInAppHandler {
 
     if (ttsProviderPref === 'vaf') {
       const pipeline = await this.getPipeline();
+      pipeline.setUserContext?.(userId);
       try {
         const speakResult = await pipeline.speak(
           response.text,
