@@ -332,6 +332,121 @@ describe('AdvancedVoiceSettings — voice persona dropdown', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// WS18 — Secondary language picker + HIPAA badge
+// ---------------------------------------------------------------------------
+
+describe('AdvancedVoiceSettings — WS18 secondary language picker', () => {
+  it('does not render the language dropdown when autoDetectLanguage is off', () => {
+    render(
+      <AdvancedVoiceSettings
+        onChange={() => {}}
+        initialConfig={{ autoDetectLanguage: false }}
+      />
+    );
+    expect(screen.queryByLabelText(/Secondary Language/i)).toBeNull();
+  });
+
+  it('renders the language dropdown when autoDetectLanguage is on', () => {
+    render(
+      <AdvancedVoiceSettings
+        onChange={() => {}}
+        initialConfig={{ autoDetectLanguage: true, secondaryLanguage: 'es' }}
+      />
+    );
+    const select = screen.getByLabelText(/Secondary Language/i) as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.value).toBe('es');
+    // Confirm at least a few of the documented options are present.
+    expect(screen.getByRole('option', { name: 'Spanish' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'French' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Japanese' })).toBeTruthy();
+  });
+
+  it('fires onChange with secondaryLanguage patch when language changes', () => {
+    const onChange = jest.fn();
+    render(
+      <AdvancedVoiceSettings
+        onChange={onChange}
+        initialConfig={{ autoDetectLanguage: true, secondaryLanguage: null }}
+      />
+    );
+    const select = screen.getByLabelText(/Secondary Language/i) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'fr' } });
+    expect(onChange).toHaveBeenCalledWith({ secondaryLanguage: 'fr' });
+  });
+
+  it('fires onChange with secondaryLanguage:null when "— None —" is picked', () => {
+    const onChange = jest.fn();
+    render(
+      <AdvancedVoiceSettings
+        onChange={onChange}
+        initialConfig={{ autoDetectLanguage: true, secondaryLanguage: 'es' }}
+      />
+    );
+    const select = screen.getByLabelText(/Secondary Language/i) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '' } });
+    expect(onChange).toHaveBeenCalledWith({ secondaryLanguage: null });
+  });
+});
+
+describe('AdvancedVoiceSettings — WS18 HIPAA compliance badge', () => {
+  it('renders the badge when complianceModes prop includes HIPAA', () => {
+    render(
+      <AdvancedVoiceSettings
+        onChange={() => {}}
+        complianceModes={['HIPAA']}
+      />
+    );
+    const badge = screen.getByTestId('vaf-compliance-badge');
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toMatch(/HIPAA mode active/);
+  });
+
+  it('renders a generic mode label when only non-HIPAA modes are flagged', () => {
+    render(
+      <AdvancedVoiceSettings
+        onChange={() => {}}
+        complianceModes={['PCI']}
+      />
+    );
+    const badge = screen.getByTestId('vaf-compliance-badge');
+    expect(badge.textContent).toMatch(/PCI mode active/);
+  });
+
+  it('omits the badge when complianceModes is an empty array', () => {
+    render(
+      <AdvancedVoiceSettings
+        onChange={() => {}}
+        complianceModes={[]}
+      />
+    );
+    expect(screen.queryByTestId('vaf-compliance-badge')).toBeNull();
+  });
+
+  it('fetches compliance status when prop is omitted and renders the badge', async () => {
+    global.fetch = jest.fn((url: string) => {
+      if (typeof url === 'string' && url.includes('/api/shadow/compliance/status')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              success: true,
+              data: { entityId: 'ent-1', complianceModes: ['HIPAA'] },
+            }),
+        });
+      }
+      // Health check — fail-closed.
+      return Promise.reject(new Error('no network'));
+    }) as unknown as typeof fetch;
+
+    render(<AdvancedVoiceSettings onChange={() => {}} />);
+
+    const badge = await screen.findByTestId('vaf-compliance-badge');
+    expect(badge.textContent).toMatch(/HIPAA mode active/);
+  });
+});
+
 describe('AdvancedVoiceSettings — self-persist when no onChange', () => {
   it('PATCHes /api/shadow/vaf-config when onChange prop is omitted', async () => {
     const fetchMock = jest.fn(() =>

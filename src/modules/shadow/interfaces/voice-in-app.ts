@@ -17,6 +17,11 @@ import { prisma } from '@/lib/db';
 import { getVafConfig } from '@/lib/shadow/vaf-config';
 import { ShadowVoicePipeline } from '@/lib/shadow/voice/pipeline';
 import type { AudioQualityReport } from '@/lib/vaf/audio-quality-client';
+import { deriveEntityCompliance } from '@/lib/shadow/compliance/entity-compliance';
+import {
+  VAFTranslation,
+  type TranslateSpeechResult,
+} from '@/lib/vaf/translation-client';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +32,13 @@ export interface AudioInputParams {
   sessionId: string;
   userId: string;
   format?: string;
+  /**
+   * Active entity for this voice turn. When supplied, the handler runs
+   * `deriveEntityCompliance(entityId)` and forwards the result to the
+   * STT call as `complianceMode` (e.g. ['HIPAA']). When omitted, no
+   * compliance flag is sent (legacy behaviour).
+   */
+  entityId?: string;
 }
 
 export interface AudioInputResult {
@@ -58,6 +70,17 @@ export interface AudioInputResult {
    * Friendly user-facing message accompanying switchToText.
    */
   switchToTextMessage?: string;
+  /**
+   * When the translation flow ran (autoDetectLanguage=true and the user
+   * spoke a non-English language), this is the detected source-language
+   * tag (e.g. 'es', 'fr'). Present so callers / observability can tell
+   * a translated turn from a normal English turn.
+   */
+  sourceLanguage?: string;
+  /**
+   * True when transcript came from VAFTranslation rather than STT.
+   */
+  translated?: boolean;
 }
 
 export interface TTSParams {
@@ -147,6 +170,17 @@ function estimateAudioDurationMs(buffer: Buffer, format: string): number {
 // VoiceInAppHandler
 // ---------------------------------------------------------------------------
 
+export interface VafConfigForVoice {
+  sttProvider: string;
+  ttsProvider: string;
+  /**
+   * Optional translation/language flags. Older test fixtures may omit
+   * these — the handler treats absence as "translation flow disabled".
+   */
+  autoDetectLanguage?: boolean;
+  secondaryLanguage?: string | null;
+}
+
 export interface VoiceInAppHandlerDeps {
   /**
    * Optional ShadowVoicePipeline injection. Used when the user's VAF
@@ -159,10 +193,17 @@ export interface VoiceInAppHandlerDeps {
    * Optional override for VAF config lookup. Production uses the real
    * `getVafConfig`; tests pass a stub.
    */
-  vafConfigLoader?: (userId: string) => Promise<{
-    sttProvider: string;
-    ttsProvider: string;
-  }>;
+  vafConfigLoader?: (userId: string) => Promise<VafConfigForVoice>;
+  /**
+   * Optional VAFTranslation override for the auto-detect-language flow
+   * (WS18). Tests inject a stub; production uses the real client.
+   */
+  translation?: VAFTranslation;
+  /**
+   * Optional override for the entity-compliance lookup. Production uses
+   * the real `deriveEntityCompliance`; tests pass a stub.
+   */
+  complianceLoader?: (entityId: string) => Promise<string[]>;
 }
 
 const SWITCH_TO_TEXT_MESSAGE =
@@ -172,10 +213,10 @@ export class VoiceInAppHandler {
   private readonly pipelineOverride?: ShadowVoicePipeline;
   private pipelineCached?: ShadowVoicePipeline;
   private pipelineInitialized = false;
-  private readonly vafConfigLoader: (userId: string) => Promise<{
-    sttProvider: string;
-    ttsProvider: string;
-  }>;
+  private readonly vafConfigLoader: (userId: string) => Promise<VafConfigForVoice>;
+  private readonly translation?: VAFTranslation;
+  private translationCached?: VAFTranslation;
+  private readonly complianceLoader: (entityId: string) => Promise<string[]>;
 
   constructor(deps?: VoiceInAppHandlerDeps) {
     this.pipelineOverride = deps?.pipeline;
@@ -183,8 +224,30 @@ export class VoiceInAppHandler {
       deps?.vafConfigLoader ??
       (async (userId: string) => {
         const cfg = await getVafConfig(userId);
-        return { sttProvider: cfg.sttProvider, ttsProvider: cfg.ttsProvider };
+        return {
+          sttProvider: cfg.sttProvider,
+          ttsProvider: cfg.ttsProvider,
+          autoDetectLanguage: cfg.autoDetectLanguage,
+          secondaryLanguage: cfg.secondaryLanguage,
+        };
       });
+    this.translation = deps?.translation;
+    this.complianceLoader =
+      deps?.complianceLoader ??
+      ((entityId: string) => deriveEntityCompliance(entityId));
+  }
+
+  /**
+   * Lazily build a VAFTranslation client. Tests usually inject one via
+   * deps; production constructs on first translation call so unrelated
+   * code paths don't pay the (tiny) construction cost.
+   */
+  private getTranslation(): VAFTranslation {
+    if (this.translation) return this.translation;
+    if (!this.translationCached) {
+      this.translationCached = new VAFTranslation();
+    }
+    return this.translationCached;
   }
 
   /**
@@ -222,18 +285,35 @@ export class VoiceInAppHandler {
   // -------------------------------------------------------------------------
 
   async processAudioInput(params: AudioInputParams): Promise<AudioInputResult> {
-    const { audioBuffer, sessionId, userId, format = 'webm' } = params;
+    const { audioBuffer, sessionId, userId, entityId, format = 'webm' } = params;
 
     // Resolve VAF config to choose providers. Falls back to legacy
     // behavior on any failure (non-breaking).
     let sttProviderPref = 'whisper';
     let ttsProviderPref = 'elevenlabs';
+    let autoDetectLanguage = false;
+    let secondaryLanguage: string | null = null;
     try {
       const cfg = await this.vafConfigLoader(userId);
       sttProviderPref = cfg.sttProvider;
       ttsProviderPref = cfg.ttsProvider;
+      autoDetectLanguage = cfg.autoDetectLanguage ?? false;
+      secondaryLanguage = cfg.secondaryLanguage ?? null;
     } catch {
       // Treat as legacy.
+    }
+
+    // Derive entity compliance once per turn. Empty array = no flag.
+    // Failure inside the helper is already swallowed (logged) — no
+    // try/catch needed here.
+    let entityCompliance: string[] = [];
+    if (entityId) {
+      try {
+        entityCompliance = await this.complianceLoader(entityId);
+      } catch {
+        // Defensive — never block voice on compliance lookup error.
+        entityCompliance = [];
+      }
     }
 
     // 1. Speech-to-text + audio quality
@@ -241,11 +321,59 @@ export class VoiceInAppHandler {
     let sttProviderUsed: AudioInputResult['sttProvider'] = 'none';
     let audioQuality: AudioQualityReport | null = null;
     let switchToText = false;
+    // Translation-flow state. Set when autoDetectLanguage=true and the
+    // user spoke a non-English language. detectedSourceLanguage drives
+    // the TTS reply language.
+    let detectedSourceLanguage: string | undefined;
+    let translatedFlag = false;
 
-    if (sttProviderPref === 'vaf') {
+    // ----------------------------------------------------------------
+    // Translation pre-step (Integration 7).
+    // When the user has opted in to auto-detect language AND configured
+    // a secondary language, run the audio through VAFTranslation FIRST.
+    // If the detected source isn't English, use the translated text as
+    // the transcript instead of running STT, and remember the source
+    // language so we can speak the reply back in it.
+    // ----------------------------------------------------------------
+    if (autoDetectLanguage && secondaryLanguage && sttProviderPref === 'vaf') {
+      try {
+        const translation = this.getTranslation();
+        const translateResult: TranslateSpeechResult =
+          await translation.translateSpeech(audioBuffer, {
+            sourceLanguage: 'auto',
+            targetLanguage: 'en',
+          });
+        const detected = (translateResult.sourceLanguage || '').toLowerCase();
+        const isEnglish =
+          detected === '' || detected === 'en' || detected.startsWith('en-');
+        if (
+          !isEnglish &&
+          translateResult.translatedText &&
+          translateResult.translatedText.trim().length > 0
+        ) {
+          transcript = translateResult.translatedText;
+          sttProviderUsed = 'vaf';
+          detectedSourceLanguage = translateResult.sourceLanguage;
+          translatedFlag = true;
+        }
+        // English (or unknown) source → fall through to normal STT path.
+      } catch {
+        // Translation failure is non-fatal. Continue with STT.
+      }
+    }
+
+    if (!transcript && sttProviderPref === 'vaf') {
       const pipeline = await this.getPipeline();
       try {
-        const vafResult = await pipeline.processUserAudio(audioBuffer);
+        // Only pass the options object when at least one option is set.
+        // Keeping the no-options call site identical to pre-WS18 means
+        // existing tests (which assert .toHaveBeenCalledWith(buffer))
+        // remain green.
+        const vafResult = entityCompliance.length > 0
+          ? await pipeline.processUserAudio(audioBuffer, {
+              entityCompliance,
+            })
+          : await pipeline.processUserAudio(audioBuffer);
         audioQuality = vafResult.report ?? null;
         if (vafResult.quality === 'poor') {
           // Persist provider/quality telemetry, then bail out without
@@ -343,7 +471,12 @@ export class VoiceInAppHandler {
     if (ttsProviderPref === 'vaf') {
       const pipeline = await this.getPipeline();
       try {
-        const speakResult = await pipeline.speak(response.text);
+        const speakResult = await pipeline.speak(
+          response.text,
+          detectedSourceLanguage
+            ? { sourceLanguage: detectedSourceLanguage }
+            : undefined
+        );
         if (speakResult.audioBuffer && speakResult.audioBuffer.byteLength > 0) {
           audioResponse = Buffer.from(speakResult.audioBuffer);
           ttsProviderUsed = speakResult.provider;
@@ -390,6 +523,10 @@ export class VoiceInAppHandler {
       ttsProvider: ttsProviderUsed,
       audioQuality,
       switchToText: false,
+      ...(detectedSourceLanguage
+        ? { sourceLanguage: detectedSourceLanguage }
+        : {}),
+      ...(translatedFlag ? { translated: true } : {}),
     };
   }
 
