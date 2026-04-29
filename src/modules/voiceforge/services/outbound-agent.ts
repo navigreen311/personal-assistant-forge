@@ -51,6 +51,9 @@ export async function initiateOutboundCall(
     personaId: request.personaId,
   });
 
+  // Notify lifecycle subscribers (continuous voiceprint, sentiment monitor, etc).
+  fireCallStart(call.id, request.userId);
+
   // Initiate call via provider
   const session = await provider.initiateCall({
     from: '+10000000000',
