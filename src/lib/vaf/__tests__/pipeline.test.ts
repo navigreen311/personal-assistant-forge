@@ -3,11 +3,17 @@ import { VAFSpeechToText } from '../stt-client';
 import { VAFTextToSpeech } from '../tts-client';
 import { VAFAudioQuality } from '../audio-quality-client';
 
+const mockRecordVafFallback = jest.fn();
+jest.mock('@/lib/shadow/telemetry/vaf-fallback', () => ({
+  recordVafFallback: (...args: unknown[]) => mockRecordVafFallback(...args),
+}));
+
 const originalFetch = global.fetch;
 
 afterEach(() => {
   global.fetch = originalFetch;
   jest.restoreAllMocks();
+  mockRecordVafFallback.mockReset();
   delete process.env.VAF_SERVICE_URL;
   delete process.env.VAF_API_KEY;
   // Clean up any window mock we attach for browser-fallback paths
@@ -224,6 +230,127 @@ describe('ShadowVoicePipeline', () => {
       // STT must be called against the enhanced bytes (9,9,9), not the raw 'raw' bytes
       const passedAudio = arg.audio as Buffer;
       expect(Array.from(passedAudio)).toEqual([9, 9, 9]);
+    });
+  });
+
+  describe('fallback telemetry', () => {
+    it('records a stt fallback when VAF transcribe throws and userId is set', async () => {
+      mockHealthOk();
+      const stt = new VAFSpeechToText();
+      jest.spyOn(stt, 'transcribe').mockRejectedValue(new Error('VAF down'));
+
+      // Browser fallback path needs a recognition stub but its result
+      // doesn't matter for this telemetry assertion.
+      const fakeRecognition: { onresult: ((e: unknown) => void) | null; onerror: ((e: unknown) => void) | null; start: () => void; lang: string } = {
+        lang: 'en-US',
+        onresult: null,
+        onerror: null,
+        start() { this.onresult?.({ results: [[{ transcript: '', confidence: 0 }]] }); },
+      };
+      const Ctor = function () { return fakeRecognition; };
+      (global as unknown as { window: object }).window = { webkitSpeechRecognition: Ctor };
+
+      const pipeline = new ShadowVoicePipeline({ stt });
+      await pipeline.initialize({ voicePersona: 'x', speechSpeed: 1.0 });
+      pipeline.setUserContext('user-42');
+
+      await pipeline.transcribeAudio(new Blob([new Uint8Array([1, 2])]));
+
+      expect(mockRecordVafFallback).toHaveBeenCalledTimes(1);
+      const payload = mockRecordVafFallback.mock.calls[0][0];
+      expect(payload.userId).toBe('user-42');
+      expect(payload.feature).toBe('stt');
+      expect(payload.reason).toBe('VAF down');
+    });
+
+    it('records a tts fallback when VAF synthesize throws', async () => {
+      mockHealthOk();
+      const tts = new VAFTextToSpeech();
+      jest.spyOn(tts, 'synthesize').mockRejectedValue(new Error('tts oops'));
+
+      // Browser fallback path needs SpeechSynthesisUtterance + speechSynthesis stubs.
+      class FakeUtterance { rate = 1; onend: (() => void) | null = null; onerror: (() => void) | null = null; constructor(public text: string) {} }
+      (global as unknown as { SpeechSynthesisUtterance: unknown }).SpeechSynthesisUtterance = FakeUtterance;
+      (global as unknown as { window: object }).window = {
+        speechSynthesis: { speak: (u: { onend?: () => void }) => u.onend?.() },
+      };
+
+      const pipeline = new ShadowVoicePipeline({ tts });
+      await pipeline.initialize({ voicePersona: 'x', speechSpeed: 1.0 });
+      pipeline.setUserContext('user-42');
+
+      await pipeline.speak('hello');
+
+      expect(mockRecordVafFallback).toHaveBeenCalledTimes(1);
+      const payload = mockRecordVafFallback.mock.calls[0][0];
+      expect(payload.userId).toBe('user-42');
+      expect(payload.feature).toBe('tts');
+      expect(payload.reason).toBe('tts oops');
+    });
+
+    it('does NOT record a fallback when userId is unset (legacy callers)', async () => {
+      mockHealthOk();
+      const stt = new VAFSpeechToText();
+      jest.spyOn(stt, 'transcribe').mockRejectedValue(new Error('VAF down'));
+
+      const fakeRecognition: { onresult: ((e: unknown) => void) | null; onerror: ((e: unknown) => void) | null; start: () => void; lang: string } = {
+        lang: 'en-US',
+        onresult: null,
+        onerror: null,
+        start() { this.onresult?.({ results: [[{ transcript: '', confidence: 0 }]] }); },
+      };
+      const Ctor = function () { return fakeRecognition; };
+      (global as unknown as { window: object }).window = { webkitSpeechRecognition: Ctor };
+
+      const pipeline = new ShadowVoicePipeline({ stt });
+      await pipeline.initialize({ voicePersona: 'x', speechSpeed: 1.0 });
+      // No setUserContext call.
+
+      await pipeline.transcribeAudio(new Blob([new Uint8Array([1, 2])]));
+
+      expect(mockRecordVafFallback).not.toHaveBeenCalled();
+    });
+
+    it('records audio_quality fallback when analyze throws', async () => {
+      mockHealthOk();
+      const audioQuality = new VAFAudioQuality();
+      jest.spyOn(audioQuality, 'analyze').mockRejectedValue(new Error('aq down'));
+
+      const pipeline = new ShadowVoicePipeline({ audioQuality });
+      await pipeline.initialize({ voicePersona: 'x', speechSpeed: 1.0 });
+      pipeline.setUserContext('user-7');
+
+      const result = await pipeline.processUserAudio(Buffer.from('audio'));
+
+      expect(result.provider).toBe('none');
+      expect(mockRecordVafFallback).toHaveBeenCalledTimes(1);
+      expect(mockRecordVafFallback.mock.calls[0][0].feature).toBe('audio_quality');
+      expect(mockRecordVafFallback.mock.calls[0][0].reason).toBe('aq down');
+    });
+
+    it('telemetry failure is swallowed and does not break the call', async () => {
+      mockHealthOk();
+      const stt = new VAFSpeechToText();
+      jest.spyOn(stt, 'transcribe').mockRejectedValue(new Error('VAF down'));
+      mockRecordVafFallback.mockRejectedValueOnce(new Error('telemetry pipe broken'));
+
+      const fakeRecognition: { onresult: ((e: unknown) => void) | null; onerror: ((e: unknown) => void) | null; start: () => void; lang: string } = {
+        lang: 'en-US',
+        onresult: null,
+        onerror: null,
+        start() { this.onresult?.({ results: [[{ transcript: 'fallback ok', confidence: 0.7 }]] }); },
+      };
+      const Ctor = function () { return fakeRecognition; };
+      (global as unknown as { window: object }).window = { webkitSpeechRecognition: Ctor };
+
+      const pipeline = new ShadowVoicePipeline({ stt });
+      await pipeline.initialize({ voicePersona: 'x', speechSpeed: 1.0 });
+      pipeline.setUserContext('user-1');
+
+      const result = await pipeline.transcribeAudio(new Blob([new Uint8Array([1])]));
+
+      expect(result.provider).toBe('browser');
+      expect(result.text).toBe('fallback ok');
     });
   });
 });

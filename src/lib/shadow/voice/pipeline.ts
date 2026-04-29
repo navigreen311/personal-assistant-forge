@@ -15,6 +15,7 @@ import {
   type AudioQualityReport,
 } from '@/lib/vaf/audio-quality-client';
 import { isVAFAvailable } from '@/lib/vaf/health';
+import { recordVafFallback, type VafFeature } from '@/lib/shadow/telemetry/vaf-fallback';
 import {
   openSttStream,
   type SttStreamHandle,
@@ -92,6 +93,7 @@ export class ShadowVoicePipeline {
   private voicePersona = 'default';
   private speechSpeed = 1.0;
   private entityVocabulary: string[] = [];
+  private userId: string | null = null;
   private readonly stt: VAFSpeechToText;
   private readonly tts: VAFTextToSpeech;
   private readonly audioQuality: VAFAudioQuality;
@@ -111,6 +113,27 @@ export class ShadowVoicePipeline {
     this.speechSpeed = config.speechSpeed;
     this.entityVocabulary = config.entityVocabulary ?? [];
     this.useVAF = await isVAFAvailable();
+  }
+
+  /**
+   * Set the active user id for fallback telemetry. Pipeline is a
+   * per-process singleton (see VoiceInAppHandler), so userId is set
+   * per-request rather than via initialize(). Pass null to clear.
+   * Best-effort: when no userId is set, recordFallback no-ops.
+   */
+  setUserContext(userId: string | null): void {
+    this.userId = userId;
+  }
+
+  // Best-effort telemetry. Skipped when no userId is set (legacy /
+  // unauthenticated paths produce no telemetry rows).
+  private async recordFallback(feature: VafFeature, reason: string): Promise<void> {
+    if (!this.userId) return;
+    try {
+      await recordVafFallback({ userId: this.userId, feature, reason });
+    } catch {
+      // Telemetry must never break the call path.
+    }
   }
 
   isUsingVAF(): boolean {
@@ -140,7 +163,8 @@ export class ShadowVoicePipeline {
           latencyMs: result.latencyMs,
           provider: 'vaf',
         };
-      } catch {
+      } catch (err) {
+        void this.recordFallback('stt', (err as Error).message || 'vaf_stt_failed');
         // Fall through to browser
       }
     }
@@ -182,7 +206,8 @@ export class ShadowVoicePipeline {
           latencyMs: result.latencyMs,
           provider: 'vaf',
         };
-      } catch {
+      } catch (err) {
+        void this.recordFallback('tts', (err as Error).message || 'vaf_tts_failed');
         // Fall through to browser
       }
     }
@@ -195,7 +220,8 @@ export class ShadowVoicePipeline {
       try {
         const voices = await this.tts.getVoices();
         return voices.map((v) => ({ id: v.id, name: v.name, previewUrl: v.previewUrl }));
-      } catch {
+      } catch (err) {
+        void this.recordFallback('tts', (err as Error).message || 'vaf_voices_failed');
         // Fall through
       }
     }
@@ -234,7 +260,11 @@ export class ShadowVoicePipeline {
         denoise: true,
         removeEcho: true,
       });
-    } catch {
+    } catch (err) {
+      void this.recordFallback(
+        'audio_quality',
+        (err as Error).message || 'vaf_audio_quality_failed',
+      );
       return { transcript: '', quality: 'unavailable', enhanced: false, provider: 'none' };
     }
 
