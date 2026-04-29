@@ -22,7 +22,7 @@ const OutboundCallSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withAuth(request, async (req, session) => {
     try {
       const body = await req.json();
       const parsed = OutboundCallSchema.safeParse(body);
@@ -33,7 +33,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const result = await initiateOutboundCall(parsed.data);
+      // Forward userId so VAF integrations (sentiment monitoring, voiceprint)
+      // can look up the per-user config.
+      const result = await initiateOutboundCall({ ...parsed.data, userId: session.userId });
       return success(result, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

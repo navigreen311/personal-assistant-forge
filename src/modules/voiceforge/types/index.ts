@@ -70,6 +70,17 @@ export interface OutboundCallRequest {
   maxDuration?: number;
   recordCall?: boolean;
   guardrails: CallGuardrails;
+  /**
+   * Owning user id. Optional so older callers continue to compile, but
+   * required for any per-user integration (e.g. sentiment monitoring,
+   * voiceprint verification) to look up the user's VAF config.
+   */
+  userId?: string;
+  /**
+   * Optional ShadowMessage id so VAF sentiment frames can be persisted
+   * onto the message row. Forwarded directly to monitorCallSentiment.
+   */
+  messageId?: string;
 }
 
 export interface CallGuardrails {

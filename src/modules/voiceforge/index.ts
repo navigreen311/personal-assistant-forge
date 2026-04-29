@@ -47,6 +47,24 @@ export {
   initiateOutboundCallForCampaign,
 } from './services/outbound-agent';
 export {
+  onCallStart,
+  onCallEnd,
+  emitCallStart,
+  emitCallEnd,
+} from './services/call-lifecycle';
+export type {
+  CallStartContext,
+  CallEndContext,
+  CallStartHandler,
+  CallEndHandler,
+} from './services/call-lifecycle';
+export {
+  registerSentimentIntegration,
+  getPendingEscalation,
+  getCallInsights,
+} from './services/sentiment-integration';
+export type { PendingEscalation } from './services/sentiment-integration';
+export {
   createPersona,
   getPersona,
   listPersonas,
