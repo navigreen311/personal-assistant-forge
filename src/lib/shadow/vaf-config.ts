@@ -7,6 +7,7 @@
  * pre-seed on signup.
  */
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 
 /**
@@ -85,11 +86,29 @@ export type VafConfigPatch = Partial<Pick<VafConfigShape, PatchableVafField>>;
  * for a backfill migration.
  */
 export async function getVafConfig(userId: string): Promise<VafConfigShape & { userId: string }> {
-  const row = await prisma.vafIntegrationConfig.upsert({
-    where: { userId },
-    create: { userId, ...DEFAULT_VAF_CONFIG },
-    update: {},
-  });
+  // Concurrent first-load race: two parallel API requests for the same fresh
+  // user can both miss the row, both attempt the create branch of upsert,
+  // and one will lose with P2002 (unique violation on userId). On that loss
+  // the row now definitely exists, so re-read once and return it.
+  let row;
+  try {
+    row = await prisma.vafIntegrationConfig.upsert({
+      where: { userId },
+      create: { userId, ...DEFAULT_VAF_CONFIG },
+      update: {},
+    });
+  } catch (err) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      row = await prisma.vafIntegrationConfig.findUniqueOrThrow({
+        where: { userId },
+      });
+    } else {
+      throw err;
+    }
+  }
 
   return {
     userId: row.userId,

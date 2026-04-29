@@ -10,12 +10,15 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import VoiceprintEnrollmentSection from '@/components/shadow/safety/VoiceprintEnrollmentSection';
+import { VAFTextToSpeech, type VAFVoice } from '@/lib/vaf/tts-client';
 
 // ---- Types --------------------------------------------------------------
 
 export interface VafConfigShape {
   sttProvider: string;
   ttsProvider: string;
+  /** Selected VAF voice ID (e.g. 'professional-female'). */
+  voicePersona?: string;
   audioEnhancement: boolean;
   noiseCancellation: boolean;
   echoSuppression: boolean;
@@ -54,6 +57,55 @@ interface ServiceStatus {
   available: boolean;
   latency: { stt: number | null; tts: number | null; sentiment: number | null };
   message: string;
+}
+
+/**
+ * Static fallback list shown when the VAF voices endpoint is unreachable
+ * (offline dev, VAF down, or unauthenticated). Mirrors the persona names
+ * the rest of the app already uses so the dropdown is never empty.
+ */
+const STATIC_VOICE_FALLBACK: { id: string; name: string }[] = [
+  { id: 'default', name: 'Default' },
+  { id: 'professional-female', name: 'Professional (female)' },
+  { id: 'professional-male', name: 'Professional (male)' },
+  { id: 'warm-female', name: 'Warm (female)' },
+];
+
+// Module-level voice cache. 60s TTL — VAF voice catalogues change rarely
+// and re-fetching on every settings panel mount is wasteful (and noisy in
+// the audit log).
+const VOICES_TTL_MS = 60_000;
+let voiceCache: { fetchedAt: number; voices: VAFVoice[] } | null = null;
+let voiceCacheInflight: Promise<VAFVoice[]> | null = null;
+
+async function loadVoicesCached(): Promise<VAFVoice[]> {
+  const now = Date.now();
+  if (voiceCache && now - voiceCache.fetchedAt < VOICES_TTL_MS) {
+    return voiceCache.voices;
+  }
+  if (voiceCacheInflight) return voiceCacheInflight;
+
+  voiceCacheInflight = (async () => {
+    try {
+      const tts = new VAFTextToSpeech();
+      const voices = await tts.getVoices();
+      voiceCache = { fetchedAt: Date.now(), voices };
+      return voices;
+    } finally {
+      voiceCacheInflight = null;
+    }
+  })();
+  return voiceCacheInflight;
+}
+
+/**
+ * Test-only escape hatch: clears the module-level voice cache so each
+ * jest test starts from a clean slate. Not exported in production
+ * surfaces; safe to import from test code.
+ */
+export function __resetVoiceCacheForTests() {
+  voiceCache = null;
+  voiceCacheInflight = null;
 }
 
 // ---- Defaults -----------------------------------------------------------
@@ -128,17 +180,21 @@ async function pingVafHealth(baseUrl: string): Promise<ServiceStatus> {
 
     if (!res.ok) return fail(`VAF unavailable (HTTP ${res.status})`);
 
+    // Accept either `latency` (legacy) or `latencies` (post-WS10/WS11
+    // health endpoint shape). Whichever the server emits, the dropdown
+    // displays real numbers — never hard-coded values.
     const data: {
       latency?: { stt?: number; tts?: number; sentiment?: number };
+      latencies?: { stt?: number; tts?: number; sentiment?: number };
     } = await res.json().catch(() => ({}));
+    const lat = data.latencies ?? data.latency ?? {};
 
     return {
       available: true,
       latency: {
-        stt: typeof data.latency?.stt === 'number' ? data.latency.stt : null,
-        tts: typeof data.latency?.tts === 'number' ? data.latency.tts : null,
-        sentiment:
-          typeof data.latency?.sentiment === 'number' ? data.latency.sentiment : null,
+        stt: typeof lat.stt === 'number' ? lat.stt : null,
+        tts: typeof lat.tts === 'number' ? lat.tts : null,
+        sentiment: typeof lat.sentiment === 'number' ? lat.sentiment : null,
       },
       message: 'VisionAudioForge connected',
     };
@@ -162,6 +218,36 @@ export default function AdvancedVoiceSettings({
   }));
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [status, setStatus] = useState<ServiceStatus | null>(null);
+  const [voices, setVoices] = useState<{ id: string; name: string }[]>(
+    STATIC_VOICE_FALLBACK
+  );
+
+  // Populate the Shadow Voice dropdown from VAF on mount. Cached at the
+  // module level for 60s so re-mounting the panel (e.g. tab switching)
+  // does not re-fetch. On VAF failure we keep the static fallback list
+  // so the dropdown is never blank.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const fetched = await loadVoicesCached();
+        if (cancelled) return;
+        if (Array.isArray(fetched) && fetched.length > 0) {
+          setVoices(
+            fetched.map((v) => ({
+              id: v.id,
+              name: v.name || v.id,
+            }))
+          );
+        }
+      } catch {
+        // Keep STATIC_VOICE_FALLBACK; surfaced in service-status row.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Resolve VAF base URL: prop → public env → empty (no health check).
   const baseUrl =
@@ -302,6 +388,29 @@ export default function AdvancedVoiceSettings({
               {TTS_PROVIDERS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Shadow Voice persona dropdown — populated live from VAF */}
+          <div>
+            <label
+              htmlFor="vaf-voice-persona"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+            >
+              Shadow Voice
+            </label>
+            <select
+              id="vaf-voice-persona"
+              data-testid="vaf-voice-persona"
+              value={config.voicePersona ?? voices[0]?.id ?? 'default'}
+              onChange={(e) => apply({ voicePersona: e.target.value })}
+              className="w-full max-w-xs px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+            >
+              {voices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
                 </option>
               ))}
             </select>

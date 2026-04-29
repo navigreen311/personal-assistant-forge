@@ -10,14 +10,36 @@
  */
 
 const mockUpsert = jest.fn();
+const mockFindUniqueOrThrow = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
     vafIntegrationConfig: {
       upsert: (...args: unknown[]) => mockUpsert(...args),
+      findUniqueOrThrow: (...args: unknown[]) => mockFindUniqueOrThrow(...args),
     },
   },
 }));
+
+// Lightweight Prisma stub so the helper's `instanceof` check against
+// PrismaClientKnownRequestError fires without pulling the full client.
+jest.mock('@prisma/client', () => {
+  class PrismaClientKnownRequestError extends Error {
+    code: string;
+    clientVersion: string;
+    meta?: Record<string, unknown>;
+    constructor(message: string, opts: { code: string; clientVersion?: string; meta?: Record<string, unknown> }) {
+      super(message);
+      this.code = opts.code;
+      this.clientVersion = opts.clientVersion ?? 'test';
+      this.meta = opts.meta;
+    }
+  }
+  return {
+    Prisma: { PrismaClientKnownRequestError },
+    PrismaClientKnownRequestError,
+  };
+});
 
 import {
   getVafConfig,
@@ -54,6 +76,7 @@ const STORED_ROW = {
 
 beforeEach(() => {
   mockUpsert.mockReset();
+  mockFindUniqueOrThrow.mockReset();
 });
 
 describe('getVafConfig', () => {
@@ -84,6 +107,39 @@ describe('getVafConfig', () => {
     expect(result.ttsProvider).toBe(DEFAULT_VAF_CONFIG.ttsProvider);
     expect(result.audioEnhancement).toBe(DEFAULT_VAF_CONFIG.audioEnhancement);
     expect(result.voiceprintEnrolled).toBe(false);
+  });
+
+  it('retries with findUniqueOrThrow when upsert hits a P2002 unique-violation race', async () => {
+    // Simulate the race: two parallel first-load callers, this one loses
+    // and the upsert's create branch fails with P2002. The helper must
+    // recover by re-reading instead of bubbling the error up.
+    const { Prisma } = jest.requireMock('@prisma/client');
+    const raceErr = new Prisma.PrismaClientKnownRequestError('unique', {
+      code: 'P2002',
+    });
+    mockUpsert.mockRejectedValueOnce(raceErr);
+    mockFindUniqueOrThrow.mockResolvedValueOnce(STORED_ROW);
+
+    const result = await getVafConfig(USER_ID);
+
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockFindUniqueOrThrow).toHaveBeenCalledTimes(1);
+    expect(mockFindUniqueOrThrow.mock.calls[0][0]).toEqual({
+      where: { userId: USER_ID },
+    });
+    expect(result.userId).toBe(USER_ID);
+    expect(result.sttProvider).toBe('whisper');
+  });
+
+  it('does not swallow non-P2002 prisma errors', async () => {
+    const { Prisma } = jest.requireMock('@prisma/client');
+    const otherErr = new Prisma.PrismaClientKnownRequestError('boom', {
+      code: 'P2025',
+    });
+    mockUpsert.mockRejectedValueOnce(otherErr);
+
+    await expect(getVafConfig(USER_ID)).rejects.toBe(otherErr);
+    expect(mockFindUniqueOrThrow).not.toHaveBeenCalled();
   });
 
   it('returns the stored row when one already exists (upsert update branch is a no-op)', async () => {

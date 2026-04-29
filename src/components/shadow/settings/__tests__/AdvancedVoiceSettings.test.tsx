@@ -16,7 +16,18 @@
 
 import React from 'react';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
-import AdvancedVoiceSettings from '../AdvancedVoiceSettings';
+import AdvancedVoiceSettings, {
+  __resetVoiceCacheForTests,
+} from '../AdvancedVoiceSettings';
+
+// Mock the VAF TTS client so we can control getVoices() per test without
+// hitting the real fetch. The class shape mirrors the production export.
+const mockGetVoices = jest.fn();
+jest.mock('@/lib/vaf/tts-client', () => ({
+  VAFTextToSpeech: jest.fn().mockImplementation(() => ({
+    getVoices: (...args: unknown[]) => mockGetVoices(...args),
+  })),
+}));
 
 // Stub fetch so the health check fails fast (fail-closed) and so any
 // auto-PATCH calls we make in onChange-less mode don't actually hit a
@@ -31,6 +42,10 @@ afterEach(() => {
 beforeEach(() => {
   // Default: fetch always rejects (no VAF service in jsdom).
   global.fetch = jest.fn(() => Promise.reject(new Error('no network'))) as unknown as typeof fetch;
+  // Default: voice fetch rejects, so the static fallback list is shown.
+  mockGetVoices.mockReset();
+  mockGetVoices.mockRejectedValue(new Error('no vaf'));
+  __resetVoiceCacheForTests();
 });
 
 describe('AdvancedVoiceSettings — controls render', () => {
@@ -206,6 +221,114 @@ describe('AdvancedVoiceSettings — service status', () => {
       expect(status.textContent).toMatch(/✅/);
       expect(status.textContent).toMatch(/VisionAudioForge connected/);
     });
+  });
+
+  it('displays live latency numbers from /api/v1/health (legacy `latency` shape)', async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            latency: { stt: 321, tts: 182, sentiment: 47 },
+          }),
+      })
+    ) as unknown as typeof fetch;
+
+    render(<AdvancedVoiceSettings onChange={() => {}} vafServiceUrl="http://vaf.test" />);
+    const status = await screen.findByTestId('vaf-service-status');
+    await waitFor(() => {
+      expect(status.textContent).toMatch(/STT 321ms/);
+      expect(status.textContent).toMatch(/TTS 182ms/);
+      expect(status.textContent).toMatch(/Sentiment 47ms/);
+    });
+  });
+
+  it('displays live latency numbers from /api/v1/health (post-WS10 `latencies` shape)', async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            status: 'ok',
+            latencies: { stt: 410, tts: 220, sentiment: 60 },
+            version: '1.0.0',
+          }),
+      })
+    ) as unknown as typeof fetch;
+
+    render(<AdvancedVoiceSettings onChange={() => {}} vafServiceUrl="http://vaf.test" />);
+    const status = await screen.findByTestId('vaf-service-status');
+    await waitFor(() => {
+      expect(status.textContent).toMatch(/STT 410ms/);
+      expect(status.textContent).toMatch(/TTS 220ms/);
+      expect(status.textContent).toMatch(/Sentiment 60ms/);
+    });
+  });
+});
+
+describe('AdvancedVoiceSettings — voice persona dropdown', () => {
+  it('renders the voice dropdown with the static fallback when VAF is unreachable', async () => {
+    // mockGetVoices already rejects per beforeEach.
+    render(<AdvancedVoiceSettings onChange={() => {}} />);
+    const dropdown = (await screen.findByTestId(
+      'vaf-voice-persona'
+    )) as HTMLSelectElement;
+    expect(dropdown).toBeTruthy();
+    // Static fallback should populate the dropdown.
+    const optionValues = Array.from(dropdown.options).map((o) => o.value);
+    expect(optionValues).toContain('default');
+    expect(optionValues).toContain('professional-female');
+    expect(optionValues).toContain('professional-male');
+    expect(optionValues).toContain('warm-female');
+  });
+
+  it('populates the voice dropdown from VAFTextToSpeech.getVoices() when available', async () => {
+    mockGetVoices.mockReset();
+    mockGetVoices.mockResolvedValue([
+      {
+        id: 'shadow-classic',
+        name: 'Shadow Classic',
+        gender: 'neutral',
+        language: 'en',
+        accent: 'us',
+        style: 'calm',
+        previewUrl: '',
+        isCloned: false,
+      },
+      {
+        id: 'shadow-warm',
+        name: 'Shadow Warm',
+        gender: 'female',
+        language: 'en',
+        accent: 'us',
+        style: 'warm',
+        previewUrl: '',
+        isCloned: false,
+      },
+    ]);
+
+    render(<AdvancedVoiceSettings onChange={() => {}} />);
+
+    const dropdown = (await screen.findByTestId(
+      'vaf-voice-persona'
+    )) as HTMLSelectElement;
+
+    await waitFor(() => {
+      const optionValues = Array.from(dropdown.options).map((o) => o.value);
+      expect(optionValues).toContain('shadow-classic');
+      expect(optionValues).toContain('shadow-warm');
+    });
+  });
+
+  it('fires onChange with voicePersona patch when the dropdown changes', async () => {
+    const onChange = jest.fn();
+    render(<AdvancedVoiceSettings onChange={onChange} />);
+
+    const dropdown = (await screen.findByTestId(
+      'vaf-voice-persona'
+    )) as HTMLSelectElement;
+    fireEvent.change(dropdown, { target: { value: 'professional-male' } });
+    expect(onChange).toHaveBeenCalledWith({ voicePersona: 'professional-male' });
   });
 });
 
