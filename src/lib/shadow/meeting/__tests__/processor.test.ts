@@ -4,6 +4,7 @@
 const mockEventFindUniqueOrThrow = jest.fn();
 const mockEventUpdate = jest.fn();
 const mockCreateTask = jest.fn();
+const mockCreateEntry = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -18,6 +19,10 @@ jest.mock('@/modules/tasks/services/task-crud', () => ({
   createTask: (...args: unknown[]) => mockCreateTask(...args),
 }));
 
+jest.mock('@/modules/decisions/services/decision-journal', () => ({
+  createEntry: (...args: unknown[]) => mockCreateEntry(...args),
+}));
+
 import { MeetingProcessor } from '../processor';
 import type { MeetingTranscript } from '@/lib/vaf/meeting-intel-client';
 import { VAFMeetingIntelligence } from '@/lib/vaf/meeting-intel-client';
@@ -27,6 +32,12 @@ describe('MeetingProcessor', () => {
     mockEventFindUniqueOrThrow.mockReset();
     mockEventUpdate.mockReset();
     mockCreateTask.mockReset();
+    mockCreateEntry.mockReset();
+    // Default: createEntry succeeds with a synthetic id. Tests that care
+    // can override per-call.
+    mockCreateEntry.mockImplementation(async () => ({
+      id: `journal-${mockCreateEntry.mock.calls.length}`,
+    }));
   });
 
   const fixture: MeetingTranscript = {
@@ -88,8 +99,60 @@ describe('MeetingProcessor', () => {
 
     expect(out.tasksCreated).toEqual(['task-1', 'task-2', 'task-3']);
     expect(out.decisionsLogged).toBe(1);
+    expect(out.decisionsJournaled).toEqual(['journal-1']);
     expect(out.summaryAttached).toBe(true);
     expect(out.warnings).toEqual([]);
+  });
+
+  it('applyTranscript journals each decision via the Decisions module', async () => {
+    mockEventUpdate.mockResolvedValue({ id: 'evt-1' });
+    mockCreateTask.mockResolvedValue({ id: 'task' });
+
+    const multiDecision: MeetingTranscript = {
+      ...fixture,
+      decisions: [
+        { decision: 'Postpone vendor onboarding to Q4', madeBy: 'Ivan', context: 'budget' },
+        { decision: 'Hire compliance lead', madeBy: 'Maria', context: 'staffing' },
+      ],
+    };
+
+    const intelStub = { processRecording: jest.fn() } as unknown as VAFMeetingIntelligence;
+    const processor = new MeetingProcessor(intelStub);
+
+    const out = await processor.applyTranscript('evt-1', 'entity-1', multiDecision);
+
+    expect(mockCreateEntry).toHaveBeenCalledTimes(2);
+    const firstArg = mockCreateEntry.mock.calls[0][0];
+    expect(firstArg.entityId).toBe('entity-1');
+    expect(firstArg.title).toBe('Postpone vendor onboarding to Q4');
+    expect(firstArg.chosenOption).toBe('Postpone vendor onboarding to Q4');
+    expect(firstArg.rationale).toBe('Captured from meeting transcript');
+    expect(firstArg.context).toContain('We agreed on Q3 staffing changes.');
+    expect(firstArg.expectedOutcomes).toEqual([]);
+    expect(firstArg.optionsConsidered).toEqual([]);
+    expect(firstArg.status).toBe('PENDING_REVIEW');
+    expect(firstArg.reviewDate).toBeInstanceOf(Date);
+
+    expect(out.decisionsLogged).toBe(2);
+    expect(out.decisionsJournaled).toEqual(['journal-1', 'journal-2']);
+  });
+
+  it('applyTranscript surfaces journal failures as warnings without failing the pipeline', async () => {
+    mockEventUpdate.mockResolvedValue({ id: 'evt-1' });
+    mockCreateTask.mockResolvedValue({ id: 'task' });
+    mockCreateEntry.mockReset();
+    mockCreateEntry.mockRejectedValueOnce(new Error('journal db down'));
+
+    const intelStub = { processRecording: jest.fn() } as unknown as VAFMeetingIntelligence;
+    const processor = new MeetingProcessor(intelStub);
+
+    const out = await processor.applyTranscript('evt-1', 'entity-1', fixture);
+
+    expect(out.decisionsJournaled).toEqual([]);
+    expect(out.warnings.some((w) => w.includes('journal db down'))).toBe(true);
+    // Tasks + summary still landed.
+    expect(out.summaryAttached).toBe(true);
+    expect(out.tasksCreated.length).toBeGreaterThan(0);
   });
 
   it('applyTranscript writes a summary block back to the calendar event', async () => {
