@@ -1,4 +1,4 @@
-export { EntityService, getCurrentUserId } from './entity.service';
+export { EntityService } from './entity.service';
 export { PersonaService } from './persona.service';
 export * from './entity.types';
 export * from './entity.validation';

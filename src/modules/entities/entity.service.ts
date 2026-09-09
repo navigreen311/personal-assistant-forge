@@ -101,16 +101,6 @@ interface CalendarEventRow {
   endTime: Date;
 }
 
-/**
- * Auth stub — returns userId from header or a placeholder.
- * Will be replaced by Worker 02's auth middleware.
- */
-export function getCurrentUserId(headers?: Headers): string {
-  const headerUserId = headers?.get('x-user-id');
-  if (headerUserId) return headerUserId;
-  return 'stub-user-id';
-}
-
 export class EntityService {
   // ─── CRUD ──────────────────────────────────────────────
 
