@@ -7,6 +7,10 @@ import {
   optimizeScript,
 } from '@/modules/voiceforge/services/script-engine';
 import type { CallScript, ScriptNode, ScriptBranch } from '@/modules/voiceforge/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 // Mock Prisma (needed for module-level imports)
 jest.mock('@/lib/db', () => ({
@@ -16,6 +20,9 @@ jest.mock('@/lib/db', () => ({
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      // Trap 1: updateScript now writes through updateMany so the entity can
+      // sit in the WHERE clause. Its own mock -- the args differ.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   },
 }));
@@ -261,7 +268,7 @@ describe('Script Engine', () => {
         startNodeId: 'greeting',
       });
 
-      const result = await generateScriptWithAI('entity-1', {
+      const result = await generateScriptWithAI(ENTITY, {
         purpose: 'sales follow-up',
         targetAudience: 'existing customers',
         tone: 'friendly',
@@ -286,7 +293,7 @@ describe('Script Engine', () => {
         startNodeId: 'n1',
       });
 
-      const result = await generateScriptWithAI('entity-1', {
+      const result = await generateScriptWithAI(ENTITY, {
         purpose: 'test',
         targetAudience: 'test',
         tone: 'professional',
@@ -314,7 +321,7 @@ describe('Script Engine', () => {
         startNodeId: 'start',
       });
 
-      const result = await generateScriptWithAI('entity-1', {
+      const result = await generateScriptWithAI(ENTITY, {
         purpose: 'sales',
         targetAudience: 'prospects',
         tone: 'professional',
@@ -333,7 +340,7 @@ describe('Script Engine', () => {
         startNodeId: 'n1',
       });
 
-      await generateScriptWithAI('entity-1', {
+      await generateScriptWithAI(ENTITY, {
         purpose: 'healthcare follow-up',
         targetAudience: 'patients',
         tone: 'empathetic',

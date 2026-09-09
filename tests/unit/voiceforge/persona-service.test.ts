@@ -22,15 +22,20 @@ jest.mock('@/lib/db', () => ({
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
   },
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
+
 const basePersonaData = {
-  entityId: 'entity-1',
+  entityId: ENTITY,
   name: 'Sales Agent',
   description: 'Professional sales voice',
   voiceConfig: {
@@ -84,14 +89,14 @@ describe('Persona Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await getPersona('persona-1');
+      const result = await getPersona('persona-1', ENTITY);
       expect(result).not.toBeNull();
       expect(result?.name).toBe('Sales Agent');
     });
 
     it('should return null when not found', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      const result = await getPersona('nonexistent');
+      const result = await getPersona('nonexistent', ENTITY);
       expect(result).toBeNull();
     });
   });
@@ -115,7 +120,7 @@ describe('Persona Service', () => {
         },
       ]);
 
-      const result = await listPersonas('entity-1');
+      const result = await listPersonas(ENTITY);
       expect(result).toHaveLength(2);
     });
   });
@@ -136,7 +141,7 @@ describe('Persona Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await validateConsentChain('persona-1');
+      const result = await validateConsentChain('persona-1', ENTITY);
       expect(result.valid).toBe(true);
       expect(result.issues).toHaveLength(0);
     });
@@ -156,7 +161,7 @@ describe('Persona Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await validateConsentChain('persona-1');
+      const result = await validateConsentChain('persona-1', ENTITY);
       expect(result.valid).toBe(false);
       expect(result.issues.some((i) => i.includes('revoked'))).toBe(true);
     });
@@ -175,7 +180,7 @@ describe('Persona Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await validateConsentChain('persona-1');
+      const result = await validateConsentChain('persona-1', ENTITY);
       expect(result.valid).toBe(false);
       expect(result.issues.some((i) => i.includes('expired'))).toBe(true);
     });
@@ -189,14 +194,14 @@ describe('Persona Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await validateConsentChain('persona-1');
+      const result = await validateConsentChain('persona-1', ENTITY);
       expect(result.valid).toBe(false);
       expect(result.issues.some((i) => i.includes('No consent entries'))).toBe(true);
     });
 
     it('should return invalid for non-existent persona', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      const result = await validateConsentChain('nonexistent');
+      const result = await validateConsentChain('nonexistent', ENTITY);
       expect(result.valid).toBe(false);
     });
   });

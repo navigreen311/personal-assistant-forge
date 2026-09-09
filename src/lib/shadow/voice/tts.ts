@@ -14,6 +14,16 @@ const CARD_MARKER_RE =
 export interface ShadowTTSCallbacks {
   onStart: () => void;
   onEnd: () => void;
+  /**
+   * Called when the utterance fails, or when there is no speech synthesis to
+   * speak it with.
+   *
+   * T-022: `utterance.onerror` used to call `onEnd()` -- the same callback as a
+   * successful utterance -- so a caller could not tell "finished speaking" from
+   * "never spoke". `onEnd` is still called after this, so existing callers keep
+   * their cleanup; this only adds the distinction they had no way to make.
+   */
+  onError?: (reason: string, detail: unknown) => void;
 }
 
 export interface ShadowTTSSpeakOptions {
@@ -31,10 +41,12 @@ export class ShadowTTS {
   private speaking = false;
   private readonly onStart: () => void;
   private readonly onEnd: () => void;
+  private readonly onError?: (reason: string, detail: unknown) => void;
 
-  constructor({ onStart, onEnd }: ShadowTTSCallbacks) {
+  constructor({ onStart, onEnd, onError }: ShadowTTSCallbacks) {
     this.onStart = onStart;
     this.onEnd = onEnd;
+    this.onError = onError;
   }
 
   speak(text: string, options: ShadowTTSSpeakOptions = {}): void {
@@ -43,6 +55,14 @@ export class ShadowTTS {
 
     const cleanText = text.replace(CARD_MARKER_RE, '').trim();
     if (!cleanText) return;
+
+    if (!isBrowserTtsSupported()) {
+      // Previously this threw a ReferenceError deep inside speak(), or -- worse,
+      // server-side -- was never reached and the caller assumed it had spoken.
+      this.onError?.('speech synthesis unavailable in this environment', undefined);
+      this.onEnd();
+      return;
+    }
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
     utterance.rate = options.rate ?? 1.0;
@@ -62,8 +82,9 @@ export class ShadowTTS {
       this.speaking = false;
       this.onEnd();
     };
-    utterance.onerror = () => {
+    utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
       this.speaking = false;
+      this.onError?.(event?.error ?? 'speech synthesis error', event);
       this.onEnd();
     };
 

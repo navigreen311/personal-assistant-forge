@@ -11,28 +11,58 @@ import type {
   InboundCallResult,
   AfterHoursConfig,
 } from '@/modules/voiceforge/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'INBOUND_CONFIG';
+
+/** An inbound config whose scope has already been proven. See section 2. */
+export type InboundConfigDraft = Omit<InboundConfig, 'entityId'> & {
+  entityId: VerifiedEntityId;
+};
 
 function deserializeConfig(doc: { id: string; entityId: string; content: string | null }): InboundConfig {
   return JSON.parse(doc.content ?? '{}') as InboundConfig;
 }
 
-export async function getInboundConfig(phoneNumber: string): Promise<InboundConfig | null> {
+/**
+ * Private: find one entity's config for a number. Takes a plain string because
+ * both public entry points below have already established the scope in their
+ * own way.
+ */
+async function findConfigInEntity(
+  phoneNumber: string,
+  entityId: string
+): Promise<InboundConfig | null> {
   const docs = await prisma.document.findMany({
-    where: { type: DOC_TYPE },
+    where: { type: DOC_TYPE, entityId },
   });
 
   for (const doc of docs) {
     const config = deserializeConfig(doc);
-    if (config.phoneNumber === phoneNumber) {
-      return config;
-    }
+    if (config.phoneNumber === phoneNumber) return config;
   }
   return null;
 }
 
-export async function saveInboundConfig(config: InboundConfig): Promise<InboundConfig> {
+/**
+ * Read the inbound config for a number that belongs to the caller's entity.
+ *
+ * Before this change the lookup was findMany({ where: { type } }) over EVERY
+ * entity's documents, returning the first row whose serialised phoneNumber
+ * matched. Any authenticated user could read any tenant's greeting, persona id,
+ * routing rules, VIP contact list and urgent escalation number by guessing a
+ * phone number -- and phone numbers are public.
+ */
+export async function getInboundConfig(
+  phoneNumber: string,
+  entityId: VerifiedEntityId
+): Promise<InboundConfig | null> {
+  return findConfigInEntity(phoneNumber, entityId);
+}
+
+export async function saveInboundConfig(
+  config: InboundConfigDraft
+): Promise<InboundConfig> {
   // Check if config already exists for this number
   const existing = await prisma.document.findMany({
     where: { type: DOC_TYPE, entityId: config.entityId },
@@ -44,8 +74,10 @@ export async function saveInboundConfig(config: InboundConfig): Promise<InboundC
   });
 
   if (existingDoc) {
-    await prisma.document.update({
-      where: { id: existingDoc.id },
+    // updateMany with the entity in the WHERE, so the scope survives any later
+    // reordering of the lookup above. Section 3.
+    await prisma.document.updateMany({
+      where: { id: existingDoc.id, type: DOC_TYPE, entityId: config.entityId },
       data: { content: JSON.stringify(config) },
     });
   } else {
@@ -63,7 +95,8 @@ export async function saveInboundConfig(config: InboundConfig): Promise<InboundC
   return config;
 }
 
-export async function detectCallerIntent(
+/** Private: the intent query itself. Scope is established by the caller. */
+async function detectCallerIntentInEntity(
   contactId: string | null,
   entityId: string
 ): Promise<string | undefined> {
@@ -95,20 +128,50 @@ Return JSON with "intent": one of INQUIRY, FOLLOW_UP, COMPLAINT, SCHEDULING, SUP
   }
 }
 
-export async function handleInboundCall(
+export async function detectCallerIntent(
+  contactId: string | null,
+  entityId: VerifiedEntityId
+): Promise<string | undefined> {
+  return detectCallerIntentInEntity(contactId, entityId);
+}
+
+/**
+ * Handle a call arriving on one of our numbers.
+ *
+ * There is no request and no user here: a telephony webhook says only "a call
+ * arrived at DID X". The entity therefore comes off the config ROW keyed by
+ * that DID -- trusted provenance, a value read from a database column, never
+ * from a request. That is exactly the case section 5 of the tenancy pattern
+ * covers, so this is a second entry point named ...ForEntityOwner rather than a
+ * cast, and it is deliberately NOT re-exported from the module index.
+ *
+ * A DID is globally unique across entities, so resolving it across all configs
+ * is correct here in a way it is emphatically not on the request path (see
+ * getInboundConfig above).
+ */
+export async function handleInboundCallForEntityOwner(
   phoneNumber: string,
   callerNumber: string
 ): Promise<InboundCallResult> {
-  const config = await getInboundConfig(phoneNumber);
+  const docs = await prisma.document.findMany({ where: { type: DOC_TYPE } });
+  let config: InboundConfig | null = null;
+  for (const doc of docs) {
+    const candidate = deserializeConfig(doc);
+    if (candidate.phoneNumber === phoneNumber) {
+      // Trust the ROW entityId column, not the serialised blob.
+      config = { ...candidate, entityId: doc.entityId };
+      break;
+    }
+  }
   if (!config) {
     throw new Error(`No inbound config found for ${phoneNumber}`);
   }
 
-  const callerInfo = await screenCaller(callerNumber, config.entityId);
+  const callerInfo = await screenCallerInEntity(callerNumber, config.entityId);
   const afterHours = isAfterHours(config.afterHoursConfig);
 
   // Detect caller intent using AI if we have a known contact
-  const intent = await detectCallerIntent(callerInfo.contact?.id ?? null, config.entityId);
+  const intent = await detectCallerIntentInEntity(callerInfo.contact?.id ?? null, config.entityId);
 
   const routedTo = routeCall(config, {
     isVIP: callerInfo.isVIP,
@@ -141,7 +204,8 @@ export async function handleInboundCall(
   };
 }
 
-export async function screenCaller(
+/** Private: the screening query itself. Scope is established by the caller. */
+async function screenCallerInEntity(
   callerNumber: string,
   entityId: string
 ): Promise<{ isSpam: boolean; isVIP: boolean; contact: Contact | null }> {
@@ -192,6 +256,13 @@ export async function screenCaller(
   const isSpam = !contact && callerNumber.startsWith('+1900');
 
   return { isSpam, isVIP, contact };
+}
+
+export async function screenCaller(
+  callerNumber: string,
+  entityId: VerifiedEntityId
+): Promise<{ isSpam: boolean; isVIP: boolean; contact: Contact | null }> {
+  return screenCallerInEntity(callerNumber, entityId);
 }
 
 export function routeCall(

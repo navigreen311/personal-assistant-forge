@@ -13,7 +13,9 @@
 jest.mock('@/lib/ai', () => ({ generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable')), generateText: jest.fn().mockRejectedValue(new Error('AI unavailable')) }));
 
 const mockPrisma = {
-  document: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+  // Trap 1: the services now write through updateMany so the entity can sit in
+  // the WHERE clause. It needs its own mock -- the args differ from update's.
+  document: { create: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
   call: { findMany: jest.fn() },
 };
 
@@ -23,11 +25,15 @@ import { createPersona, getPersona, listPersonas, validateConsentChain, generate
 import { checkStopConditions, updateStats, getNextContacts } from '@/modules/voiceforge/services/campaign-service';
 import { validateScript, startExecution, advanceNode, evaluateBranch, generateScriptWithAI } from '@/modules/voiceforge/services/script-engine';
 import type { Campaign, OutboundCallResult, CallScript, ScriptNode, ScriptBranch } from '@/modules/voiceforge/types';
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 const { generateJSON } = require('@/lib/ai') as { generateJSON: jest.Mock };
 
 const basePersonaData = {
-  entityId: 'entity-1', name: 'Sales Agent', description: 'Pro sales voice',
+  entityId: ENTITY, name: 'Sales Agent', description: 'Pro sales voice',
   voiceConfig: { provider: 'mock', voiceId: 'v1', speed: 1, pitch: 1, language: 'en-US' },
   personality: { defaultTone: 'WARM', formality: 7, empathy: 8, assertiveness: 5, humor: 3, vocabulary: 'MODERATE' as const },
   status: 'DRAFT' as const, consentChain: [],
@@ -57,13 +63,13 @@ describe('Voice System E2E', () => {
 
     it('should get persona by ID', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'p1', entityId: 'entity-1', content: JSON.stringify(basePersonaData), createdAt: new Date(), updatedAt: new Date() });
-      const r = await getPersona('p1');
+      const r = await getPersona('p1', ENTITY);
       expect(r?.name).toBe('Sales Agent');
     });
 
     it('should return null for non-existent persona', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      expect(await getPersona('nope')).toBeNull();
+      expect(await getPersona('nope', ENTITY)).toBeNull();
     });
 
     it('should list personas for entity', async () => {
@@ -71,7 +77,7 @@ describe('Voice System E2E', () => {
         { id: 'p1', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, name: 'A1' }), createdAt: new Date(), updatedAt: new Date() },
         { id: 'p2', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, name: 'A2' }), createdAt: new Date(), updatedAt: new Date() },
       ]);
-      expect(await listPersonas('entity-1')).toHaveLength(2);
+      expect(await listPersonas(ENTITY)).toHaveLength(2);
     });
 
     it('should generate unique watermark IDs', () => {
@@ -84,30 +90,30 @@ describe('Voice System E2E', () => {
     describe('Consent Chain Validation', () => {
       it('should be valid when all GRANTED', async () => {
         (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'p1', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, consentChain: [{ id: 'c1', grantedBy: 'u1', grantedAt: new Date(), scope: 'voice', status: 'GRANTED' }] }), createdAt: new Date(), updatedAt: new Date() });
-        const r = await validateConsentChain('p1');
+        const r = await validateConsentChain('p1', ENTITY);
         expect(r.valid).toBe(true);
       });
 
       it('should be invalid when REVOKED', async () => {
         (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'p1', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, consentChain: [{ id: 'c1', grantedBy: 'u1', grantedAt: new Date(), scope: 'voice', status: 'GRANTED' }, { id: 'c2', grantedBy: 'u2', grantedAt: new Date(), scope: 'recording', status: 'REVOKED', revokedAt: new Date() }] }), createdAt: new Date(), updatedAt: new Date() });
-        const r = await validateConsentChain('p1');
+        const r = await validateConsentChain('p1', ENTITY);
         expect(r.valid).toBe(false);
         expect(r.issues.some((i) => i.includes('revoked'))).toBe(true);
       });
 
       it('should be invalid when EXPIRED', async () => {
         (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'p1', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, consentChain: [{ id: 'c1', grantedBy: 'u1', grantedAt: new Date(), scope: 'voice', status: 'EXPIRED' }] }), createdAt: new Date(), updatedAt: new Date() });
-        expect((await validateConsentChain('p1')).valid).toBe(false);
+        expect((await validateConsentChain('p1', ENTITY)).valid).toBe(false);
       });
 
       it('should be invalid when empty', async () => {
         (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'p1', entityId: 'entity-1', content: JSON.stringify({ ...basePersonaData, consentChain: [] }), createdAt: new Date(), updatedAt: new Date() });
-        expect((await validateConsentChain('p1')).valid).toBe(false);
+        expect((await validateConsentChain('p1', ENTITY)).valid).toBe(false);
       });
 
       it('should be invalid for non-existent persona', async () => {
         (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-        expect((await validateConsentChain('nope')).valid).toBe(false);
+        expect((await validateConsentChain('nope', ENTITY)).valid).toBe(false);
       });
     });
   });
@@ -138,8 +144,8 @@ describe('Voice System E2E', () => {
     it('should update stats for CONNECTED', async () => {
       const c = makeCampaign();
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'campaign-1', entityId: 'entity-1', content: JSON.stringify({ name: c.name, description: c.description, personaId: c.personaId, scriptId: c.scriptId, targetContactIds: c.targetContactIds, schedule: c.schedule, stopConditions: c.stopConditions, status: c.status, stats: c.stats }), createdAt: new Date(), updatedAt: new Date() });
-      (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
-      const s = await updateStats('campaign-1', { callId: 'call-1', outcome: 'CONNECTED', duration: 120, voicemailDropped: false, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0.5, escalated: false });
+      (mockPrisma.document.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+      const s = await updateStats('campaign-1', ENTITY, { callId: 'call-1', outcome: 'CONNECTED', duration: 120, voicemailDropped: false, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0.5, escalated: false });
       expect(s.totalCalled).toBe(1);
       expect(s.totalConnected).toBe(1);
     });
@@ -147,8 +153,8 @@ describe('Voice System E2E', () => {
     it('should update stats for VOICEMAIL', async () => {
       const c = makeCampaign();
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'campaign-1', entityId: 'entity-1', content: JSON.stringify({ ...c, stats: c.stats }), createdAt: new Date(), updatedAt: new Date() });
-      (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
-      const s = await updateStats('campaign-1', { callId: 'call-2', outcome: 'VOICEMAIL', duration: 30, voicemailDropped: true, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0, escalated: false });
+      (mockPrisma.document.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+      const s = await updateStats('campaign-1', ENTITY, { callId: 'call-2', outcome: 'VOICEMAIL', duration: 30, voicemailDropped: true, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0, escalated: false });
       expect(s.totalVoicemail).toBe(1);
     });
 
@@ -156,19 +162,19 @@ describe('Voice System E2E', () => {
       const c = makeCampaign();
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'campaign-1', entityId: 'entity-1', content: JSON.stringify({ ...c, stats: c.stats }), createdAt: new Date(), updatedAt: new Date() });
       (mockPrisma.call.findMany as jest.Mock).mockResolvedValue([{ contactId: 'c1' }, { contactId: 'c2' }]);
-      expect(await getNextContacts('campaign-1', 10)).toEqual(['c3', 'c4', 'c5']);
+      expect(await getNextContacts('campaign-1', ENTITY, 10)).toEqual(['c3', 'c4', 'c5']);
     });
 
     it('should respect limit', async () => {
       const c = makeCampaign();
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ id: 'campaign-1', entityId: 'entity-1', content: JSON.stringify({ ...c, stats: c.stats }), createdAt: new Date(), updatedAt: new Date() });
       (mockPrisma.call.findMany as jest.Mock).mockResolvedValue([]);
-      expect(await getNextContacts('campaign-1', 2)).toHaveLength(2);
+      expect(await getNextContacts('campaign-1', ENTITY, 2)).toHaveLength(2);
     });
 
     it('should return empty for non-existent campaign', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      expect(await getNextContacts('nope', 10)).toEqual([]);
+      expect(await getNextContacts('nope', ENTITY, 10)).toEqual([]);
     });
   });
 
@@ -256,20 +262,20 @@ describe('Voice System E2E', () => {
 
       it('should generate script with AI', async () => {
         generateJSON.mockResolvedValueOnce({ name: 'Sales Follow-up', description: 'Follow-up', nodes: [{ id: 'g', type: 'GREETING', content: 'Hello!', branches: [] }, { id: 'c', type: 'CLOSING', content: 'Thanks', branches: [] }], startNodeId: 'g' });
-        const r = await generateScriptWithAI('entity-1', { purpose: 'sales', targetAudience: 'customers', tone: 'friendly', maxDuration: 5, keyPoints: ['upsell'] });
+        const r = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'customers', tone: 'friendly', maxDuration: 5, keyPoints: ['upsell'] });
         expect(r.name).toBe('Sales Follow-up');
         expect(r.status).toBe('DRAFT');
       });
 
       it('should include branching in generated script', async () => {
         generateJSON.mockResolvedValueOnce({ name: 'Branch', description: 'B', nodes: [{ id: 's', type: 'GREETING', content: 'Hi', branches: [{ condition: 'i', targetNodeId: 'p' }, { condition: 'n', targetNodeId: 'e' }] }, { id: 'p', type: 'STATEMENT', content: 'P', branches: [] }, { id: 'e', type: 'CLOSING', content: 'E', branches: [] }], startNodeId: 's' });
-        const r = await generateScriptWithAI('entity-1', { purpose: 'sales', targetAudience: 'prospects', tone: 'pro', maxDuration: 5, keyPoints: ['pitch'] });
+        const r = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'prospects', tone: 'pro', maxDuration: 5, keyPoints: ['pitch'] });
         expect(r.nodes[0].branches.length).toBe(2);
       });
 
       it('should respect compliance requirements', async () => {
         generateJSON.mockResolvedValueOnce({ name: 'HIPAA', description: 'H', nodes: [{ id: 'n', type: 'GREETING', content: 'Hi', branches: [] }], startNodeId: 'n' });
-        await generateScriptWithAI('entity-1', { purpose: 'healthcare', targetAudience: 'patients', tone: 'empathetic', maxDuration: 5, keyPoints: ['follow-up'], complianceRequirements: ['HIPAA', 'patient consent'] });
+        await generateScriptWithAI(ENTITY, { purpose: 'healthcare', targetAudience: 'patients', tone: 'empathetic', maxDuration: 5, keyPoints: ['follow-up'], complianceRequirements: ['HIPAA', 'patient consent'] });
         const args = generateJSON.mock.calls[0][0] as string;
         expect(args).toContain('HIPAA');
         expect(args).toContain('patient consent');
@@ -282,14 +288,14 @@ describe('Voice System E2E', () => {
       const c = makeCampaign();
       const doc = { id: 'ch', entityId: 'entity-1', content: JSON.stringify({ name: c.name, description: c.description, personaId: c.personaId, scriptId: c.scriptId, targetContactIds: c.targetContactIds, schedule: c.schedule, stopConditions: c.stopConditions, status: c.status, stats: c.stats }), createdAt: new Date(), updatedAt: new Date() };
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(doc);
-      (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.document.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      const s1 = await updateStats('ch', { callId: 'c1', outcome: 'CONNECTED', duration: 120, voicemailDropped: false, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0.5, escalated: false });
+      const s1 = await updateStats('ch', ENTITY, { callId: 'c1', outcome: 'CONNECTED', duration: 120, voicemailDropped: false, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0.5, escalated: false });
       expect(s1.totalCalled).toBe(1);
       expect(s1.totalConnected).toBe(1);
 
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue({ ...doc, content: JSON.stringify({ ...JSON.parse(doc.content), stats: s1 }) });
-      const s2 = await updateStats('ch', { callId: 'c2', outcome: 'VOICEMAIL', duration: 30, voicemailDropped: true, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0, escalated: false });
+      const s2 = await updateStats('ch', ENTITY, { callId: 'c2', outcome: 'VOICEMAIL', duration: 30, voicemailDropped: true, commitmentsMade: [], actionItems: [], nextSteps: [], sentiment: 0, escalated: false });
       expect(s2.totalCalled).toBe(2);
       expect(s2.totalVoicemail).toBe(1);
     });
@@ -309,7 +315,7 @@ describe('Voice System E2E', () => {
         { id: 'c', type: 'END', content: 'Thanks', branches: [] },
       ], startNodeId: 'g' });
 
-      const script = await generateScriptWithAI('entity-1', { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
+      const script = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
       const e = startExecution((script as any).id, 'call-lc', script.startNodeId);
       expect(e.currentNodeId).toBe('g');
 

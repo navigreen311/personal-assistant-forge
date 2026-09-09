@@ -30,6 +30,9 @@ jest.mock('@/lib/db', () => ({
         direction: 'OUTBOUND',
       }),
       update: jest.fn().mockResolvedValue({}),
+      // Trap 1: the service now writes through updateMany so the entity can sit
+      // in the WHERE clause. Its own mock -- the args differ from update's.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     shadowAuthEvent: {
       create: (...args: unknown[]) => mockShadowAuthEventCreate(...args),
@@ -74,6 +77,10 @@ import {
 } from '@/modules/voiceforge/services/sentiment-integration';
 import { __resetCallLifecycleHandlersForTesting } from '@/modules/voiceforge/services/call-lifecycle';
 import type { CallGuardrails } from '@/modules/voiceforge/types';
+import { verifiedEntityIdForTest } from '../../../../tests/helpers/factories';
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 const STANDARD_CONFIG = {
   userId: 'user-1',
@@ -131,7 +138,7 @@ describe('initiateOutboundCall + sentiment integration', () => {
 
     await initiateOutboundCall({
       userId: 'user-1',
-      entityId: 'entity-1',
+      entityId: ENTITY,
       contactId: 'contact-1',
       personaId: 'persona-1',
       purpose: 'follow up',
@@ -147,7 +154,7 @@ describe('initiateOutboundCall + sentiment integration', () => {
 
     await initiateOutboundCall({
       userId: 'user-1',
-      entityId: 'entity-1',
+      entityId: ENTITY,
       contactId: 'contact-1',
       personaId: 'persona-1',
       purpose: 'follow up',
@@ -161,7 +168,7 @@ describe('initiateOutboundCall + sentiment integration', () => {
     mockGetVafConfig.mockResolvedValue({ ...STANDARD_CONFIG });
 
     await initiateOutboundCall({
-      entityId: 'entity-1',
+      entityId: ENTITY,
       contactId: 'contact-1',
       personaId: 'persona-1',
       purpose: 'follow up',
@@ -193,7 +200,7 @@ describe('initiateOutboundCall + sentiment integration', () => {
 
     const result = await initiateOutboundCall({
       userId: 'user-1',
-      entityId: 'entity-1',
+      entityId: ENTITY,
       contactId: 'contact-1',
       personaId: 'persona-1',
       purpose: 'follow up',
@@ -236,7 +243,7 @@ describe('initiateOutboundCall + sentiment integration', () => {
 
     const result = await initiateOutboundCall({
       userId: 'user-1',
-      entityId: 'entity-1',
+      entityId: ENTITY,
       contactId: 'contact-1',
       personaId: 'persona-1',
       purpose: 'follow up',

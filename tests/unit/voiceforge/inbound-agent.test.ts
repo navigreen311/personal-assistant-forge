@@ -31,7 +31,11 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 describe('Inbound Agent', () => {
   const baseConfig: InboundConfig = {
@@ -151,7 +155,7 @@ describe('Inbound Agent', () => {
     it('should return no contact when phone not found', async () => {
       (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await screenCaller('+15550000000', 'entity-1');
+      const result = await screenCaller('+15550000000', ENTITY);
       expect(result.contact).toBeNull();
       expect(result.isVIP).toBe(false);
     });
@@ -159,14 +163,14 @@ describe('Inbound Agent', () => {
     it('should detect spam for 900 numbers', async () => {
       (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await screenCaller('+19001234567', 'entity-1');
+      const result = await screenCaller('+19001234567', ENTITY);
       expect(result.isSpam).toBe(true);
     });
 
     it('should not flag normal numbers as spam', async () => {
       (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await screenCaller('+15551234567', 'entity-1');
+      const result = await screenCaller('+15551234567', ENTITY);
       expect(result.isSpam).toBe(false);
     });
 
@@ -187,7 +191,7 @@ describe('Inbound Agent', () => {
         updatedAt: new Date(),
       });
 
-      const result = await screenCaller('+15551234567', 'entity-1');
+      const result = await screenCaller('+15551234567', ENTITY);
       expect(result.contact).not.toBeNull();
       expect(result.contact?.name).toBe('John Doe');
     });

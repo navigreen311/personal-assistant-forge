@@ -2,10 +2,10 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createPersona, listPersonas } from '@/modules/voiceforge/services/persona-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const PersonaSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1),
   description: z.string(),
   voiceConfig: z.object({
@@ -40,14 +40,10 @@ const PersonaSchema = z.object({
     .default([]),
 });
 
+/** Single-entity list (section 5b): a persona library belongs to one entity. */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
-      }
-
       const personas = await listPersonas(entityId);
       return success(personas);
     } catch (err) {
@@ -57,7 +53,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = PersonaSchema.safeParse(body);
@@ -68,7 +64,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const persona = await createPersona(parsed.data);
+      // entityId LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const persona = await createPersona({ ...draft, entityId });
       return success(persona, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

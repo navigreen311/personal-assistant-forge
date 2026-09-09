@@ -10,8 +10,21 @@ import type {
   ConsentChainEntry,
 } from '@/modules/voiceforge/types';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'VOICE_PERSONA';
+
+/**
+ * A persona as the caller supplies it, with the scope proven.
+ *
+ * `entityId` is a VerifiedEntityId, so a route cannot hand this function a
+ * value straight off the request body -- that is a compile error, which is the
+ * whole point of the brand (docs/parallel-build/tenancy-pattern.md section 2).
+ */
+export type PersonaDraft = Omit<
+  VoicePersona,
+  'id' | 'entityId' | 'createdAt' | 'updatedAt'
+> & { entityId: VerifiedEntityId };
 
 function deserializePersona(doc: { id: string; entityId: string; content: string | null; createdAt: Date; updatedAt: Date }): VoicePersona {
   const data = JSON.parse(doc.content ?? '{}');
@@ -44,9 +57,7 @@ function serializePersona(persona: Omit<VoicePersona, 'id' | 'createdAt' | 'upda
   });
 }
 
-export async function createPersona(
-  data: Omit<VoicePersona, 'id' | 'createdAt' | 'updatedAt'>
-): Promise<VoicePersona> {
+export async function createPersona(data: PersonaDraft): Promise<VoicePersona> {
   const doc = await prisma.document.create({
     data: {
       title: data.name,
@@ -59,15 +70,20 @@ export async function createPersona(
   return deserializePersona(doc);
 }
 
-export async function getPersona(id: string): Promise<VoicePersona | null> {
+export async function getPersona(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<VoicePersona | null> {
+  // The scope is in the WHERE, not a check after the read: another tenant's
+  // persona is simply not found, so there is no check to forget. Section 3.
   const doc = await prisma.document.findFirst({
-    where: { id, type: DOC_TYPE },
+    where: { id, type: DOC_TYPE, entityId },
   });
   if (!doc) return null;
   return deserializePersona(doc);
 }
 
-export async function listPersonas(entityId: string): Promise<VoicePersona[]> {
+export async function listPersonas(entityId: VerifiedEntityId): Promise<VoicePersona[]> {
   const docs = await prisma.document.findMany({
     where: { entityId, type: DOC_TYPE },
     orderBy: { createdAt: 'desc' },
@@ -77,9 +93,10 @@ export async function listPersonas(entityId: string): Promise<VoicePersona[]> {
 
 export async function updatePersona(
   id: string,
+  entityId: VerifiedEntityId,
   data: Partial<VoicePersona>
 ): Promise<VoicePersona> {
-  const existing = await getPersona(id);
+  const existing = await getPersona(id, entityId);
   if (!existing) throw new Error(`Persona ${id} not found`);
 
   const merged = {
@@ -90,22 +107,30 @@ export async function updatePersona(
     createdAt: existing.createdAt,
   };
 
-  const doc = await prisma.document.update({
-    where: { id },
+  // updateMany, not update: a unique WHERE cannot carry the entity, so an
+  // `update({ where: { id } })` would let anyone holding an id edit any
+  // tenant's persona. count === 0 is not-found. Section 3.
+  const res = await prisma.document.updateMany({
+    where: { id, type: DOC_TYPE, entityId },
     data: {
       title: merged.name,
       content: serializePersona(merged),
       status: merged.status,
     },
   });
-  return deserializePersona(doc);
+  if (res.count === 0) throw new Error(`Persona ${id} not found`);
+
+  const updated = await getPersona(id, entityId);
+  if (!updated) throw new Error(`Persona ${id} not found`);
+  return updated;
 }
 
 export async function addConsentEntry(
   personaId: string,
+  entityId: VerifiedEntityId,
   entry: Omit<ConsentChainEntry, 'id'>
 ): Promise<ConsentChainEntry> {
-  const persona = await getPersona(personaId);
+  const persona = await getPersona(personaId, entityId);
   if (!persona) throw new Error(`Persona ${personaId} not found`);
 
   const newEntry: ConsentChainEntry = {
@@ -114,15 +139,16 @@ export async function addConsentEntry(
   };
 
   persona.consentChain.push(newEntry);
-  await updatePersona(personaId, { consentChain: persona.consentChain });
+  await updatePersona(personaId, entityId, { consentChain: persona.consentChain });
   return newEntry;
 }
 
 export async function revokeConsent(
   personaId: string,
+  entityId: VerifiedEntityId,
   entryId: string
 ): Promise<void> {
-  const persona = await getPersona(personaId);
+  const persona = await getPersona(personaId, entityId);
   if (!persona) throw new Error(`Persona ${personaId} not found`);
 
   const entry = persona.consentChain.find((e) => e.id === entryId);
@@ -131,13 +157,14 @@ export async function revokeConsent(
   entry.status = 'REVOKED';
   entry.revokedAt = new Date();
 
-  await updatePersona(personaId, { consentChain: persona.consentChain });
+  await updatePersona(personaId, entityId, { consentChain: persona.consentChain });
 }
 
 export async function validateConsentChain(
-  personaId: string
+  personaId: string,
+  entityId: VerifiedEntityId
 ): Promise<{ valid: boolean; issues: string[] }> {
-  const persona = await getPersona(personaId);
+  const persona = await getPersona(personaId, entityId);
   if (!persona) return { valid: false, issues: ['Persona not found'] };
 
   const issues: string[] = [];

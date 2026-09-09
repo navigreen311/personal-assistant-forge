@@ -25,12 +25,14 @@ export {
   getInboundConfig,
   saveInboundConfig,
   detectCallerIntent,
-  handleInboundCall,
   screenCaller,
   routeCall,
   isAfterHours,
   collectIntakeForm,
 } from './services/inbound-agent';
+// handleInboundCallForEntityOwner is deliberately NOT re-exported: the trusted
+// server-side entry point stays reachable only by its own module path, so
+// `grep -rn ForEntityOwner src/` finds every call site. See section 5.
 export {
   provisionNumber,
   releaseNumber,

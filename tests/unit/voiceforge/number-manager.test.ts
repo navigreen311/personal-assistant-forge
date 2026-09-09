@@ -14,6 +14,9 @@ jest.mock('@/lib/db', () => ({
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      // Trap 1: the services now write through updateMany so the entity can sit
+      // in the WHERE clause. Its own mock, not an alias -- the args differ.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
   },
 }));
@@ -34,7 +37,11 @@ jest.mock('@/lib/voice/mock-provider', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 describe('Number Manager', () => {
   beforeEach(() => {
@@ -58,7 +65,7 @@ describe('Number Manager', () => {
         createdAt: new Date(),
       });
 
-      const result = await provisionNumber('entity-1', '512', 'Main Line');
+      const result = await provisionNumber(ENTITY, '512', 'Main Line');
       expect(result.id).toBe('num-1');
       expect(result.phoneNumber).toBe('+15125551234');
       expect(result.label).toBe('Main Line');
@@ -82,7 +89,7 @@ describe('Number Manager', () => {
         createdAt: new Date(),
       });
 
-      await provisionNumber('entity-1', '512', 'Test');
+      await provisionNumber(ENTITY, '512', 'Test');
       expect(mockPrisma.document.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -108,7 +115,7 @@ describe('Number Manager', () => {
         createdAt: new Date(),
       });
 
-      const result = await provisionNumber('entity-1', '512', 'Sales Line');
+      const result = await provisionNumber(ENTITY, '512', 'Sales Line');
       expect(result.entityId).toBe('entity-1');
       expect(result.provider).toBe('mock');
       expect(result.capabilities).toContain('VOICE');
@@ -132,10 +139,17 @@ describe('Number Manager', () => {
       });
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
 
-      await releaseNumber('num-1');
-      expect(mockPrisma.document.update).toHaveBeenCalledWith(
+      await releaseNumber('num-1', ENTITY);
+      // CORRECTED BY P-14. This previously asserted
+      //   update({ where: { id: 'num-1' } })
+      // -- a unique WHERE with no entity in it. That is precisely the defect
+      // section 3 of the tenancy pattern describes: any caller who knew a
+      // number id could release any tenant's phone number, and this test was
+      // green the whole time because it encoded the broken behaviour as the
+      // requirement. The scope must be IN the WHERE clause.
+      expect(mockPrisma.document.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'num-1' },
+          where: expect.objectContaining({ id: 'num-1', entityId: ENTITY }),
           data: expect.objectContaining({
             status: 'ARCHIVED',
           }),
@@ -145,7 +159,7 @@ describe('Number Manager', () => {
 
     it('should throw for non-existent number', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      await expect(releaseNumber('nonexistent')).rejects.toThrow('not found');
+      await expect(releaseNumber('nonexistent', ENTITY)).rejects.toThrow('not found');
     });
   });
 
@@ -180,7 +194,7 @@ describe('Number Manager', () => {
         },
       ]);
 
-      const result = await listNumbers('entity-1');
+      const result = await listNumbers(ENTITY);
       expect(result).toHaveLength(2);
       expect(result[0].phoneNumber).toBe('+15125551234');
     });
@@ -203,20 +217,20 @@ describe('Number Manager', () => {
       });
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
 
-      const result = await assignPersona('num-1', 'persona-1');
+      const result = await assignPersona('num-1', ENTITY, 'persona-1');
       expect(result.assignedPersonaId).toBe('persona-1');
     });
 
     it('should throw for non-existent number', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      await expect(assignPersona('nonexistent', 'persona-1')).rejects.toThrow('not found');
+      await expect(assignPersona('nonexistent', ENTITY, 'persona-1')).rejects.toThrow('not found');
     });
   });
 
   describe('getNumber', () => {
     it('should return null for non-existent number', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      const result = await getNumber('nonexistent');
+      const result = await getNumber('nonexistent', ENTITY);
       expect(result).toBeNull();
     });
 
@@ -235,7 +249,7 @@ describe('Number Manager', () => {
         createdAt: new Date(),
       });
 
-      const result = await getNumber('num-1');
+      const result = await getNumber('num-1', ENTITY);
       expect(result).not.toBeNull();
       expect(result!.phoneNumber).toBe('+15125551234');
     });
@@ -258,14 +272,14 @@ describe('Number Manager', () => {
       });
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({});
 
-      const result = await assignInboundConfig('num-1', 'config-1');
+      const result = await assignInboundConfig('num-1', ENTITY, 'config-1');
       expect(result.inboundConfigId).toBe('config-1');
-      expect(mockPrisma.document.update).toHaveBeenCalled();
+      expect(mockPrisma.document.updateMany).toHaveBeenCalled();
     });
 
     it('should throw when number not found', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      await expect(assignInboundConfig('nonexistent', 'config-1')).rejects.toThrow('not found');
+      await expect(assignInboundConfig('nonexistent', ENTITY, 'config-1')).rejects.toThrow('not found');
     });
   });
 });

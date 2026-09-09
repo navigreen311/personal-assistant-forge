@@ -2,10 +2,10 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { initiateOutboundCall } from '@/modules/voiceforge/services/outbound-agent';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const OutboundCallSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   contactId: z.string().min(1),
   personaId: z.string().min(1),
   scriptId: z.string().optional(),
@@ -22,7 +22,7 @@ const OutboundCallSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = OutboundCallSchema.safeParse(body);
@@ -33,9 +33,15 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Forward userId so VAF integrations (sentiment monitoring, voiceprint)
-      // can look up the per-user config.
-      const result = await initiateOutboundCall({ ...parsed.data, userId: session.userId });
+      // entityId LAST: it overwrites whatever the caller asked for. userId comes
+      // from the session, never the wire -- VAF integrations (sentiment
+      // monitoring, voiceprint) look up per-user config with it.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const result = await initiateOutboundCall({
+        ...draft,
+        userId: session.userId,
+        entityId,
+      });
       return success(result, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
