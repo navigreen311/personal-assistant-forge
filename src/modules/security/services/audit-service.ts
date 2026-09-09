@@ -116,6 +116,25 @@ function escapeCsvValue(value: string): string {
   return value;
 }
 
+/**
+ * `JSON.stringify` with object keys sorted at every depth.
+ *
+ * See `calculateHash` for why this exists. Arrays keep their order (it is
+ * meaningful); `undefined` inside an object is dropped, matching what a jsonb
+ * round trip does to it.
+ */
+function canonicalStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalStringify(v)}`);
+
+  return `{${entries.join(',')}}`;
+}
+
 // ---------------------------------------------------------------------------
 // AuditService
 // ---------------------------------------------------------------------------
@@ -420,6 +439,19 @@ Return JSON with:
 
   /**
    * Calculate a SHA-256 hash over the canonical set of entry fields.
+   *
+   * CANONICAL MEANS KEY-SORTED, AND THAT IS NOT A STYLE CHOICE.
+   *
+   * `details` is a `jsonb` column, and Postgres does not preserve object key
+   * order in `jsonb` -- it stores keys sorted by length then bytewise. So the
+   * object written (`{durationMs, query, attemptedEntityId}`) comes back in a
+   * different order, `JSON.stringify` produces a different string, and the
+   * recalculated hash differs from the stored one. Every single row would then
+   * verify as TAMPERED, which is the most useless possible failure mode for a
+   * tamper-evident log: an alarm that is always on gets switched off.
+   *
+   * The in-memory version could not hit this, because it re-hashed the very
+   * object it had hashed a moment earlier. Persisting it is what exposed it.
    */
   private calculateHash(payload: {
     timestamp: Date;
@@ -429,8 +461,8 @@ Return JSON with:
     details: Record<string, unknown>;
     previousHash: string;
   }): string {
-    const serialized = JSON.stringify({
-      timestamp: payload.timestamp,
+    const serialized = canonicalStringify({
+      timestamp: payload.timestamp.toISOString(),
       actor: payload.actor,
       action: payload.action,
       resource: payload.resource,
