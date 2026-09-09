@@ -1,10 +1,43 @@
-import { prisma } from '@/lib/db';
-import type { Task, Priority, TaskStatus } from '@/shared/types';
-import type { TaskFilters, TaskSortOptions } from '../types';
+/**
+ * Task CRUD -- the reference implementation of the P-00 tenancy pattern's
+ * service half.
+ *
+ * ============================================================================
+ * WHAT CHANGED AND WHY
+ * ============================================================================
+ *
+ * Before P-04 this file contained ZERO references to `userId`. `createTask`
+ * checked that the entity *existed*; it never checked the caller owned it. The
+ * routes above it called `withAuth(request, async (req, _session) => ...)` and
+ * then took `entityId` straight off the request body or query string, so an
+ * authenticated user of entity A could create, read, update and delete tasks in
+ * entity B by naming B's id.
+ *
+ * Two changes close it, and the second is the one that keeps it closed:
+ *
+ *  1. Every entity-scoped function takes a `VerifiedEntityId` -- a branded
+ *     string that only `withEntityScope` can produce. A plain `string` is not
+ *     assignable to it, so a future call site that passes a raw value off the
+ *     request body FAILS TO COMPILE. Review missed this 149 times; `tsc` will
+ *     not miss it once.
+ *
+ *  2. The verified id goes into the WHERE clause, it is not checked and then
+ *     discarded. `findFirst({ where: { id, entityId } })` rather than
+ *     `findUnique({ where: { id } })` followed by an `if`. A foreign row is
+ *     not "found and rejected", it is simply not found -- so there is no
+ *     ordering mistake available in which the check is skipped.
+ *
+ * See docs/parallel-build/tenancy-pattern.md.
+ */
 
-export async function createTask(params: {
+import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+import type { Task, Priority, TaskStatus } from '@/shared/types';
+import type { TaskQueryFilters, TaskSortOptions } from '../types';
+
+/** The fields a task is created from, minus the scope. */
+interface TaskDraft {
   title: string;
-  entityId: string;
   description?: string;
   projectId?: string;
   priority?: Priority;
@@ -14,26 +47,98 @@ export async function createTask(params: {
   assigneeId?: string;
   tags?: string[];
   createdFrom?: { type: string; sourceId: string };
-}): Promise<Task> {
-  const entity = await prisma.entity.findUnique({ where: { id: params.entityId } });
+}
+
+/**
+ * Create a task in an entity the caller has been proven to own.
+ *
+ * `params.entityId` is a `VerifiedEntityId`, so the only way to reach this
+ * function is through `withEntityScope`. `userId` is the authenticated caller,
+ * carried for the audit trail and re-asserted against the entity's owner as
+ * defence in depth -- if those two ever disagree the brand has been forged and
+ * we want a loud failure, not a silent write.
+ */
+export async function createTask(
+  params: TaskDraft & { entityId: VerifiedEntityId },
+  userId: string
+): Promise<Task> {
+  const entity = await prisma.entity.findUnique({
+    where: { id: params.entityId },
+    select: { id: true, userId: true },
+  });
+  if (!entity) {
+    throw new Error(`Entity not found: ${params.entityId}`);
+  }
+  if (entity.userId !== userId) {
+    // Unreachable through withEntityScope. If it ever fires, the brand was
+    // manufactured rather than earned.
+    throw new Error('Entity does not belong to the authenticated user');
+  }
+
+  return insertTask(params, params.entityId);
+}
+
+/**
+ * SYSTEM CONTEXT ONLY -- create a task with no HTTP request in play.
+ *
+ * ============================================================================
+ * READ THIS BEFORE COPYING IT
+ * ============================================================================
+ *
+ * `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. Trusted server-side code -- a worker, a cron job, a webhook
+ * pipeline -- has no request and therefore cannot obtain one. The frozen
+ * interface in `src/shared/middleware/auth.ts` offers no server-side
+ * equivalent. That is a real gap; it is written up in
+ * PARALLEL_BUILD_ESCALATION_P04.md, and this function is the interim answer,
+ * not the pattern.
+ *
+ * It is safe ONLY because of the rule in its name: the `entityId` must have
+ * been read off a database row (e.g. `calendarEvent.entityId`), never off a
+ * request. There is no user to authorize, so the owner is resolved FROM the
+ * entity rather than compared against a caller-supplied one.
+ *
+ * Its only caller today is `src/lib/shadow/meeting/processor.ts`. It is not
+ * re-exported from `src/modules/tasks/index.ts`, so `grep -r
+ * createTaskForEntityOwner` finds every use in one line. NEVER call it from a
+ * route handler: a route has a request, and a request must use `createTask`.
+ */
+export async function createTaskForEntityOwner(
+  params: TaskDraft & { entityId: string }
+): Promise<Task> {
+  const entity = await prisma.entity.findUnique({
+    where: { id: params.entityId },
+    select: { id: true },
+  });
   if (!entity) {
     throw new Error(`Entity not found: ${params.entityId}`);
   }
 
+  return insertTask(params, params.entityId);
+}
+
+/**
+ * The shared write. Takes the scope as a plain string because both callers have
+ * already established it -- one by proving ownership, one by reading it off a
+ * row. Not exported: there is no third way in.
+ */
+async function insertTask(params: TaskDraft, entityId: string): Promise<Task> {
   if (params.projectId) {
-    const project = await prisma.project.findUnique({ where: { id: params.projectId } });
+    // Scope the lookup rather than looking up and then comparing: a project in
+    // another entity is simply not found.
+    const project = await prisma.project.findFirst({
+      where: { id: params.projectId, entityId },
+      select: { id: true },
+    });
     if (!project) {
       throw new Error(`Project not found: ${params.projectId}`);
-    }
-    if (project.entityId !== params.entityId) {
-      throw new Error('Project does not belong to the specified entity');
     }
   }
 
   const task = await prisma.task.create({
     data: {
       title: params.title,
-      entityId: params.entityId,
+      entityId,
       description: params.description ?? null,
       projectId: params.projectId ?? null,
       priority: params.priority ?? 'P1',
@@ -49,8 +154,17 @@ export async function createTask(params: {
   return mapPrismaTask(task);
 }
 
-export async function getTask(taskId: string): Promise<Task | null> {
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
+/**
+ * Read one task, scoped.
+ *
+ * `findFirst({ id, entityId })`, not `findUnique({ id })` plus a comparison:
+ * a task in another entity does not exist as far as this caller is concerned.
+ */
+export async function getTask(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<Task | null> {
+  const task = await prisma.task.findFirst({ where: { id: taskId, entityId } });
   return task ? mapPrismaTask(task) : null;
 }
 
@@ -66,11 +180,24 @@ export async function updateTask(
     assigneeId: string;
     projectId: string;
     tags: string[];
-  }>
+  }>,
+  entityId: VerifiedEntityId,
+  userId: string
 ): Promise<Task> {
-  const existing = await prisma.task.findUnique({ where: { id: taskId } });
+  const existing = await prisma.task.findFirst({ where: { id: taskId, entityId } });
   if (!existing) {
     throw new Error(`Task not found: ${taskId}`);
+  }
+
+  // Moving a task into a project only works within the same entity.
+  if (updates.projectId) {
+    const project = await prisma.project.findFirst({
+      where: { id: updates.projectId, entityId },
+      select: { id: true },
+    });
+    if (!project) {
+      throw new Error(`Project not found: ${updates.projectId}`);
+    }
   }
 
   // Track deferral for procrastination detection
@@ -80,7 +207,9 @@ export async function updateTask(
     if (newDate > oldDate) {
       await prisma.actionLog.create({
         data: {
-          actor: 'SYSTEM',
+          // The actor is the authenticated caller, not the literal 'SYSTEM'
+          // this used to record for every human edit.
+          actor: userId,
           actionType: 'TASK_DEFERRED',
           target: taskId,
           reason: `Due date moved from ${oldDate.toISOString()} to ${newDate.toISOString()}`,
@@ -110,20 +239,42 @@ export async function updateTask(
   return mapPrismaTask(task);
 }
 
-export async function deleteTask(taskId: string): Promise<void> {
-  await prisma.task.update({
-    where: { id: taskId },
+/**
+ * Soft-delete (cancel) a task, scoped.
+ *
+ * `updateMany` rather than `update`, because `update` takes a unique WHERE and
+ * cannot carry the entity. A zero count means the task is not in this entity --
+ * indistinguishable, deliberately, from not existing.
+ */
+export async function deleteTask(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const result = await prisma.task.updateMany({
+    where: { id: taskId, entityId },
     data: { status: 'CANCELLED' },
   });
+  if (result.count === 0) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
 }
 
+/**
+ * List tasks in one entity.
+ *
+ * The scope is the FIRST and a REQUIRED argument, and `filters` is a
+ * `TaskQueryFilters` -- the same bag minus `entityId`. A route parses filters
+ * wholesale out of the query string, so a tenancy field on that object would
+ * hand the scope straight back to the caller.
+ */
 export async function listTasks(
-  filters: TaskFilters,
+  entityId: VerifiedEntityId,
+  filters: TaskQueryFilters = {},
   sort?: TaskSortOptions,
   page = 1,
   pageSize = 20
 ): Promise<{ data: Task[]; total: number }> {
-  const where = buildWhereClause(filters);
+  const where = buildWhereClause(entityId, filters);
 
   const orderBy: Record<string, string> = {};
   if (sort) {
@@ -145,6 +296,15 @@ export async function listTasks(
   return { data: tasks.map(mapPrismaTask), total };
 }
 
+/**
+ * Bulk update, scoped.
+ *
+ * A list endpoint that leaks rows and a bulk endpoint that writes rows are
+ * different failures. This one used to accept an arbitrary array of task ids
+ * and update every one of them; the entity in the WHERE clause now means ids
+ * belonging to another tenant silently match nothing, and the returned count
+ * tells the caller how many of their own tasks moved.
+ */
 export async function bulkUpdateTasks(
   taskIds: string[],
   updates: Partial<{
@@ -152,10 +312,11 @@ export async function bulkUpdateTasks(
     priority: Priority;
     assigneeId: string;
     projectId: string;
-  }>
+  }>,
+  entityId: VerifiedEntityId
 ): Promise<{ updated: number }> {
   const result = await prisma.task.updateMany({
-    where: { id: { in: taskIds } },
+    where: { id: { in: taskIds }, entityId },
     data: updates,
   });
   return { updated: result.count };
@@ -163,17 +324,18 @@ export async function bulkUpdateTasks(
 
 export async function getTasksByProject(
   projectId: string,
-  filters?: TaskFilters
+  entityId: VerifiedEntityId,
+  filters?: TaskQueryFilters
 ): Promise<Task[]> {
-  const baseWhere = filters ? buildWhereClause(filters) : {};
+  const where = buildWhereClause(entityId, filters ?? {});
   const tasks = await prisma.task.findMany({
-    where: { ...baseWhere, projectId },
+    where: { ...where, projectId },
     orderBy: { createdAt: 'desc' },
   });
   return tasks.map(mapPrismaTask);
 }
 
-export async function getOverdueTasks(entityId: string): Promise<Task[]> {
+export async function getOverdueTasks(entityId: VerifiedEntityId): Promise<Task[]> {
   const tasks = await prisma.task.findMany({
     where: {
       entityId,
@@ -185,7 +347,7 @@ export async function getOverdueTasks(entityId: string): Promise<Task[]> {
   return tasks.map(mapPrismaTask);
 }
 
-export async function getBlockedTasks(entityId: string): Promise<Task[]> {
+export async function getBlockedTasks(entityId: VerifiedEntityId): Promise<Task[]> {
   const tasks = await prisma.task.findMany({
     where: {
       entityId,
@@ -198,10 +360,17 @@ export async function getBlockedTasks(entityId: string): Promise<Task[]> {
 
 // --- Helpers ---
 
-function buildWhereClause(filters: TaskFilters): Record<string, unknown> {
+/**
+ * The scope is applied last and unconditionally, so no combination of filters
+ * can widen it. It is a separate parameter rather than a filter field for the
+ * same reason.
+ */
+function buildWhereClause(
+  entityId: VerifiedEntityId,
+  filters: TaskQueryFilters
+): Record<string, unknown> {
   const where: Record<string, unknown> = {};
 
-  if (filters.entityId) where.entityId = filters.entityId;
   if (filters.projectId) where.projectId = filters.projectId;
   if (filters.assigneeId) where.assigneeId = filters.assigneeId;
 
@@ -244,6 +413,8 @@ function buildWhereClause(filters: TaskFilters): Record<string, unknown> {
   if (filters.isBlocked) {
     where.status = 'BLOCKED';
   }
+
+  where.entityId = entityId;
 
   return where;
 }

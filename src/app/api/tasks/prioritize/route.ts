@@ -1,18 +1,18 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { scoreBatch, getDailyTop3 } from '@/modules/tasks/services/prioritization-engine';
 import { prisma } from '@/lib/db';
 import type { Task } from '@/shared/types';
 
 const PrioritizeSchema = z.object({
   taskIds: z.array(z.string()).optional(),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = PrioritizeSchema.safeParse(body);
@@ -21,8 +21,10 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { taskIds, entityId } = parsed.data;
+      const { taskIds } = parsed.data;
 
+      // `entityId` here is the verified one, not `parsed.data.entityId`. The
+      // caller-supplied id is never read.
       const where: Record<string, unknown> = {
         entityId,
         status: { in: ['TODO', 'IN_PROGRESS', 'BLOCKED'] },
@@ -60,18 +62,21 @@ export async function POST(request: NextRequest) {
   });
 }
 
+/**
+ * The caller's own daily top 3.
+ *
+ * This route used to read BOTH halves of "whose day" off the query string:
+ * `?userId=<anyone>&entityId=<anything>`. `userId` now comes from the session
+ * and `entityId` from withEntityScope; a `userId` query parameter is ignored.
+ *
+ * Identity is never a request parameter. If a route needs to act for a
+ * different user, that is an impersonation feature and needs its own
+ * authorization -- it is not something a query string decides.
+ */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, session, entityId) => {
     try {
-      const params = req.nextUrl.searchParams;
-      const userId = params.get('userId');
-      const entityId = params.get('entityId');
-
-      if (!userId || !entityId) {
-        return error('VALIDATION_ERROR', 'userId and entityId are required', 400);
-      }
-
-      const result = await getDailyTop3(userId, entityId);
+      const result = await getDailyTop3(session.userId, entityId);
       return success(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to get daily top 3';

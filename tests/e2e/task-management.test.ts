@@ -11,6 +11,22 @@
  * - nlp-parser.ts (parseTaskFromText, extractEntities, resolveEntityReferences, parseMultipleTasks)
  * - forecasting-service.ts (forecastTaskCompletion, calculateVelocity, detectVelocityAnomalies)
  * - procrastination-detector.ts (detectProcrastination, getSuggestion, getTaskDeferralHistory)
+ *
+ * ============================================================================
+ * WHAT THIS FILE IS, AND WHAT IT IS NOT (P-04)
+ * ============================================================================
+ *
+ * Despite living in tests/e2e/ this is a UNIT test. It builds `mockPrisma`
+ * below and calls `jest.mock('@/lib/db')`, so no request, no middleware and no
+ * database are involved -- it cannot observe a tenancy check at all, and its
+ * passing is not evidence that one exists. The real tenancy proof for this
+ * module is tests/db/tasks-tenancy.test.ts, which runs against a real Postgres
+ * with `getToken` unmocked.
+ *
+ * P-04 updated the call sites here for the new service signatures, and
+ * corrected three assertions that had recorded the missing tenant check as the
+ * expected behaviour (bulk update, soft delete, deferral actor). Each is marked
+ * "CORRECTED BY P-04" where it appears.
  */
 
 // --- Infrastructure mocks ---
@@ -26,6 +42,9 @@ const mockPrisma = {
   task: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    // Reads are scoped now -- findFirst({ id, entityId }) rather than
+    // findUnique({ id }). Same stub everywhere it was used.
+    findFirst: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
     updateMany: jest.fn(),
@@ -48,6 +67,23 @@ const mockPrisma = {
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
 
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn(),
@@ -147,7 +183,7 @@ describe('Task Management E2E Tests', () => {
   // =========================================================================
   describe('Full task lifecycle: create -> update -> assign -> complete -> archive', () => {
     it('should walk a task through every status from creation to archival', async () => {
-      const mockEntity = { id: 'entity-1', name: 'Test Entity', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', name: 'Test Entity', complianceProfile: [], userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
 
       // Step 1: CREATE
@@ -160,11 +196,14 @@ describe('Task Management E2E Tests', () => {
       });
       mockPrisma.task.create.mockResolvedValue(createdRecord);
 
-      const created = await createTask({
-        title: 'Prepare quarterly report',
-        entityId: 'entity-1',
-        dueDate: new Date('2026-03-01'),
-      });
+      const created = await createTask(
+        {
+          title: 'Prepare quarterly report',
+          entityId: verified('entity-1'),
+          dueDate: new Date('2026-03-01'),
+        },
+        'user-1'
+      );
 
       expect(created.id).toBe('lifecycle-task');
       expect(created.status).toBe('TODO');
@@ -179,13 +218,18 @@ describe('Task Management E2E Tests', () => {
         tags: ['finance', 'quarterly'],
         status: 'TODO',
       });
-      mockPrisma.task.findUnique.mockResolvedValue(createdRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(createdRecord);
       mockPrisma.task.update.mockResolvedValue(updatedRecord);
 
-      const updated = await updateTask('lifecycle-task', {
-        description: 'Include financial data and projections',
-        tags: ['finance', 'quarterly'],
-      });
+      const updated = await updateTask(
+        'lifecycle-task',
+        {
+          description: 'Include financial data and projections',
+          tags: ['finance', 'quarterly'],
+        },
+        verified('entity-1'),
+        'user-1'
+      );
 
       expect(updated.description).toBe('Include financial data and projections');
       expect(updated.tags).toEqual(['finance', 'quarterly']);
@@ -196,10 +240,10 @@ describe('Task Management E2E Tests', () => {
         assigneeId: 'user-42',
         status: 'TODO',
       });
-      mockPrisma.task.findUnique.mockResolvedValue(updatedRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(updatedRecord);
       mockPrisma.task.update.mockResolvedValue(assignedRecord);
 
-      const assigned = await updateTask('lifecycle-task', { assigneeId: 'user-42' });
+      const assigned = await updateTask('lifecycle-task', { assigneeId: 'user-42' }, verified('entity-1'), 'user-1');
       expect(assigned.assigneeId).toBe('user-42');
 
       // Step 4: Move to IN_PROGRESS
@@ -208,10 +252,10 @@ describe('Task Management E2E Tests', () => {
         status: 'IN_PROGRESS',
         assigneeId: 'user-42',
       });
-      mockPrisma.task.findUnique.mockResolvedValue(assignedRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(assignedRecord);
       mockPrisma.task.update.mockResolvedValue(inProgressRecord);
 
-      const inProgress = await updateTask('lifecycle-task', { status: 'IN_PROGRESS' });
+      const inProgress = await updateTask('lifecycle-task', { status: 'IN_PROGRESS' }, verified('entity-1'), 'user-1');
       expect(inProgress.status).toBe('IN_PROGRESS');
 
       // Step 5: COMPLETE (move to DONE)
@@ -220,10 +264,10 @@ describe('Task Management E2E Tests', () => {
         status: 'DONE',
         assigneeId: 'user-42',
       });
-      mockPrisma.task.findUnique.mockResolvedValue(inProgressRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(inProgressRecord);
       mockPrisma.task.update.mockResolvedValue(doneRecord);
 
-      const done = await updateTask('lifecycle-task', { status: 'DONE' });
+      const done = await updateTask('lifecycle-task', { status: 'DONE' }, verified('entity-1'), 'user-1');
       expect(done.status).toBe('DONE');
 
       // Step 6: ARCHIVE (soft-delete via CANCELLED status)
@@ -232,10 +276,16 @@ describe('Task Management E2E Tests', () => {
         status: 'CANCELLED',
       });
       mockPrisma.task.update.mockResolvedValue(cancelledRecord);
+      mockPrisma.task.updateMany.mockResolvedValue({ count: 1 });
 
-      await deleteTask('lifecycle-task');
-      expect(mockPrisma.task.update).toHaveBeenCalledWith({
-        where: { id: 'lifecycle-task' },
+      await deleteTask('lifecycle-task', verified('entity-1'));
+      // CORRECTED BY P-04. This previously asserted
+      //     where: { id: 'lifecycle-task' }
+      // -- a cancel with no entity in the WHERE clause, i.e. any authenticated
+      // caller could cancel any tenant's task by id. The assertion passed, and
+      // what it recorded as the requirement was the defect.
+      expect(mockPrisma.task.updateMany).toHaveBeenCalledWith({
+        where: { id: 'lifecycle-task', entityId: 'entity-1' },
         data: { status: 'CANCELLED' },
       });
     });
@@ -255,15 +305,18 @@ describe('Task Management E2E Tests', () => {
         status: 'IN_PROGRESS',
       });
 
-      mockPrisma.task.findUnique.mockResolvedValue(existingTask);
+      mockPrisma.task.findFirst.mockResolvedValue(existingTask);
       mockPrisma.task.update.mockResolvedValue(deferredTask);
       mockPrisma.actionLog.create.mockResolvedValue({});
 
-      await updateTask('deferred-task', { dueDate: newDue });
+      await updateTask('deferred-task', { dueDate: newDue }, verified('entity-1'), 'user-1');
 
       expect(mockPrisma.actionLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          actor: 'SYSTEM',
+          // CORRECTED BY P-04: was the literal 'SYSTEM' for every human edit,
+          // so the deferral audit trail recorded that something happened but
+          // never who did it.
+          actor: 'user-1',
           actionType: 'TASK_DEFERRED',
           target: 'deferred-task',
           blastRadius: 'LOW',
@@ -276,15 +329,15 @@ describe('Task Management E2E Tests', () => {
       mockPrisma.entity.findUnique.mockResolvedValue(null);
 
       await expect(
-        createTask({ title: 'Orphan task', entityId: 'bad-entity' })
+        createTask({ title: 'Orphan task', entityId: verified('bad-entity') }, 'user-1')
       ).rejects.toThrow('Entity not found: bad-entity');
     });
 
     it('should throw when updating a task that does not exist', async () => {
-      mockPrisma.task.findUnique.mockResolvedValue(null);
+      mockPrisma.task.findFirst.mockResolvedValue(null);
 
       await expect(
-        updateTask('nonexistent', { status: 'DONE' })
+        updateTask('nonexistent', { status: 'DONE' }, verified('entity-1'), 'user-1')
       ).rejects.toThrow('Task not found: nonexistent');
     });
   });
@@ -298,12 +351,15 @@ describe('Task Management E2E Tests', () => {
 
       const result = await bulkUpdateTasks(
         ['task-a', 'task-b', 'task-c'],
-        { status: 'DONE' }
+        { status: 'DONE' },
+        verified('entity-1')
       );
 
       expect(result.updated).toBe(3);
+      // CORRECTED BY P-04: the WHERE clause had no entity in it, so a bulk
+      // update was a write primitive over every tenant's tasks at once.
       expect(mockPrisma.task.updateMany).toHaveBeenCalledWith({
-        where: { id: { in: ['task-a', 'task-b', 'task-c'] } },
+        where: { id: { in: ['task-a', 'task-b', 'task-c'] }, entityId: 'entity-1' },
         data: { status: 'DONE' },
       });
     });
@@ -313,12 +369,13 @@ describe('Task Management E2E Tests', () => {
 
       const result = await bulkUpdateTasks(
         ['task-x', 'task-y'],
-        { priority: 'P0', assigneeId: 'user-99' }
+        { priority: 'P0', assigneeId: 'user-99' },
+        verified('entity-1')
       );
 
       expect(result.updated).toBe(2);
       expect(mockPrisma.task.updateMany).toHaveBeenCalledWith({
-        where: { id: { in: ['task-x', 'task-y'] } },
+        where: { id: { in: ['task-x', 'task-y'] }, entityId: 'entity-1' },
         data: { priority: 'P0', assigneeId: 'user-99' },
       });
     });
@@ -332,7 +389,8 @@ describe('Task Management E2E Tests', () => {
       mockPrisma.task.count.mockResolvedValue(5);
 
       const result = await listTasks(
-        { entityId: 'entity-1', status: 'TODO' },
+        verified('entity-1'),
+        { status: 'TODO' },
         { field: 'priority', direction: 'asc' },
         1,
         2
@@ -356,7 +414,7 @@ describe('Task Management E2E Tests', () => {
       ];
       mockPrisma.task.findMany.mockResolvedValue(overdueTasks);
 
-      const result = await getOverdueTasks('entity-1');
+      const result = await getOverdueTasks(verified('entity-1'));
 
       expect(result).toHaveLength(2);
       expect(mockPrisma.task.findMany).toHaveBeenCalledWith(
@@ -375,7 +433,7 @@ describe('Task Management E2E Tests', () => {
       ];
       mockPrisma.task.findMany.mockResolvedValue(blockedTasks);
 
-      const result = await getBlockedTasks('entity-1');
+      const result = await getBlockedTasks(verified('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(result[0].status).toBe('BLOCKED');
@@ -396,7 +454,7 @@ describe('Task Management E2E Tests', () => {
       ];
       mockPrisma.task.findMany.mockResolvedValue(projectTasks);
 
-      const graph = await buildDependencyGraph('proj-1');
+      const graph = await buildDependencyGraph('proj-1', verified('entity-1'));
 
       expect(graph.nodes).toHaveLength(5);
       expect(graph.edges.length).toBeGreaterThan(0);
@@ -423,7 +481,7 @@ describe('Task Management E2E Tests', () => {
       //   findUnique(dep-3) -> deps=[dep-2] ->
       //   findUnique(dep-2) as blocker -> push -> traceBlockers(dep-2) ->
       //   findUnique(dep-2) -> deps=[] -> done
-      mockPrisma.task.findUnique
+      mockPrisma.task.findFirst
         .mockResolvedValueOnce(createMockTaskRecord({
           id: 'dep-4',
           dependencies: ['dep-3'],
@@ -450,7 +508,7 @@ describe('Task Management E2E Tests', () => {
           status: 'IN_PROGRESS',
         }));
 
-      const chain = await getBlockingChain('dep-4');
+      const chain = await getBlockingChain('dep-4', verified('entity-1'));
 
       expect(chain).toHaveLength(2);
       expect(chain.map((t) => t.id)).toContain('dep-3');
@@ -466,7 +524,7 @@ describe('Task Management E2E Tests', () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]);
 
-      const downstream = await getDownstreamTasks('blocker-1');
+      const downstream = await getDownstreamTasks('blocker-1', verified('entity-1'));
 
       expect(downstream).toHaveLength(2);
       expect(downstream.map((t) => t.id)).toContain('down-1');
@@ -519,12 +577,12 @@ describe('Task Management E2E Tests', () => {
         assigneeId: 'user-5',
       });
 
-      mockPrisma.task.findUnique
+      mockPrisma.task.findFirst
         .mockResolvedValueOnce(blockedTask)
         .mockResolvedValueOnce(blockerA)
         .mockResolvedValueOnce(blockerB);
 
-      const suggestion = await suggestDependencyResolution('blocked-task');
+      const suggestion = await suggestDependencyResolution('blocked-task', verified('entity-1'));
 
       expect(suggestion).toContain('Review API spec');
       expect(suggestion).toContain('TODO');
@@ -534,7 +592,7 @@ describe('Task Management E2E Tests', () => {
     });
 
     it('should create a task with dependencies and verify they are stored', async () => {
-      const mockEntity = { id: 'entity-1', name: 'Test Entity' };
+      const mockEntity = { id: 'entity-1', name: 'Test Entity', userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
 
       const taskWithDeps = createMockTaskRecord({
@@ -544,11 +602,14 @@ describe('Task Management E2E Tests', () => {
       });
       mockPrisma.task.create.mockResolvedValue(taskWithDeps);
 
-      const task = await createTask({
-        title: 'Deploy to prod',
-        entityId: 'entity-1',
-        dependencies: ['run-tests', 'code-review'],
-      });
+      const task = await createTask(
+        {
+          title: 'Deploy to prod',
+          entityId: verified('entity-1'),
+          dependencies: ['run-tests', 'code-review'],
+        },
+        'user-1'
+      );
 
       expect(task.dependencies).toEqual(['run-tests', 'code-review']);
       expect(mockPrisma.task.create).toHaveBeenCalledWith({
@@ -628,7 +689,7 @@ describe('Task Management E2E Tests', () => {
         rawInput: 'Update API docs for Platform project assign to John',
       };
 
-      const resolved = await resolveEntityReferences(parsed, 'entity-1');
+      const resolved = await resolveEntityReferences(parsed, verified('entity-1'));
 
       expect(resolved.entityId).toBe('entity-1');
       expect(resolved.projectId).toBe('proj-abc');
@@ -677,10 +738,10 @@ describe('Task Management E2E Tests', () => {
         priority: 'P1',
         dependencies: [],
       });
-      mockPrisma.task.findUnique.mockResolvedValue(task);
+      mockPrisma.task.findFirst.mockResolvedValue(task);
       mockPrisma.task.count.mockImplementation(() => Promise.resolve(3));
 
-      const forecast = await forecastTaskCompletion('fc-task');
+      const forecast = await forecastTaskCompletion('fc-task', verified('entity-1'));
 
       expect(forecast.taskId).toBe('fc-task');
       expect(forecast.predictedCompletionDate).toBeInstanceOf(Date);
@@ -697,10 +758,10 @@ describe('Task Management E2E Tests', () => {
         priority: 'P0',
         dependencies: ['other-task'],
       });
-      mockPrisma.task.findUnique.mockResolvedValue(task);
+      mockPrisma.task.findFirst.mockResolvedValue(task);
       mockPrisma.task.count.mockResolvedValue(2);
 
-      const forecast = await forecastTaskCompletion('blocked-fc');
+      const forecast = await forecastTaskCompletion('blocked-fc', verified('entity-1'));
 
       expect(forecast.confidence).toBeLessThanOrEqual(0.5);
       expect(forecast.risks.some((r) => r.includes('blocked'))).toBe(true);
@@ -714,10 +775,10 @@ describe('Task Management E2E Tests', () => {
         priority: 'P2',
         dependencies: [],
       });
-      mockPrisma.task.findUnique.mockResolvedValue(task);
+      mockPrisma.task.findFirst.mockResolvedValue(task);
       mockPrisma.task.count.mockResolvedValue(0);
 
-      const forecast = await forecastTaskCompletion('zero-vel');
+      const forecast = await forecastTaskCompletion('zero-vel', verified('entity-1'));
 
       expect(forecast.confidence).toBeLessThanOrEqual(0.3);
       expect(forecast.risks.some((r) => r.toLowerCase().includes('zero velocity'))).toBe(true);
@@ -732,7 +793,7 @@ describe('Task Management E2E Tests', () => {
         return Promise.resolve(val);
       });
 
-      const velocity = await calculateVelocity('entity-1', undefined, 8);
+      const velocity = await calculateVelocity(verified('entity-1'), undefined, 8);
 
       expect(velocity.entityId).toBe('entity-1');
       expect(velocity.weeklyData).toHaveLength(8);
@@ -789,7 +850,7 @@ describe('Task Management E2E Tests', () => {
         timestamp: new Date('2026-01-01'),
       });
 
-      const alerts = await detectProcrastination('entity-1');
+      const alerts = await detectProcrastination(verified('entity-1'));
 
       expect(alerts.length).toBeGreaterThan(0);
       const alert = alerts[0];
@@ -815,7 +876,7 @@ describe('Task Management E2E Tests', () => {
       mockPrisma.actionLog.count.mockResolvedValue(0);
       mockPrisma.actionLog.findFirst.mockResolvedValue(null);
 
-      const alerts = await detectProcrastination('entity-1');
+      const alerts = await detectProcrastination(verified('entity-1'));
 
       expect(alerts.length).toBeGreaterThan(0);
       expect(alerts[0].suggestion).toBe('DELEGATE');
@@ -838,7 +899,7 @@ describe('Task Management E2E Tests', () => {
       mockPrisma.actionLog.count.mockResolvedValue(0);
       mockPrisma.actionLog.findFirst.mockResolvedValue(null);
 
-      const alerts = await detectProcrastination('entity-1');
+      const alerts = await detectProcrastination(verified('entity-1'));
 
       expect(alerts.length).toBeGreaterThan(0);
       expect(alerts[0].suggestion).toBe('BREAK_DOWN');
@@ -864,7 +925,7 @@ describe('Task Management E2E Tests', () => {
         timestamp: new Date('2025-12-01'),
       });
 
-      const alerts = await detectProcrastination('entity-1');
+      const alerts = await detectProcrastination(verified('entity-1'));
 
       expect(alerts.length).toBeGreaterThan(0);
       expect(alerts[0].suggestion).toBe('ELIMINATE');
@@ -927,7 +988,7 @@ describe('Task Management E2E Tests', () => {
         },
       ]);
 
-      const history = await getTaskDeferralHistory('deferred-task');
+      const history = await getTaskDeferralHistory('deferred-task', verified('entity-1'));
 
       expect(history).toHaveLength(2);
       expect(history[0].date).toEqual(new Date('2026-01-10'));
@@ -950,7 +1011,7 @@ describe('Task Management E2E Tests', () => {
       expect(parsed.dueDate).toBeInstanceOf(Date);
 
       // Step 2: Create
-      const mockEntity = { id: 'entity-1', name: 'Startup', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', name: 'Startup', complianceProfile: [], userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
       const taskRecord = createMockTaskRecord({
         id: 'nlp-task',
@@ -962,13 +1023,16 @@ describe('Task Management E2E Tests', () => {
       });
       mockPrisma.task.create.mockResolvedValue(taskRecord);
 
-      const task = await createTask({
-        title: parsed.title,
-        entityId: 'entity-1',
-        priority: parsed.priority,
-        dueDate: parsed.dueDate,
-        tags: parsed.tags,
-      });
+      const task = await createTask(
+        {
+          title: parsed.title,
+          entityId: verified('entity-1'),
+          priority: parsed.priority,
+          dueDate: parsed.dueDate,
+          tags: parsed.tags,
+        },
+        'user-1'
+      );
 
       expect(task.id).toBe('nlp-task');
 
@@ -978,7 +1042,7 @@ describe('Task Management E2E Tests', () => {
 
       const score = await scoreTask(
         createMockTask({ ...task, dueDate: parsed.dueDate }),
-        'entity-1'
+        verified('entity-1')
       );
 
       expect(score.taskId).toBe('nlp-task');
@@ -986,10 +1050,10 @@ describe('Task Management E2E Tests', () => {
       expect(score.quadrant).toBeDefined();
 
       // Step 4: Forecast
-      mockPrisma.task.findUnique.mockResolvedValue(taskRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(taskRecord);
       mockPrisma.task.count.mockResolvedValue(4);
 
-      const forecast = await forecastTaskCompletion('nlp-task');
+      const forecast = await forecastTaskCompletion('nlp-task', verified('entity-1'));
 
       expect(forecast.taskId).toBe('nlp-task');
       expect(forecast.predictedCompletionDate).toBeInstanceOf(Date);

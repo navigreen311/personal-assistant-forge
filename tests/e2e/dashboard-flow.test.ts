@@ -147,6 +147,13 @@ const mockedGetToken = getToken as jest.MockedFunction<typeof getToken>;
 describe('Dashboard Flow E2E Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // P-04: /api/tasks now goes through withEntityScope, which reads the entity
+    // from the database and proves the caller owns it. This mock is that read.
+    // createMockEntity() is owned by user-1, which is who createMockSession()
+    // signs in as, so the ownership check passes and every existing assertion
+    // keeps its meaning. Without it the middleware answers 404 and the tests
+    // below are testing nothing.
+    mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
   });
 
   // =========================================================================
@@ -209,9 +216,13 @@ describe('Dashboard Flow E2E Tests', () => {
       expect(body.meta.pageSize).toBe(10);
 
       // Verify service was called with correct filters
+      // CORRECTED BY P-04. This asserted that the scope arrived as a FIELD on
+      // the caller-supplied filter bag -- which is how a caller used to be able
+      // to name someone else's entity. The verified scope is its own leading
+      // argument now, and the filter bag can no longer carry one.
       expect(mockListTasks).toHaveBeenCalledWith(
+        'entity-1',
         expect.objectContaining({
-          entityId: 'entity-1',
           status: ['TODO', 'IN_PROGRESS'],
         }),
         undefined,
@@ -444,13 +455,16 @@ describe('Dashboard Flow E2E Tests', () => {
       expect(data.tags).toEqual(['quick-capture']);
       expect(data.createdAt).toBeDefined();
       expect(data.updatedAt).toBeDefined();
+      // P-04: createTask takes the authenticated caller as a second argument
+      // now, so the identity on a write is server-side, not inferred.
       expect(mockCreateTask).toHaveBeenCalledWith(
         expect.objectContaining({
           title: 'Quick capture: Call dentist',
           entityId: 'entity-1',
           priority: 'P1',
           tags: ['quick-capture'],
-        })
+        }),
+        'user-1'
       );
     });
 
@@ -469,19 +483,32 @@ describe('Dashboard Flow E2E Tests', () => {
       await expectErrorResponse(res, 400, 'VALIDATION_ERROR');
     });
 
-    it('should reject task creation with missing entityId', async () => {
+    // CORRECTED BY P-04. This used to assert 400 VALIDATION_ERROR when the
+    // body carried no entityId -- i.e. it required the CLIENT to state which
+    // tenant it was acting for, which is the habit that produced the bug.
+    // withEntityScope's frozen resolution order ends at the session's own
+    // activeEntityId, so a request that names no entity acts on the caller's
+    // own entity and succeeds. A request that names SOMEONE ELSE'S entity is
+    // the case that must fail, and it gets 403 -- see
+    // tests/db/tasks-tenancy.test.ts, which proves it against a real database.
+    it('falls back to the session entity when the body names none', async () => {
       mockedGetToken.mockResolvedValue(
         createMockSession() as never
       );
+      mockCreateTask.mockResolvedValue({ id: 'task-new', title: 'A task without entity' });
 
       const req = createPostRequest('/api/tasks', {
         title: 'A task without entity',
-        // missing entityId
+        // no entityId: the session's activeEntityId is used
       });
 
       const res = await tasksPostHandler(req);
 
-      await expectErrorResponse(res, 400, 'VALIDATION_ERROR');
+      expect(res.status).toBe(201);
+      expect(mockCreateTask).toHaveBeenCalledWith(
+        expect.objectContaining({ entityId: 'entity-1' }),
+        'user-1'
+      );
     });
 
     it('should handle task creation service errors gracefully', async () => {
@@ -624,6 +651,7 @@ describe('Dashboard Flow E2E Tests', () => {
       expect(todoRes.status).toBe(200);
       expect(todoBody.data).toHaveLength(1);
       expect(mockListTasks).toHaveBeenCalledWith(
+        'entity-1',
         expect.objectContaining({ status: 'TODO' }),
         undefined,
         1,
@@ -678,6 +706,7 @@ describe('Dashboard Flow E2E Tests', () => {
       expect(res.status).toBe(200);
       expect(body.data).toHaveLength(1);
       expect(mockListTasks).toHaveBeenCalledWith(
+        'entity-1',
         expect.objectContaining({ priority: 'P0' }),
         undefined,
         1,
@@ -711,7 +740,8 @@ describe('Dashboard Flow E2E Tests', () => {
       expect(res.status).toBe(200);
       expect(body.data).toHaveLength(2);
       expect(mockListTasks).toHaveBeenCalledWith(
-        expect.objectContaining({ entityId: 'entity-1' }),
+        'entity-1',
+        expect.any(Object),
         { field: 'dueDate', direction: 'asc' },
         1,
         20

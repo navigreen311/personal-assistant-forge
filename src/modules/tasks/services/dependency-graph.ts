@@ -1,10 +1,25 @@
+/**
+ * Dependency graph -- every read is scoped to a VerifiedEntityId.
+ *
+ * These functions used to take a bare projectId or taskId and `findUnique` it.
+ * A dependency graph is a particularly leaky shape: it walks from one id to
+ * every id it references, so one unscoped seed exposed an arbitrary subgraph of
+ * another tenant's task titles, statuses and assignees.
+ *
+ * The walk is now scoped at every hop, not only at the seed.
+ */
+
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Task } from '@/shared/types';
 import type { DependencyGraph, DependencyNode, DependencyEdge } from '../types';
 
-export async function buildDependencyGraph(projectId: string): Promise<DependencyGraph> {
+export async function buildDependencyGraph(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<DependencyGraph> {
   const tasks = await prisma.task.findMany({
-    where: { projectId },
+    where: { projectId, entityId },
   });
 
   const taskMap = new Map(tasks.map((t) => [t.id, t]));
@@ -183,7 +198,10 @@ export function detectCircularDependencies(
   return cycles;
 }
 
-export async function getBlockingChain(taskId: string): Promise<Task[]> {
+export async function getBlockingChain(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<Task[]> {
   const chain: Task[] = [];
   const visited = new Set<string>();
 
@@ -191,11 +209,13 @@ export async function getBlockingChain(taskId: string): Promise<Task[]> {
     if (visited.has(currentId)) return;
     visited.add(currentId);
 
-    const task = await prisma.task.findUnique({ where: { id: currentId } });
+    const task = await prisma.task.findFirst({ where: { id: currentId, entityId } });
     if (!task) return;
 
     for (const depId of task.dependencies) {
-      const blocker = await prisma.task.findUnique({ where: { id: depId } });
+      // Scoped at every hop: a dependency pointing into another entity is not
+      // followed, so the walk cannot leave the tenant it started in.
+      const blocker = await prisma.task.findFirst({ where: { id: depId, entityId } });
       if (blocker && blocker.status !== 'DONE' && blocker.status !== 'CANCELLED') {
         chain.push(mapPrismaTask(blocker));
         await traceBlockers(depId);
@@ -207,7 +227,10 @@ export async function getBlockingChain(taskId: string): Promise<Task[]> {
   return chain;
 }
 
-export async function getDownstreamTasks(taskId: string): Promise<Task[]> {
+export async function getDownstreamTasks(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<Task[]> {
   const downstream: Task[] = [];
   const visited = new Set<string>();
 
@@ -216,7 +239,7 @@ export async function getDownstreamTasks(taskId: string): Promise<Task[]> {
     visited.add(currentId);
 
     const dependents = await prisma.task.findMany({
-      where: { dependencies: { has: currentId } },
+      where: { dependencies: { has: currentId }, entityId },
     });
 
     for (const dep of dependents) {
@@ -231,14 +254,17 @@ export async function getDownstreamTasks(taskId: string): Promise<Task[]> {
   return downstream;
 }
 
-export async function suggestDependencyResolution(blockedTaskId: string): Promise<string> {
-  const task = await prisma.task.findUnique({ where: { id: blockedTaskId } });
+export async function suggestDependencyResolution(
+  blockedTaskId: string,
+  entityId: VerifiedEntityId
+): Promise<string> {
+  const task = await prisma.task.findFirst({ where: { id: blockedTaskId, entityId } });
   if (!task) return 'Task not found.';
 
   const blockers: Array<{ id: string; title: string; status: string; assigneeId: string | null }> = [];
 
   for (const depId of task.dependencies) {
-    const blocker = await prisma.task.findUnique({ where: { id: depId } });
+    const blocker = await prisma.task.findFirst({ where: { id: depId, entityId } });
     if (blocker && blocker.status !== 'DONE' && blocker.status !== 'CANCELLED') {
       blockers.push(blocker);
     }

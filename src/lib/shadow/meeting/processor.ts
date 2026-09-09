@@ -20,7 +20,7 @@ import {
   type MeetingTranscript,
   type MeetingProcessOptions,
 } from '@/lib/vaf/meeting-intel-client';
-import { createTask } from '@/modules/tasks/services/task-crud';
+import { createTaskForEntityOwner } from '@/modules/tasks/services/task-crud';
 import { createEntry } from '@/modules/decisions/services/decision-journal';
 import type { Priority } from '@/shared/types';
 
@@ -121,7 +121,11 @@ export class MeetingProcessor {
     const tasksCreated: string[] = [];
     for (const item of transcript.actionItems) {
       try {
-        const task = await createTask({
+        // P-04: this pipeline has no HTTP request, so it cannot hold a
+        // VerifiedEntityId. `entityId` here was read off the calendar event
+        // row, never off a request. See createTaskForEntityOwner's banner and
+        // PARALLEL_BUILD_ESCALATION_P04.md.
+        const task = await createTaskForEntityOwner({
           title: item.description,
           entityId,
           description: item.assignee ? `Assignee: ${item.assignee}` : undefined,
