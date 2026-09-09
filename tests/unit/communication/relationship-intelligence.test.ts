@@ -9,6 +9,7 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     contact: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
     },
     message: {
@@ -24,6 +25,13 @@ import { prisma } from '@/lib/db';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot
+// mint the brand, so it uses the one sanctioned helper (P-00b) rather than a
+// local cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+
 describe('relationship-intelligence', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -32,7 +40,7 @@ describe('relationship-intelligence', () => {
   describe('calculateRelationshipScore', () => {
     it('should return high score for frequent, recent interactions with positive sentiment', async () => {
       const now = new Date();
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: now,
         commitments: [
@@ -48,14 +56,14 @@ describe('relationship-intelligence', () => {
         { sentiment: 0.9 },
       ]);
 
-      const score = await calculateRelationshipScore('c-1');
+      const score = await calculateRelationshipScore('c-1', SCOPE);
       expect(score).toBeGreaterThanOrEqual(70);
       expect(score).toBeLessThanOrEqual(100);
     });
 
     it('should return low score for no interactions and negative sentiment', async () => {
       const old = new Date('2024-01-01');
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-2',
         lastTouch: old,
         commitments: [
@@ -67,13 +75,13 @@ describe('relationship-intelligence', () => {
         { sentiment: -0.8 },
       ]);
 
-      const score = await calculateRelationshipScore('c-2');
+      const score = await calculateRelationshipScore('c-2', SCOPE);
       expect(score).toBeLessThanOrEqual(30);
     });
 
     it('should return moderate score for average engagement', async () => {
       const twoWeeksAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-3',
         lastTouch: twoWeeksAgo,
         commitments: [
@@ -88,15 +96,15 @@ describe('relationship-intelligence', () => {
         { sentiment: 0.2 },
       ]);
 
-      const score = await calculateRelationshipScore('c-3');
+      const score = await calculateRelationshipScore('c-3', SCOPE);
       expect(score).toBeGreaterThanOrEqual(20);
       expect(score).toBeLessThanOrEqual(70);
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await expect(calculateRelationshipScore('nonexistent')).rejects.toThrow('Contact not found');
+      await expect(calculateRelationshipScore('nonexistent', SCOPE)).rejects.toThrow('Contact not found');
     });
 
     it('should use at least 3 signals', async () => {
@@ -104,24 +112,24 @@ describe('relationship-intelligence', () => {
       const now = new Date();
 
       // High frequency, low recency
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-a',
         lastTouch: new Date('2024-01-01'),
         commitments: [],
       });
       (mockPrisma.message.findMany as jest.Mock).mockResolvedValue(Array(50).fill({ createdAt: now }));
       (mockPrisma.call.findMany as jest.Mock).mockResolvedValue([]);
-      const scoreA = await calculateRelationshipScore('c-a');
+      const scoreA = await calculateRelationshipScore('c-a', SCOPE);
 
       // Low frequency, high recency
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-b',
         lastTouch: now,
         commitments: [],
       });
       (mockPrisma.message.findMany as jest.Mock).mockResolvedValue([]);
       (mockPrisma.call.findMany as jest.Mock).mockResolvedValue([]);
-      const scoreB = await calculateRelationshipScore('c-b');
+      const scoreB = await calculateRelationshipScore('c-b', SCOPE);
 
       // Both should be moderate but different
       expect(scoreA).not.toBe(scoreB);
@@ -133,7 +141,7 @@ describe('relationship-intelligence', () => {
       const now = new Date();
       const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: sixtyDaysAgo,
       });
@@ -145,7 +153,7 @@ describe('relationship-intelligence', () => {
       }
       (mockPrisma.message.findMany as jest.Mock).mockResolvedValue(messages);
 
-      const result = await detectGhosting('c-1');
+      const result = await detectGhosting('c-1', SCOPE);
       expect(result.isGhosting).toBe(true);
       expect(result.riskLevel).toBe('HIGH');
       expect(result.daysSinceLastContact).toBeGreaterThan(14);
@@ -156,7 +164,7 @@ describe('relationship-intelligence', () => {
       const now = new Date();
       const oneHourAgo = new Date(now.getTime() - 1 * 60 * 60 * 1000);
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-2',
         lastTouch: oneHourAgo,
       });
@@ -167,7 +175,7 @@ describe('relationship-intelligence', () => {
       }
       (mockPrisma.message.findMany as jest.Mock).mockResolvedValue(messages);
 
-      const result = await detectGhosting('c-2');
+      const result = await detectGhosting('c-2', SCOPE);
       expect(result.isGhosting).toBe(false);
       expect(result.riskLevel).toBe('LOW');
     });
@@ -177,7 +185,7 @@ describe('relationship-intelligence', () => {
       // Average cadence ~14 days, last contact ~20 days ago (between 1x and 2x average)
       const twentyDaysAgo = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000);
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-3',
         lastTouch: twentyDaysAgo,
       });
@@ -189,13 +197,13 @@ describe('relationship-intelligence', () => {
       }
       (mockPrisma.message.findMany as jest.Mock).mockResolvedValue(messages);
 
-      const result = await detectGhosting('c-3');
+      const result = await detectGhosting('c-3', SCOPE);
       expect(result.riskLevel).toBe('MEDIUM');
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
-      await expect(detectGhosting('nonexistent')).rejects.toThrow('Contact not found');
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
+      await expect(detectGhosting('nonexistent', SCOPE)).rejects.toThrow('Contact not found');
     });
   });
 
@@ -206,7 +214,7 @@ describe('relationship-intelligence', () => {
         { id: 'c-2', name: 'Bob', relationshipScore: 30, lastTouch: null, tags: [], messages: [], calls: [] },
       ]);
 
-      const graph = await getRelationshipGraph('entity-1');
+      const graph = await getRelationshipGraph(verifiedEntityIdForTest('entity-1'));
       expect(graph).toHaveLength(2);
       expect(graph[0].connectionStrength).toBe('STRONG');
       expect(graph[1].connectionStrength).toBe('WEAK');
@@ -217,7 +225,7 @@ describe('relationship-intelligence', () => {
     it('should suggest value-first approach for high-risk contacts', async () => {
       const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         name: 'John',
         preferences: { preferredChannel: 'EMAIL', preferredTone: 'WARM' },
@@ -228,15 +236,15 @@ describe('relationship-intelligence', () => {
         { createdAt: sixtyDaysAgo },
       ]);
 
-      const strategy = await suggestReengagement('c-1');
+      const strategy = await suggestReengagement('c-1', SCOPE);
       expect(strategy.approach.toLowerCase()).toContain('value');
       expect(strategy.suggestedMessage).toContain('John');
       expect(strategy.bestChannel).toBe('EMAIL');
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
-      await expect(suggestReengagement('nonexistent')).rejects.toThrow('Contact not found');
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
+      await expect(suggestReengagement('nonexistent', SCOPE)).rejects.toThrow('Contact not found');
     });
   });
 });

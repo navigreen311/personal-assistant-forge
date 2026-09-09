@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 import { TriageService } from '@/modules/inbox';
 import { triageMessageSchema } from '@/modules/inbox/inbox.validation';
@@ -8,7 +8,7 @@ import { triageMessageSchema } from '@/modules/inbox/inbox.validation';
 const triageService = new TriageService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = triageMessageSchema.safeParse(body);
@@ -19,9 +19,10 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // The body's own entityId is discarded: the verified one wins.
       const result = await triageService.triageMessage(
         parsed.data.messageId,
-        parsed.data.entityId
+        entityId
       );
 
       return success(result, 201);

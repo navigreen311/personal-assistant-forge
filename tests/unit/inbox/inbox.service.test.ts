@@ -5,8 +5,10 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     message: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       count: jest.fn(),
     },
     contact: {
@@ -17,6 +19,7 @@ jest.mock('@/lib/db', () => ({
     },
     followUpReminder: {
       create: jest.fn(),
+      updateMany: jest.fn(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -28,6 +31,8 @@ jest.mock('@/lib/db', () => ({
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      updateMany: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
@@ -71,6 +76,15 @@ const mockMessageRow = {
 const mockFollowUpReminder = () => (mockedPrisma as any).followUpReminder;
 const mockCannedResponse = () => (mockedPrisma as any).cannedResponse;
 
+// P-06: InboxService now takes a VerifiedEntityId for the entity in scope and
+// the authenticated userId for rows it owns. A unit test cannot mint the brand,
+// so it uses the one sanctioned helper (P-00b) rather than a local cast. See
+// docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+const USER = 'user-1';
+
 describe('InboxService', () => {
   let service: InboxService;
 
@@ -80,9 +94,12 @@ describe('InboxService', () => {
     // Default mocks for follow-up and canned response Prisma calls
     mockFollowUpReminder().findMany.mockResolvedValue([]);
     mockFollowUpReminder().findFirst.mockResolvedValue(null);
-    mockFollowUpReminder().findUnique.mockResolvedValue(null);
     mockCannedResponse().findMany.mockResolvedValue([]);
-    mockCannedResponse().findUnique.mockResolvedValue(null);
+    mockCannedResponse().findFirst.mockResolvedValue(null);
+    mockCannedResponse().updateMany.mockResolvedValue({ count: 1 });
+    mockCannedResponse().deleteMany.mockResolvedValue({ count: 1 });
+    mockFollowUpReminder().updateMany.mockResolvedValue({ count: 1 });
+    (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
   });
 
   describe('listInbox', () => {
@@ -92,7 +109,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([mockMessageRow]); // stats query
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(1);
 
-      const result = await service.listInbox('user-1', { page: 1, pageSize: 20 });
+      const result = await service.listInbox(SCOPE, { page: 1, pageSize: 20 });
 
       expect(result.items).toHaveLength(1);
       expect(result.total).toBe(1);
@@ -107,7 +124,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(0);
 
-      await service.listInbox('user-1', { channel: 'SMS' });
+      await service.listInbox(SCOPE, { channel: 'SMS' });
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -122,7 +139,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(0);
 
-      await service.listInbox('user-1', { minTriageScore: 7, maxTriageScore: 10 });
+      await service.listInbox(SCOPE, { minTriageScore: 7, maxTriageScore: 10 });
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -139,7 +156,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(0);
 
-      await service.listInbox('user-1', { entityId: 'entity-1' });
+      await service.listInbox(SCOPE, {});
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -156,7 +173,7 @@ describe('InboxService', () => {
 
       const dateFrom = new Date('2024-01-01');
       const dateTo = new Date('2024-12-31');
-      await service.listInbox('user-1', { dateFrom, dateTo });
+      await service.listInbox(SCOPE, { dateFrom, dateTo });
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -173,7 +190,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(0);
 
-      await service.listInbox('user-1', { search: 'urgent' });
+      await service.listInbox(SCOPE, { search: 'urgent' });
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -192,7 +209,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(0);
 
-      await service.listInbox('user-1', {});
+      await service.listInbox(SCOPE, {});
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -207,7 +224,7 @@ describe('InboxService', () => {
         .mockResolvedValueOnce([{ id: 'msg-1', channel: 'EMAIL', triageScore: 5, intent: 'INQUIRY', draftStatus: null, read: false }]);
       (mockedPrisma.message.count as jest.Mock).mockResolvedValue(1);
 
-      const result = await service.listInbox('user-1', {});
+      const result = await service.listInbox(SCOPE, {});
 
       expect(result.stats).toHaveProperty('total');
       expect(result.stats).toHaveProperty('unread');
@@ -220,10 +237,10 @@ describe('InboxService', () => {
 
   describe('getMessageDetail', () => {
     it('should return message with thread context', async () => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMessageRow);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMessageRow);
       (mockedPrisma.message.findMany as jest.Mock).mockResolvedValue([mockMessageRow]);
 
-      const result = await service.getMessageDetail('msg-1', 'user-1');
+      const result = await service.getMessageDetail('msg-1', SCOPE);
 
       expect(result).not.toBeNull();
       expect(result!.message.id).toBe('msg-1');
@@ -249,19 +266,19 @@ describe('InboxService', () => {
           updatedAt: new Date(),
         },
       };
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(msgWithContact);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(msgWithContact);
       (mockedPrisma.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.getMessageDetail('msg-1', 'user-1');
+      const result = await service.getMessageDetail('msg-1', SCOPE);
 
       expect(result!.senderContact).toBeDefined();
       expect(result!.senderName).toBe('John Doe');
     });
 
     it('should return null for non-existent message', async () => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await service.getMessageDetail('nonexistent', 'user-1');
+      const result = await service.getMessageDetail('nonexistent', SCOPE);
       expect(result).toBeNull();
     });
   });
@@ -272,7 +289,7 @@ describe('InboxService', () => {
       const msg2 = { ...mockMessageRow, id: 'msg-2', createdAt: new Date('2024-01-02') };
       (mockedPrisma.message.findMany as jest.Mock).mockResolvedValue([msg1, msg2]);
 
-      const thread = await service.getThread('thread-1', 'entity-1');
+      const thread = await service.getThread('thread-1', SCOPE);
 
       expect(thread).toHaveLength(2);
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
@@ -286,14 +303,14 @@ describe('InboxService', () => {
     it('should return single message if no thread', async () => {
       (mockedPrisma.message.findMany as jest.Mock).mockResolvedValue([mockMessageRow]);
 
-      const thread = await service.getThread('thread-1', 'entity-1');
+      const thread = await service.getThread('thread-1', SCOPE);
       expect(thread).toHaveLength(1);
     });
   });
 
   describe('followUp operations', () => {
     it('should create follow-up reminder', async () => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMessageRow);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMessageRow);
       const createdRow = {
         id: 'fu-1',
         userId: 'default-user',
@@ -310,10 +327,9 @@ describe('InboxService', () => {
 
       const followUp = await service.createFollowUp({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         reminderAt: new Date('2024-06-01'),
         reason: 'Need to check back',
-      });
+      }, SCOPE, USER);
 
       expect(followUp.id).toBe('fu-1');
       expect(followUp.messageId).toBe('msg-1');
@@ -350,7 +366,7 @@ describe('InboxService', () => {
       ];
       mockFollowUpReminder().findMany.mockResolvedValue(rows);
 
-      const list = await service.listFollowUps('user-1');
+      const list = await service.listFollowUps(USER);
       expect(list.length).toBe(2);
       // Should be sorted by date ascending
       expect(list[0].id).toBe('fu-2');
@@ -370,19 +386,19 @@ describe('InboxService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      mockFollowUpReminder().findUnique.mockResolvedValue(row);
-      mockFollowUpReminder().update.mockResolvedValue({
+      mockFollowUpReminder().findFirst.mockResolvedValue(row);
+      mockFollowUpReminder().updateMany.mockResolvedValue({
         ...row,
         priority: 'COMPLETED:entity-1',
         completed: true,
         completedAt: new Date(),
       });
 
-      await service.completeFollowUp('fu-1');
+      await service.completeFollowUp('fu-1', USER);
 
-      expect(mockFollowUpReminder().update).toHaveBeenCalledWith(
+      expect(mockFollowUpReminder().updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'fu-1' },
+          where: { id: 'fu-1', userId: USER },
           data: expect.objectContaining({
             completed: true,
             priority: 'COMPLETED:entity-1',
@@ -404,20 +420,20 @@ describe('InboxService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      mockFollowUpReminder().findUnique.mockResolvedValue(row);
+      mockFollowUpReminder().findFirst.mockResolvedValue(row);
 
       const newDate = new Date('2024-06-08');
-      mockFollowUpReminder().update.mockResolvedValue({
+      mockFollowUpReminder().updateMany.mockResolvedValue({
         ...row,
         dueDate: newDate,
         priority: 'PENDING:entity-1',
       });
 
-      await service.snoozeFollowUp('fu-1', newDate);
+      await service.snoozeFollowUp('fu-1', newDate, USER);
 
-      expect(mockFollowUpReminder().update).toHaveBeenCalledWith(
+      expect(mockFollowUpReminder().updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'fu-1' },
+          where: { id: 'fu-1', userId: USER },
           data: expect.objectContaining({
             dueDate: newDate,
             priority: 'PENDING:entity-1',
@@ -452,12 +468,11 @@ describe('InboxService', () => {
 
       const response = await service.createCannedResponse({
         name: 'Auto Reply',
-        entityId: 'entity-1',
         channel: 'EMAIL',
         category: 'General',
         body: 'Thank you for reaching out. We will get back to you shortly.',
         tone: 'FORMAL',
-      });
+      }, SCOPE, USER);
 
       expect(response.id).toBe('cr-1');
       expect(response.name).toBe('Auto Reply');
@@ -467,7 +482,7 @@ describe('InboxService', () => {
     it('should list canned responses filtered by entity', async () => {
       mockCannedResponse().findMany.mockResolvedValue([makeCannedRow()]);
 
-      const list = await service.listCannedResponses('entity-1');
+      const list = await service.listCannedResponses(SCOPE, USER);
       expect(list.length).toBe(1);
       expect(list.every((r) => r.entityId === 'entity-1')).toBe(true);
     });
@@ -488,14 +503,14 @@ describe('InboxService', () => {
         }),
       ]);
 
-      const list = await service.listCannedResponses('entity-1', 'SMS');
+      const list = await service.listCannedResponses(SCOPE, USER, 'SMS');
       expect(list.every((r) => r.channel === 'SMS')).toBe(true);
     });
 
     it('should update canned response', async () => {
       const existingRow = makeCannedRow({ id: 'cr-upd', title: 'Old Name', content: 'Old body' });
-      mockCannedResponse().findUnique.mockResolvedValue(existingRow);
-      mockCannedResponse().update.mockResolvedValue({
+      mockCannedResponse().findFirst.mockResolvedValue(existingRow);
+      mockCannedResponse().updateMany.mockResolvedValue({
         ...existingRow,
         title: 'New Name',
         content: 'New body',
@@ -504,22 +519,24 @@ describe('InboxService', () => {
       const updated = await service.updateCannedResponse('cr-upd', {
         name: 'New Name',
         body: 'New body',
-      });
+      }, USER);
 
       expect(updated.name).toBe('New Name');
       expect(updated.body).toBe('New body');
     });
 
     it('should delete canned response', async () => {
-      const existingRow = makeCannedRow({ id: 'cr-del' });
-      mockCannedResponse().findUnique
-        .mockResolvedValueOnce(existingRow) // for deleteCannedResponse lookup
-        .mockResolvedValueOnce(null); // for getCannedResponse after delete
-      mockCannedResponse().delete.mockResolvedValue(existingRow);
+      // deleteCannedResponse no longer reads the row first: the scope rides in
+      // the deleteMany WHERE clause and count === 0 is not-found. Queueing a
+      // read for it would leave a stale mockResolvedValueOnce behind --
+      // jest.clearAllMocks() does not drain the once-queue -- and the next
+      // test in this file would consume it.
+      mockCannedResponse().findFirst.mockResolvedValueOnce(null); // after delete
+      mockCannedResponse().deleteMany.mockResolvedValue({ count: 1 });
 
-      await service.deleteCannedResponse('cr-del');
+      await service.deleteCannedResponse('cr-del', USER);
 
-      const found = await service.getCannedResponse('cr-del');
+      const found = await service.getCannedResponse('cr-del', USER);
       expect(found).toBeNull();
     });
 
@@ -528,7 +545,7 @@ describe('InboxService', () => {
       // First call: incrementCannedResponseUsage reads existing
       // Second call: incrementCannedResponseUsage reads existing again
       // Third call: getCannedResponse reads the updated version
-      mockCannedResponse().findUnique
+      mockCannedResponse().findFirst
         .mockResolvedValueOnce(existingRow) // first increment
         .mockResolvedValueOnce({
           ...existingRow,
@@ -553,13 +570,13 @@ describe('InboxService', () => {
           }),
         }); // getCannedResponse
 
-      mockCannedResponse().update.mockResolvedValue(existingRow);
+      mockCannedResponse().updateMany.mockResolvedValue(existingRow);
       mockCannedResponse().create.mockResolvedValue(existingRow);
 
-      await service.incrementCannedResponseUsage('cr-usage');
-      await service.incrementCannedResponseUsage('cr-usage');
+      await service.incrementCannedResponseUsage('cr-usage', USER);
+      await service.incrementCannedResponseUsage('cr-usage', USER);
 
-      const updated = await service.getCannedResponse('cr-usage');
+      const updated = await service.getCannedResponse('cr-usage', USER);
       expect(updated!.usageCount).toBe(2);
     });
   });

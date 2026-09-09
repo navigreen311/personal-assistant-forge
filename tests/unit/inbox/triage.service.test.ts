@@ -6,12 +6,15 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     message: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       count: jest.fn(),
     },
     contact: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
     entity: {
       findUnique: jest.fn(),
@@ -66,6 +69,13 @@ function makeContact(overrides: Partial<Contact> = {}): Contact {
     ...overrides,
   };
 }
+
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot mint
+// the brand, so it uses the one sanctioned helper (P-00b) rather than a local
+// cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
 
 describe('TriageService', () => {
   let service: TriageService;
@@ -325,7 +335,7 @@ describe('TriageService', () => {
     it('should return complete TriageResult with all fields', async () => {
       jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
 
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue({
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue({
         id: 'msg-1',
         channel: 'EMAIL',
         senderId: 'sender-1',
@@ -343,16 +353,16 @@ describe('TriageService', () => {
         updatedAt: new Date(),
       });
 
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'entity-1',
         name: 'Test Entity',
         type: 'LLC',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      const result = await service.triageMessage('msg-1', 'entity-1');
+      const result = await service.triageMessage('msg-1', SCOPE);
 
       expect(result).toHaveProperty('messageId', 'msg-1');
       expect(result).toHaveProperty('urgencyScore');
@@ -373,7 +383,7 @@ describe('TriageService', () => {
     it('should update message triageScore in database', async () => {
       jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
 
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue({
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue({
         id: 'msg-1',
         channel: 'EMAIL',
         senderId: 'sender-1',
@@ -390,20 +400,20 @@ describe('TriageService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       });
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'entity-1',
         name: 'Test',
         type: 'Personal',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      await service.triageMessage('msg-1', 'entity-1');
+      await service.triageMessage('msg-1', SCOPE);
 
-      expect(mockedPrisma.message.update).toHaveBeenCalledWith(
+      expect(mockedPrisma.message.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'msg-1' },
+          where: { id: 'msg-1', entityId: SCOPE },
           data: expect.objectContaining({
             triageScore: expect.any(Number),
             intent: expect.any(String),
@@ -442,20 +452,19 @@ describe('TriageService', () => {
         updatedAt: new Date(),
       };
 
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMsg);
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMsg);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'e1',
         name: 'Test',
         type: 'Personal',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
       const result = await service.batchTriage({
-        entityId: 'e1',
         messageIds: ['msg-1', 'msg-2'],
-      });
+      }, SCOPE);
 
       expect(result.processed).toBe(2);
       expect(result.results).toHaveLength(2);
@@ -493,20 +502,19 @@ describe('TriageService', () => {
         updatedAt: new Date(),
       };
 
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMsg);
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMsg);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'e1',
         name: 'Test',
         type: 'Personal',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
       const result = await service.batchTriage({
-        entityId: 'e1',
         maxMessages: 1,
-      });
+      }, SCOPE);
 
       expect(mockedPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ take: 1 })
@@ -554,22 +562,21 @@ describe('TriageService', () => {
         updatedAt: new Date(),
       };
 
-      (mockedPrisma.message.findUnique as jest.Mock)
+      (mockedPrisma.message.findFirst as jest.Mock)
         .mockResolvedValueOnce(urgentMsg)
         .mockResolvedValueOnce(normalMsg);
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'e1',
         name: 'Test',
         type: 'Personal',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
       const result = await service.batchTriage({
-        entityId: 'e1',
         messageIds: ['msg-urgent', 'msg-normal'],
-      });
+      }, SCOPE);
 
       expect(result.processed).toBe(2);
       expect(result.summary.urgent).toBeGreaterThanOrEqual(0);
@@ -598,15 +605,15 @@ describe('TriageService', () => {
     };
 
     beforeEach(() => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMsg);
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMsg);
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'entity-1',
         name: 'Test Entity',
         type: 'LLC',
         complianceProfile: [],
       });
-      (mockedPrisma.message.update as jest.Mock).mockResolvedValue({});
+      (mockedPrisma.message.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
     });
 
     it('should use AI result when generateJSON succeeds', async () => {
@@ -622,7 +629,7 @@ describe('TriageService', () => {
       };
       mockedGenerateJSON.mockResolvedValue(aiResult);
 
-      const result = await service.triageMessage('msg-1', 'entity-1');
+      const result = await service.triageMessage('msg-1', SCOPE);
 
       expect(mockedGenerateJSON).toHaveBeenCalled();
       expect(result.urgencyScore).toBe(7);
@@ -643,7 +650,7 @@ describe('TriageService', () => {
         flags: [],
       });
 
-      await service.triageMessage('msg-1', 'entity-1');
+      await service.triageMessage('msg-1', SCOPE);
 
       const callArgs = mockedGenerateJSON.mock.calls[0];
       const prompt = callArgs[0] as string;
@@ -653,7 +660,7 @@ describe('TriageService', () => {
     });
 
     it('should include sender VIP status in prompt', async () => {
-      (mockedPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockedPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'sender-1',
         name: 'VIP Client',
         tags: ['VIP'],
@@ -677,7 +684,7 @@ describe('TriageService', () => {
         flags: [],
       });
 
-      await service.triageMessage('msg-1', 'entity-1');
+      await service.triageMessage('msg-1', SCOPE);
 
       const prompt = mockedGenerateJSON.mock.calls[0][0] as string;
       expect(prompt).toContain('VIP');
@@ -687,7 +694,7 @@ describe('TriageService', () => {
       jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
       mockedGenerateJSON.mockRejectedValue(new Error('AI service unavailable'));
 
-      const result = await service.triageMessage('msg-1', 'entity-1');
+      const result = await service.triageMessage('msg-1', SCOPE);
 
       expect(result.messageId).toBe('msg-1');
       expect(result.urgencyScore).toBeGreaterThanOrEqual(1);
@@ -700,7 +707,7 @@ describe('TriageService', () => {
       jest.spyOn(Date.prototype, 'getHours').mockReturnValue(10);
       mockedGenerateJSON.mockRejectedValue(new SyntaxError('Unexpected token'));
 
-      const result = await service.triageMessage('msg-1', 'entity-1');
+      const result = await service.triageMessage('msg-1', SCOPE);
 
       expect(result.messageId).toBe('msg-1');
       expect(result.intent).toBeDefined();

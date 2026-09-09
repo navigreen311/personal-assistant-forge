@@ -1,19 +1,28 @@
 import { z } from 'zod';
 
+// `entityId` is OPTIONAL in every schema below, and deliberately so.
+//
+// withEntityScope resolves the entity from the query string, the body, or the
+// session's active entity, and proves ownership in every case before the
+// handler runs. A client may still send one -- it is verified, not trusted --
+// but a client that sends none gets its own active entity rather than a 400.
+// Requiring the caller to name their own tenant is the habit that produced the
+// bug this build exists to close. See docs/parallel-build/tenancy-pattern.md.
+
 export const triageMessageSchema = z.object({
   messageId: z.string().min(1),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
 });
 
 export const batchTriageSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   messageIds: z.array(z.string()).optional(),
   maxMessages: z.number().int().positive().max(200).optional().default(50),
 });
 
 export const draftRequestSchema = z.object({
   messageId: z.string().min(1),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   tone: z
     .enum([
       'FIRM',
@@ -66,7 +75,25 @@ export const inboxListSchema = z.object({
     .optional(),
   minTriageScore: z.coerce.number().int().min(1).max(10).optional(),
   maxTriageScore: z.coerce.number().int().min(1).max(10).optional(),
-  intent: z.string().optional(),
+  // Narrowed from z.string(): the filter is compared against Message.intent,
+  // and InboxFilters types it as MessageIntent. The route used to bridge the
+  // gap with `as InboxListParams`, which also swallowed the entityId change.
+  intent: z
+    .enum([
+      'INQUIRY',
+      'REQUEST',
+      'UPDATE',
+      'URGENT',
+      'FYI',
+      'COMPLAINT',
+      'FOLLOW_UP',
+      'INTRODUCTION',
+      'SCHEDULING',
+      'FINANCIAL',
+      'APPROVAL',
+      'SOCIAL',
+    ])
+    .optional(),
   sensitivity: z
     .enum(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED', 'REGULATED'])
     .optional(),
@@ -84,7 +111,7 @@ export const inboxListSchema = z.object({
 
 export const createFollowUpSchema = z.object({
   messageId: z.string().min(1),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   reminderAt: z.coerce.date(),
   reason: z.string().optional(),
 });
@@ -106,7 +133,7 @@ export const updateMessageSchema = z.object({
 
 export const createCannedResponseSchema = z.object({
   name: z.string().min(1).max(100),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   channel: z.enum([
     'EMAIL',
     'SMS',

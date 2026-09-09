@@ -5,6 +5,7 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     message: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
     entity: {
       findUnique: jest.fn(),
@@ -43,6 +44,13 @@ const mockMessage = {
   updatedAt: new Date(),
 };
 
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot mint
+// the brand, so it uses the one sanctioned helper (P-00b) rather than a local
+// cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+
 describe('DraftService', () => {
   let service: DraftService;
 
@@ -53,7 +61,7 @@ describe('DraftService', () => {
 
   describe('generateDraft', () => {
     beforeEach(() => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue(mockMessage);
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue(mockMessage);
       (mockedPrisma.entity.findUnique as jest.Mock).mockResolvedValue({
         id: 'entity-1',
         name: 'Test Entity',
@@ -66,8 +74,7 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
-      });
+      }, SCOPE);
 
       expect(mockedGenerateText).toHaveBeenCalled();
       const prompt = mockedGenerateText.mock.calls[0][0];
@@ -79,7 +86,7 @@ describe('DraftService', () => {
     });
 
     it('should generate reply for REQUEST intent via AI', async () => {
-      (mockedPrisma.message.findUnique as jest.Mock).mockResolvedValue({
+      (mockedPrisma.message.findFirst as jest.Mock).mockResolvedValue({
         ...mockMessage,
         body: 'Please send me the financial report for Q2.',
       });
@@ -87,8 +94,7 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
-      });
+      }, SCOPE);
 
       expect(result.draftBody).toBeTruthy();
     });
@@ -98,9 +104,8 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       expect(result.tone).toBe('FORMAL');
       const prompt = mockedGenerateText.mock.calls[0][0];
@@ -112,9 +117,8 @@ describe('DraftService', () => {
 
       await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         constraints: ['Avoid technical jargon', 'Keep under 100 words'],
-      });
+      }, SCOPE);
 
       const prompt = mockedGenerateText.mock.calls[0][0];
       expect(prompt).toContain('Avoid technical jargon');
@@ -131,9 +135,8 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         includeDisclaimer: true,
-      });
+      }, SCOPE);
 
       expect(result.complianceNotes.length).toBeGreaterThan(0);
       expect(result.draftBody).toContain('HIPAA');
@@ -147,9 +150,8 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       expect(result.alternatives.length).toBeGreaterThanOrEqual(1);
       expect(result.alternatives[0]).toHaveProperty('tone');
@@ -162,9 +164,8 @@ describe('DraftService', () => {
 
       const result = await service.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       expect(result.draftBody).toBeTruthy();
       expect(result.draftBody).toContain('Dear');

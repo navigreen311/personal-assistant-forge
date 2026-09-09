@@ -13,13 +13,16 @@
 const mockPrisma = {
   message: {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     count: jest.fn(),
   },
   contact: {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     findMany: jest.fn(),
   },
   entity: {
@@ -47,6 +50,11 @@ import { TriageService } from '@/modules/inbox/triage.service';
 import { DraftService } from '@/modules/inbox/draft.service';
 import { InboxService } from '@/modules/inbox/inbox.service';
 import { generateJSON, generateText, chat } from '@/lib/ai';
+// P-06: these services now take a VerifiedEntityId. See
+// docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
 
 const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 const mockedGenerateText = generateText as jest.MockedFunction<typeof generateText>;
@@ -109,16 +117,16 @@ describe('Inbox Flow Integration Tests', () => {
       });
       const mockEntity = createMockEntity();
 
-      mockPrisma.message.findUnique.mockResolvedValue(mockMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(mockMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
-      mockPrisma.message.update.mockResolvedValue(mockMessage);
+      mockPrisma.message.updateMany.mockResolvedValue(mockMessage);
 
       // AI mock for triage - simulate failure to test keyword fallback
       mockedGenerateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
       // Step 1: Triage the message
-      const triageResult = await triageService.triageMessage('msg-1', 'entity-1');
+      const triageResult = await triageService.triageMessage('msg-1', SCOPE);
 
       expect(triageResult.messageId).toBe('msg-1');
       expect(triageResult.urgencyScore).toBeGreaterThanOrEqual(1);
@@ -128,8 +136,8 @@ describe('Inbox Flow Integration Tests', () => {
       expect(triageResult.flags).toBeInstanceOf(Array);
 
       // Verify triage score was persisted
-      expect(mockPrisma.message.update).toHaveBeenCalledWith({
-        where: { id: 'msg-1' },
+      expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'msg-1', entityId: SCOPE },
         data: expect.objectContaining({
           triageScore: triageResult.urgencyScore,
           intent: triageResult.intent,
@@ -138,7 +146,7 @@ describe('Inbox Flow Integration Tests', () => {
 
       // Step 2: Generate a draft reply
       // Reset findUnique to return the message again for draft service
-      mockPrisma.message.findUnique.mockResolvedValue(mockMessage);
+      mockPrisma.message.findFirst.mockResolvedValue(mockMessage);
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
 
       // AI mock for draft - also simulate failure for template fallback
@@ -146,9 +154,8 @@ describe('Inbox Flow Integration Tests', () => {
 
       const draftResult = await draftService.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       expect(draftResult.messageId).toBe('msg-1');
       expect(draftResult.draftBody).toBeTruthy();
@@ -176,22 +183,20 @@ describe('Inbox Flow Integration Tests', () => {
 
       // Each triageMessage call will use findUnique
       let findUniqueCallIndex = 0;
-      mockPrisma.message.findUnique.mockImplementation(() => {
+      mockPrisma.message.findFirst.mockImplementation(() => {
         const msg = messages[findUniqueCallIndex % messages.length];
         findUniqueCallIndex++;
         return Promise.resolve(msg);
       });
 
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
-      mockPrisma.message.update.mockResolvedValue({});
+      mockPrisma.message.updateMany.mockResolvedValue({});
 
       // AI fails, falling back to keyword-based triage
       mockedGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const batchResult = await triageService.batchTriage({
-        entityId: 'entity-1',
-      });
+      const batchResult = await triageService.batchTriage({}, SCOPE);
 
       expect(batchResult.processed).toBe(3);
       expect(batchResult.results).toHaveLength(3);
@@ -223,7 +228,7 @@ describe('Inbox Flow Integration Tests', () => {
       });
       const mockEntity = createMockEntity();
 
-      mockPrisma.message.findUnique.mockResolvedValue(mockMessage);
+      mockPrisma.message.findFirst.mockResolvedValue(mockMessage);
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
 
       // Step 1: Generate initial draft (template fallback)
@@ -231,9 +236,8 @@ describe('Inbox Flow Integration Tests', () => {
 
       const initialDraft = await draftService.generateDraft({
         messageId: 'msg-1',
-        entityId: 'entity-1',
         tone: 'WARM',
-      });
+      }, SCOPE);
 
       expect(initialDraft.draftBody).toBeTruthy();
       expect(initialDraft.tone).toBe('WARM');
@@ -266,15 +270,15 @@ describe('Inbox Flow Integration Tests', () => {
       });
       const mockEntity = createMockEntity();
 
-      mockPrisma.message.findUnique.mockResolvedValue(mockMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(mockMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
-      mockPrisma.message.update.mockResolvedValue(mockMessage);
+      mockPrisma.message.updateMany.mockResolvedValue(mockMessage);
 
       // AI fails
       mockedGenerateJSON.mockRejectedValueOnce(new Error('API rate limit exceeded'));
 
-      const result = await triageService.triageMessage('msg-1', 'entity-1');
+      const result = await triageService.triageMessage('msg-1', SCOPE);
 
       // Should not throw, should return valid result using keyword fallback
       expect(result.messageId).toBe('msg-1');
@@ -295,15 +299,15 @@ describe('Inbox Flow Integration Tests', () => {
       });
       const mockEntity = createMockEntity();
 
-      mockPrisma.message.findUnique.mockResolvedValue(mockMessage);
-      mockPrisma.contact.findUnique.mockRejectedValue(new Error('Contact not found'));
+      mockPrisma.message.findFirst.mockResolvedValue(mockMessage);
+      mockPrisma.contact.findFirst.mockRejectedValue(new Error('Contact not found'));
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
-      mockPrisma.message.update.mockResolvedValue(mockMessage);
+      mockPrisma.message.updateMany.mockResolvedValue(mockMessage);
 
       // AI fails
       mockedGenerateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
-      const result = await triageService.triageMessage('msg-1', 'entity-1');
+      const result = await triageService.triageMessage('msg-1', SCOPE);
 
       // Should complete without error
       expect(result.messageId).toBe('msg-1');

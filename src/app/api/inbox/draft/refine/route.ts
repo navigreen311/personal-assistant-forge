@@ -8,6 +8,9 @@ import { refineDraftSchema } from '@/modules/inbox/inbox.validation';
 const draftService = new DraftService();
 
 export async function POST(request: NextRequest) {
+  // No tenant data is read or written here: refineDraft rewrites text handed
+  // in by the caller and touches no database row. withAuth is the whole
+  // requirement, and the session is deliberately unused.
   return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 import { createCannedResponseSchema } from '@/modules/inbox/inbox.validation';
@@ -9,19 +9,15 @@ import type { MessageChannel } from '@/shared/types';
 const inboxService = new InboxService();
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId is required', 400);
-      }
-
       const channel = req.nextUrl.searchParams.get('channel') as
         | MessageChannel
         | null;
 
       const responses = await inboxService.listCannedResponses(
         entityId,
+        session.userId,
         channel ?? undefined
       );
       return success(responses);
@@ -33,7 +29,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createCannedResponseSchema.safeParse(body);
@@ -44,7 +40,13 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const response = await inboxService.createCannedResponse(parsed.data);
+      const { entityId: _requested, ...input } = parsed.data;
+
+      const response = await inboxService.createCannedResponse(
+        input,
+        entityId,
+        session.userId
+      );
       return success(response, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';

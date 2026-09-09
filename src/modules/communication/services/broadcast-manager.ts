@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { sendEmail } from '@/lib/integrations/email/client';
 import { sendSMS } from '@/lib/integrations/sms/client';
 import type { BroadcastRequest, BroadcastResult } from '@/modules/communication/types';
@@ -25,14 +26,18 @@ export function renderTemplate(
  * Validate recipients: check for doNotContact flag and missing channel handles.
  */
 export async function validateRecipients(
-  recipientIds: string[]
+  recipientIds: string[],
+  entityId: VerifiedEntityId
 ): Promise<{ valid: string[]; invalid: string[] }> {
   if (recipientIds.length === 0) {
     return { valid: [], invalid: [] };
   }
 
+  // A bulk route: recipientIds are caller-supplied. Scoped here, a foreign id
+  // is simply not found and reports as invalid -- it never becomes a valid
+  // recipient, which would have meant mailing another tenant's contact.
   const contacts = await prisma.contact.findMany({
-    where: { id: { in: recipientIds } },
+    where: { id: { in: recipientIds }, entityId },
     select: { id: true, preferences: true, channels: true },
   });
 
@@ -72,7 +77,7 @@ export async function sendBroadcast(
   const { entityId, recipientIds, template, mergeFields, channel, scheduledAt } = request;
 
   // Validate recipients first
-  const { valid, invalid } = await validateRecipients(recipientIds);
+  const { valid, invalid } = await validateRecipients(recipientIds, entityId);
 
   const failures: { contactId: string; reason: string }[] = invalid.map((id) => ({
     contactId: id,
@@ -108,8 +113,8 @@ export async function sendBroadcast(
       // Dispatch via email or SMS after recording the message
       if (channel === 'EMAIL') {
         try {
-          const contact = await prisma.contact.findUnique({
-            where: { id: contactId },
+          const contact = await prisma.contact.findFirst({
+            where: { id: contactId, entityId },
             select: { email: true, name: true },
           });
           if (contact?.email) {
@@ -124,8 +129,8 @@ export async function sendBroadcast(
         }
       } else if (channel === 'SMS') {
         try {
-          const contact = await prisma.contact.findUnique({
-            where: { id: contactId },
+          const contact = await prisma.contact.findFirst({
+            where: { id: contactId, entityId },
             select: { phone: true, name: true },
           });
           if (contact?.phone) {
@@ -179,7 +184,7 @@ export async function scheduleBroadcast(
  * Get broadcast history for an entity, grouped by subject.
  */
 export async function getBroadcastHistory(
-  entityId: string,
+  entityId: VerifiedEntityId,
   limit = 20
 ): Promise<Array<{ id: string; subject: string; totalSent: number; sentAt: Date }>> {
   const messages = await prisma.message.findMany({

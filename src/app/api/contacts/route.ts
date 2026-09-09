@@ -2,11 +2,13 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 
 const createContactSchema = z.object({
-  entityId: z.string().min(1, 'entityId is required'),
+  // Optional: withEntityScope resolves and verifies the entity, so a client
+  // that names none gets its own active entity rather than a 400.
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1, 'name is required'),
   email: z.string().email('Invalid email').optional(),
   phone: z.string().optional(),
@@ -24,19 +26,22 @@ const createContactSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = new URL(req.url);
-      const entityId = searchParams.get('entityId');
       const tags = searchParams.get('tags');
       const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10));
       const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get('pageSize') ?? '20', 10)));
 
       const where: Record<string, unknown> = {};
-      if (entityId) where.entityId = entityId;
       if (tags) {
         where.tags = { hasSome: tags.split(',').map((t) => t.trim()) };
       }
+
+      // The scope, applied last and unconditionally. Previously `entityId` was
+      // read off the query string and applied only `if (entityId)` -- omitting
+      // it listed every contact in the database.
+      where.entityId = entityId;
 
       const [contacts, total] = await Promise.all([
         prisma.contact.findMany({
@@ -56,7 +61,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createContactSchema.safeParse(body);
@@ -69,21 +74,19 @@ export async function POST(request: NextRequest) {
 
       const data = parsed.data;
 
-      // Verify entity exists
-      const entity = await prisma.entity.findUnique({ where: { id: data.entityId } });
-      if (!entity) {
-        return error('NOT_FOUND', `Entity not found: ${data.entityId}`, 404);
-      }
-
+      // The entity has already been proven to belong to the caller by
+      // withEntityScope; the "verify entity exists" lookup that stood here
+      // checked existence and nothing else.
       const contact = await prisma.contact.create({
         data: {
-          entityId: data.entityId,
           name: data.name,
           email: data.email,
           phone: data.phone,
           channels: data.channels,
           preferences: data.preferences,
           tags: data.tags,
+          // Last, deliberately: it overwrites whatever the caller sent.
+          entityId,
         },
       });
 

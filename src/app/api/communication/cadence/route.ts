@@ -5,13 +5,15 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
 // --- Validation Schema ---
 
+// entityId is optional: withEntityScope resolves it from the query string or
+// the session's active entity and proves ownership either way.
 const querySchema = z.object({
-  entityId: z.string().min(1, 'entityId is required'),
+  entityId: z.string().min(1).optional(),
 });
 
 // --- Cadence helpers ---
@@ -55,7 +57,7 @@ function computeCadenceStatus(
 // --- Handler ---
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -64,19 +66,15 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId } = parsed.data;
-
-      // Verify entity ownership
+      // The hand-rolled findUnique + `entity.userId !== session.userId` check
+      // that stood here is now withEntityScope's job: same check, but the
+      // handler cannot run without it and cannot forget it.
       const entity = await prisma.entity.findUnique({
         where: { id: entityId },
+        select: { name: true },
       });
-
       if (!entity) {
         return error('NOT_FOUND', 'Entity not found', 404);
-      }
-
-      if (entity.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this entity', 403);
       }
 
       let contacts: Array<{

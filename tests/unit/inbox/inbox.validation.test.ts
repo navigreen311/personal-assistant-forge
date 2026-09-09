@@ -24,11 +24,17 @@ describe('triageMessageSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject missing entityId', () => {
+  // CORRECTED (P-06). This asserted `success === false` when the client did
+  // not name an entity. That encoded the defect: making the caller name their
+  // own tenant is exactly the habit the tenancy work exists to remove. The
+  // entity is now resolved and OWNERSHIP-CHECKED by withEntityScope -- from
+  // the query string, the body, or the session's active entity -- so a request
+  // that omits it is valid and gets its own entity, not a 400.
+  it('accepts a triage request that names no entity, because the session does', () => {
     const result = triageMessageSchema.safeParse({
       messageId: 'msg-123',
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 
   it('should reject empty messageId', () => {
