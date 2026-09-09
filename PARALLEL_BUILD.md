@@ -169,6 +169,13 @@ actually asserts before assuming your change is wrong.
   to roughly 45 genuine persistence stores; the rest are callbacks, static lookup
   tables and derived caches that are correctly in memory. Read each hit.
 - **`tail -3` on a chained command is a prediction dressed as a measurement.**
+- **A second intermittent failure exists, and P-19 must know about it.**
+  `tests/unit/engines/adoption-activation.test.ts` failed once on a 1 ms clock
+  boundary (`...964Z` vs `...965Z`) and passed on three consecutive re-runs. It is
+  a real flake in a file nobody has touched. When the board is finally being
+  driven green it will read as a regression. The fix is to freeze the clock in
+  that test. **Owner: P-13** (engines/analytics), alongside the `goal-tracking`
+  failure.
 - **Cross-suite pollution exists.** `tests/unit/security/vault-service.test.ts`
   passes alone (26/26) but can fail inside a larger run depending on module
   registry ordering. If a suite fails in the full run, re-run it alone before
@@ -220,6 +227,7 @@ One row per merge. Appended by the coordinator at merge time.
 |---|---|---|---|---|---|---|---|---|---|
 | — | *baseline* `0f098288` | — | — | 72 | 319/320 | 5267/5268 | n/a | — | 2026-09-09 |
 | 1 | P-00 coordinator | [#57](https://github.com/navigreen311/personal-assistant-forge/pull/57) | `e18a8f7` | 67 | 319/320 | 5267/5268 | 16/16 | **none** | 2026-09-09 18:59Z |
+| 2 | P-01 db harness | [#58](https://github.com/navigreen311/personal-assistant-forge/pull/58) | `5c3256b` | 67 | 319/320 | 5267/5268 | **45/45** | **none** | 2026-09-09 19:2xZ |
 
 ---
 
@@ -251,5 +259,24 @@ worth knowing:
   run in CI, so P-19 was going to fix the type errors and walk straight into
   this. Now fixed for both.
 
-**Unblocked now:** P-01 (db harness) and P-02 (typecheck repair) immediately,
+**P-01 merged at `5c3256b`.** The real-database harness is live and
+`npm run test:db` is 45/45. **P-04..P-14: you do not build test infrastructure.**
+Use it:
+
+```ts
+import { setupTestDatabase } from '@/../tests/helpers/db';
+import { createTwoTenants } from '@/../tests/helpers/factories';
+import { requestAs } from '@/../tests/helpers/session';
+
+setupTestDatabase();
+const { a, b } = await createTwoTenants();   // two users, two entities, two live sessions
+const res = await GET(requestAs(a, `/api/tasks?entityId=${b.entity.id}`));
+expect(res.status).toBe(403);
+```
+
+`getToken` is **not** mocked — the helper mints a genuine NextAuth JWE and the
+production decrypt path runs. You cannot pass a tenancy test without a real
+authenticated session, which is the point.
+
+**Unblocked now:** P-02 (typecheck repair) is in flight,
 then P-03, then P-04 as the reference implementation, then the Wave 2 fan-out.
