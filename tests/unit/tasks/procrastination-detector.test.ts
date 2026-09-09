@@ -20,6 +20,23 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
+
 describe('ProcrastinationDetector', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -42,7 +59,7 @@ describe('ProcrastinationDetector', () => {
       ]);
       mockActionLogCount.mockResolvedValue(3);
 
-      const alerts = await detectProcrastination('e1');
+      const alerts = await detectProcrastination(verified('e1'));
       expect(alerts.length).toBe(1);
       expect(alerts[0].deferrals).toBe(3);
     });
@@ -60,7 +77,7 @@ describe('ProcrastinationDetector', () => {
         },
       ]);
 
-      const alerts = await detectProcrastination('e1');
+      const alerts = await detectProcrastination(verified('e1'));
       expect(alerts.length).toBe(1);
       expect(alerts[0].suggestion).toBe('DELEGATE');
     });
@@ -78,7 +95,7 @@ describe('ProcrastinationDetector', () => {
         },
       ]);
 
-      const alerts = await detectProcrastination('e1');
+      const alerts = await detectProcrastination(verified('e1'));
       expect(alerts.length).toBe(1);
       expect(alerts[0].suggestion).toBe('BREAK_DOWN');
     });
@@ -96,7 +113,7 @@ describe('ProcrastinationDetector', () => {
         },
       ]);
 
-      const alerts = await detectProcrastination('e1');
+      const alerts = await detectProcrastination(verified('e1'));
       expect(alerts.length).toBe(0);
     });
 
@@ -104,7 +121,7 @@ describe('ProcrastinationDetector', () => {
       // The query filters to active statuses, so DONE/CANCELLED aren't fetched
       mockTaskFindMany.mockResolvedValue([]);
 
-      const alerts = await detectProcrastination('e1');
+      const alerts = await detectProcrastination(verified('e1'));
       expect(alerts.length).toBe(0);
     });
   });

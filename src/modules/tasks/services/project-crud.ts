@@ -1,15 +1,40 @@
+/**
+ * Project CRUD -- same tenancy pattern as task-crud.ts.
+ *
+ * Before P-04 this file, like its twin, contained ZERO references to `userId`.
+ * Every function took a bare `projectId` and looked it up with `findUnique`, so
+ * any authenticated caller who knew (or guessed) an id could read, rename,
+ * re-health or cancel another tenant's project.
+ *
+ * Every entity-scoped function now takes a `VerifiedEntityId` and puts it in
+ * the WHERE clause. See task-crud.ts for the full rationale and
+ * docs/parallel-build/tenancy-pattern.md for the pattern.
+ */
+
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Project, Milestone, TaskStatus, ProjectHealth } from '@/shared/types';
 
-export async function createProject(params: {
-  name: string;
-  entityId: string;
-  description?: string;
-  milestones?: Milestone[];
-}): Promise<Project> {
-  const entity = await prisma.entity.findUnique({ where: { id: params.entityId } });
+export async function createProject(
+  params: {
+    name: string;
+    entityId: VerifiedEntityId;
+    description?: string;
+    milestones?: Milestone[];
+    status?: TaskStatus;
+  },
+  userId: string
+): Promise<Project> {
+  const entity = await prisma.entity.findUnique({
+    where: { id: params.entityId },
+    select: { id: true, userId: true },
+  });
   if (!entity) {
     throw new Error(`Entity not found: ${params.entityId}`);
+  }
+  if (entity.userId !== userId) {
+    // Unreachable through withEntityScope; a loud failure beats a silent write.
+    throw new Error('Entity does not belong to the authenticated user');
   }
 
   const project = await prisma.project.create({
@@ -18,7 +43,7 @@ export async function createProject(params: {
       entityId: params.entityId,
       description: params.description ?? null,
       milestones: params.milestones ? JSON.parse(JSON.stringify(params.milestones)) : [],
-      status: 'TODO',
+      status: params.status ?? 'TODO',
       health: 'GREEN',
     },
   });
@@ -26,8 +51,11 @@ export async function createProject(params: {
   return mapPrismaProject(project);
 }
 
-export async function getProject(projectId: string): Promise<Project | null> {
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+export async function getProject(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<Project | null> {
+  const project = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   return project ? mapPrismaProject(project) : null;
 }
 
@@ -39,9 +67,10 @@ export async function updateProject(
     milestones: Milestone[];
     status: TaskStatus;
     health: ProjectHealth;
-  }>
+  }>,
+  entityId: VerifiedEntityId
 ): Promise<Project> {
-  const existing = await prisma.project.findUnique({ where: { id: projectId } });
+  const existing = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   if (!existing) {
     throw new Error(`Project not found: ${projectId}`);
   }
@@ -63,15 +92,26 @@ export async function updateProject(
   return mapPrismaProject(project);
 }
 
-export async function deleteProject(projectId: string): Promise<void> {
-  await prisma.project.update({
-    where: { id: projectId },
+/**
+ * `updateMany` rather than `update`: `update` takes a unique WHERE and cannot
+ * carry the entity, so scoping it would mean read-then-check. A zero count is
+ * "not in this entity", deliberately indistinguishable from "does not exist".
+ */
+export async function deleteProject(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const result = await prisma.project.updateMany({
+    where: { id: projectId, entityId },
     data: { status: 'CANCELLED' },
   });
+  if (result.count === 0) {
+    throw new Error(`Project not found: ${projectId}`);
+  }
 }
 
 export async function listProjects(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters?: { status?: string; health?: string },
   page = 1,
   pageSize = 20
@@ -93,9 +133,12 @@ export async function listProjects(
   return { data: projects.map(mapPrismaProject), total };
 }
 
-export async function calculateProjectHealth(projectId: string): Promise<ProjectHealth> {
+export async function calculateProjectHealth(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<ProjectHealth> {
   const tasks = await prisma.task.findMany({
-    where: { projectId, status: { notIn: ['CANCELLED'] } },
+    where: { projectId, entityId, status: { notIn: ['CANCELLED'] } },
   });
 
   if (tasks.length === 0) return 'GREEN';
@@ -113,7 +156,7 @@ export async function calculateProjectHealth(projectId: string): Promise<Project
   const completionRatio = doneTasks / totalTasks;
 
   // Retrieve milestones from project
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  const project = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   const milestones = (project?.milestones as unknown as Milestone[]) ?? [];
   const overdueMilestones = milestones.filter(
     (m) => new Date(m.dueDate) < now && m.status !== 'DONE'
@@ -132,20 +175,23 @@ export async function calculateProjectHealth(projectId: string): Promise<Project
   return 'GREEN';
 }
 
-export async function getProjectSummary(projectId: string): Promise<{
+export async function getProjectSummary(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<{
   project: Project;
   taskCounts: Record<TaskStatus, number>;
   completionPercent: number;
   nextMilestone?: Milestone;
   health: ProjectHealth;
 }> {
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+  const project = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   if (!project) {
     throw new Error(`Project not found: ${projectId}`);
   }
 
   const tasks = await prisma.task.findMany({
-    where: { projectId, status: { notIn: ['CANCELLED'] } },
+    where: { projectId, entityId, status: { notIn: ['CANCELLED'] } },
   });
 
   const taskCounts: Record<TaskStatus, number> = {
@@ -164,7 +210,7 @@ export async function getProjectSummary(projectId: string): Promise<{
   const totalTasks = tasks.length;
   const completionPercent = totalTasks > 0 ? Math.round((taskCounts.DONE / totalTasks) * 100) : 0;
 
-  const health = await calculateProjectHealth(projectId);
+  const health = await calculateProjectHealth(projectId, entityId);
 
   const milestones = ((project.milestones as unknown as Milestone[]) ?? []);
   const now = new Date();

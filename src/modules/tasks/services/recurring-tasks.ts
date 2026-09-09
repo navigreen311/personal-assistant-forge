@@ -1,17 +1,75 @@
+/**
+ * Recurring task configs.
+ *
+ * ============================================================================
+ * A SHARED, PROCESS-GLOBAL STORE WITH NO TENANT COLUMN
+ * ============================================================================
+ *
+ * These configs live in an in-memory Map, not the database -- there is no
+ * Prisma model for them and the schema is frozen this run, so P-04 cannot add
+ * one (that would be an automatic hand-back). Before P-04 the Map had no
+ * entity on it at all, and `adjustCadence`, `deactivateRecurring`,
+ * `generateNextOccurrence` and `checkSLACompliance` each took a bare
+ * `configId`. One process serves every tenant, so any authenticated caller
+ * could deactivate or re-cadence any other tenant's recurring task by naming
+ * its id.
+ *
+ * The fix needs no migration: the config now carries the `entityId` it was
+ * created under, and every lookup goes through `getScopedConfig`, which returns
+ * the config only when the scope matches. A config belonging to another tenant
+ * is reported as not found, exactly like a row that does not exist.
+ *
+ * The store being in-memory is a separate, pre-existing defect (configs are
+ * lost on restart and are not shared between server instances). It is out of
+ * scope here and is recorded in PARALLEL_BUILD_ESCALATION_P04.md.
+ */
+
 import { v4 as uuidv4 } from 'uuid';
 import { addDays, addWeeks, addMonths, differenceInHours } from 'date-fns';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Task } from '@/shared/types';
 import type { RecurringTaskConfig, RecurrenceCadence } from '../types';
 
 // In-memory store for recurring configs (in production, this would be in DB)
 const recurringConfigs = new Map<string, RecurringTaskConfig>();
 
-export function createRecurringConfig(
-  params: Omit<RecurringTaskConfig, 'id' | 'lastGenerated'>
-): RecurringTaskConfig {
+/**
+ * The single door into the store.
+ *
+ * Every exported function that takes a `configId` goes through here, so
+ * "look up by id, then check the entity" cannot be forgotten at one call site
+ * the way it was forgotten at four.
+ */
+function getScopedConfig(
+  configId: string,
+  entityId: VerifiedEntityId
+): RecurringTaskConfig | undefined {
+  const config = recurringConfigs.get(configId);
+  if (!config || config.entityId !== entityId) return undefined;
+  return config;
+}
+
+/**
+ * Create a config. Async now, because the template task has to be proven to
+ * live in the caller's entity before a config can point at it -- otherwise the
+ * config becomes a handle onto a foreign task.
+ */
+export async function createRecurringConfig(
+  params: Omit<RecurringTaskConfig, 'id' | 'lastGenerated' | 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<RecurringTaskConfig> {
+  const template = await prisma.task.findFirst({
+    where: { id: params.taskTemplateId, entityId },
+    select: { id: true },
+  });
+  if (!template) {
+    throw new Error(`Task template not found: ${params.taskTemplateId}`);
+  }
+
   const config: RecurringTaskConfig = {
     id: uuidv4(),
+    entityId,
     taskTemplateId: params.taskTemplateId,
     cadence: params.cadence,
     nextDue: params.nextDue,
@@ -24,14 +82,17 @@ export function createRecurringConfig(
   return config;
 }
 
-export async function generateNextOccurrence(configId: string): Promise<Task> {
-  const config = recurringConfigs.get(configId);
+export async function generateNextOccurrence(
+  configId: string,
+  entityId: VerifiedEntityId
+): Promise<Task> {
+  const config = getScopedConfig(configId, entityId);
   if (!config) {
     throw new Error(`Recurring config not found: ${configId}`);
   }
 
-  const template = await prisma.task.findUnique({
-    where: { id: config.taskTemplateId },
+  const template = await prisma.task.findFirst({
+    where: { id: config.taskTemplateId, entityId },
   });
   if (!template) {
     throw new Error(`Task template not found: ${config.taskTemplateId}`);
@@ -77,7 +138,7 @@ export async function generateNextOccurrence(configId: string): Promise<Task> {
 }
 
 export async function getUpcomingRecurrences(
-  entityId: string,
+  entityId: VerifiedEntityId,
   days = 30
 ): Promise<Array<{ config: RecurringTaskConfig; nextDue: Date }>> {
   const cutoff = addDays(new Date(), days);
@@ -85,12 +146,7 @@ export async function getUpcomingRecurrences(
 
   for (const config of recurringConfigs.values()) {
     if (!config.isActive) continue;
-
-    // Verify config belongs to entity by checking template
-    const template = await prisma.task.findUnique({
-      where: { id: config.taskTemplateId },
-    });
-    if (template?.entityId !== entityId) continue;
+    if (config.entityId !== entityId) continue;
 
     if (config.nextDue <= cutoff) {
       results.push({ config, nextDue: config.nextDue });
@@ -100,8 +156,11 @@ export async function getUpcomingRecurrences(
   return results.sort((a, b) => a.nextDue.getTime() - b.nextDue.getTime());
 }
 
-export async function adjustCadence(configId: string): Promise<RecurringTaskConfig> {
-  const config = recurringConfigs.get(configId);
+export async function adjustCadence(
+  configId: string,
+  entityId: VerifiedEntityId
+): Promise<RecurringTaskConfig> {
+  const config = getScopedConfig(configId, entityId);
   if (!config) {
     throw new Error(`Recurring config not found: ${configId}`);
   }
@@ -113,6 +172,7 @@ export async function adjustCadence(configId: string): Promise<RecurringTaskConf
   // Analyze completion patterns for tasks generated from this config
   const generatedTasks = await prisma.task.findMany({
     where: {
+      entityId,
       tags: { has: 'recurring' },
       status: 'DONE',
     },
@@ -148,14 +208,13 @@ export async function adjustCadence(configId: string): Promise<RecurringTaskConf
   return config;
 }
 
-export async function getRecurringConfigs(entityId: string): Promise<RecurringTaskConfig[]> {
+export async function getRecurringConfigs(
+  entityId: VerifiedEntityId
+): Promise<RecurringTaskConfig[]> {
   const configs: RecurringTaskConfig[] = [];
 
   for (const config of recurringConfigs.values()) {
-    const template = await prisma.task.findUnique({
-      where: { id: config.taskTemplateId },
-    });
-    if (template?.entityId === entityId) {
+    if (config.entityId === entityId) {
       configs.push(config);
     }
   }
@@ -163,8 +222,11 @@ export async function getRecurringConfigs(entityId: string): Promise<RecurringTa
   return configs;
 }
 
-export async function deactivateRecurring(configId: string): Promise<void> {
-  const config = recurringConfigs.get(configId);
+export async function deactivateRecurring(
+  configId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const config = getScopedConfig(configId, entityId);
   if (!config) {
     throw new Error(`Recurring config not found: ${configId}`);
   }
@@ -173,13 +235,16 @@ export async function deactivateRecurring(configId: string): Promise<void> {
   recurringConfigs.set(config.id, config);
 }
 
-export async function checkSLACompliance(configId: string): Promise<{
+export async function checkSLACompliance(
+  configId: string,
+  entityId: VerifiedEntityId
+): Promise<{
   compliant: boolean;
   averageCompletionHours: number;
   slaHours: number;
   complianceRate: number;
 }> {
-  const config = recurringConfigs.get(configId);
+  const config = getScopedConfig(configId, entityId);
   if (!config) {
     throw new Error(`Recurring config not found: ${configId}`);
   }
@@ -188,6 +253,7 @@ export async function checkSLACompliance(configId: string): Promise<{
 
   const generatedTasks = await prisma.task.findMany({
     where: {
+      entityId,
       tags: { has: 'recurring' },
       status: 'DONE',
     },

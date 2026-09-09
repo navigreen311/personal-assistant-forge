@@ -15,6 +15,9 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     task: {
       findUnique: (...args: unknown[]) => mockTaskFindUnique(...args),
+      // The service scopes its read: findFirst({ id, entityId }) rather than
+      // findUnique({ id }). Same stub, so every existing expectation stands.
+      findFirst: (...args: unknown[]) => mockTaskFindUnique(...args),
     },
     document: {
       findMany: (...args: unknown[]) => mockDocumentFindMany(...args),
@@ -38,6 +41,23 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
+
 // --- Tests ---
 
 describe('ContextLoader', () => {
@@ -49,7 +69,7 @@ describe('ContextLoader', () => {
     it('should throw if task is not found', async () => {
       mockTaskFindUnique.mockResolvedValue(null);
 
-      await expect(loadTaskContext('nonexistent')).rejects.toThrow(
+      await expect(loadTaskContext('nonexistent', verified('entity-1'))).rejects.toThrow(
         'Task not found: nonexistent'
       );
     });
@@ -108,7 +128,7 @@ describe('ContextLoader', () => {
         },
       ]);
 
-      const context = await loadTaskContext('task-1');
+      const context = await loadTaskContext('task-1', verified('entity-1'));
 
       expect(context.taskId).toBe('task-1');
       // Documents scored by tag overlap: 'finance' matches 'Finance Report Q4', 'quarterly' matches 'Quarterly Budget Plan'
@@ -148,7 +168,7 @@ describe('ContextLoader', () => {
       mockKnowledgeEntryFindMany.mockResolvedValue([]);
       mockActionLogFindMany.mockResolvedValue([]);
 
-      const context = await loadTaskContext('task-2');
+      const context = await loadTaskContext('task-2', verified('entity-1'));
 
       expect(context.relatedMessages).toHaveLength(1);
       expect(context.relatedMessages[0].id).toBe('msg-source');
@@ -176,7 +196,7 @@ describe('ContextLoader', () => {
       // but the function checks tags.length === 0 and returns [] early
       mockActionLogFindMany.mockResolvedValue([]);
 
-      const context = await loadTaskContext('task-3');
+      const context = await loadTaskContext('task-3', verified('entity-1'));
 
       expect(context.relatedNotes).toEqual([]);
       expect(context.relatedDocuments).toEqual([]);

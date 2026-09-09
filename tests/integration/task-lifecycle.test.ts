@@ -15,10 +15,13 @@ const mockPrisma = {
   },
   project: {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
   },
   task: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    // Reads are scoped now -- findFirst({ id, entityId }).
+    findFirst: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
     updateMany: jest.fn(),
@@ -35,6 +38,23 @@ const mockPrisma = {
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
 
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn(),
@@ -91,7 +111,7 @@ describe('Task Lifecycle Integration Tests', () => {
 
   describe('Create and prioritize', () => {
     it('should create a task and calculate its priority score', async () => {
-      const mockEntity = { id: 'entity-1', name: 'Test Entity', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', name: 'Test Entity', complianceProfile: [], userId: 'user-1' };
       const taskRecord = createMockTaskRecord({
         title: 'Prepare investor deck',
         dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days from now
@@ -103,11 +123,14 @@ describe('Task Lifecycle Integration Tests', () => {
       mockPrisma.task.create.mockResolvedValue(taskRecord);
 
       // Step 1: Create the task
-      const task = await createTask({
-        title: 'Prepare investor deck',
-        entityId: 'entity-1',
-        dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-      });
+      const task = await createTask(
+        {
+          title: 'Prepare investor deck',
+          entityId: verified('entity-1'),
+          dueDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+        },
+        'user-1'
+      );
 
       expect(task.id).toBe('task-1');
       expect(task.title).toBe('Prepare investor deck');
@@ -120,7 +143,7 @@ describe('Task Lifecycle Integration Tests', () => {
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
       mockPrisma.task.findMany.mockResolvedValue([]); // no dependent tasks
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
 
       expect(score.taskId).toBe('task-1');
       expect(score.overallScore).toBeGreaterThanOrEqual(0);
@@ -143,29 +166,29 @@ describe('Task Lifecycle Integration Tests', () => {
       const taskRecord = createMockTaskRecord();
 
       // Create task
-      mockPrisma.entity.findUnique.mockResolvedValue({ id: 'entity-1' });
+      mockPrisma.entity.findUnique.mockResolvedValue({ id: 'entity-1', userId: 'user-1' });
       mockPrisma.task.create.mockResolvedValue(taskRecord);
 
-      const task = await createTask({
-        title: 'Test Task',
-        entityId: 'entity-1',
-      });
+      const task = await createTask(
+        { title: 'Test Task', entityId: verified('entity-1') },
+        'user-1'
+      );
       expect(task.status).toBe('TODO');
 
       // Update to IN_PROGRESS
       const inProgressRecord = createMockTaskRecord({ status: 'IN_PROGRESS' });
-      mockPrisma.task.findUnique.mockResolvedValue(taskRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(taskRecord);
       mockPrisma.task.update.mockResolvedValue(inProgressRecord);
 
-      const inProgressTask = await updateTask('task-1', { status: 'IN_PROGRESS' });
+      const inProgressTask = await updateTask('task-1', { status: 'IN_PROGRESS' }, verified('entity-1'), 'user-1');
       expect(inProgressTask.status).toBe('IN_PROGRESS');
 
       // Update to DONE
       const doneRecord = createMockTaskRecord({ status: 'DONE' });
-      mockPrisma.task.findUnique.mockResolvedValue(inProgressRecord);
+      mockPrisma.task.findFirst.mockResolvedValue(inProgressRecord);
       mockPrisma.task.update.mockResolvedValue(doneRecord);
 
-      const doneTask = await updateTask('task-1', { status: 'DONE' });
+      const doneTask = await updateTask('task-1', { status: 'DONE' }, verified('entity-1'), 'user-1');
       expect(doneTask.status).toBe('DONE');
 
       // Verify update was called with correct data
@@ -196,16 +219,16 @@ describe('Task Lifecycle Integration Tests', () => {
       });
 
       // Mock entity and financial records for scoring
-      const mockEntity = { id: 'entity-1', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', complianceProfile: [], userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
       mockPrisma.task.findMany.mockResolvedValue([]); // no dependent tasks
 
       // Score with far future due date
-      const scoreFar = await scoreTask(taskWithFarDue, 'entity-1');
+      const scoreFar = await scoreTask(taskWithFarDue, verified('entity-1'));
 
       // Score with near due date
-      const scoreNear = await scoreTask(taskWithNearDue, 'entity-1');
+      const scoreNear = await scoreTask(taskWithNearDue, verified('entity-1'));
 
       // Task with closer deadline should have higher score
       expect(scoreNear.overallScore).toBeGreaterThan(scoreFar.overallScore);
@@ -226,16 +249,19 @@ describe('Task Lifecycle Integration Tests', () => {
         dueDate: newDue,
       });
 
-      mockPrisma.task.findUnique.mockResolvedValue(existingTask);
+      mockPrisma.task.findFirst.mockResolvedValue(existingTask);
       mockPrisma.task.update.mockResolvedValue(updatedTask);
       mockPrisma.actionLog.create.mockResolvedValue({});
 
-      await updateTask('task-1', { dueDate: newDue });
+      await updateTask('task-1', { dueDate: newDue }, verified('entity-1'), 'user-1');
 
       // Verify deferral was logged
       expect(mockPrisma.actionLog.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          actor: 'SYSTEM',
+          // CORRECTED BY P-04: was the literal 'SYSTEM' for every human edit,
+          // which made the deferral audit trail useless -- it recorded that
+          // something happened but never who did it.
+          actor: 'user-1',
           actionType: 'TASK_DEFERRED',
           target: 'task-1',
           blastRadius: 'LOW',
@@ -277,11 +303,11 @@ describe('Task Lifecycle Integration Tests', () => {
         .mockResolvedValueOnce([urgentTask, normalTask, lowTask]) // initial fetch
         .mockResolvedValue([]); // dependency checks return empty
 
-      const mockEntity = { id: 'entity-1', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', complianceProfile: [], userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const result = await reprioritize('entity-1');
+      const result = await reprioritize(verified('entity-1'));
 
       expect(result.reranked).toBe(3);
       expect(result.changes).toBeInstanceOf(Array);
@@ -309,12 +335,12 @@ describe('Task Lifecycle Integration Tests', () => {
         createMockTask({ id: 'task-c', title: 'Task C' }), // no due date
       ];
 
-      const mockEntity = { id: 'entity-1', complianceProfile: [] };
+      const mockEntity = { id: 'entity-1', complianceProfile: [], userId: 'user-1' };
       mockPrisma.entity.findUnique.mockResolvedValue(mockEntity);
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
       mockPrisma.task.findMany.mockResolvedValue([]); // no dependents
 
-      const scores = await scoreBatch(tasks, 'entity-1');
+      const scores = await scoreBatch(tasks, verified('entity-1'));
 
       expect(scores).toHaveLength(3);
 

@@ -20,6 +20,23 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
+
 // --- Tests ---
 
 describe('ResourceAllocation', () => {
@@ -31,7 +48,7 @@ describe('ResourceAllocation', () => {
     it('should return empty array when no tasks exist', async () => {
       mockTaskFindMany.mockResolvedValue([]);
 
-      const result = await getResourceAllocation('entity-1');
+      const result = await getResourceAllocation(verified('entity-1'));
 
       expect(result).toEqual([]);
     });
@@ -47,7 +64,7 @@ describe('ResourceAllocation', () => {
         .mockResolvedValueOnce({ id: 'user-1', name: 'Alice' })
         .mockResolvedValueOnce({ id: 'user-2', name: 'Bob' });
 
-      const result = await getResourceAllocation('entity-1');
+      const result = await getResourceAllocation(verified('entity-1'));
 
       expect(result).toHaveLength(2);
 
@@ -82,7 +99,7 @@ describe('ResourceAllocation', () => {
       mockTaskFindMany.mockResolvedValue(tasks);
       mockUserFindUnique.mockResolvedValue({ id: 'user-1', name: 'Alice' });
 
-      const result = await getResourceAllocation('entity-1');
+      const result = await getResourceAllocation(verified('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(result[0].isOvercommitted).toBe(true);
@@ -102,7 +119,7 @@ describe('ResourceAllocation', () => {
         .mockResolvedValueOnce({ id: 'user-high', name: 'High' })
         .mockResolvedValueOnce({ id: 'user-low', name: 'Low' });
 
-      const result = await getResourceAllocation('entity-1');
+      const result = await getResourceAllocation(verified('entity-1'));
 
       // user-high: 2 * 4h = 8h (20%), user-low: 1h (3%)
       expect(result[0].userId).toBe('user-high');
@@ -130,7 +147,7 @@ describe('ResourceAllocation', () => {
         .mockResolvedValueOnce({ id: 'user-over', name: 'Overloaded' })
         .mockResolvedValueOnce({ id: 'user-under', name: 'Underloaded' });
 
-      const result = await detectOvercommitment('entity-1');
+      const result = await detectOvercommitment(verified('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(result[0].userId).toBe('user-over');
@@ -143,7 +160,7 @@ describe('ResourceAllocation', () => {
       ]);
       mockUserFindUnique.mockResolvedValue({ id: 'user-1', name: 'Alice' });
 
-      const result = await detectOvercommitment('entity-1');
+      const result = await detectOvercommitment(verified('entity-1'));
 
       expect(result).toEqual([]);
     });
@@ -170,7 +187,7 @@ describe('ResourceAllocation', () => {
         .mockResolvedValueOnce({ id: 'user-over', name: 'Overloaded' })
         .mockResolvedValueOnce({ id: 'user-under', name: 'Free' });
 
-      const suggestions = await suggestRebalancing('entity-1');
+      const suggestions = await suggestRebalancing(verified('entity-1'));
 
       expect(suggestions.length).toBeGreaterThanOrEqual(1);
       // The P2 task (1h, <= 2h) should be suggested for move

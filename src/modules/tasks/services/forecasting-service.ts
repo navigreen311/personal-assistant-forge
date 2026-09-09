@@ -9,15 +9,19 @@ import {
   subWeeks,
   format,
 } from 'date-fns';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CompletionForecast, VelocityMetrics, BurndownData } from '../types';
 
-export async function forecastTaskCompletion(taskId: string): Promise<CompletionForecast> {
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
+export async function forecastTaskCompletion(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<CompletionForecast> {
+  const task = await prisma.task.findFirst({ where: { id: taskId, entityId } });
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
   }
 
-  const velocity = await calculateVelocity(task.entityId, task.projectId ?? undefined, 8);
+  const velocity = await calculateVelocity(entityId, task.projectId ?? undefined, 8);
 
   if (velocity.currentVelocity === 0) {
     return {
@@ -59,14 +63,17 @@ export async function forecastTaskCompletion(taskId: string): Promise<Completion
   };
 }
 
-export async function forecastProjectCompletion(projectId: string): Promise<CompletionForecast> {
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+export async function forecastProjectCompletion(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<CompletionForecast> {
+  const project = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   if (!project) {
     throw new Error(`Project not found: ${projectId}`);
   }
 
   const tasks = await prisma.task.findMany({
-    where: { projectId, status: { notIn: ['DONE', 'CANCELLED'] } },
+    where: { projectId, entityId, status: { notIn: ['DONE', 'CANCELLED'] } },
   });
 
   const remainingTasks = tasks.length;
@@ -82,7 +89,7 @@ export async function forecastProjectCompletion(projectId: string): Promise<Comp
     };
   }
 
-  const velocity = await calculateVelocity(project.entityId, projectId, 8);
+  const velocity = await calculateVelocity(entityId, projectId, 8);
 
   const weeksNeeded =
     velocity.currentVelocity > 0
@@ -124,7 +131,7 @@ export async function forecastProjectCompletion(projectId: string): Promise<Comp
 }
 
 export async function calculateVelocity(
-  entityId: string,
+  entityId: VerifiedEntityId,
   projectId?: string,
   weeks = 8
 ): Promise<VelocityMetrics> {
@@ -169,14 +176,17 @@ export async function calculateVelocity(
   };
 }
 
-export async function getBurndownData(projectId: string): Promise<BurndownData> {
-  const project = await prisma.project.findUnique({ where: { id: projectId } });
+export async function getBurndownData(
+  projectId: string,
+  entityId: VerifiedEntityId
+): Promise<BurndownData> {
+  const project = await prisma.project.findFirst({ where: { id: projectId, entityId } });
   if (!project) {
     throw new Error(`Project not found: ${projectId}`);
   }
 
   const allTasks = await prisma.task.findMany({
-    where: { projectId, status: { notIn: ['CANCELLED'] } },
+    where: { projectId, entityId, status: { notIn: ['CANCELLED'] } },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -311,7 +321,7 @@ function getProjectTargetDate(
 // --- AI-Enhanced Forecasting ---
 
 export async function forecastWithAI(
-  entityId: string,
+  entityId: VerifiedEntityId,
   projectId?: string,
   taskContext?: { title: string; status: string; priority: string; daysOld: number }[]
 ): Promise<{ predictedWeeks: number; confidence: number; insights: string[] }> {

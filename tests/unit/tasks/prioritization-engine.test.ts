@@ -8,6 +8,23 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
 }));
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
+
 // Mock prisma
 const mockFindMany = jest.fn();
 const mockFindUnique = jest.fn();
@@ -60,7 +77,7 @@ describe('PrioritizationEngine', () => {
         status: 'IN_PROGRESS',
       });
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.overallScore).toBeGreaterThan(70);
     });
 
@@ -70,7 +87,7 @@ describe('PrioritizationEngine', () => {
         status: 'TODO',
       });
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.overallScore).toBeLessThan(50);
     });
 
@@ -82,8 +99,8 @@ describe('PrioritizationEngine', () => {
         tags: ['misc'],
       });
 
-      const alignedScore = await scoreTask(alignedTask, 'entity-1');
-      const unalignedScore = await scoreTask(unalignedTask, 'entity-1');
+      const alignedScore = await scoreTask(alignedTask, verified('entity-1'));
+      const unalignedScore = await scoreTask(unalignedTask, verified('entity-1'));
 
       expect(alignedScore.overallScore).toBeGreaterThan(unalignedScore.overallScore);
     });
@@ -97,15 +114,15 @@ describe('PrioritizationEngine', () => {
         status: 'TODO',
       });
 
-      const ipScore = await scoreTask(inProgressTask, 'entity-1');
-      const todoScore = await scoreTask(todoTask, 'entity-1');
+      const ipScore = await scoreTask(inProgressTask, verified('entity-1'));
+      const todoScore = await scoreTask(todoTask, verified('entity-1'));
 
       expect(ipScore.overallScore).toBeGreaterThan(todoScore.overallScore);
     });
 
     it('should produce score between 0 and 100', async () => {
       const task = createMockTask();
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.overallScore).toBeGreaterThanOrEqual(0);
       expect(score.overallScore).toBeLessThanOrEqual(100);
     });
@@ -120,7 +137,7 @@ describe('PrioritizationEngine', () => {
 
       mockFindMany.mockResolvedValue([{ id: 'blocked-1' }]); // has downstream tasks
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.quadrant).toBe('DO_FIRST');
     });
 
@@ -133,7 +150,7 @@ describe('PrioritizationEngine', () => {
 
       mockFindMany.mockResolvedValue([{ id: 'blocked-1' }]);
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.quadrant).toBe('SCHEDULE');
     });
 
@@ -143,7 +160,7 @@ describe('PrioritizationEngine', () => {
         status: 'TODO',
       });
 
-      const score = await scoreTask(task, 'entity-1');
+      const score = await scoreTask(task, verified('entity-1'));
       expect(score.quadrant).toBe('ELIMINATE');
     });
   });
@@ -157,7 +174,7 @@ describe('PrioritizationEngine', () => {
         { id: 't4', title: 'Task 4', entityId: 'e1', priority: 'P2', status: 'TODO', dependencies: [], tags: [], createdAt: new Date(), updatedAt: new Date(), dueDate: null, assigneeId: null, projectId: null, description: null, createdFrom: null },
       ]);
 
-      const result = await getDailyTop3('user-1', 'e1');
+      const result = await getDailyTop3('user-1', verified('e1'));
       expect(result.tasks.length).toBe(3);
     });
 
@@ -167,7 +184,7 @@ describe('PrioritizationEngine', () => {
         { id: 't2', title: 'High', entityId: 'e1', priority: 'P0', status: 'IN_PROGRESS', dependencies: [], tags: [], createdAt: new Date(), updatedAt: new Date(), dueDate: addDays(new Date(), 1), assigneeId: null, projectId: null, description: null, createdFrom: null },
       ]);
 
-      const result = await getDailyTop3('user-1', 'e1');
+      const result = await getDailyTop3('user-1', verified('e1'));
       if (result.tasks.length >= 2) {
         expect(result.tasks[0].score.overallScore).toBeGreaterThanOrEqual(result.tasks[1].score.overallScore);
       }
@@ -178,14 +195,14 @@ describe('PrioritizationEngine', () => {
         { id: 't1', title: 'Task', entityId: 'e1', priority: 'P0', status: 'TODO', dependencies: [], tags: [], createdAt: new Date(), updatedAt: new Date(), dueDate: addDays(new Date(), 1), assigneeId: null, projectId: null, description: null, createdFrom: null },
       ]);
 
-      const result = await getDailyTop3('user-1', 'e1');
+      const result = await getDailyTop3('user-1', verified('e1'));
       expect(result.reasoning).toBeTruthy();
     });
 
     it('should exclude DONE and CANCELLED tasks', async () => {
       mockFindMany.mockResolvedValue([]);
 
-      const result = await getDailyTop3('user-1', 'e1');
+      const result = await getDailyTop3('user-1', verified('e1'));
       // The mock returns empty since we filter for TODO/IN_PROGRESS in the query
       expect(result.tasks.length).toBe(0);
     });

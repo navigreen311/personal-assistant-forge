@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import { differenceInDays, differenceInHours, isBefore, addDays } from 'date-fns';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Task } from '@/shared/types';
 import type {
   PrioritizationScore,
@@ -19,7 +20,10 @@ const FACTOR_WEIGHTS = {
   completionMomentum: 0.10,
 } as const;
 
-export async function scoreTask(task: Task, entityId: string): Promise<PrioritizationScore> {
+export async function scoreTask(
+  task: Task,
+  entityId: VerifiedEntityId
+): Promise<PrioritizationScore> {
   const factors = await calculateFactors(task, entityId);
 
   const overallScore = Math.round(
@@ -40,14 +44,22 @@ export async function scoreTask(task: Task, entityId: string): Promise<Prioritiz
 
 export async function scoreBatch(
   tasks: Task[],
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<PrioritizationScore[]> {
   return Promise.all(tasks.map((t) => scoreTask(t, entityId)));
 }
 
+/**
+ * The three tasks to do today, for one user, in one entity.
+ *
+ * `userId` used to arrive on the query string (`?userId=...`), so a caller
+ * could ask for anybody's day. It is now the authenticated caller's own id,
+ * supplied by the route from the session, and `entityId` is verified. Both
+ * halves of "whose" are server-decided.
+ */
 export async function getDailyTop3(
   userId: string,
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<DailyTop3> {
   const tasks = await prisma.task.findMany({
     where: {
@@ -95,7 +107,7 @@ export async function getDailyTop3(
 }
 
 export async function reprioritize(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<{
   reranked: number;
   changes: Array<{ taskId: string; oldPriority: string; newPriority: string }>;

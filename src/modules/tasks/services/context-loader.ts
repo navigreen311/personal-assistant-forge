@@ -1,8 +1,12 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { TaskContext } from '../types';
 
-export async function loadTaskContext(taskId: string): Promise<TaskContext> {
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
+export async function loadTaskContext(
+  taskId: string,
+  entityId: VerifiedEntityId
+): Promise<TaskContext> {
+  const task = await prisma.task.findFirst({ where: { id: taskId, entityId } });
   if (!task) {
     throw new Error(`Task not found: ${taskId}`);
   }

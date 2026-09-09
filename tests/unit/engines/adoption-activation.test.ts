@@ -46,6 +46,15 @@ import {
   getCurrentPhase,
 } from '@/engines/adoption/activation-service';
 
+// The service stamps completion times with `new Date()`, and the mocked prisma
+// layer above does the same for createdAt/updatedAt. Comparing two such stamps
+// makes the real system clock a hidden input: the idempotency test below
+// compared timestamps taken a fraction of a millisecond apart and failed
+// whenever the millisecond happened to tick between them (observed at roughly
+// 1 run in 7). Pinning the clock removes the race; where a test needs to prove
+// something did *not* change, it advances the pinned clock deliberately.
+const FIXED_NOW = new Date('2026-03-01T09:00:00.000Z');
+
 // Make crypto.randomUUID deterministic for testing
 let uuidCounter = 0;
 
@@ -66,8 +75,13 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  jest.useFakeTimers({ now: FIXED_NOW });
   _adoptionStore.clear();
   resetUUIDs();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe('activation-service', () => {
@@ -185,5 +199,20 @@ describe('activation-service', () => {
     const second = await completeTask(uid, taskId);
     expect(second.phases[0].tasks[0].completedAt).toEqual(firstCompletedAt);
     expect(second.overallProgress).toBe(first.overallProgress);
+
+    // Freezing the clock would on its own make the assertion above pass no
+    // matter what the service did, so advance it and re-complete once more:
+    // a service that genuinely re-completed the task would now record a
+    // visibly different time and/or count the task twice.
+    jest.setSystemTime(new Date(FIXED_NOW.getTime() + 60_000));
+
+    resetUUIDs();
+    const third = await completeTask(uid, taskId);
+    expect(third.overallProgress).toBe(first.overallProgress);
+
+    resetUUIDs();
+    const reloaded = await getChecklist(uid);
+    expect(reloaded.phases[0].tasks[0].completedAt).toEqual(firstCompletedAt);
+    expect(reloaded.overallProgress).toBe(first.overallProgress);
   });
 });

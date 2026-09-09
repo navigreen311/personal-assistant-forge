@@ -1,8 +1,11 @@
 import { prisma } from '@/lib/db';
 import { differenceInDays } from 'date-fns';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ProcrastinationAlert } from '../types';
 
-export async function detectProcrastination(entityId: string): Promise<ProcrastinationAlert[]> {
+export async function detectProcrastination(
+  entityId: VerifiedEntityId
+): Promise<ProcrastinationAlert[]> {
   const alerts: ProcrastinationAlert[] = [];
   const now = new Date();
 
@@ -116,9 +119,24 @@ export function getSuggestion(alert: ProcrastinationAlert): string {
   }
 }
 
+/**
+ * Deferral history for one task.
+ *
+ * ActionLog rows carry no entityId of their own -- `target` is a task id -- so
+ * the scope is proven on the PARENT first and the log is only read if the task
+ * is in this entity. That is how you scope a child table the frozen schema
+ * gives no entity column.
+ */
 export async function getTaskDeferralHistory(
-  taskId: string
+  taskId: string,
+  entityId: VerifiedEntityId
 ): Promise<Array<{ date: Date; oldDueDate?: Date; newDueDate?: Date }>> {
+  const task = await prisma.task.findFirst({
+    where: { id: taskId, entityId },
+    select: { id: true },
+  });
+  if (!task) return [];
+
   const logs = await prisma.actionLog.findMany({
     where: {
       target: taskId,

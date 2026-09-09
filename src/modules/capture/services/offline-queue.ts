@@ -15,6 +15,19 @@ import type { CaptureItem } from '@/modules/capture/types';
 const QUEUE_NAME = 'capture-queue';
 const MAX_RETRIES = 3;
 
+// How long to wait for the Redis connection to report ready before giving up
+// and serving the operation from the in-memory fallback. An unreachable host
+// normally refuses the TCP connection immediately, so the probe settles in a
+// millisecond or two; this bound only matters for addresses that black-hole
+// the connection instead of refusing it. Without it, BullMQ waits for a ready
+// connection forever and every queue call hangs rather than degrading.
+const REDIS_READY_TIMEOUT_MS = 2000;
+
+// After a failed readiness probe, serve everything from memory for this long
+// before probing again, so a sustained outage does not make every single call
+// pay the probe cost. Short enough that recovery is picked up quickly.
+const REDIS_RETRY_COOLDOWN_MS = 5000;
+
 type CreateCaptureParams = Omit<CaptureItem, 'id' | 'status' | 'createdAt' | 'updatedAt'>;
 
 interface OfflineQueueItem extends CaptureItem {
@@ -32,6 +45,9 @@ const DEFAULT_JOB_OPTIONS: JobsOptions = {
 class OfflineQueue {
   private bullQueue: Queue | null = null;
   private redisAvailable = true;
+  private redisReady = false;
+  private readyProbe: Promise<Queue | null> | null = null;
+  private lastRedisFailure?: number;
 
   // In-memory fallback when Redis is down
   private fallbackQueue: OfflineQueueItem[] = [];
@@ -61,9 +77,13 @@ class OfflineQueue {
         defaultJobOptions: DEFAULT_JOB_OPTIONS,
       });
 
-      // Listen for connection errors to trigger fallback mode
+      // Listen for connection errors to trigger fallback mode. This does not
+      // record a failure timestamp: ioredis re-emits an error on every
+      // reconnection attempt, and stamping each one would keep the retry
+      // cooldown permanently fresh and prevent recovery from ever being probed.
       this.bullQueue.on('error', () => {
         this.redisAvailable = false;
+        this.redisReady = false;
       });
 
       this.redisAvailable = true;
@@ -75,6 +95,71 @@ class OfflineQueue {
       this.redisAvailable = false;
       return null;
     }
+  }
+
+  /**
+   * Resolve to a Redis-backed queue that is actually usable, or null if Redis
+   * is unreachable right now.
+   *
+   * BullMQ defers every command until its connection reports ready, and ioredis
+   * reconnects indefinitely, so awaiting a queue operation against a dead Redis
+   * never returns. Probing readiness here — bounded by the first connection
+   * error and by REDIS_READY_TIMEOUT_MS — is what makes the documented
+   * "fall back to in-memory storage" behaviour real instead of a hang.
+   */
+  private async getReadyQueue(): Promise<Queue | null> {
+    const q = this.getBullQueue();
+    if (!q) return null;
+
+    if (this.redisReady && this.redisAvailable) return q;
+
+    // Back off between probes while Redis is known to be down.
+    if (
+      this.lastRedisFailure !== undefined &&
+      Date.now() - this.lastRedisFailure < REDIS_RETRY_COOLDOWN_MS
+    ) {
+      return null;
+    }
+
+    if (!this.readyProbe) {
+      this.readyProbe = this.probeRedis(q);
+    }
+    return this.readyProbe;
+  }
+
+  /**
+   * Wait — with a bound — for the queue's Redis connection to become ready.
+   * Records the outcome on the instance so callers can skip Redis entirely
+   * while it is down.
+   */
+  private probeRedis(queue: Queue): Promise<Queue | null> {
+    return new Promise<Queue | null>((resolve) => {
+      let settled = false;
+
+      const settle = (ready: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        queue.off('error', onError);
+        this.redisReady = ready;
+        this.redisAvailable = ready;
+        if (!ready) this.lastRedisFailure = Date.now();
+        this.readyProbe = null;
+        resolve(ready ? queue : null);
+      };
+
+      const onError = (): void => settle(false);
+
+      const timer = setTimeout(() => settle(false), REDIS_READY_TIMEOUT_MS);
+      // Never let the backstop timer keep a process alive on its own.
+      timer.unref?.();
+
+      queue.on('error', onError);
+      queue.waitUntilReady().then(
+        () => settle(true),
+        () => settle(false),
+      );
+    });
   }
 
   /**
@@ -110,8 +195,8 @@ class OfflineQueue {
       retryCount: 0,
     };
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         await q.add('capture-item', item, {
           jobId: `capture-${id}`,
@@ -152,16 +237,20 @@ class OfflineQueue {
       retryCount: 0,
     };
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
-      // Fire-and-forget add to Redis. On failure, push to fallback.
-      q.add('capture-item', item, { jobId: `capture-${item.id}` }).catch(() => {
+    // Fire-and-forget: resolve Redis readiness first so an unreachable Redis
+    // lands the item in the in-memory fallback instead of a promise that never
+    // settles. The probe is resolved by the connection error, so this costs
+    // microseconds when Redis is down and nothing at all once it is ready.
+    void this.getReadyQueue().then((q) => {
+      if (!q) {
+        this.fallbackQueue.push(item);
+        return;
+      }
+      return q.add('capture-item', item, { jobId: `capture-${item.id}` }).catch(() => {
         this.redisAvailable = false;
         this.fallbackQueue.push(item);
       });
-    } else {
-      this.fallbackQueue.push(item);
-    }
+    });
   }
 
   /**
@@ -171,8 +260,8 @@ class OfflineQueue {
   async dequeue(): Promise<CaptureItem | null> {
     if (!this.processorFn) return null;
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         // Get the next waiting job
         const [nextJob] = await q.getJobs(['waiting'], 0, 0, true);
@@ -247,9 +336,9 @@ class OfflineQueue {
    */
   async getQueueSize(): Promise<number> {
     let redisCount = 0;
-    const q = this.getBullQueue();
+    const q = await this.getReadyQueue();
 
-    if (q && this.redisAvailable) {
+    if (q) {
       try {
         const counts = await q.getJobCounts('waiting', 'delayed', 'active');
         redisCount = counts.waiting + counts.delayed + counts.active;
@@ -267,8 +356,8 @@ class OfflineQueue {
   async getDeadLetterItems(): Promise<CaptureItem[]> {
     const items: CaptureItem[] = [...this.fallbackDeadLetter];
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         const failedJobs = await q.getJobs(['failed']);
         for (const job of failedJobs) {
@@ -295,8 +384,8 @@ class OfflineQueue {
       item.status = 'PENDING';
       item.updatedAt = new Date();
 
-      const q = this.getBullQueue();
-      if (q && this.redisAvailable) {
+      const q = await this.getReadyQueue();
+      if (q) {
         try {
           await q.add('capture-item', item, { jobId: `capture-${item.id}-retry` });
           return true;
@@ -310,8 +399,8 @@ class OfflineQueue {
     }
 
     // Check BullMQ failed jobs
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         const failedJobs = await q.getJobs(['failed']);
         const job = failedJobs.find((j) => {
@@ -350,8 +439,8 @@ class OfflineQueue {
     await this.drainFallbackToRedis();
 
     // Process BullMQ jobs
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         const jobs = await q.getJobs(['waiting', 'delayed'], 0, -1, true);
 
@@ -421,8 +510,8 @@ class OfflineQueue {
   async getQueuedItems(): Promise<CaptureItem[]> {
     const items: CaptureItem[] = [...this.fallbackQueue];
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         const jobs = await q.getJobs(['waiting', 'delayed', 'active']);
         for (const job of jobs) {
@@ -443,8 +532,8 @@ class OfflineQueue {
     this.fallbackQueue = [];
     this.fallbackDeadLetter = [];
 
-    const q = this.getBullQueue();
-    if (q && this.redisAvailable) {
+    const q = await this.getReadyQueue();
+    if (q) {
       try {
         await q.obliterate({ force: true });
       } catch {
@@ -478,8 +567,8 @@ class OfflineQueue {
   private async drainFallbackToRedis(): Promise<void> {
     if (this.fallbackQueue.length === 0) return;
 
-    const q = this.getBullQueue();
-    if (!q || !this.redisAvailable) return;
+    const q = await this.getReadyQueue();
+    if (!q) return;
 
     const drained: number[] = [];
     for (let i = 0; i < this.fallbackQueue.length; i++) {
@@ -505,9 +594,16 @@ class OfflineQueue {
    * Gracefully close the BullMQ queue connection.
    */
   async close(): Promise<void> {
-    if (this.bullQueue) {
-      await this.bullQueue.close();
-      this.bullQueue = null;
+    const q = this.bullQueue;
+    this.bullQueue = null;
+    this.redisReady = false;
+    this.readyProbe = null;
+    if (!q) return;
+    try {
+      await q.close();
+    } catch {
+      // Closing a connection that never came up can reject; the queue object is
+      // being discarded either way, so a failed close is not an error here.
     }
   }
 }

@@ -15,6 +15,7 @@ import {
 } from 'date-fns';
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ParsedTaskInput, NLPEntity } from '../types';
 
 // --- Entity Extraction Patterns ---
@@ -388,7 +389,7 @@ export async function parseTaskFromText(input: string): Promise<ParsedTaskInput>
 
 export async function resolveEntityReferences(
   parsed: ParsedTaskInput,
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<{ projectId?: string; assigneeId?: string; entityId: string }> {
   const result: { projectId?: string; assigneeId?: string; entityId: string } = { entityId };
 
