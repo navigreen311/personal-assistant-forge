@@ -219,7 +219,7 @@ One row per merge. Appended by the coordinator at merge time.
 | # | Package | PR | Merge SHA | tsc | jest suites | jest tests | test:db | New failures | Timestamp |
 |---|---|---|---|---|---|---|---|---|---|
 | — | *baseline* `0f098288` | — | — | 72 | 319/320 | 5267/5268 | n/a | — | 2026-09-09 |
-| 1 | P-00 coordinator | *pending* | *pending* | 67 | 319/320 | 5267/5268 | 16/16 | **none** | 2026-09-09 |
+| 1 | P-00 coordinator | [#57](https://github.com/navigreen311/personal-assistant-forge/pull/57) | `e18a8f7` | 67 | 319/320 | 5267/5268 | 16/16 | **none** | 2026-09-09 18:59Z |
 
 ---
 
@@ -233,4 +233,23 @@ a different session and lives at a path this environment cannot reach. **Commit
 it before dispatching either package.** Sizing them from the issue bullets alone
 would be inventing scope.
 
-Everything else is unblocked the moment P-00 merges.
+**P-00 merged at `e18a8f7` on 2026-09-09.** Verified post-merge from a clean
+`npm ci` on `master`: tsc 67, unit 319/320 and 5267/5268, test:db 16/16 -- all at
+baseline, no new failures.
+
+**Real-Database Tests is the first CI job ever to report green in this
+repository.** The previous 115 runs produced zero successes.
+
+Two defects in P-00 were caught by its own CI run before merge, and both are
+worth knowing:
+
+- The db lane was gated behind `lint-typecheck-test`, which is red until P-19, so
+  it reported `skipping` and would never have executed for the whole run. **Do
+  not gate a new job behind a permanently red one.**
+- `ts-node` was missing, so no TypeScript jest config parses under a clean
+  `npm ci`. **`jest.config.ts` has the same dependency**, and its step has never
+  run in CI, so P-19 was going to fix the type errors and walk straight into
+  this. Now fixed for both.
+
+**Unblocked now:** P-01 (db harness) and P-02 (typecheck repair) immediately,
+then P-03, then P-04 as the reference implementation, then the Wave 2 fan-out.
