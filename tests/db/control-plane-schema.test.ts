@@ -11,16 +11,21 @@
  *
  * So this asserts the weakest useful thing, against the real connection: every
  * table P-00 added exists, is queryable, and accepts a write. If the migration
- * did not apply, these fail. P-01 replaces the ad-hoc client below with the
+ * did not apply, these fail. P-01 has replaced the ad-hoc client below with the
  * shared harness; P-04..P-14 then add the tenancy tests that matter.
  */
 
-import { PrismaClient } from '@prisma/client';
+// P-01: the ad-hoc `new PrismaClient()` this file was written with is now the
+// shared harness (tests/helpers/db.ts) -- the same singleton the product code
+// imports, connected and disconnected in one place. Assertions below unchanged.
+import { closeDatabase, connectDatabase, prisma } from '../helpers/db';
 
-const prisma = new PrismaClient();
+beforeAll(async () => {
+  await connectDatabase();
+});
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await closeDatabase();
 });
 
 describe('P-00 control-plane schema', () => {
