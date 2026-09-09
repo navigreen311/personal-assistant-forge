@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CrisisDetectionSignal, CrisisType, CrisisSeverity, CrisisEvent } from '../types';
 import { getEscalationChain } from './escalation-service';
 import { getPlaybook } from './playbook-service';
@@ -182,9 +183,13 @@ Be conservative: only flag a crisis if signals clearly indicate one. False negat
   }
 }
 
+// P-10/T-001. `entityId` came straight off the request body: an authenticated
+// user could declare a crisis inside another tenant, which activates that
+// tenant's war room, clears their calendar and calls their phone tree.
+// VerifiedEntityId makes a raw request value a compile error at the call site.
 export async function createCrisisEvent(
   userId: string,
-  entityId: string,
+  entityId: VerifiedEntityId,
   type: CrisisType,
   severity: CrisisSeverity,
   title: string,
@@ -225,6 +230,28 @@ export async function getActiveCrises(userId: string): Promise<CrisisEvent[]> {
   return Array.from(crisisStore.values()).filter(
     c => c.userId === userId && c.status !== 'RESOLVED' && c.status !== 'POST_MORTEM'
   );
+}
+
+/**
+ * P-10/T-001 — the scoped lookup, and the one routes must use.
+ *
+ * Every `/api/crisis/[id]/*` route called `getCrisisById(id)` and acted on
+ * whatever came back. There was NO ownership check anywhere in the chain, so an
+ * authenticated user who knew (or guessed) a crisis id could read another
+ * user's crisis, change its severity, mark it resolved, or activate their war
+ * room -- which clears that user's calendar and calls their phone tree.
+ *
+ * This returns `undefined` for a crisis that is not the caller's, so a foreign
+ * record is simply NOT FOUND and there is no separate check for a later edit to
+ * drop. That is the in-memory equivalent of putting the scope in the WHERE
+ * clause (tenancy-pattern.md §3); when the crisis store gets a real table it
+ * should become `findFirst({ where: { id, userId } })` and nothing else changes.
+ *
+ * `getCrisisById` is kept for the services that already hold a scoped record.
+ */
+export function getCrisisForUser(crisisId: string, userId: string): CrisisEvent | undefined {
+  const crisis = crisisStore.get(crisisId);
+  return crisis && crisis.userId === userId ? crisis : undefined;
 }
 
 // Exported for testing and other services

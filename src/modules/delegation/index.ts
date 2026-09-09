@@ -22,6 +22,7 @@ export {
   trackDelegation,
   revokeDelegation,
   buildContextPack,
+  getDelegationForParty,
 } from './services/delegation-service';
 export {
   getDefaultRoles,

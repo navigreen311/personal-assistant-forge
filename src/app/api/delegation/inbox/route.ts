@@ -1,10 +1,14 @@
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
 import { success, error } from '@/shared/utils/api-response';
 import { getDailySuggestions } from '@/modules/delegation/services/delegation-inbox-service';
 
+// P-10/T-002: audited. Already correctly scoped to `session.userId`;
+// delegations carry no entityId in the model (tenancy-pattern.md §5b).
+const AUDIT = { resource: 'delegation.inbox', sensitivityLevel: 'CONFIDENTIAL' as const };
+
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuditedAuth(request, AUDIT, async (req, session) => {
     try {
       const suggestions = await getDailySuggestions(session.userId);
       return success(suggestions);

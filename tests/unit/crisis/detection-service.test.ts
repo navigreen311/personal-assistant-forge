@@ -6,6 +6,7 @@ import {
   updateCrisis,
 } from '@/modules/crisis/services/detection-service';
 import type { CrisisDetectionSignal } from '@/modules/crisis/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 // Mock AI client
 jest.mock('@/lib/ai', () => ({
@@ -203,7 +204,7 @@ describe('DetectionService', () => {
     it('should create a crisis event with escalation chain and playbook', async () => {
       const crisis = await createCrisisEvent(
         'user-1',
-        'entity-1',
+        verifiedEntityIdForTest('entity-1'),
         'LEGAL_THREAT',
         'HIGH',
         'Lawsuit Notice',
@@ -227,7 +228,7 @@ describe('DetectionService', () => {
     it('should return active (non-resolved) crises for a user', async () => {
       const crisis = await createCrisisEvent(
         'user-active',
-        'entity-1',
+        verifiedEntityIdForTest('entity-1'),
         'LEGAL_THREAT',
         'HIGH',
         'Active crisis',
@@ -243,7 +244,7 @@ describe('DetectionService', () => {
   describe('getCrisisById / updateCrisis', () => {
     it('should retrieve a crisis by its ID', async () => {
       const crisis = await createCrisisEvent(
-        'user-1', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Breach', 'desc'
+        'user-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Breach', 'desc'
       );
 
       const found = getCrisisById(crisis.id);
@@ -258,7 +259,7 @@ describe('DetectionService', () => {
 
     it('should update crisis state via updateCrisis', async () => {
       const crisis = await createCrisisEvent(
-        'user-1', 'entity-1', 'PR_ISSUE', 'MEDIUM', 'PR', 'desc'
+        'user-1', verifiedEntityIdForTest('entity-1'), 'PR_ISSUE', 'MEDIUM', 'PR', 'desc'
       );
 
       crisis.status = 'RESOLVED';

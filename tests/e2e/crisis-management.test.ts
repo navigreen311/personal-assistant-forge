@@ -77,6 +77,7 @@ import { activateWarRoom, deactivateWarRoom, getWarRoomState, addWarRoomDocument
 import { configure, checkIn, evaluateSwitch, getStatus, addProtocol } from '@/modules/crisis/services/dead-man-switch-service';
 import { getEscalationChain, setEscalationChain, executeEscalation, acknowledgeEscalation, getEscalationStatus } from '@/modules/crisis/services/escalation-service';
 import type { CrisisDetectionSignal, EscalationChainConfig, DeadManProtocol } from '@/modules/crisis/types';
+import { verifiedEntityIdForTest } from '../helpers/factories';
 
 const { generateText, generateJSON } = require('@/lib/ai');
 
@@ -149,7 +150,7 @@ describe('Crisis Management E2E', () => {
 
   describe('Crisis CRUD and Acknowledgment', () => {
     it('should create crisis event with escalation chain', async () => {
-      const c = await createCrisisEvent('user-1', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Lawsuit', 'Threat received');
+      const c = await createCrisisEvent('user-1', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Lawsuit', 'Threat received');
       expect(c.id).toBeDefined();
       expect(c.status).toBe('DETECTED');
       expect(c.escalationChain.length).toBeGreaterThan(0);
@@ -157,20 +158,20 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should retrieve active crises', async () => {
-      const c = await createCrisisEvent('user-active', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Active', 'desc');
+      const c = await createCrisisEvent('user-active', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Active', 'desc');
       const actives = await getActiveCrises('user-active');
       expect(actives.some((x) => x.id === c.id)).toBe(true);
     });
 
     it('should get crisis by ID', async () => {
-      const c = await createCrisisEvent('user-get', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Breach', 'desc');
+      const c = await createCrisisEvent('user-get', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Breach', 'desc');
       expect(getCrisisById(c.id)!.id).toBe(c.id);
     });
 
     it('should return undefined for non-existent ID', () => { expect(getCrisisById('nope')).toBeUndefined(); });
 
     it('should update crisis status', async () => {
-      const c = await createCrisisEvent('user-upd', 'entity-1', 'PR_ISSUE', 'MEDIUM', 'PR', 'desc');
+      const c = await createCrisisEvent('user-upd', verifiedEntityIdForTest('entity-1'), 'PR_ISSUE', 'MEDIUM', 'PR', 'desc');
       c.status = 'RESOLVED';
       updateCrisis(c);
       expect(getCrisisById(c.id)!.status).toBe('RESOLVED');
@@ -179,7 +180,7 @@ describe('Crisis Management E2E', () => {
 
   describe('War Room Creation', () => {
     it('should activate war room with docs and comms', async () => {
-      const c = await createCrisisEvent('user-wr', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Breach', 'Unauthorized access');
+      const c = await createCrisisEvent('user-wr', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Breach', 'Unauthorized access');
       const wr = await activateWarRoom(c.id);
       expect(wr.isActive).toBe(true);
       expect(wr.activatedAt).toBeInstanceOf(Date);
@@ -187,14 +188,14 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should use AI for stakeholder comms', async () => {
-      const c = await createCrisisEvent('user-wr-ai', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'AI Test', 'desc');
+      const c = await createCrisisEvent('user-wr-ai', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'AI Test', 'desc');
       await activateWarRoom(c.id);
       expect(generateText).toHaveBeenCalledTimes(1);
     });
 
     it('should fall back when AI fails', async () => {
       generateText.mockRejectedValueOnce(new Error('AI unavailable'));
-      const c = await createCrisisEvent('user-wr-fb', 'entity-1', 'DATA_BREACH', 'HIGH', 'Fallback', 'desc');
+      const c = await createCrisisEvent('user-wr-fb', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'HIGH', 'Fallback', 'desc');
       const wr = await activateWarRoom(c.id);
       expect(wr.draftedComms.length).toBeGreaterThan(0);
       expect(wr.draftedComms[0]).toContain('Fallback');
@@ -205,27 +206,27 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should persist war room state', async () => {
-      const c = await createCrisisEvent('user-wr-p', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Persist', 'desc');
+      const c = await createCrisisEvent('user-wr-p', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Persist', 'desc');
       await activateWarRoom(c.id);
       expect(getCrisisById(c.id)!.warRoom.isActive).toBe(true);
     });
 
     it('should deactivate war room', async () => {
-      const c = await createCrisisEvent('user-deact', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Deact', 'desc');
+      const c = await createCrisisEvent('user-deact', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Deact', 'desc');
       await activateWarRoom(c.id);
       await deactivateWarRoom(c.id);
       expect((await getWarRoomState(c.id)).isActive).toBe(false);
     });
 
     it('should add document to war room', async () => {
-      const c = await createCrisisEvent('user-doc', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Doc', 'desc');
+      const c = await createCrisisEvent('user-doc', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Doc', 'desc');
       await activateWarRoom(c.id);
       const s = await addWarRoomDocument(c.id, 'new-doc');
       expect(s.surfacedDocuments).toContain('new-doc');
     });
 
     it('should not duplicate documents', async () => {
-      const c = await createCrisisEvent('user-dup', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Dup', 'desc');
+      const c = await createCrisisEvent('user-dup', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Dup', 'desc');
       await activateWarRoom(c.id);
       await addWarRoomDocument(c.id, 'uniq');
       const s = await addWarRoomDocument(c.id, 'uniq');
@@ -306,7 +307,7 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should notify first step during escalation', async () => {
-      const c = await createCrisisEvent('user-esc', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Test', 'desc');
+      const c = await createCrisisEvent('user-esc', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Test', 'desc');
       const steps = await executeEscalation(c.id);
       const notified = steps.find((s) => s.status === 'NOTIFIED');
       expect(notified).toBeDefined();
@@ -318,7 +319,7 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should acknowledge and skip remaining', async () => {
-      const c = await createCrisisEvent('user-ack', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Ack', 'desc');
+      const c = await createCrisisEvent('user-ack', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Ack', 'desc');
       await executeEscalation(c.id);
       const updated = await acknowledgeEscalation(c.id, 1);
       expect(updated.status).toBe('ACKNOWLEDGED');
@@ -326,7 +327,7 @@ describe('Crisis Management E2E', () => {
     });
 
     it('should return escalation status', async () => {
-      const c = await createCrisisEvent('user-es', 'entity-1', 'FINANCIAL_ANOMALY', 'HIGH', 'Finance', 'desc');
+      const c = await createCrisisEvent('user-es', verifiedEntityIdForTest('entity-1'), 'FINANCIAL_ANOMALY', 'HIGH', 'Finance', 'desc');
       const steps = await getEscalationStatus(c.id);
       expect(steps.length).toBeGreaterThan(0);
       expect(steps[0]).toHaveProperty('order');
@@ -338,7 +339,7 @@ describe('Crisis Management E2E', () => {
       const detection = await analyzeSignals([{ source: 'security', signalType: 'alert', confidence: 0.9, rawData: { body: 'Unauthorized access detected. Data breach confirmed.' }, timestamp: new Date() }]);
       expect(detection.isCrisis).toBe(true);
 
-      const crisis = await createCrisisEvent('user-lc', 'entity-1', detection.type!, 'CRITICAL', 'Production Breach', 'Unauthorized DB access');
+      const crisis = await createCrisisEvent('user-lc', verifiedEntityIdForTest('entity-1'), detection.type!, 'CRITICAL', 'Production Breach', 'Unauthorized DB access');
       expect(crisis.status).toBe('DETECTED');
 
       const wr = await activateWarRoom(crisis.id);

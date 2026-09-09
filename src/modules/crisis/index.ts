@@ -11,6 +11,7 @@ export {
   createCrisisEvent,
   getActiveCrises,
   getCrisisById,
+  getCrisisForUser,
   updateCrisis,
 } from './services/detection-service';
 export {

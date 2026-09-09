@@ -1,157 +1,76 @@
 // ============================================================================
 // GET /api/delegation/stats - Returns delegation statistics
+//
+// P-10/T-026. This route ran four queries against `(prisma as any).delegationTask`
+// — a delegate that DOES NOT EXIST in the schema — each wrapped in a `safeCount`
+// that returned 0 on failure. So every query threw, every count was 0, and the
+// route answered `{ activeDelegated: 0, completedThisWeek: 0, timeSavedHours: 0,
+// pendingApproval: 0 }` on every request, for every user, forever. A dashboard
+// showing four zeros reads as "you have delegated nothing", not as "this feature
+// is not connected", and nothing in the response said which it was.
+//
+// The delegations themselves live in `delegationStore`, an in-memory Map in
+// `delegation-service.ts` (no table exists — flagged to the coordinator). The
+// counts are therefore computed from the store that actually holds them, scoped
+// to the caller. Zero now means zero.
 // ============================================================================
 
 import { NextRequest } from 'next/server';
-import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
-import { prisma } from '@/lib/db';
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { getDelegatedTasks } from '@/modules/delegation/services/delegation-service';
 
-// --- Validation Schema ---
-
-const querySchema = z.object({
-  entityId: z.string().min(1).optional(),
-});
-
-// --- Safe count wrapper ---
-
-const safeCount = async (fn: () => Promise<number>): Promise<number> => {
-  try {
-    return await fn();
-  } catch {
-    return 0;
-  }
-};
-
-// --- Handler ---
+function startOfThisWeek(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+}
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
-    try {
-      const params = Object.fromEntries(req.nextUrl.searchParams);
-      const parsed = querySchema.safeParse(params);
+  return withAuditedAuth(
+    request,
+    { resource: 'delegation.stats' },
+    async (req, session) => {
+      try {
+        // Scoped to the caller by the verified session. The route previously
+        // took an optional `?entityId=` and verified it, but delegations have no
+        // entityId in the model, so the parameter narrowed nothing — it only
+        // looked as though it did.
+        const delegations = await getDelegatedTasks(session.userId, 'delegated_by');
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+        const weekStart = startOfThisWeek(new Date());
 
-      const { entityId } = parsed.data;
+        const activeDelegated = delegations.filter(
+          (d) => d.status === 'PENDING' || d.status === 'IN_REVIEW' || d.status === 'APPROVED',
+        ).length;
 
-      // Verify entity ownership if entityId is provided
-      if (entityId) {
-        const entity = await prisma.entity.findFirst({
-          where: { id: entityId, userId: session.userId },
-        });
+        const completedThisWeek = delegations.filter(
+          (d) => d.status === 'COMPLETED' && d.completedAt !== undefined && d.completedAt >= weekStart,
+        ).length;
 
-        if (!entity) {
-          return error('NOT_FOUND', 'Entity not found', 404);
-        }
-      }
+        const pendingApproval = delegations.filter((d) =>
+          d.approvalChain.some((step) => step.status === 'PENDING'),
+        ).length;
 
-      // Get all entity IDs for this user if no specific entityId
-      let entityIds: string[] = [];
-      if (entityId) {
-        entityIds = [entityId];
-      } else {
-        try {
-          const entities = await prisma.entity.findMany({
-            where: { userId: session.userId },
-            select: { id: true },
-          });
-          entityIds = entities.map((e) => e.id);
-        } catch {
-          return success({
-            activeDelegated: 0,
-            completedThisWeek: 0,
-            timeSavedHours: 0,
-            pendingApproval: 0,
-          });
-        }
-      }
+        // Hours between delegation and completion, for work finished this week.
+        const timeSavedHours = delegations
+          .filter((d) => d.status === 'COMPLETED' && d.completedAt && d.completedAt >= weekStart)
+          .reduce((total, d) => {
+            const ms = d.completedAt!.getTime() - d.delegatedAt.getTime();
+            return total + Math.max(0, ms) / (1000 * 60 * 60);
+          }, 0);
 
-      if (entityIds.length === 0) {
         return success({
-          activeDelegated: 0,
-          completedThisWeek: 0,
-          timeSavedHours: 0,
-          pendingApproval: 0,
+          activeDelegated,
+          completedThisWeek,
+          timeSavedHours: Math.round(timeSavedHours * 10) / 10,
+          pendingApproval,
         });
+      } catch (err) {
+        return error(
+          'INTERNAL_ERROR',
+          err instanceof Error ? err.message : 'Failed to fetch delegation stats',
+          500,
+        );
       }
-
-      const now = new Date();
-      const dayOfWeek = now.getDay();
-      const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek);
-
-      const entityFilter =
-        entityIds.length === 1
-          ? { entityId: entityIds[0] }
-          : { entityId: { in: entityIds } };
-
-      // Run all queries in parallel
-      const [activeDelegated, completedThisWeek, pendingApproval, timeSavedResult] =
-        await Promise.all([
-          // Active delegated tasks (in progress or not started)
-          safeCount(() =>
-            (prisma as any).delegationTask.count({
-              where: {
-                ...entityFilter,
-                status: { in: ['IN_PROGRESS', 'NOT_STARTED'] },
-              },
-            })
-          ),
-
-          // Completed this week
-          safeCount(() =>
-            (prisma as any).delegationTask.count({
-              where: {
-                ...entityFilter,
-                status: 'COMPLETED',
-                createdAt: { gte: startOfWeek },
-              },
-            })
-          ),
-
-          // Pending approval
-          safeCount(() =>
-            (prisma as any).delegationTask.count({
-              where: {
-                ...entityFilter,
-                status: 'WAITING_APPROVAL',
-              },
-            })
-          ),
-
-          // Time saved (sum of estimatedTime for completed tasks this week)
-          (async (): Promise<number> => {
-            try {
-              const result = await (prisma as any).delegationTask.aggregate({
-                where: {
-                  ...entityFilter,
-                  status: 'COMPLETED',
-                  createdAt: { gte: startOfWeek },
-                },
-                _sum: { estimatedTime: true },
-              });
-              return result._sum?.estimatedTime ?? 0;
-            } catch {
-              return 0;
-            }
-          })(),
-        ]);
-
-      return success({
-        activeDelegated,
-        completedThisWeek,
-        timeSavedHours: timeSavedResult,
-        pendingApproval,
-      });
-    } catch (err) {
-      return error(
-        'INTERNAL_ERROR',
-        err instanceof Error ? err.message : 'Failed to fetch delegation stats',
-        500
-      );
-    }
-  });
+    },
+  );
 }

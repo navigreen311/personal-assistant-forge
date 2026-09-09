@@ -1,19 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
-import { prisma } from '@/lib/db';
-
-/**
- * Safely execute a query, returning a default value on failure.
- */
-const safeQuery = async <T>(fn: () => Promise<T>, defaultVal: T): Promise<T> => {
-  try {
-    return await fn();
-  } catch {
-    return defaultVal;
-  }
-};
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { configure, getStatus } from '@/modules/crisis/services/dead-man-switch-service';
 
 /** Demo dead-man-switch protocols. */
 function getDefaultProtocols() {
@@ -71,35 +60,64 @@ function getDefaultConfig() {
   };
 }
 
+/**
+ * P-10/T-026. This read `(prisma as any).crisisConfig.findUnique(...)` inside a
+ * `safeQuery` that swallowed every error. **There is no `CrisisConfig` model in
+ * the schema**, so that call threw on every single request and the route
+ * returned the demo constants above, every time, silently -- the same failure
+ * shape as the `shadow/compliance` delegates the audit found, and invisible for
+ * exactly the same reason. Removing it changes no behaviour whatsoever; it just
+ * stops the code claiming to consult a store that does not exist, and removes
+ * an `as any` from `src/`.
+ *
+ * The dead-man-switch half is now real (see /api/crisis/dead-man-switch), so it
+ * is read from `DeadManSwitch` rather than invented. Phone tree, escalation
+ * rules and war-room defaults have no table in the frozen schema and are still
+ * defaults -- now labelled as such in the response instead of presented as
+ * saved configuration. Flagged to the coordinator; they need models.
+ */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
-    try {
-      // Attempt to load crisis configuration from DB
-      const config: Record<string, unknown> | null = await safeQuery(
-        () =>
-          (prisma as any).crisisConfig.findUnique({
-            where: { userId: session.userId },
-          }),
-        null as Record<string, unknown> | null,
-      );
+  return withAuditedAuth(
+    request,
+    { resource: 'crisis.config' },
+    async (req, session) => {
+      const defaults = getDefaultConfig();
 
-      if (config) {
-        const defaults = getDefaultConfig();
-        return success({
-          deadManSwitch: config.deadManSwitch ?? defaults.deadManSwitch,
-          phoneTree: config.phoneTree ?? defaults.phoneTree,
-          escalationRules: config.escalationRules ?? defaults.escalationRules,
-          warRoomDefaults: config.warRoomDefaults ?? defaults.warRoomDefaults,
-        });
+      let deadManSwitch = defaults.deadManSwitch;
+      let deadManSwitchIsReal = false;
+      try {
+        const stored = await getStatus(session.userId);
+        deadManSwitch = {
+          enabled: stored.isEnabled,
+          intervalHours: stored.checkInIntervalHours,
+          triggerAfterMisses: stored.triggerAfterMisses,
+          lastCheckIn: stored.lastCheckIn.toISOString(),
+          protocols: stored.protocols.map((p) => ({
+            step: p.order,
+            contact: p.contactName,
+            delayHours: p.delayHoursAfterTrigger,
+          })),
+        };
+        deadManSwitchIsReal = true;
+      } catch {
+        // Not configured for this user. The defaults stand, and `placeholder`
+        // below says so rather than letting them read as saved settings.
       }
 
-      // No saved config — return demo data
-      return success(getDefaultConfig());
-    } catch {
-      // Outer safety net: always return demo data so the page never crashes
-      return success(getDefaultConfig());
-    }
-  });
+      return success({
+        deadManSwitch,
+        phoneTree: defaults.phoneTree,
+        escalationRules: defaults.escalationRules,
+        warRoomDefaults: defaults.warRoomDefaults,
+        placeholder: {
+          deadManSwitch: !deadManSwitchIsReal,
+          phoneTree: true,
+          escalationRules: true,
+          warRoomDefaults: true,
+        },
+      });
+    },
+  );
 }
 
 const updateConfigSchema = z.object({
@@ -153,41 +171,82 @@ const updateConfigSchema = z.object({
     .optional(),
 });
 
+/**
+ * P-10/T-026. This validated the body, called
+ * `(prisma as any).crisisConfig.upsert(...)` inside a `safeQuery` that swallowed
+ * the error -- against a model that DOES NOT EXIST -- and then returned
+ * `{ message: 'Crisis configuration updated' }`. Every save silently discarded
+ * everything and reported success. A user who set their emergency phone tree
+ * was told it was saved and it never was; they would find out during a crisis.
+ *
+ * Now: the dead-man-switch half is persisted for real, through the same
+ * `DeadManSwitch` model the rest of T-015 uses. The other three sections have no
+ * table in the frozen schema, so they are reported as NOT persisted rather than
+ * confirmed. A refusal a user can see beats a success they cannot verify.
+ */
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
-    try {
-      const body = await req.json();
-      const parsed = updateConfigSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withAuditedAuth(
+    request,
+    { resource: 'crisis.config', sensitivityLevel: 'CONFIDENTIAL' },
+    async (req, session) => {
+      try {
+        const body = await req.json();
+        const parsed = updateConfigSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const persisted: string[] = [];
+        const notPersisted: string[] = [];
+
+        const dms = parsed.data.deadManSwitch;
+        if (dms) {
+          // Merge onto what is already stored so a partial update does not
+          // silently reset the fields it did not mention.
+          let current: Awaited<ReturnType<typeof getStatus>> | null = null;
+          try {
+            current = await getStatus(session.userId);
+          } catch {
+            current = null;
+          }
+
+          const defaults = getDefaultConfig().deadManSwitch;
+          await configure(session.userId, {
+            userId: session.userId,
+            isEnabled: dms.enabled ?? current?.isEnabled ?? defaults.enabled,
+            checkInIntervalHours:
+              dms.intervalHours ?? current?.checkInIntervalHours ?? defaults.intervalHours,
+            triggerAfterMisses:
+              dms.triggerAfterMisses ?? current?.triggerAfterMisses ?? defaults.triggerAfterMisses,
+            protocols: dms.protocols
+              ? dms.protocols.map((p) => ({
+                  order: p.step,
+                  action: 'NOTIFY',
+                  contactName: p.contact,
+                  message: 'Dead man switch triggered: no check-in received.',
+                  delayHoursAfterTrigger: p.delayHours,
+                }))
+              : current?.protocols ?? [],
+          });
+          persisted.push('deadManSwitch');
+        }
+
+        // No CrisisConfig / PhoneTree / EscalationRule models exist. Say so.
+        for (const section of ['phoneTree', 'escalationRules', 'warRoomDefaults'] as const) {
+          if (parsed.data[section]) notPersisted.push(section);
+        }
+
+        return success({
+          persisted,
+          notPersisted,
+          message:
+            notPersisted.length === 0
+              ? 'Crisis configuration updated'
+              : `Saved: ${persisted.join(', ') || 'nothing'}. NOT saved (no store exists yet): ${notPersisted.join(', ')}.`,
+        });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-
-      // Attempt to persist — placeholder for when the model exists
-      await safeQuery(
-        () =>
-          (prisma as any).crisisConfig.upsert({
-            where: { userId: session.userId },
-            update: {
-              ...(parsed.data.deadManSwitch ? { deadManSwitch: parsed.data.deadManSwitch } : {}),
-              ...(parsed.data.phoneTree ? { phoneTree: parsed.data.phoneTree } : {}),
-              ...(parsed.data.escalationRules ? { escalationRules: parsed.data.escalationRules } : {}),
-              ...(parsed.data.warRoomDefaults ? { warRoomDefaults: parsed.data.warRoomDefaults } : {}),
-            },
-            create: {
-              userId: session.userId,
-              deadManSwitch: parsed.data.deadManSwitch ?? getDefaultConfig().deadManSwitch,
-              phoneTree: parsed.data.phoneTree ?? getDefaultConfig().phoneTree,
-              escalationRules: parsed.data.escalationRules ?? getDefaultConfig().escalationRules,
-              warRoomDefaults: parsed.data.warRoomDefaults ?? getDefaultConfig().warRoomDefaults,
-            },
-          }),
-        null,
-      );
-
-      return success({ message: 'Crisis configuration updated', ...parsed.data });
-    } catch {
-      // Even on total failure, confirm acceptance
-      return success({ message: 'Crisis configuration accepted (pending persistence)' });
-    }
-  });
+    },
+  );
 }

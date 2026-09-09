@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
 import * as detectionService from '@/modules/crisis/services/detection-service';
 
 const detectSchema = z.object({
@@ -15,7 +15,12 @@ const detectSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  // P-10/T-002: audited. Stateless analysis of caller-supplied signals; no
+  // entity in the model, so no entity scope to add.
+  return withAuditedAuth(
+    request,
+    { resource: 'crisis.detect' },
+    async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = detectSchema.safeParse(body);
@@ -26,5 +31,6 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
-  });
+    },
+  );
 }

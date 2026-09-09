@@ -1,6 +1,7 @@
 import { getEscalationChain, setEscalationChain, executeEscalation, acknowledgeEscalation, getEscalationStatus } from '@/modules/crisis/services/escalation-service';
 import { createCrisisEvent } from '@/modules/crisis/services/detection-service';
 import type { CrisisType, EscalationChainConfig } from '@/modules/crisis/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 describe('getEscalationChain', () => {
   it('should return default chain for each crisis type', () => {
@@ -34,7 +35,7 @@ describe('getEscalationChain', () => {
 
 describe('executeEscalation', () => {
   it('should notify first contact in chain', async () => {
-    const crisis = await createCrisisEvent('user-test-1', 'entity-1', 'DATA_BREACH', 'HIGH', 'Test Crisis', 'Test');
+    const crisis = await createCrisisEvent('user-test-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'HIGH', 'Test Crisis', 'Test');
     const steps = await executeEscalation(crisis.id);
     const firstStep = steps.find(s => s.order === 1);
     expect(firstStep?.status).toBe('NOTIFIED');
@@ -42,7 +43,7 @@ describe('executeEscalation', () => {
   });
 
   it('should escalate to next contact after timeout', async () => {
-    const crisis = await createCrisisEvent('user-test-2', 'entity-1', 'CLIENT_COMPLAINT', 'MEDIUM', 'Test', 'Test');
+    const crisis = await createCrisisEvent('user-test-2', verifiedEntityIdForTest('entity-1'), 'CLIENT_COMPLAINT', 'MEDIUM', 'Test', 'Test');
     await executeEscalation(crisis.id);
     // Execute again to notify second contact
     const steps = await executeEscalation(crisis.id);
@@ -51,7 +52,7 @@ describe('executeEscalation', () => {
   });
 
   it('should stop escalation on acknowledgment', async () => {
-    const crisis = await createCrisisEvent('user-test-3', 'entity-1', 'PR_ISSUE', 'HIGH', 'PR Test', 'Test');
+    const crisis = await createCrisisEvent('user-test-3', verifiedEntityIdForTest('entity-1'), 'PR_ISSUE', 'HIGH', 'PR Test', 'Test');
     await executeEscalation(crisis.id);
     const updated = await acknowledgeEscalation(crisis.id, 1);
     const skipped = updated.escalationChain.filter(s => s.status === 'SKIPPED');
@@ -63,14 +64,14 @@ describe('executeEscalation', () => {
       crisisType: 'NATURAL_DISASTER',
       steps: [{ order: 1, contactName: 'Single Contact', contactMethod: 'PHONE', escalateAfterMinutes: 5 }],
     });
-    const crisis = await createCrisisEvent('user-test-4', 'entity-1', 'NATURAL_DISASTER', 'HIGH', 'Single', 'Test');
+    const crisis = await createCrisisEvent('user-test-4', verifiedEntityIdForTest('entity-1'), 'NATURAL_DISASTER', 'HIGH', 'Single', 'Test');
     const steps = await executeEscalation(crisis.id);
     expect(steps.length).toBe(1);
     expect(steps[0].status).toBe('NOTIFIED');
   });
 
   it('should handle all contacts unresponsive', async () => {
-    const crisis = await createCrisisEvent('user-test-5', 'entity-1', 'FINANCIAL_ANOMALY', 'MEDIUM', 'Unresponsive', 'Test');
+    const crisis = await createCrisisEvent('user-test-5', verifiedEntityIdForTest('entity-1'), 'FINANCIAL_ANOMALY', 'MEDIUM', 'Unresponsive', 'Test');
     // Execute multiple times
     await executeEscalation(crisis.id);
     await executeEscalation(crisis.id);
@@ -83,7 +84,7 @@ describe('executeEscalation', () => {
 
 describe('acknowledgeEscalation', () => {
   it('should mark step as acknowledged', async () => {
-    const crisis = await createCrisisEvent('user-ack-1', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Ack Test', 'Test');
+    const crisis = await createCrisisEvent('user-ack-1', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Ack Test', 'Test');
     await executeEscalation(crisis.id);
     const updated = await acknowledgeEscalation(crisis.id, 1);
     const step = updated.escalationChain.find(s => s.order === 1);
@@ -92,7 +93,7 @@ describe('acknowledgeEscalation', () => {
   });
 
   it('should stop further escalation', async () => {
-    const crisis = await createCrisisEvent('user-ack-2', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Stop Test', 'Test');
+    const crisis = await createCrisisEvent('user-ack-2', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Stop Test', 'Test');
     await executeEscalation(crisis.id);
     const updated = await acknowledgeEscalation(crisis.id, 1);
     const pending = updated.escalationChain.filter(s => s.status === 'PENDING');
@@ -100,7 +101,7 @@ describe('acknowledgeEscalation', () => {
   });
 
   it('should update crisis event status', async () => {
-    const crisis = await createCrisisEvent('user-ack-3', 'entity-1', 'PR_ISSUE', 'MEDIUM', 'Status Test', 'Test');
+    const crisis = await createCrisisEvent('user-ack-3', verifiedEntityIdForTest('entity-1'), 'PR_ISSUE', 'MEDIUM', 'Status Test', 'Test');
     await executeEscalation(crisis.id);
     const updated = await acknowledgeEscalation(crisis.id, 1);
     expect(updated.status).toBe('ACKNOWLEDGED');
