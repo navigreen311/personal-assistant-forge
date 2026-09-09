@@ -1,3 +1,24 @@
+// P-00/T-003: identity no longer comes from request headers in production.
+// These middlewares now ask the auth layer, which reads the verified JWT and
+// checks entity ownership against the database.
+//
+// In THESE TESTS ONLY, the mock below resolves identity from the x-user-id /
+// x-entity-id headers, so each case can inject "a verified session for this
+// user and entity" in one line and every existing assertion keeps its meaning.
+// The header is the test's injection point; it is not a trusted input in the
+// code under test. See resolveActor / resolveVerifiedEntityId in
+// src/shared/middleware/auth.ts.
+jest.mock('@/shared/middleware/auth', () => ({
+  resolveActor: jest.fn(async (req: { headers: { get: (k: string) => string | null } }) => {
+    const id = req.headers.get('x-user-id');
+    return id ? { actor: id, actorId: id } : null;
+  }),
+  resolveVerifiedEntityId: jest.fn(
+    async (req: { headers: { get: (k: string) => string | null } }) =>
+      req.headers.get('x-entity-id')
+  ),
+}));
+
 jest.mock('@/modules/security/services/compliance-service', () => ({
   complianceService: {
     getComplianceProfile: jest.fn().mockResolvedValue([]),
@@ -227,17 +248,27 @@ describe('compliance middleware', () => {
   });
 
   describe('withHIPAAGuard', () => {
-    it('should pass through when no entity ID is provided', async () => {
+    // P-00/T-003. This test previously asserted the OPPOSITE: that a request
+    // with no entity header passed straight through to the handler. That made
+    // omitting a header the way to switch PHI protection off, and a passing test
+    // was defending it. The assertion is inverted deliberately, and the new one
+    // is stricter than the old one, not looser.
+    it('should FAIL CLOSED when the entity cannot be verified', async () => {
       const handler = jest.fn().mockResolvedValue(
         NextResponse.json({ data: 'test' }, { status: 200 })
       );
 
       const middleware = withHIPAAGuard(handler);
-      const req = createMockRequest();
+      const req = createMockRequest(); // no verifiable entity in scope
       const response = await middleware(req);
 
-      expect(handler).toHaveBeenCalledTimes(1);
-      expect(response.status).toBe(200);
+      // The handler must never run: a guard over regulated data that cannot
+      // identify the tenant has to refuse, not wave the request on.
+      expect(handler).not.toHaveBeenCalled();
+      expect(response.status).toBe(403);
+
+      const body = await response.json();
+      expect(body.error.code).toBe('ENTITY_UNVERIFIED');
     });
   });
 });
