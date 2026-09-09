@@ -6,6 +6,10 @@ import type {
   ScheduleRequest,
 } from '../../../src/modules/calendar/calendar.types';
 import type { CalendarEvent } from '../../../src/shared/types/index';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/** P-05: ScheduleRequest.entityId is a VerifiedEntityId. See factories.ts. */
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 // Mock prisma using the path alias the module actually imports
 jest.mock('@/lib/db', () => ({
@@ -31,7 +35,7 @@ describe('BufferService', () => {
 
   const makeRequest = (overrides: Partial<ScheduleRequest> = {}): ScheduleRequest => ({
     title: 'Test Meeting',
-    entityId: 'entity-1',
+    entityId: ENTITY_1,
     duration: 60,
     priority: 'MEDIUM',
     type: 'MEETING',

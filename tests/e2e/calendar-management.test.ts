@@ -23,10 +23,17 @@ const mockPrisma = {
   calendarEvent: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    // P-05: scoped reads are findFirst({ where: { id, entityId } }) and scoped
+    // writes are updateMany/deleteMany, because Prisma's update/delete take a
+    // unique WHERE and cannot carry the tenant.
+    findFirst: jest.fn(),
+    findFirstOrThrow: jest.fn(),
     findUniqueOrThrow: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     delete: jest.fn(),
+    deleteMany: jest.fn(),
   },
   contact: {
     findMany: jest.fn(),
@@ -58,6 +65,15 @@ import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { PrepPacketService } from '@/modules/calendar/prep.service';
 import { NLPSchedulingService } from '@/modules/calendar/nlp.service';
 import { generateJSON } from '@/lib/ai';
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+/**
+ * P-05: the calendar services take a `VerifiedEntityId` wherever they take a
+ * tenant -- a branded string only `withEntityScope` can produce. These tests
+ * call the services directly, with no request, so they mint the brand through
+ * the one sanctioned helper.
+ */
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
@@ -108,6 +124,12 @@ describe('Calendar Management E2E Tests', () => {
     prepService = new PrepPacketService();
     nlpService = new NLPSchedulingService();
     mockedGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
+    // P-05 trap 2: an entity stub needs an owner. createEvent re-asserts
+    // entity.userId against the authenticated caller as defence in depth.
+    mockPrisma.entity.findUnique.mockResolvedValue({ id: 'entity-1', userId: 'user-1' });
+    mockPrisma.calendarEvent.findFirstOrThrow.mockImplementation(
+      mockPrisma.calendarEvent.findUniqueOrThrow
+    );
   });
 
   // =========================================================================
@@ -127,7 +149,7 @@ describe('Calendar Management E2E Tests', () => {
       const event = await schedulingService.createEvent(
         {
           title: 'Team Standup',
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           duration: 30,
           priority: 'MEDIUM',
           type: 'MEETING',
@@ -157,18 +179,33 @@ describe('Calendar Management E2E Tests', () => {
         title: 'Renamed Meeting',
       });
 
-      mockPrisma.calendarEvent.update.mockResolvedValue(updatedRecord);
+      // -------------------------------------------------------------------
+      // CORRECTED BY P-05.
+      //
+      // This used to call updateEvent with a third argument named `userId`
+      // that the service ignored (`_userId`), and then assert
+      //
+      //     expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
+      //       where: { id: 'update-event' }, ...
+      //
+      // -- a write addressed by id with NO tenant in the WHERE clause. It
+      // recorded the defect as the requirement: any authenticated caller who
+      // knew an event id could rewrite any tenant's meeting. The third
+      // argument is now the verified entity and the write carries it.
+      // -------------------------------------------------------------------
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(updatedRecord);
 
       const updated = await schedulingService.updateEvent(
         'update-event',
         { title: 'Renamed Meeting' },
-        'user-1'
+        ENTITY_1
       );
 
       expect(updated.id).toBe('update-event');
       expect(updated.title).toBe('Renamed Meeting');
-      expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
-        where: { id: 'update-event' },
+      expect(mockPrisma.calendarEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'update-event', entityId: ENTITY_1 },
         data: expect.objectContaining({ title: 'Renamed Meeting' }),
       });
     });
@@ -184,7 +221,7 @@ describe('Calendar Management E2E Tests', () => {
 
       mockPrisma.calendarEvent.create.mockResolvedValue(originalEvent);
       await schedulingService.createEvent(
-        { title: 'Movable Meeting', entityId: 'entity-1', duration: 60, priority: 'MEDIUM', type: 'MEETING' },
+        { title: 'Movable Meeting', entityId: ENTITY_1, duration: 60, priority: 'MEDIUM', type: 'MEETING' },
         { start: new Date('2026-02-18T10:00:00Z'), end: new Date('2026-02-18T11:00:00Z') },
         'user-1'
       );
@@ -195,8 +232,9 @@ describe('Calendar Management E2E Tests', () => {
         endTime: new Date('2026-02-19T15:00:00Z'),
       };
 
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(originalEvent);
-      mockPrisma.calendarEvent.update.mockResolvedValue(rescheduledRecord);
+      // P-05: the scoped move is updateMany({ id, entityId }) + findFirst.
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(rescheduledRecord);
       mockPrisma.user.findUnique.mockResolvedValue(createMockUser());
       mockPrisma.entity.findMany.mockResolvedValue([{ id: 'entity-1' }]);
       mockPrisma.calendarEvent.findMany.mockResolvedValue([]);
@@ -207,6 +245,7 @@ describe('Calendar Management E2E Tests', () => {
           newStartTime: new Date('2026-02-19T14:00:00Z'),
           newEndTime: new Date('2026-02-19T15:00:00Z'),
         },
+        ENTITY_1,
         'user-1'
       );
 
@@ -232,7 +271,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([existingEvent]);
 
       const conflicts = await schedulingService.detectConflicts(
-        'entity-1',
+        ENTITY_1,
         { start: new Date('2026-02-20T10:30:00Z'), end: new Date('2026-02-20T11:30:00Z') },
         'user-1'
       );
@@ -259,7 +298,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([existingEvent]);
 
       const conflicts = await schedulingService.detectConflicts(
-        'entity-1',
+        ENTITY_1,
         { start: new Date('2026-02-20T14:00:00Z'), end: new Date('2026-02-20T15:00:00Z') },
         'user-1'
       );
@@ -281,8 +320,9 @@ describe('Calendar Management E2E Tests', () => {
         endTime: new Date('2026-02-20T15:00:00Z'),
       });
 
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(eventToMove);
-      mockPrisma.calendarEvent.update.mockResolvedValue({
+      // P-05: the scoped move is updateMany({ id, entityId }) + findFirst.
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue({
         ...eventToMove,
         startTime: new Date('2026-02-20T14:00:00Z'),
         endTime: new Date('2026-02-20T15:00:00Z'),
@@ -297,6 +337,7 @@ describe('Calendar Management E2E Tests', () => {
           newStartTime: new Date('2026-02-20T14:00:00Z'),
           newEndTime: new Date('2026-02-20T15:00:00Z'),
         },
+        ENTITY_1,
         'user-1'
       );
 
@@ -315,7 +356,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([]);
 
       const slots = await schedulingService.findAvailableSlots(
-        { title: 'New Meeting', entityId: 'entity-1', duration: 60, priority: 'MEDIUM', type: 'MEETING' },
+        { title: 'New Meeting', entityId: ENTITY_1, duration: 60, priority: 'MEDIUM', type: 'MEETING' },
         'user-1',
         7
       );
@@ -345,7 +386,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue(existingEvents);
 
       const slots = await schedulingService.findAvailableSlots(
-        { title: 'Available Slot Meeting', entityId: 'entity-1', duration: 60, priority: 'MEDIUM', type: 'MEETING' },
+        { title: 'Available Slot Meeting', entityId: ENTITY_1, duration: 60, priority: 'MEDIUM', type: 'MEETING' },
         'user-1',
         7
       );
@@ -370,7 +411,7 @@ describe('Calendar Management E2E Tests', () => {
         participantIds: ['contact-1', 'contact-2'],
       });
 
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(eventRecord);
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(eventRecord);
       mockPrisma.contact.findMany.mockResolvedValue([
         { name: 'Alice Chen', email: 'alice@venture.com', tags: ['VIP', 'Investor'], relationshipScore: 90 },
         { name: 'Bob Kumar', email: 'bob@venture.com', tags: [], relationshipScore: 70 },
@@ -386,7 +427,7 @@ describe('Calendar Management E2E Tests', () => {
 
       const prepPacket = await prepService.generatePrepPacket({
         eventId: 'prep-event',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
       });
 
@@ -401,8 +442,12 @@ describe('Calendar Management E2E Tests', () => {
       expect(prepPacket.openItems.length).toBe(2);
       expect(prepPacket.openItems.some((i) => i.includes('Prepare financial summary'))).toBe(true);
 
-      expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
-        where: { id: 'prep-event' },
+      // CORRECTED BY P-05. This asserted `update({ where: { id } })` -- the
+      // prep packet, which aggregates the attendees' contact profiles, recent
+      // messages and open tasks, was written back to an event addressed with no
+      // tenant. The scoped write is updateMany({ id, entityId }).
+      expect(mockPrisma.calendarEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'prep-event', entityId: ENTITY_1 },
         data: { prepPacket: expect.any(Object) },
       });
     });
@@ -410,7 +455,7 @@ describe('Calendar Management E2E Tests', () => {
     it('should handle a meeting with no attendees gracefully', async () => {
       const eventRecord = createMockCalendarEvent({ id: 'solo-event', title: 'Solo Focus Block', participantIds: [] });
 
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(eventRecord);
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(eventRecord);
       mockPrisma.contact.findMany.mockResolvedValue([]);
       mockPrisma.message.findMany.mockResolvedValue([]);
       mockPrisma.task.findMany.mockResolvedValue([]);
@@ -418,7 +463,7 @@ describe('Calendar Management E2E Tests', () => {
 
       const prepPacket = await prepService.generatePrepPacket({
         eventId: 'solo-event',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
       });
 
@@ -435,7 +480,7 @@ describe('Calendar Management E2E Tests', () => {
     it('should parse "Schedule a call with Alice tomorrow at 2pm"', async () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Schedule a call with Alice tomorrow at 2pm',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         userId: 'user-1',
       });
 
@@ -449,7 +494,7 @@ describe('Calendar Management E2E Tests', () => {
     it('should parse "Quick meeting with Bob next Monday"', async () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Quick meeting with Bob next Monday',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         userId: 'user-1',
       });
 
@@ -462,7 +507,7 @@ describe('Calendar Management E2E Tests', () => {
     it('should parse "2 hour workshop with Dr. Smith next Friday"', async () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: '2 hour workshop with Dr. Smith next Friday',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         userId: 'user-1',
       });
 
@@ -534,7 +579,7 @@ describe('Calendar Management E2E Tests', () => {
       ]);
 
       const resolved = await nlpService.resolveParticipants(
-        ['Alice', 'Bob', 'Charlie'], 'entity-1'
+        ['Alice', 'Bob', 'Charlie'], ENTITY_1
       );
 
       expect(resolved).toHaveLength(3);
@@ -552,7 +597,7 @@ describe('Calendar Management E2E Tests', () => {
       // Step 1: Parse NLP input
       const parsed = await nlpService.parseScheduleRequest({
         text: 'Schedule a meeting with Alice tomorrow morning',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         userId: 'user-1',
       });
       expect(parsed.type).toBe('MEETING');
@@ -564,7 +609,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([]);
 
       const slots = await schedulingService.findAvailableSlots(
-        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type },
+        { title: parsed.title, entityId: ENTITY_1, duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type },
         'user-1', 7
       );
       expect(slots.length).toBeGreaterThan(0);
@@ -580,13 +625,13 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.create.mockResolvedValue(eventRecord);
 
       const event = await schedulingService.createEvent(
-        { title: parsed.title, entityId: 'entity-1', duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type, participantIds: ['contact-alice'] },
+        { title: parsed.title, entityId: ENTITY_1, duration: parsed.duration ?? 60, priority: parsed.priority, type: parsed.type, participantIds: ['contact-alice'] },
         slots[0].slot, 'user-1'
       );
       expect(event.id).toBe('nlp-event');
 
       // Step 4: Generate prep packet
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(eventRecord);
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(eventRecord);
       mockPrisma.contact.findMany.mockResolvedValue([
         { name: 'Alice Johnson', email: 'alice@example.com', tags: [], relationshipScore: 75 },
       ]);
@@ -595,7 +640,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.update.mockResolvedValue(eventRecord);
 
       const prepPacket = await prepService.generatePrepPacket({
-        eventId: 'nlp-event', entityId: 'entity-1', depth: 'STANDARD',
+        eventId: 'nlp-event', entityId: ENTITY_1, depth: 'STANDARD',
       });
 
       expect(prepPacket.eventId).toBe('nlp-event');
@@ -616,7 +661,7 @@ describe('Calendar Management E2E Tests', () => {
       mockPrisma.calendarEvent.create.mockResolvedValue(eventRecord);
 
       const event = await schedulingService.createEvent(
-        { title: 'Solo Deep Work', entityId: 'entity-1', duration: 120, priority: 'HIGH', type: 'FOCUS_BLOCK' },
+        { title: 'Solo Deep Work', entityId: ENTITY_1, duration: 120, priority: 'HIGH', type: 'FOCUS_BLOCK' },
         { start: new Date('2026-02-20T08:00:00Z'), end: new Date('2026-02-20T10:00:00Z') },
         'user-1'
       );
@@ -628,7 +673,7 @@ describe('Calendar Management E2E Tests', () => {
     it('should parse NLP input with no recognizable time hint', async () => {
       const parsed = await nlpService.parseScheduleRequest({
         text: 'meet with the team sometime',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         userId: 'user-1',
       });
 

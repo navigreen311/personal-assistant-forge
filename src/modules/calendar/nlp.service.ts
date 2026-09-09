@@ -16,6 +16,7 @@ import {
   isBefore,
 } from 'date-fns';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateJSON } from '@/lib/ai';
 import type {
   NaturalLanguageScheduleInput,
@@ -157,9 +158,16 @@ Return JSON with:
     };
   }
 
+  /**
+   * Resolve participant names to this tenant's contacts.
+   *
+   * `entityId` is the WHERE clause of a contact search, so a plain `string`
+   * here meant the natural-language endpoints would search another tenant's
+   * address book and return their contact ids.
+   */
   async resolveParticipants(
     names: string[],
-    entityId: string
+    entityId: VerifiedEntityId
   ): Promise<{ name: string; contactId?: string; resolved: boolean }[]> {
     if (names.length === 0) return [];
 

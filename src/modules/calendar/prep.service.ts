@@ -1,12 +1,34 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CalendarEvent, PrepPacket } from '@/shared/types';
 import type { PrepPacketRequest, GeneratedPrepPacket } from './calendar.types';
 
 export class PrepPacketService {
+  /**
+   * Build a prep packet for an event in an entity the caller has been proven
+   * to own.
+   *
+   * A prep packet is the most sensitive object in this module: it aggregates
+   * contact profiles, the last five messages and the open tasks for the
+   * attendees. The old code read the event with
+   * `findUniqueOrThrow({ where: { id: request.eventId } })` -- no tenant --
+   * and then queried contacts, messages and tasks under whatever `entityId`
+   * the request body carried. So a caller could name another tenant's event id
+   * and, separately, another tenant's entity id, and receive their CRM.
+   *
+   * Both halves are scoped now: `request.entityId` is a `VerifiedEntityId`,
+   * and the event lookup carries it, so an event in another tenant is simply
+   * not found rather than found-and-rejected.
+   */
   async generatePrepPacket(request: PrepPacketRequest): Promise<GeneratedPrepPacket> {
-    const event = await prisma.calendarEvent.findUniqueOrThrow({
-      where: { id: request.eventId },
+    const event = await prisma.calendarEvent.findFirst({
+      where: { id: request.eventId, entityId: request.entityId },
     });
+    if (!event) {
+      // Deliberately the same failure a non-existent id produces: existence
+      // must not leak across tenants.
+      throw new Error(`Event not found: ${request.eventId}`);
+    }
 
     const participantIds = event.participantIds;
     const entityId = request.entityId;
@@ -51,9 +73,10 @@ export class PrepPacketService {
       riskFlags,
     };
 
-    // Save to event
-    await prisma.calendarEvent.update({
-      where: { id: request.eventId },
+    // Save to event. `update` takes a unique WHERE and cannot carry the
+    // tenant, so this is `updateMany` with the scope in the WHERE clause.
+    await prisma.calendarEvent.updateMany({
+      where: { id: request.eventId, entityId: request.entityId },
       data: { prepPacket: JSON.parse(JSON.stringify(prepPacket)) },
     });
 
@@ -62,7 +85,7 @@ export class PrepPacketService {
 
   private async getAttendeeProfiles(
     participantIds: string[],
-    entityId: string
+    entityId: VerifiedEntityId
   ): Promise<string[]> {
     if (participantIds.length === 0) return [];
 
@@ -83,7 +106,7 @@ export class PrepPacketService {
 
   private async getLastInteractions(
     participantIds: string[],
-    entityId: string
+    entityId: VerifiedEntityId
   ): Promise<string[]> {
     if (participantIds.length === 0) return [];
 
@@ -111,7 +134,7 @@ export class PrepPacketService {
 
   private async getOpenItems(
     participantIds: string[],
-    entityId: string
+    entityId: VerifiedEntityId
   ): Promise<string[]> {
     if (participantIds.length === 0) return [];
 

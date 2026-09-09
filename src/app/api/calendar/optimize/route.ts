@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { CalendarAnalyticsService } from '@/modules/calendar/analytics.service';
 import { analyticsSchema } from '@/modules/calendar/calendar.validation';
 
 const analyticsService = new CalendarAnalyticsService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = analyticsSchema.safeParse(body);
@@ -18,10 +18,12 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // `parsed.data.entityId` is a plain string off the body and is
+      // deliberately ignored; the verified scope is the only one used.
       const analytics = await analyticsService.getAnalytics(
         session.userId,
         { start: parsed.data.startDate, end: parsed.data.endDate },
-        parsed.data.entityId
+        entityId
       );
 
       return success(analytics.suggestions);

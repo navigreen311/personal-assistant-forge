@@ -1,22 +1,45 @@
 import { v4 as uuid } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CalendarEvent } from '@/shared/types';
 import type { PostMeetingCapture, ActionItemFromMeeting } from './calendar.types';
 
 export class PostMeetingService {
+  /**
+   * Record what happened in a meeting, in an entity the caller has been proven
+   * to own.
+   *
+   * This handler writes three things -- meeting notes onto the event, tasks
+   * from the action items, and optionally a follow-up event -- and before P-05
+   * none of them carried a tenant. `update({ where: { id: capture.eventId } })`
+   * would overwrite any tenant's meeting notes given only an event id, and the
+   * tasks and the follow-up were created under whatever `entityId` the body
+   * named. `capture.entityId` is now a `VerifiedEntityId` and every write
+   * carries it.
+   */
   async capturePostMeeting(capture: PostMeetingCapture): Promise<{
     event: CalendarEvent;
     tasksCreated: string[];
     followUpScheduled?: string;
   }> {
-    // Update event with meeting notes
+    // Update event with meeting notes. `update` takes a unique WHERE and
+    // cannot carry the tenant, so this is `updateMany` with the scope in the
+    // WHERE clause and `count === 0` treated as not-found.
     const notesContent = this.buildNotesContent(capture);
 
-    const event = await prisma.calendarEvent.update({
-      where: { id: capture.eventId },
+    const { count } = await prisma.calendarEvent.updateMany({
+      where: { id: capture.eventId, entityId: capture.entityId },
       data: {
         meetingNotes: notesContent,
       },
+    });
+
+    if (count === 0) {
+      throw new Error(`Event not found: ${capture.eventId}`);
+    }
+
+    const event = await prisma.calendarEvent.findFirstOrThrow({
+      where: { id: capture.eventId, entityId: capture.entityId },
     });
 
     // Create tasks from action items
@@ -60,7 +83,7 @@ export class PostMeetingService {
 
   private async createTasksFromActionItems(
     actionItems: ActionItemFromMeeting[],
-    entityId: string,
+    entityId: VerifiedEntityId,
     eventId: string
   ): Promise<string[]> {
     const taskIds: string[] = [];
@@ -88,11 +111,11 @@ export class PostMeetingService {
   private async scheduleFollowUp(
     eventId: string,
     followUpDate: Date,
-    entityId: string,
+    entityId: VerifiedEntityId,
     participantIds: string[]
   ): Promise<string> {
-    const originalEvent = await prisma.calendarEvent.findUniqueOrThrow({
-      where: { id: eventId },
+    const originalEvent = await prisma.calendarEvent.findFirstOrThrow({
+      where: { id: eventId, entityId },
     });
 
     const followUpEvent = await prisma.calendarEvent.create({

@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { scheduleRequestSchema } from '@/modules/calendar/calendar.validation';
 
 const schedulingService = new SchedulingService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = scheduleRequestSchema.safeParse(body);
@@ -18,8 +18,11 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // `entityId` spread LAST: it overwrites the caller's own value.
+      const { entityId: _requested, ...draft } = parsed.data;
+
       const suggestions = await schedulingService.findAvailableSlots(
-        parsed.data,
+        { ...draft, entityId },
         session.userId,
         body.lookAheadDays
       );

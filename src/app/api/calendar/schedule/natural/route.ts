@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { NLPSchedulingService } from '@/modules/calendar/nlp.service';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { naturalLanguageSchema } from '@/modules/calendar/calendar.validation';
@@ -9,7 +9,7 @@ const nlpService = new NLPSchedulingService();
 const schedulingService = new SchedulingService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = naturalLanguageSchema.safeParse(body);
@@ -20,9 +20,10 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // The verified scope, not `parsed.data.entityId`.
       const input = {
         text: parsed.data.text,
-        entityId: parsed.data.entityId,
+        entityId,
         userId: session.userId,
       };
 
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
       const suggestions = await schedulingService.findAvailableSlots(
         {
           title: intent.title,
-          entityId: parsed.data.entityId,
+          entityId,
           duration: intent.duration ?? 30,
           priority: intent.priority,
           type: intent.type,

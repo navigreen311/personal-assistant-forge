@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, KeyboardEvent } from 'react';
-import type { ScheduleSuggestion, ParsedScheduleIntent, EventType, ScheduleRequest } from '../calendar.types';
+import type { ScheduleSuggestion, ParsedScheduleIntent, EventType, ScheduleRequest, ScheduleDraft } from '../calendar.types';
 
 interface ScheduleWizardProps {
   entityId?: string;
@@ -17,7 +17,17 @@ type BufferOption = 'none' | '15before' | '30before' | '15after' | '30after' | '
 type PrepTimeOption = 'none' | '15' | '30' | '60';
 type VisibilityOption = 'busy' | 'free' | 'tentative';
 
-interface ExtendedFormData extends Partial<ScheduleRequest> {
+/**
+ * The wizard's in-browser form state.
+ *
+ * It extends `ScheduleDraft`, NOT `ScheduleRequest`: `ScheduleRequest.entityId`
+ * is a `VerifiedEntityId`, which only the server can mint. What the browser
+ * holds is the entity the user is currently looking at -- a hint that travels
+ * in the request body and that `withEntityScope` verifies and then overwrites.
+ * A plain string here, deliberately.
+ */
+interface ExtendedFormData extends Partial<ScheduleDraft> {
+  entityId?: string;
   meetingType?: MeetingType;
   participants?: string[];
   durationPreset?: DurationPreset;
