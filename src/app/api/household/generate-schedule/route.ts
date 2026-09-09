@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
+import { prisma } from '@/lib/db';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -9,10 +10,23 @@ import { withAuth } from '@/shared/middleware/auth';
 
 const generateSchema = z.object({
   propertyId: z.string().min(1),
+  // Optional and still verified; see the tenancy pattern, section 1.
+  entityId: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
-// Mock Seasonal Schedule
+// Standard seasonal template
+//
+// This is a fixed list of common home-maintenance chores, NOT an analysis of the
+// property. It does not read the property's age, systems, appliances or history,
+// and every property gets the same twelve tasks and the same $1,650 estimate.
+//
+// That is fine as a starting checklist and it is not invented measurement -- but
+// it was previously named `generateMockSchedule` and returned under a route
+// called `generate-schedule`, which reads as though something was computed for
+// this property specifically. Renamed and documented so the caller knows what it
+// is getting. Making it property-specific needs the property's systems on the
+// schema, which is frozen.
 // ---------------------------------------------------------------------------
 
 interface ScheduleTask {
@@ -25,6 +39,8 @@ interface ScheduleTask {
 
 interface SeasonalSchedule {
   propertyId: string;
+  /** True for every response: this is a fixed checklist, not a per-property plan. */
+  isStandardTemplate: true;
   generatedAt: string;
   seasons: {
     spring: ScheduleTask[];
@@ -35,9 +51,10 @@ interface SeasonalSchedule {
   annualEstimate: number;
 }
 
-function generateMockSchedule(propertyId: string): SeasonalSchedule {
+function standardSeasonalTemplate(propertyId: string): SeasonalSchedule {
   return {
     propertyId,
+    isStandardTemplate: true,
     generatedAt: new Date().toISOString(),
     seasons: {
       spring: [
@@ -142,13 +159,27 @@ function generateMockSchedule(propertyId: string): SeasonalSchedule {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = generateSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const schedule = generateMockSchedule(parsed.data.propertyId);
+      // The property is a row, so its owner is a property of the row -- prove the
+      // caller's entity owns it before answering about it. Select the id only:
+      // no property data crosses this line.
+      const property = await prisma.document.findFirst({
+        where: {
+          id: parsed.data.propertyId,
+          entityId,
+          type: 'PROPERTY',
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!property) return error('NOT_FOUND', 'Property not found', 404);
+
+      const schedule = standardSeasonalTemplate(property.id);
       return success(schedule);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

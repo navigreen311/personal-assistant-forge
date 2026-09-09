@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import * as itineraryService from '@/modules/travel/services/itinerary-service';
 
 const createSchema = z.object({
@@ -20,13 +20,20 @@ const createSchema = z.object({
     status: z.enum(['BOOKED', 'PENDING', 'CANCELLED', 'COMPLETED']),
     notes: z.string().optional(),
   })),
+  // Optional and still verified; see the tenancy pattern, section 1.
+  entityId: z.string().min(1).optional(),
 });
 
+/**
+ * Single-entity by choice (tenancy pattern section 5b). See the note on
+ * `listItineraries` for why an itinerary belongs to an entity rather than to a
+ * user across all of them.
+ */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const status = req.nextUrl.searchParams.get('status') ?? undefined;
-      const itineraries = await itineraryService.listItineraries(session.userId, status);
+      const itineraries = await itineraryService.listItineraries(entityId, status);
       return success(itineraries);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
@@ -35,14 +42,19 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
       const { name, legs } = parsed.data;
-      const itinerary = await itineraryService.createItinerary(session.userId, name, legs);
+      const itinerary = await itineraryService.createItinerary(
+        entityId,
+        session.userId,
+        name,
+        legs
+      );
       return success(itinerary, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

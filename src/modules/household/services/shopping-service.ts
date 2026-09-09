@@ -1,16 +1,20 @@
 import { generateJSON } from '@/lib/ai';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ShoppingItem } from '../types';
 
-function docToShoppingItem(doc: {
-  id: string;
-  entityId: string;
-  content: string | null;
-}): ShoppingItem {
+function docToShoppingItem(
+  doc: {
+    id: string;
+    entityId: string;
+    content: string | null;
+  },
+  userId: string
+): ShoppingItem {
   const data = doc.content ? JSON.parse(doc.content) : {};
   return {
     id: doc.id,
-    userId: doc.entityId,
+    userId,
     name: data.name ?? '',
     category: data.category ?? '',
     quantity: data.quantity ?? 1,
@@ -25,6 +29,7 @@ function docToShoppingItem(doc: {
 }
 
 export async function addItem(
+  entityId: VerifiedEntityId,
   userId: string,
   item: Omit<ShoppingItem, 'id' | 'isPurchased' | 'addedAt'>
 ): Promise<ShoppingItem> {
@@ -32,7 +37,7 @@ export async function addItem(
   const created = await prisma.document.create({
     data: {
       title: item.name,
-      entityId: userId,
+      entityId,
       type: 'SHOPPING_LIST',
       status: 'ACTIVE',
       content: JSON.stringify({
@@ -50,42 +55,56 @@ export async function addItem(
     },
   });
 
-  return docToShoppingItem(created);
+  return docToShoppingItem(created, userId);
 }
 
-export async function getList(userId: string, includePurchased = false): Promise<ShoppingItem[]> {
+export async function getList(
+  entityId: VerifiedEntityId,
+  userId: string,
+  includePurchased = false
+): Promise<ShoppingItem[]> {
   const docs = await prisma.document.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'SHOPPING_LIST',
       deletedAt: null,
     },
   });
 
-  const items: ShoppingItem[] = docs.map(docToShoppingItem);
+  const items: ShoppingItem[] = docs.map((d) => docToShoppingItem(d, userId));
   if (includePurchased) return items;
   return items.filter((i: ShoppingItem) => !i.isPurchased);
 }
 
-export async function markPurchased(itemId: string): Promise<ShoppingItem> {
-  const existing = await prisma.document.findUnique({ where: { id: itemId } });
+export async function markPurchased(
+  entityId: VerifiedEntityId,
+  userId: string,
+  itemId: string
+): Promise<ShoppingItem> {
+  const existing = await prisma.document.findFirst({ where: { id: itemId, entityId } });
   if (!existing) throw new Error(`Shopping item ${itemId} not found`);
 
   const data = existing.content ? JSON.parse(existing.content) : {};
   data.isPurchased = true;
 
-  const updated = await prisma.document.update({
-    where: { id: itemId },
+  const changed = await prisma.document.updateMany({
+    where: { id: itemId, entityId },
     data: {
       content: JSON.stringify(data),
     },
   });
+  if (changed.count === 0) throw new Error(`Shopping item ${itemId} not found`);
 
-  return docToShoppingItem(updated);
+  const updated = await prisma.document.findFirstOrThrow({ where: { id: itemId, entityId } });
+
+  return docToShoppingItem(updated, userId);
 }
 
-export async function getSmartSuggestions(userId: string): Promise<ShoppingItem[]> {
-  const allItems = await getList(userId, true);
+export async function getSmartSuggestions(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<ShoppingItem[]> {
+  const allItems = await getList(entityId, userId, true);
 
   const recurringPurchased = allItems.filter(i => i.isRecurring && i.isPurchased);
   const activeItems = allItems.filter(i => !i.isPurchased).map(i => i.name.toLowerCase());
