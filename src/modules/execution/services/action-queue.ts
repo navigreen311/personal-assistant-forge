@@ -2,28 +2,130 @@
 // Action Queue / Flight Control Service
 // Manages the lifecycle of actions: enqueue, approve, reject, execute
 // ============================================================================
+//
+// P-09 (T-007): the queue used to be a module-level `Map` with a comment
+// saying "in production this would be backed by a dedicated table". P-00
+// landed that table. The queue is the approval buffer for everything the
+// platform is about to do to a user's data, so losing it on a restart loses
+// both the record of what was pending and the record of what a human had
+// already approved. `QueuedAction` is now the source of truth.
+//
+// P-09 (T-001): every function takes a VerifiedEntityId and puts it in the
+// WHERE clause. An action belonging to another tenant is simply not found, so
+// there is no check-then-act to forget and no statement ordering that can make
+// it wrong. `approvedBy` is the authenticated caller, never a body field.
 
-import { v4 as uuidv4 } from 'uuid';
 import type { AutonomyLevel } from '@/shared/types';
 import prisma from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { QueuedAction, ActionQueueFilters } from '../types';
 import { evaluateGates } from './execution-gate';
 
-// --- In-Memory Action Store ---
-// In production this would be backed by a dedicated table or Redis.
-// For now, ActionLog in Prisma is the source of truth; this map caches queue state.
+// --- Row <-> interface reconciliation ---
 
-const actionStore = new Map<string, QueuedAction>();
+interface ActionRow {
+  id: string;
+  actionLogId: string;
+  actor: string;
+  actorId: string | null;
+  actionType: string;
+  target: string;
+  description: string;
+  reason: string;
+  impact: string;
+  rollbackPlan: string;
+  blastRadius: string;
+  reversible: boolean;
+  estimatedCost: number | null;
+  status: string;
+  requiresApproval: boolean;
+  approvedBy: string | null;
+  approvedAt: Date | null;
+  executedAt: Date | null;
+  scheduledFor: Date | null;
+  entityId: string;
+  projectId: string | null;
+  workflowExecutionId: string | null;
+  createdAt: Date;
+}
+
+/**
+ * `QueuedAction` carries `updatedAt`; the landed table does not, deliberately
+ * (the schema is frozen, and an extra column would mean a migration). The last
+ * transition is recoverable from the timestamps that ARE columns, so it is
+ * reconciled on the read side rather than stored twice.
+ */
+function toQueuedAction(row: ActionRow): QueuedAction {
+  return {
+    id: row.id,
+    actionLogId: row.actionLogId,
+    actor: row.actor as QueuedAction['actor'],
+    actorId: row.actorId ?? undefined,
+    actionType: row.actionType,
+    target: row.target,
+    description: row.description,
+    reason: row.reason,
+    impact: row.impact,
+    rollbackPlan: row.rollbackPlan,
+    blastRadius: row.blastRadius as QueuedAction['blastRadius'],
+    reversible: row.reversible,
+    estimatedCost: row.estimatedCost ?? undefined,
+    status: row.status as QueuedAction['status'],
+    requiresApproval: row.requiresApproval,
+    approvedBy: row.approvedBy ?? undefined,
+    approvedAt: row.approvedAt ?? undefined,
+    executedAt: row.executedAt ?? undefined,
+    scheduledFor: row.scheduledFor ?? undefined,
+    entityId: row.entityId,
+    projectId: row.projectId ?? undefined,
+    workflowExecutionId: row.workflowExecutionId ?? undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.executedAt ?? row.approvedAt ?? row.createdAt,
+  };
+}
+
+export type EnqueueActionParams = Omit<
+  QueuedAction,
+  'id' | 'status' | 'createdAt' | 'updatedAt' | 'entityId'
+>;
 
 // --- Public API ---
 
+/**
+ * Enqueue an action for a verified tenant.
+ *
+ * `entityId` is a separate, required argument rather than a field on the draft,
+ * so a route cannot supply the scope by spreading a parsed request body.
+ */
 export async function enqueueAction(
-  params: Omit<QueuedAction, 'id' | 'status' | 'createdAt' | 'updatedAt'>,
+  params: EnqueueActionParams,
+  entityId: VerifiedEntityId,
   autonomyLevel: AutonomyLevel = 'EXECUTE_WITH_APPROVAL'
 ): Promise<QueuedAction> {
-  const id = uuidv4();
-  const now = new Date();
+  return insertAction(params, entityId, autonomyLevel);
+}
 
+/**
+ * Enqueue an action on behalf of the entity that owns a stored record.
+ *
+ * TRUSTED PROVENANCE ONLY. The only caller is the runbook engine, which reads
+ * `runbook.entityId` off a database column -- there is no request and no user
+ * to verify against. `grep -rn ForEntityOwner src/` finds every such write.
+ * Deliberately not re-exported from the module index.
+ */
+export async function enqueueActionForEntityOwner(
+  params: EnqueueActionParams,
+  entityId: string,
+  autonomyLevel: AutonomyLevel = 'EXECUTE_WITH_APPROVAL'
+): Promise<QueuedAction> {
+  return insertAction(params, entityId, autonomyLevel);
+}
+
+async function insertAction(
+  params: EnqueueActionParams,
+  entityId: string,
+  autonomyLevel: AutonomyLevel
+): Promise<QueuedAction> {
   // Create ActionLog record in Prisma
   const actionLog = await prisma.actionLog.create({
     data: {
@@ -61,108 +163,120 @@ export async function enqueueAction(
     status = 'APPROVED';
   }
 
-  const queuedAction: QueuedAction = {
-    id,
-    actionLogId: actionLog.id,
-    actor: params.actor,
-    actorId: params.actorId,
-    actionType: params.actionType,
-    target: params.target,
-    description: params.description,
-    reason: params.reason,
-    impact: params.impact,
-    rollbackPlan: params.rollbackPlan,
-    blastRadius: params.blastRadius,
-    reversible: params.reversible,
-    estimatedCost: params.estimatedCost,
-    status,
-    requiresApproval,
-    scheduledFor: params.scheduledFor,
-    entityId: params.entityId,
-    projectId: params.projectId,
-    workflowExecutionId: params.workflowExecutionId,
-    createdAt: now,
-    updatedAt: now,
-  };
+  const row = await prisma.queuedAction.create({
+    data: {
+      actionLogId: actionLog.id,
+      actor: params.actor,
+      actorId: params.actorId ?? null,
+      actionType: params.actionType,
+      target: params.target,
+      description: params.description,
+      reason: params.reason,
+      impact: params.impact,
+      rollbackPlan: params.rollbackPlan,
+      blastRadius: params.blastRadius,
+      reversible: params.reversible,
+      estimatedCost: params.estimatedCost ?? null,
+      status,
+      requiresApproval,
+      approvedBy: params.approvedBy ?? null,
+      approvedAt: params.approvedAt ?? null,
+      scheduledFor: params.scheduledFor ?? null,
+      projectId: params.projectId ?? null,
+      workflowExecutionId: params.workflowExecutionId ?? null,
+      // LAST and unconditional: this is the row's tenant.
+      entityId,
+    },
+  });
 
-  actionStore.set(id, queuedAction);
-  return queuedAction;
+  return toQueuedAction(row as ActionRow);
 }
 
+/**
+ * Approve a queued action.
+ *
+ * `approverId` is the authenticated caller's user id, resolved by the route
+ * from the session. Before P-09 the route read it off the request body, so the
+ * approval record named whoever the requester chose to name.
+ */
 export async function approveAction(
   actionId: string,
-  approverId: string
+  approverId: string,
+  entityId: VerifiedEntityId
 ): Promise<QueuedAction> {
-  const action = actionStore.get(actionId);
-  if (!action) {
-    throw new Error(`Action ${actionId} not found`);
-  }
-  if (action.status !== 'QUEUED') {
-    throw new Error(`Cannot approve action with status ${action.status}. Only QUEUED actions can be approved.`);
+  const existing = await requireAction(actionId, entityId);
+  if (existing.status !== 'QUEUED') {
+    throw new Error(
+      `Cannot approve action with status ${existing.status}. Only QUEUED actions can be approved.`
+    );
   }
 
-  action.status = 'APPROVED';
-  action.approvedBy = approverId;
-  action.approvedAt = new Date();
-  action.updatedAt = new Date();
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId, entityId, status: 'QUEUED' },
+    data: { status: 'APPROVED', approvedBy: approverId, approvedAt: new Date() },
+  });
 
-  actionStore.set(actionId, action);
-  return action;
+  return requireAction(actionId, entityId);
 }
 
 export async function rejectAction(
   actionId: string,
-  _reason: string
+  _reason: string,
+  entityId: VerifiedEntityId
 ): Promise<QueuedAction> {
-  const action = actionStore.get(actionId);
-  if (!action) {
-    throw new Error(`Action ${actionId} not found`);
-  }
-  if (action.status !== 'QUEUED') {
-    throw new Error(`Cannot reject action with status ${action.status}. Only QUEUED actions can be rejected.`);
+  const existing = await requireAction(actionId, entityId);
+  if (existing.status !== 'QUEUED') {
+    throw new Error(
+      `Cannot reject action with status ${existing.status}. Only QUEUED actions can be rejected.`
+    );
   }
 
-  action.status = 'REJECTED';
-  action.updatedAt = new Date();
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId, entityId, status: 'QUEUED' },
+    data: { status: 'REJECTED' },
+  });
 
   // Update ActionLog
   await prisma.actionLog.update({
-    where: { id: action.actionLogId },
+    where: { id: existing.actionLogId },
     data: { status: 'FAILED' },
   });
 
-  actionStore.set(actionId, action);
-  return action;
+  return requireAction(actionId, entityId);
 }
 
-export async function executeAction(actionId: string): Promise<QueuedAction> {
-  const action = actionStore.get(actionId);
-  if (!action) {
-    throw new Error(`Action ${actionId} not found`);
-  }
+export async function executeAction(
+  actionId: string,
+  entityId: VerifiedEntityId
+): Promise<QueuedAction> {
+  const action = await requireAction(actionId, entityId);
   if (action.status !== 'APPROVED') {
     throw new Error(
       `Cannot execute action with status ${action.status}. Only APPROVED actions can be executed.`
     );
   }
 
-  // Evaluate execution gates
+  // Evaluate execution gates. The rules are read from Postgres, so this is the
+  // same answer in a fresh process, in a second process, and after a restart.
   const gateResult = await evaluateGates(action, {
     blastRadius: action.blastRadius,
   });
   if (!gateResult.passed) {
-    action.status = 'FAILED';
-    action.updatedAt = new Date();
-    actionStore.set(actionId, action);
+    await prisma.queuedAction.updateMany({
+      where: { id: actionId, entityId },
+      data: { status: 'FAILED' },
+    });
     throw new Error(
       `Execution blocked by gate "${gateResult.blockedBy?.name}": ${gateResult.reason}`
     );
   }
 
-  // Mark as executing
-  action.status = 'EXECUTING';
-  action.updatedAt = new Date();
-  actionStore.set(actionId, action);
+  // Mark as executing. APPROVED is in the WHERE, so two concurrent callers
+  // cannot both get past this line.
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId, entityId, status: 'APPROVED' },
+    data: { status: 'EXECUTING' },
+  });
 
   try {
     // Create ConsentReceipt
@@ -184,15 +298,17 @@ export async function executeAction(actionId: string): Promise<QueuedAction> {
       data: { status: 'EXECUTED' },
     });
 
-    action.status = 'EXECUTED';
-    action.executedAt = new Date();
-    action.updatedAt = new Date();
-    actionStore.set(actionId, action);
-    return action;
+    await prisma.queuedAction.updateMany({
+      where: { id: actionId, entityId },
+      data: { status: 'EXECUTED', executedAt: new Date() },
+    });
+
+    return requireAction(actionId, entityId);
   } catch (err) {
-    action.status = 'FAILED';
-    action.updatedAt = new Date();
-    actionStore.set(actionId, action);
+    await prisma.queuedAction.updateMany({
+      where: { id: actionId, entityId },
+      data: { status: 'FAILED' },
+    });
 
     await prisma.actionLog.update({
       where: { id: action.actionLogId },
@@ -203,78 +319,81 @@ export async function executeAction(actionId: string): Promise<QueuedAction> {
   }
 }
 
+/**
+ * List the queue for one tenant.
+ *
+ * The scope is a leading argument and NOT a field on `filters`, because
+ * `filters` is parsed wholesale off the query string -- leaving `entityId` on
+ * it would let the caller name its own tenant all over again.
+ */
 export async function getQueuedActions(
-  filters: ActionQueueFilters,
+  entityId: VerifiedEntityId,
+  filters: Omit<ActionQueueFilters, 'entityId'> = {},
   page = 1,
   pageSize = 20
 ): Promise<{ data: QueuedAction[]; total: number }> {
-  let actions = Array.from(actionStore.values());
+  const where: Record<string, unknown> = {};
 
-  // Apply filters
-  if (filters.status) {
-    actions = actions.filter((a) => a.status === filters.status);
-  }
-  if (filters.actor) {
-    actions = actions.filter((a) => a.actor === filters.actor);
-  }
-  if (filters.blastRadius) {
-    actions = actions.filter((a) => a.blastRadius === filters.blastRadius);
-  }
-  if (filters.entityId) {
-    actions = actions.filter((a) => a.entityId === filters.entityId);
-  }
-  if (filters.projectId) {
-    actions = actions.filter((a) => a.projectId === filters.projectId);
-  }
+  if (filters.status) where.status = filters.status;
+  if (filters.actor) where.actor = filters.actor;
+  if (filters.blastRadius) where.blastRadius = filters.blastRadius;
+  if (filters.projectId) where.projectId = filters.projectId;
   if (filters.dateRange) {
-    actions = actions.filter(
-      (a) =>
-        a.createdAt >= filters.dateRange!.from &&
-        a.createdAt <= filters.dateRange!.to
-    );
+    where.createdAt = { gte: filters.dateRange.from, lte: filters.dateRange.to };
   }
 
-  // Sort by creation time descending
-  actions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  // Applied last and unconditionally: no filter combination can widen it.
+  where.entityId = entityId;
 
-  const total = actions.length;
-  const start = (page - 1) * pageSize;
-  const data = actions.slice(start, start + pageSize);
+  const [rows, total] = await Promise.all([
+    prisma.queuedAction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.queuedAction.count({ where }),
+  ]);
 
-  return { data, total };
+  return { data: (rows as ActionRow[]).map(toQueuedAction), total };
 }
 
 export async function getActionById(
-  actionId: string
+  actionId: string,
+  entityId: VerifiedEntityId
 ): Promise<QueuedAction | null> {
-  return actionStore.get(actionId) ?? null;
+  const row = await prisma.queuedAction.findFirst({
+    where: { id: actionId, entityId },
+  });
+  return row ? toQueuedAction(row as ActionRow) : null;
 }
 
 export async function scheduleAction(
   actionId: string,
-  scheduledFor: Date
+  scheduledFor: Date,
+  entityId: VerifiedEntityId
 ): Promise<QueuedAction> {
-  const action = actionStore.get(actionId);
-  if (!action) {
-    throw new Error(`Action ${actionId} not found`);
-  }
+  await requireAction(actionId, entityId);
 
-  action.scheduledFor = scheduledFor;
-  action.updatedAt = new Date();
-  actionStore.set(actionId, action);
-  return action;
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId, entityId },
+    data: { scheduledFor },
+  });
+
+  return requireAction(actionId, entityId);
 }
 
 export async function bulkApprove(
   actionIds: string[],
-  approverId: string
+  approverId: string,
+  entityId: VerifiedEntityId
 ): Promise<{ approved: number; failed: number }> {
   let approved = 0;
   let failed = 0;
 
   for (const id of actionIds) {
     try {
-      await approveAction(id, approverId);
+      await approveAction(id, approverId, entityId);
       approved++;
     } catch {
       failed++;
@@ -286,14 +405,15 @@ export async function bulkApprove(
 
 export async function bulkReject(
   actionIds: string[],
-  reason: string
+  reason: string,
+  entityId: VerifiedEntityId
 ): Promise<{ rejected: number; failed: number }> {
   let rejected = 0;
   let failed = 0;
 
   for (const id of actionIds) {
     try {
-      await rejectAction(id, reason);
+      await rejectAction(id, reason, entityId);
       rejected++;
     } catch {
       failed++;
@@ -303,28 +423,68 @@ export async function bulkReject(
   return { rejected, failed };
 }
 
-export async function cancelAction(actionId: string): Promise<QueuedAction> {
-  const action = actionStore.get(actionId);
-  if (!action) {
-    throw new Error(`Action ${actionId} not found`);
-  }
-  if (action.status !== 'QUEUED') {
-    throw new Error(`Cannot cancel action with status ${action.status}. Only QUEUED actions can be cancelled.`);
+export async function cancelAction(
+  actionId: string,
+  entityId: VerifiedEntityId
+): Promise<QueuedAction> {
+  const existing = await requireAction(actionId, entityId);
+  if (existing.status !== 'QUEUED') {
+    throw new Error(
+      `Cannot cancel action with status ${existing.status}. Only QUEUED actions can be cancelled.`
+    );
   }
 
-  action.status = 'REJECTED';
-  action.updatedAt = new Date();
-  actionStore.set(actionId, action);
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId, entityId, status: 'QUEUED' },
+    data: { status: 'REJECTED' },
+  });
 
   await prisma.actionLog.update({
-    where: { id: action.actionLogId },
+    where: { id: existing.actionLogId },
     data: { status: 'FAILED' },
   });
 
-  return action;
+  return requireAction(actionId, entityId);
 }
 
 // --- Internal Helpers ---
+
+async function requireAction(
+  actionId: string,
+  entityId: string
+): Promise<QueuedAction> {
+  const row = await prisma.queuedAction.findFirst({
+    where: { id: actionId, entityId },
+  });
+  if (!row) {
+    throw new Error(`Action ${actionId} not found`);
+  }
+  return toQueuedAction(row as ActionRow);
+}
+
+/**
+ * Look an action up by id with no tenant scope, and record the outcome of a
+ * rollback against it.
+ *
+ * TRUSTED PROVENANCE ONLY -- for the rollback engine, which has already proved
+ * the scope of this exact action id one statement earlier. Deliberately not
+ * re-exported from the module index.
+ */
+export async function getActionForEntityOwner(
+  actionId: string
+): Promise<QueuedAction | null> {
+  const row = await prisma.queuedAction.findUnique({ where: { id: actionId } });
+  return row ? toQueuedAction(row as ActionRow) : null;
+}
+
+export async function markActionRolledBackForEntityOwner(
+  actionId: string
+): Promise<void> {
+  await prisma.queuedAction.updateMany({
+    where: { id: actionId },
+    data: { status: 'ROLLED_BACK' },
+  });
+}
 
 function determineApprovalRequirement(
   blastRadius: string,
@@ -352,10 +512,7 @@ function determineApprovalRequirement(
 
 // --- Testing Helpers ---
 
-export function _clearActionStore(): void {
-  actionStore.clear();
-}
-
-export function _getActionStore(): Map<string, QueuedAction> {
-  return actionStore;
+/** Remove every queued action. A real delete now -- there is no Map to clear. */
+export async function _clearActionStore(): Promise<void> {
+  await prisma.queuedAction.deleteMany({});
 }

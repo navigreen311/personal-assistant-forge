@@ -4,6 +4,7 @@
 // ============================================================================
 
 import type { CostEstimate, CostBreakdownItem, Runbook } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import prisma from '@/lib/db';
 import { startOfDay, endOfDay } from 'date-fns';
 
@@ -154,27 +155,42 @@ export function estimateRunbookCost(runbook: Runbook): CostEstimate {
   };
 }
 
+/**
+ * What this tenant spent on a given day.
+ *
+ * P-09 (T-001): the old body ended its entity filter with a literal `|| true`
+ * -- "Include all if no entity filter on ActionLog" -- so every tenant's daily
+ * cost summary was the whole platform's spend for that day. `ActionLog` still
+ * has no entityId column and the schema is frozen, so the scope comes from
+ * `QueuedAction`, which carries both the log id and the entity, and it is in
+ * the WHERE clause rather than in a filter afterwards.
+ */
 export async function getDailyCostSummary(
-  entityId: string,
+  entityId: VerifiedEntityId,
   date: Date
 ): Promise<{ totalCost: number; breakdown: CostBreakdownItem[] }> {
   const dayStart = startOfDay(date);
   const dayEnd = endOfDay(date);
 
-  const actionLogs = await prisma.actionLog.findMany({
+  const scoped = await prisma.queuedAction.findMany({
+    where: { entityId },
+    select: { actionLogId: true },
+  });
+  const logIds = scoped
+    .map((a) => a.actionLogId)
+    .filter((id): id is string => Boolean(id));
+
+  if (logIds.length === 0) {
+    return { totalCost: 0, breakdown: [] };
+  }
+
+  const entityLogs = await prisma.actionLog.findMany({
     where: {
       timestamp: { gte: dayStart, lte: dayEnd },
       status: 'EXECUTED',
+      id: { in: logIds },
     },
   });
-
-  // Filter by entity via target field or reconstruct from action logs
-  const entityLogs = actionLogs.filter(
-    (log) =>
-      log.target.includes(entityId) ||
-      log.actionType.includes(entityId) ||
-      true // Include all if no entity filter on ActionLog
-  );
 
   const breakdown: CostBreakdownItem[] = [];
   let totalCost = 0;

@@ -2,11 +2,19 @@
 // POST /api/execution/costs  - Estimate cost for an action
 // GET /api/execution/costs   - Get daily cost summary for an entity
 // ============================================================================
+//
+// P-09 (T-001): GET required `entityId` and never verified it. The service it
+// called then ignored the entity entirely (a filter ending in `|| true`), so
+// every caller got the whole platform's spend for the day. Both halves fixed.
+//
+// POST stays on `withAuth`: an estimate is a pure function of an action type
+// and its parameters -- it reads no tenant data and touches no database, so
+// there is no scope for it to be missing.
 
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope } from '@/shared/middleware/auth';
 import {
   estimateActionCost,
   getDailyCostSummary,
@@ -20,7 +28,7 @@ const estimateCostSchema = z.object({
 });
 
 const dailySummarySchema = z.object({
-  entityId: z.string().min(1, 'entityId is required'),
+  entityId: z.string().optional(),
   date: z.string().optional(),
 });
 
@@ -54,7 +62,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = new URL(req.url);
 
@@ -72,7 +80,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const { entityId, date } = parsed.data;
+      const { date } = parsed.data;
       const targetDate = date ? new Date(date) : new Date();
 
       if (isNaN(targetDate.getTime())) {

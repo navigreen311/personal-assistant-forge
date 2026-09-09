@@ -1,8 +1,17 @@
+// ============================================================================
+// POST /api/rules/evaluate - Evaluate policy rules against a context
+// ============================================================================
+//
+// P-09 (T-001): the handler discarded the session and passed `entityId`
+// straight into the rule engine, so a caller could evaluate against another
+// tenant's rule set and read back the rules that matched, their conditions and
+// their actions.
+
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, getWinningAction } from '@/engines/policy/rule-engine';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const EvaluateSchema = z.object({
   context: z.record(z.string(), z.unknown()),
@@ -10,7 +19,7 @@ const EvaluateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = EvaluateSchema.safeParse(body);
@@ -21,7 +30,8 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const evaluated = await evaluateRules(parsed.data.context, parsed.data.entityId);
+      // The verified entity, not the one in the body.
+      const evaluated = await evaluateRules(parsed.data.context, entityId);
       const winner = getWinningAction(evaluated);
 
       return success({

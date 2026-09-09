@@ -4,7 +4,36 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { WorkflowExecution, StepExecutionResult } from '@/modules/workflows/types';
+
+/**
+ * Prove that a run belongs to this tenant.
+ *
+ * P-09 (T-001): `ActionLog` rows are matched here by `target contains
+ * "execution:<id>"`, and neither `ActionLog` nor `WorkflowExecutionRecord`
+ * carries an entityId. The scope therefore comes from the chain that does --
+ * run record -> workflow -> entity -- and it is proved BEFORE any log row is
+ * read or any rollback is attempted. Before this, `POST /api/workflows/x/
+ * executions/<any id>/rollback` would reverse another tenant's workflow run
+ * for anyone who could guess an execution id.
+ */
+async function ownsExecution(
+  executionId: string,
+  entityId: string
+): Promise<boolean> {
+  const record = await prisma.workflowExecutionRecord.findUnique({
+    where: { id: executionId },
+    select: { workflowId: true },
+  });
+  if (!record) return false;
+
+  const workflow = await prisma.workflow.findFirst({
+    where: { id: record.workflowId, entityId },
+    select: { id: true },
+  });
+  return Boolean(workflow);
+}
 
 export async function logExecution(execution: WorkflowExecution): Promise<void> {
   await prisma.actionLog.create({
@@ -50,7 +79,10 @@ export async function logStepResult(
   });
 }
 
-export async function getExecutionLog(executionId: string): Promise<{
+export async function getExecutionLog(
+  executionId: string,
+  entityId: VerifiedEntityId
+): Promise<{
   id: string;
   actor: string;
   actorId: string | null;
@@ -64,6 +96,9 @@ export async function getExecutionLog(executionId: string): Promise<{
   cost: number | null;
   timestamp: Date;
 }[]> {
+  // Scope proved on the parent, and nothing is read until it is.
+  if (!(await ownsExecution(executionId, entityId))) return [];
+
   const logs = await prisma.actionLog.findMany({
     where: {
       target: {
@@ -77,11 +112,17 @@ export async function getExecutionLog(executionId: string): Promise<{
 }
 
 export async function rollbackExecution(
-  executionId: string
+  executionId: string,
+  entityId: VerifiedEntityId
 ): Promise<{
   rolledBack: StepExecutionResult[];
   failed: StepExecutionResult[];
 }> {
+  // Reversing a run is a write. Refuse before touching anything.
+  if (!(await ownsExecution(executionId, entityId))) {
+    throw new Error(`Execution ${executionId} not found`);
+  }
+
   const logs = await prisma.actionLog.findMany({
     where: {
       target: {

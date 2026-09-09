@@ -2,21 +2,140 @@
 // Autopilot Runbook Service
 // Create, manage, and execute multi-step automation runbooks
 // ============================================================================
+//
+// P-09 (T-007): two module-level `Map`s lived here. `runbookStore` shadowed the
+// `Runbook` table, which already existed -- so a runbook created through the
+// API was never in the table the rest of the platform reads, and vanished on
+// restart. `executionStore` shadowed `RunbookExecution`. Both now point at the
+// real tables; no model was added.
+//
+// P-09 (T-001): `Runbook.entityId` is the tenant. `RunbookExecution` has no
+// entityId column, so its scope is proved on the parent runbook.
+//
+// ---------------------------------------------------------------------------
+// RECONCILING THE INTERFACE WITH THE LANDED TABLE
+// ---------------------------------------------------------------------------
+// The `Runbook` interface and the `Runbook` model drifted before this run. The
+// schema is frozen, so the difference is reconciled on the read side rather
+// than by adding columns:
+//
+//   interface.tags[]      <-> model.category   a comma-joined list. The first
+//                                              element is the category in the
+//                                              column's documented sense, so a
+//                                              category query still means what
+//                                              it looks like, and the round
+//                                              trip is lossless.
+//   interface.lastRunStatus <-> DERIVED        from the most recent
+//                                              RunbookExecution row. It was
+//                                              never independent state; storing
+//                                              it twice is how the two copies
+//                                              come to disagree.
+//   description / createdBy <-> nullable columns, defaulted on read.
 
-import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   Runbook,
   RunbookStep,
   RunbookExecution,
+  RunbookStepResult,
 } from '../types';
-import { enqueueAction } from './action-queue';
+import { enqueueActionForEntityOwner } from './action-queue';
 import { scoreAction } from './blast-radius-scorer';
 import { generateJSON } from '@/lib/ai';
 
-// --- In-Memory Stores ---
+// --- Row <-> interface reconciliation ---
 
-const runbookStore = new Map<string, Runbook>();
-const executionStore = new Map<string, RunbookExecution>();
+interface RunbookRow {
+  id: string;
+  entityId: string;
+  name: string;
+  description: string | null;
+  steps: unknown;
+  category: string;
+  schedule: string | null;
+  isActive: boolean;
+  lastRunAt: Date | null;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface RunbookExecutionRow {
+  id: string;
+  runbookId: string;
+  status: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  stepResults: unknown;
+  triggeredBy: string;
+}
+
+function categoryFromTags(tags: string[] | undefined): string {
+  const cleaned = (tags ?? []).map((t) => t.trim()).filter(Boolean);
+  return cleaned.length > 0 ? cleaned.join(',') : 'general';
+}
+
+function tagsFromCategory(category: string): string[] {
+  return category
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+function toRunbook(
+  row: RunbookRow,
+  lastRunStatus?: Runbook['lastRunStatus']
+): Runbook {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? '',
+    entityId: row.entityId,
+    schedule: row.schedule ?? undefined,
+    steps: (row.steps as RunbookStep[]) ?? [],
+    tags: tagsFromCategory(row.category),
+    lastRunAt: row.lastRunAt ?? undefined,
+    lastRunStatus,
+    isActive: row.isActive,
+    createdBy: row.createdBy ?? 'SYSTEM',
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toRunbookExecution(row: RunbookExecutionRow): RunbookExecution {
+  return {
+    id: row.id,
+    runbookId: row.runbookId,
+    status: row.status as RunbookExecution['status'],
+    startedAt: row.startedAt,
+    completedAt: row.completedAt ?? undefined,
+    stepResults: (row.stepResults as RunbookStepResult[]) ?? [],
+    triggeredBy: row.triggeredBy,
+  };
+}
+
+/** The status of the newest execution, expressed the way the interface does. */
+function executionStatusToRunStatus(
+  status: string | undefined
+): Runbook['lastRunStatus'] {
+  if (!status) return undefined;
+  if (status === 'COMPLETED') return 'SUCCESS';
+  if (status === 'PAUSED') return 'PARTIAL';
+  return 'FAILED';
+}
+
+async function lastRunStatusFor(
+  runbookId: string
+): Promise<Runbook['lastRunStatus']> {
+  const latest = await prisma.runbookExecution.findFirst({
+    where: { runbookId },
+    orderBy: { startedAt: 'desc' },
+    select: { status: true },
+  });
+  return executionStatusToRunStatus(latest?.status);
+}
 
 // --- Built-in Templates ---
 
@@ -200,97 +319,150 @@ export const BUILTIN_TEMPLATES: Omit<
 
 // --- Public API ---
 
+export type CreateRunbookParams = Omit<
+  Runbook,
+  'id' | 'entityId' | 'createdAt' | 'updatedAt' | 'lastRunAt' | 'lastRunStatus'
+>;
+
 export async function createRunbook(
-  params: Omit<
-    Runbook,
-    'id' | 'createdAt' | 'updatedAt' | 'lastRunAt' | 'lastRunStatus'
-  >
+  params: CreateRunbookParams,
+  entityId: VerifiedEntityId
 ): Promise<Runbook> {
-  const now = new Date();
-  const runbook: Runbook = {
-    id: uuidv4(),
-    ...params,
-    createdAt: now,
-    updatedAt: now,
-  };
-  runbookStore.set(runbook.id, runbook);
-  return runbook;
+  const row = await prisma.runbook.create({
+    data: {
+      name: params.name,
+      description: params.description,
+      steps: params.steps as unknown as object,
+      category: categoryFromTags(params.tags),
+      schedule: params.schedule ?? null,
+      isActive: params.isActive,
+      createdBy: params.createdBy,
+      // LAST and unconditional: the caller does not name its own tenant.
+      entityId,
+    },
+  });
+  return toRunbook(row as RunbookRow);
 }
 
 export async function getRunbook(
-  runbookId: string
+  runbookId: string,
+  entityId: VerifiedEntityId
 ): Promise<Runbook | null> {
-  return runbookStore.get(runbookId) ?? null;
+  const row = await prisma.runbook.findFirst({
+    where: { id: runbookId, entityId },
+  });
+  if (!row) return null;
+  return toRunbook(row as RunbookRow, await lastRunStatusFor(runbookId));
 }
 
 export async function updateRunbook(
   runbookId: string,
-  updates: Partial<Runbook>
+  updates: Partial<CreateRunbookParams>,
+  entityId: VerifiedEntityId
 ): Promise<Runbook> {
-  const runbook = runbookStore.get(runbookId);
-  if (!runbook) {
+  const data: Record<string, unknown> = {};
+  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.description !== undefined) data.description = updates.description;
+  if (updates.steps !== undefined) data.steps = updates.steps as unknown as object;
+  if (updates.tags !== undefined) data.category = categoryFromTags(updates.tags);
+  if (updates.schedule !== undefined) data.schedule = updates.schedule;
+  if (updates.isActive !== undefined) data.isActive = updates.isActive;
+
+  // updateMany, not update: a unique WHERE cannot carry the entity.
+  const { count } = await prisma.runbook.updateMany({
+    where: { id: runbookId, entityId },
+    data,
+  });
+  if (count === 0) {
     throw new Error(`Runbook ${runbookId} not found`);
   }
 
-  const updated: Runbook = {
-    ...runbook,
-    ...updates,
-    id: runbook.id,
-    createdAt: runbook.createdAt,
-    updatedAt: new Date(),
-  };
-  runbookStore.set(runbookId, updated);
+  const updated = await getRunbook(runbookId, entityId);
+  if (!updated) {
+    throw new Error(`Runbook ${runbookId} not found`);
+  }
   return updated;
 }
 
-export async function deleteRunbook(runbookId: string): Promise<void> {
-  if (!runbookStore.has(runbookId)) {
+export async function deleteRunbook(
+  runbookId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const { count } = await prisma.runbook.deleteMany({
+    where: { id: runbookId, entityId },
+  });
+  if (count === 0) {
     throw new Error(`Runbook ${runbookId} not found`);
   }
-  runbookStore.delete(runbookId);
 }
 
 export async function listRunbooks(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters?: { isActive?: boolean; tag?: string }
 ): Promise<Runbook[]> {
-  let runbooks = Array.from(runbookStore.values()).filter(
-    (r) => r.entityId === entityId
+  const rows = await prisma.runbook.findMany({
+    where: {
+      ...(filters?.isActive !== undefined ? { isActive: filters.isActive } : {}),
+      // Applied last and unconditionally.
+      entityId,
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  // The tag filter is applied after the scoped query, not inside it: `tags` is
+  // a comma-joined list in one column, so a SQL `contains` would match
+  // substrings ("fin" would match "finance"). It is a display filter, not a
+  // security boundary -- the boundary is the entityId in the WHERE above.
+  const filtered = (rows as RunbookRow[]).filter((row) =>
+    filters?.tag ? tagsFromCategory(row.category).includes(filters.tag) : true
   );
 
-  if (filters?.isActive !== undefined) {
-    runbooks = runbooks.filter((r) => r.isActive === filters.isActive);
-  }
-  if (filters?.tag) {
-    runbooks = runbooks.filter((r) => r.tags.includes(filters.tag!));
-  }
-
-  return runbooks;
+  return Promise.all(
+    filtered.map(async (row) => toRunbook(row, await lastRunStatusFor(row.id)))
+  );
 }
 
 export async function executeRunbook(
   runbookId: string,
-  triggeredBy: string
+  triggeredBy: string,
+  entityId: VerifiedEntityId
 ): Promise<RunbookExecution> {
-  const runbook = runbookStore.get(runbookId);
+  const runbook = await getRunbook(runbookId, entityId);
   if (!runbook) {
     throw new Error(`Runbook ${runbookId} not found`);
   }
 
-  const execution: RunbookExecution = {
-    id: uuidv4(),
-    runbookId,
-    status: 'RUNNING',
-    startedAt: new Date(),
-    stepResults: runbook.steps.map((step) => ({
-      stepOrder: step.order,
-      stepName: step.name,
-      status: 'PENDING',
-    })),
-    triggeredBy,
-  };
+  const stepResults: RunbookStepResult[] = runbook.steps.map((step) => ({
+    stepOrder: step.order,
+    stepName: step.name,
+    status: 'PENDING',
+  }));
 
-  executionStore.set(execution.id, execution);
+  const row = await prisma.runbookExecution.create({
+    data: {
+      runbookId,
+      status: 'RUNNING',
+      stepResults: stepResults as unknown as object,
+      triggeredBy,
+    },
+  });
+
+  const execution: RunbookExecution = toRunbookExecution({
+    ...(row as RunbookExecutionRow),
+    stepResults,
+  });
+  execution.stepResults = stepResults;
+
+  const persist = async (): Promise<void> => {
+    await prisma.runbookExecution.update({
+      where: { id: execution.id },
+      data: {
+        status: execution.status,
+        stepResults: execution.stepResults as unknown as object,
+        completedAt: execution.completedAt ?? null,
+      },
+    });
+  };
 
   // Execute steps sequentially
   const sortedSteps = [...runbook.steps].sort((a, b) => a.order - b.order);
@@ -321,7 +493,7 @@ export async function executeRunbook(
         stepResult.status = 'AWAITING_APPROVAL';
         stepResult.error = `Blast radius ${blastScore.overall} exceeds max ${step.maxBlastRadius}`;
         execution.status = 'PAUSED';
-        executionStore.set(execution.id, execution);
+        await persist();
         break;
       }
 
@@ -329,12 +501,13 @@ export async function executeRunbook(
       if (step.requiresApproval) {
         stepResult.status = 'AWAITING_APPROVAL';
         execution.status = 'PAUSED';
-        executionStore.set(execution.id, execution);
+        await persist();
         break;
       }
 
-      // Enqueue the action
-      const queuedAction = await enqueueAction(
+      // Enqueue the action. `runbook.entityId` came off a database column, not
+      // off a request, so this is the trusted-provenance entry point.
+      const queuedAction = await enqueueActionForEntityOwner(
         {
           actionLogId: '',
           actor: 'SYSTEM',
@@ -347,9 +520,8 @@ export async function executeRunbook(
           blastRadius: blastScore.overall,
           reversible: blastScore.reversibilityScore > 0.5,
           requiresApproval: false,
-          entityId: runbook.entityId,
-          workflowExecutionId: execution.id,
         },
+        runbook.entityId,
         'EXECUTE_AUTONOMOUS'
       );
 
@@ -371,14 +543,8 @@ export async function executeRunbook(
             remaining.status = 'SKIPPED';
           }
         }
-        executionStore.set(execution.id, execution);
-
-        // Update runbook last run
-        runbook.lastRunAt = new Date();
-        runbook.lastRunStatus = 'FAILED';
-        runbook.updatedAt = new Date();
-        runbookStore.set(runbookId, runbook);
-
+        await persist();
+        await recordRun(runbookId);
         return execution;
       }
     }
@@ -393,41 +559,62 @@ export async function executeRunbook(
     execution.completedAt = new Date();
   }
 
-  executionStore.set(execution.id, execution);
-
-  // Update runbook last run
-  runbook.lastRunAt = new Date();
-  runbook.lastRunStatus =
-    execution.status === 'COMPLETED'
-      ? 'SUCCESS'
-      : execution.status === 'PAUSED'
-        ? 'PARTIAL'
-        : 'FAILED';
-  runbook.updatedAt = new Date();
-  runbookStore.set(runbookId, runbook);
+  await persist();
+  await recordRun(runbookId);
 
   return execution;
 }
 
 export async function getRunbookExecution(
-  executionId: string
+  executionId: string,
+  entityId: VerifiedEntityId
 ): Promise<RunbookExecution | null> {
-  return executionStore.get(executionId) ?? null;
+  const row = await prisma.runbookExecution.findUnique({
+    where: { id: executionId },
+  });
+  if (!row) return null;
+
+  // RunbookExecution has no entityId column. Prove the scope on the parent and
+  // return early -- no data crosses this line until it is proved.
+  const owner = await prisma.runbook.findFirst({
+    where: { id: row.runbookId, entityId },
+    select: { id: true },
+  });
+  if (!owner) return null;
+
+  return toRunbookExecution(row as RunbookExecutionRow);
 }
 
 export async function listRunbookExecutions(
-  runbookId: string
+  runbookId: string,
+  entityId: VerifiedEntityId
 ): Promise<RunbookExecution[]> {
-  return Array.from(executionStore.values())
-    .filter((e) => e.runbookId === runbookId)
-    .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
+  const owner = await prisma.runbook.findFirst({
+    where: { id: runbookId, entityId },
+    select: { id: true },
+  });
+  if (!owner) return [];
+
+  const rows = await prisma.runbookExecution.findMany({
+    where: { runbookId },
+    orderBy: { startedAt: 'desc' },
+  });
+  return (rows as RunbookExecutionRow[]).map(toRunbookExecution);
+}
+
+/** `lastRunAt` and `runCount` are columns; keep them honest after every run. */
+async function recordRun(runbookId: string): Promise<void> {
+  await prisma.runbook.updateMany({
+    where: { id: runbookId },
+    data: { lastRunAt: new Date(), runCount: { increment: 1 } },
+  });
 }
 
 // --- Template Helper ---
 
 export async function createFromTemplate(
   templateIndex: number,
-  entityId: string,
+  entityId: VerifiedEntityId,
   createdBy: string
 ): Promise<Runbook> {
   const template = BUILTIN_TEMPLATES[templateIndex];
@@ -435,11 +622,7 @@ export async function createFromTemplate(
     throw new Error(`Template index ${templateIndex} not found`);
   }
 
-  return createRunbook({
-    ...template,
-    entityId,
-    createdBy,
-  });
+  return createRunbook({ ...template, createdBy }, entityId);
 }
 
 // --- Cron Expression Helper ---
@@ -568,7 +751,8 @@ Return JSON with valid (boolean) and suggestions (array of improvement suggestio
 
 // --- Testing Helpers ---
 
-export function _clearRunbookStores(): void {
-  runbookStore.clear();
-  executionStore.clear();
+/** Remove every runbook and execution. Real deletes -- there are no Maps now. */
+export async function _clearRunbookStores(): Promise<void> {
+  await prisma.runbookExecution.deleteMany({});
+  await prisma.runbook.deleteMany({});
 }

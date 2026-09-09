@@ -13,8 +13,124 @@
 
 // --- Infrastructure mocks (must be before imports) ---
 
+
+// ---------------------------------------------------------------------------
+// P-09: WorkflowExecutionRecord is a TABLE now, not a module-level Map.
+// This suite runs offline, so the table gets a small in-memory double that
+// answers the same delegate calls the executor makes. A delegate or field name
+// that does not exist still fails here -- which is the whole point of moving
+// off a `Map` and onto a schema.
+// ---------------------------------------------------------------------------
+
+type MockRow = Record<string, unknown>;
+
+const mockExecutionRows = new Map<string, MockRow>();
+let mockExecutionSeq = 0;
+
+function mockRowMatches(row: MockRow, where: MockRow): boolean {
+  return Object.entries(where).every(([key, value]) => row[key] === value);
+}
+
+const mockExecutionRecordDelegate = {
+  create: async (args: { data: MockRow }) => {
+    const id = (args.data.id as string) ?? `rec-${(mockExecutionSeq += 1)}`;
+    const row: MockRow = {
+      completedAt: null,
+      currentNodeId: null,
+      error: null,
+      startedAt: new Date(),
+      variables: {},
+      stepResults: [],
+      ...args.data,
+      id,
+    };
+    mockExecutionRows.set(id, row);
+    return { ...row };
+  },
+  findUnique: async (args: { where: { id: string } }) => {
+    const row = mockExecutionRows.get(args.where.id);
+    return row ? { ...row } : null;
+  },
+  findMany: async (args?: { where?: MockRow }) =>
+    Array.from(mockExecutionRows.values())
+      .filter((r) => mockRowMatches(r, args?.where ?? {}))
+      .map((r) => ({ ...r })),
+  count: async (args?: { where?: MockRow }) =>
+    Array.from(mockExecutionRows.values()).filter((r) => mockRowMatches(r, args?.where ?? {}))
+      .length,
+  updateMany: async (args: { where: MockRow; data: MockRow }) => {
+    let count = 0;
+    for (const [id, row] of mockExecutionRows) {
+      if (mockRowMatches(row, args.where)) {
+        mockExecutionRows.set(id, { ...row, ...args.data });
+        count += 1;
+      }
+    }
+    return { count };
+  },
+  upsert: async (args: { where: { id: string }; create: MockRow; update: MockRow }) => {
+    const existing = mockExecutionRows.get(args.where.id);
+    const row = existing ? { ...existing, ...args.update } : { ...args.create };
+    mockExecutionRows.set(args.where.id, row);
+    return { ...row };
+  },
+  deleteMany: async () => {
+    const count = mockExecutionRows.size;
+    mockExecutionRows.clear();
+    return { count };
+  },
+};
+
+// P-09: WorkflowApproval is a table too, and the module-level id counter is
+// gone (it reset on restart and could collide inside a millisecond). Ids here
+// stand in for the `cuid()` default.
+const mockApprovalRows = new Map<string, MockRow>();
+let mockApprovalSeq = 0;
+
+const mockApprovalDelegate = {
+  create: async (args: { data: MockRow }) => {
+    const id = `appr-${(mockApprovalSeq += 1)}`;
+    const row: MockRow = { createdAt: new Date(), ...args.data, id };
+    mockApprovalRows.set(id, row);
+    return { ...row };
+  },
+  findUnique: async (args: { where: { id: string } }) => {
+    const row = mockApprovalRows.get(args.where.id);
+    return row ? { ...row } : null;
+  },
+  findMany: async (args?: { where?: MockRow }) =>
+    Array.from(mockApprovalRows.values())
+      .filter((r) => mockRowMatches(r, args?.where ?? {}))
+      .map((r) => ({ ...r })),
+  update: async (args: { where: { id: string }; data: MockRow }) => {
+    const row = mockApprovalRows.get(args.where.id);
+    if (!row) throw new Error(`approval ${args.where.id} not found`);
+    const next = { ...row, ...args.data };
+    mockApprovalRows.set(args.where.id, next);
+    return { ...next };
+  },
+  count: async () => mockApprovalRows.size,
+  deleteMany: async () => {
+    const count = mockApprovalRows.size;
+    mockApprovalRows.clear();
+    return { count };
+  },
+};
+
 const mockPrisma = {
-  workflow: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+  workflow: {
+    create: jest.fn(),
+    findUnique: jest.fn(),
+    // P-09 trap 1: the scoped reads use findFirst so the entity rides in the
+    // WHERE clause. Aliased so the double cannot answer undefined in silence.
+    findFirst: (...args: unknown[]) => mockPrisma.workflow.findUnique(...args),
+    update: jest.fn(),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    findMany: jest.fn(),
+    count: jest.fn(),
+  },
+  workflowExecutionRecord: mockExecutionRecordDelegate,
+  workflowApproval: mockApprovalDelegate,
   actionLog: { create: jest.fn().mockResolvedValue({ id: 'log-1' }) },
   task: { create: jest.fn().mockResolvedValue({ id: 'task-1', title: 'Test Task' }) },
   message: { create: jest.fn().mockResolvedValue({ id: 'msg-1' }) },
@@ -32,6 +148,9 @@ import { executeAction } from '@/modules/workflows/services/action-handlers';
 import { simulateWorkflow, validateGraph, estimateDuration, estimateCost } from '@/modules/workflows/services/simulation-service';
 import { requestApproval, submitApproval, getPendingApprovals, getApprovalStatus, clearApprovalStore } from '@/modules/workflows/services/approval-service';
 import type { WorkflowGraph, WorkflowNode, WorkflowEdge, TriggerNodeConfig, ActionNodeConfig, HumanApprovalNodeConfig } from '@/modules/workflows/types';
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+const ENTITY = verifiedEntityIdForTest('ent-1');
 
 const mockedExecuteAction = executeAction as jest.MockedFunction<typeof executeAction>;
 
@@ -60,9 +179,9 @@ function makeWorkflowRecord(id: string, graph: WorkflowGraph, overrides: Record<
 // --- Tests ---
 
 describe('Workflow Management E2E', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
-    clearExecutionStore();
+    await clearExecutionStore();
     clearApprovalStore();
   });
 
@@ -87,7 +206,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const execution = await executeWorkflow('wf-exec-1', 'system', 'EVENT');
+      const execution = await executeWorkflow('wf-exec-1', 'system', 'EVENT', ENTITY);
       expect(execution.status).toBe('COMPLETED');
       expect(execution.stepResults.length).toBe(2);
     });
@@ -104,7 +223,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const execution = await executeWorkflow('wf-seq', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-seq', 'user-1', 'MANUAL', ENTITY);
       expect(execution.status).toBe('COMPLETED');
       expect(order).toEqual(['CREATE_TASK', 'SEND_MESSAGE', 'LOG_FINANCIAL']);
     });
@@ -118,7 +237,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const exec = await executeWorkflow('wf-cond', 'user-1', 'MANUAL', { amount: 5000 });
+      const exec = await executeWorkflow('wf-cond', 'user-1', 'MANUAL', ENTITY, { amount: 5000 });
       expect(exec.status).toBe('COMPLETED');
       expect(exec.stepResults.find((s) => s.nodeId === 'c')?.output.result).toBe(true);
       expect(mockedExecuteAction).toHaveBeenCalledWith('SEND_NOTIFICATION', expect.objectContaining({ message: 'High value' }));
@@ -133,7 +252,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const exec = await executeWorkflow('wf-cond2', 'user-1', 'MANUAL', { amount: 50 });
+      const exec = await executeWorkflow('wf-cond2', 'user-1', 'MANUAL', ENTITY, { amount: 50 });
       expect(exec.stepResults.find((s) => s.nodeId === 'c')?.output.result).toBe(false);
       expect(mockedExecuteAction).toHaveBeenCalledWith('LOG_FINANCIAL', expect.objectContaining({ message: 'Low' }));
     });
@@ -149,7 +268,7 @@ describe('Workflow Management E2E', () => {
     it('should simulate steps without creating DB records', async () => {
       const graph: WorkflowGraph = { nodes: [triggerNode('t1'), actionNode('a1', 'Task 1'), actionNode('a2', 'Task 2')], edges: [makeEdge('t1', 'a1'), makeEdge('a1', 'a2')] };
       mockPrisma.workflow.findUnique.mockResolvedValue({ id: 'wf-sim', steps: graph });
-      const result = await simulateWorkflow('wf-sim');
+      const result = await simulateWorkflow('wf-sim', ENTITY);
       expect(result.steps).toHaveLength(3);
       expect(result.estimatedDuration).toBeGreaterThan(0);
     });
@@ -160,14 +279,14 @@ describe('Workflow Management E2E', () => {
         edges: [makeEdge('t1', 'a1')],
       };
       mockPrisma.workflow.findUnique.mockResolvedValue({ id: 'wf-irr', steps: graph });
-      const result = await simulateWorkflow('wf-irr');
+      const result = await simulateWorkflow('wf-irr', ENTITY);
       expect(result.steps.find((s) => s.nodeId === 'a1')?.reversible).toBe(false);
     });
 
     it('should warn about unreachable nodes', async () => {
       const graph: WorkflowGraph = { nodes: [triggerNode('t1'), actionNode('a1', 'Reachable'), actionNode('a2', 'Unreachable')], edges: [makeEdge('t1', 'a1')] };
       mockPrisma.workflow.findUnique.mockResolvedValue({ id: 'wf-unr', steps: graph });
-      const result = await simulateWorkflow('wf-unr');
+      const result = await simulateWorkflow('wf-unr', ENTITY);
       expect(result.warnings.some((w) => w.includes('unreachable'))).toBe(true);
     });
 
@@ -201,7 +320,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const exec = await executeWorkflow('wf-fail', 'user-1', 'MANUAL');
+      const exec = await executeWorkflow('wf-fail', 'user-1', 'MANUAL', ENTITY);
       expect(exec.status).toBe('FAILED');
       expect(exec.stepResults.find((s) => s.nodeId === 'a1')?.error).toContain('External API down');
       expect(exec.stepResults.find((s) => s.nodeId === 'a2')).toBeUndefined();
@@ -214,7 +333,7 @@ describe('Workflow Management E2E', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
 
-      const exec = await executeWorkflow('wf-eh', 'user-1', 'MANUAL');
+      const exec = await executeWorkflow('wf-eh', 'user-1', 'MANUAL', ENTITY);
       expect(exec.status).toBe('COMPLETED');
       expect(exec.stepResults.find((s) => s.nodeId === 'eh')?.status).toBe('COMPLETED');
     });
@@ -224,8 +343,11 @@ describe('Workflow Management E2E', () => {
       const record = makeWorkflowRecord('wf-lr', graph);
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
-      await executeWorkflow('wf-lr', 'user-1', 'MANUAL');
-      expect(mockPrisma.workflow.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'wf-lr' }, data: expect.objectContaining({ lastRun: expect.any(Date) }) }));
+      await executeWorkflow('wf-lr', 'user-1', 'MANUAL', ENTITY);
+      // CORRECTED BY P-09: `where: { id }` alone carried no tenant, so the write
+      // was reachable for any workflow id. The entity is in the WHERE now, and
+      // the write is updateMany because a unique WHERE cannot carry it.
+      expect(mockPrisma.workflow.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'wf-lr', entityId: ENTITY }, data: expect.objectContaining({ lastRun: expect.any(Date) }) }));
     });
   });
 
@@ -293,7 +415,7 @@ describe('Workflow Management E2E', () => {
       const record = makeWorkflowRecord('wf-rb', graph);
       mockPrisma.workflow.findUnique.mockResolvedValue(record);
       mockPrisma.workflow.update.mockResolvedValue(record);
-      const exec = await executeWorkflow('wf-rb', 'user-1', 'MANUAL');
+      const exec = await executeWorkflow('wf-rb', 'user-1', 'MANUAL', ENTITY);
       expect(exec.status).toBe('COMPLETED');
       expect(exec.stepResults.find((s) => s.nodeId === 'a')?.output).toBeDefined();
     });

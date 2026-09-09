@@ -32,23 +32,28 @@ import {
   generateImpactReport,
 } from '../../../src/modules/execution/services/simulation-engine';
 import type { SimulationRequest } from '../../../src/modules/execution/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+// P-09: the entity is a branded argument now, not a field the caller supplies
+// on the request -- a simulation describes the records it would touch, so a
+// caller-named entity previews another tenant's shape.
+const ENTITY = verifiedEntityIdForTest('entity-test-001');
 
 describe('SimulationEngine', () => {
-  const defaultEntityId = 'entity-test-001';
+  const defaultEntityId: string = ENTITY;
 
   describe('simulateAction', () => {
     it('should simulate CREATE_TASK with correct effects', async () => {
-      const request: SimulationRequest = {
+      const request: Omit<SimulationRequest, 'entityId'> = {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'Write report', projectId: 'proj-1', assigneeId: 'user-1' },
-        entityId: defaultEntityId,
       };
 
-      const result = await simulateAction(request);
+      const result = await simulateAction(request, ENTITY);
 
       expect(result.id).toBeDefined();
-      expect(result.request).toEqual(request);
+      expect(result.request).toEqual({ ...request, entityId: ENTITY });
       expect(result.simulatedAt).toBeInstanceOf(Date);
 
       // Primary effect: CREATE Task
@@ -78,8 +83,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'Test' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       // checkDuplicates is not set to false, so warning should appear
       expect(result.warnings).toContain(
@@ -92,8 +96,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'Test', checkDuplicates: false },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.warnings).not.toContain(
         'Check for duplicate tasks with similar titles before creating.'
@@ -109,8 +112,7 @@ describe('SimulationEngine', () => {
           channel: 'EMAIL',
           doNotContact: true,
         },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo).toHaveLength(1);
       expect(result.wouldDo[0].type).toBe('SEND');
@@ -137,8 +139,7 @@ describe('SimulationEngine', () => {
         actionType: 'SEND_MESSAGE',
         target: 'messages',
         parameters: { recipientId: 'user-1', channel: 'SMS' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.warnings).toEqual(
         expect.arrayContaining([
@@ -152,8 +153,7 @@ describe('SimulationEngine', () => {
         actionType: 'SEND_MESSAGE',
         target: 'messages',
         parameters: { recipientId: 'user-1', sensitivity: 'CONFIDENTIAL' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.warnings).toEqual(
         expect.arrayContaining([
@@ -167,8 +167,7 @@ describe('SimulationEngine', () => {
         actionType: 'DELETE_CONTACT',
         target: 'contacts/c-123',
         parameters: { contactId: 'c-123' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo).toHaveLength(1);
       expect(result.wouldDo[0].type).toBe('DELETE');
@@ -196,8 +195,7 @@ describe('SimulationEngine', () => {
         actionType: 'DELETE_PROJECT',
         target: 'projects/p-1',
         parameters: { projectId: 'p-1' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('DELETE');
       expect(result.wouldDo[0].model).toBe('Project');
@@ -211,8 +209,7 @@ describe('SimulationEngine', () => {
         actionType: 'DELETE_RECORD',
         target: 'records/r-1',
         parameters: { recordId: 'r-1', model: 'Invoice', hasDependencies: true },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('DELETE');
       expect(result.wouldDo[0].model).toBe('Invoice');
@@ -238,8 +235,7 @@ describe('SimulationEngine', () => {
         actionType: 'UPDATE_RECORD',
         target: 'records/r-1',
         parameters: { recordId: 'r-1', model: 'Contact', changes },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('UPDATE');
       expect(result.wouldDo[0].model).toBe('Contact');
@@ -258,8 +254,7 @@ describe('SimulationEngine', () => {
         actionType: 'TRIGGER_WORKFLOW',
         target: 'workflows/wf-1',
         parameters: { workflowId: 'wf-1', stepCount: 7 },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('UPDATE');
       expect(result.wouldDo[0].model).toBe('Workflow');
@@ -281,8 +276,7 @@ describe('SimulationEngine', () => {
         actionType: 'FINANCIAL_ACTION',
         target: 'finance',
         parameters: { amount: 150000, type: 'payment' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('CREATE');
       expect(result.wouldDo[0].model).toBe('FinancialRecord');
@@ -302,8 +296,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_CONTACT',
         target: 'contacts',
         parameters: { name: 'Alice' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo).toHaveLength(1);
       expect(result.wouldDo[0].type).toBe('CREATE');
@@ -318,8 +311,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_PROJECT',
         target: 'projects',
         parameters: { name: 'New Project' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].model).toBe('Project');
       expect(result.wouldDo[0].description).toContain('New Project');
@@ -331,8 +323,7 @@ describe('SimulationEngine', () => {
         actionType: 'GENERATE_DOCUMENT',
         target: 'documents',
         parameters: { title: 'Monthly Report', type: 'REPORT' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].model).toBe('Document');
       expect(result.wouldDo[0].description).toContain('Monthly Report');
@@ -345,8 +336,7 @@ describe('SimulationEngine', () => {
         actionType: 'CALL_API',
         target: 'api/endpoint',
         parameters: { endpoint: 'https://example.com/api' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('SEND');
       expect(result.wouldDo[0].model).toBe('ExternalAPI');
@@ -363,8 +353,7 @@ describe('SimulationEngine', () => {
         actionType: 'BULK_SEND',
         target: 'messages',
         parameters: { recipientCount: 150, channel: 'EMAIL' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('SEND');
       expect(result.wouldDo[0].description).toContain('150 recipients');
@@ -384,8 +373,7 @@ describe('SimulationEngine', () => {
         actionType: 'CUSTOM_ACTION',
         target: 'custom/resource',
         parameters: {},
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       expect(result.wouldDo[0].type).toBe('UPDATE');
       expect(result.wouldDo[0].model).toBe('Unknown');
@@ -403,8 +391,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_CONTACT',
         target: 'contacts',
         parameters: { name: 'Test' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
       expect(lowResult.recommendation).toBe('SAFE_TO_EXECUTE');
 
       // MEDIUM or actions with warnings -> REVIEW_RECOMMENDED
@@ -412,8 +399,7 @@ describe('SimulationEngine', () => {
         actionType: 'FINANCIAL_ACTION',
         target: 'finance',
         parameters: { amount: 500 },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
       // FINANCIAL_ACTION has blast radius MEDIUM -> REVIEW_RECOMMENDED or HIGH_RISK
       expect(['REVIEW_RECOMMENDED', 'HIGH_RISK']).toContain(mediumResult.recommendation);
     });
@@ -423,8 +409,7 @@ describe('SimulationEngine', () => {
         actionType: 'SEND_MESSAGE',
         target: 'messages',
         parameters: { channel: 'SMS', recipientId: 'user-1' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       // SMS costs $0.01
       expect(result.estimatedCost).toBe(0.01);
@@ -433,28 +418,25 @@ describe('SimulationEngine', () => {
 
   describe('simulateMultipleActions', () => {
     it('should simulate multiple actions in parallel', async () => {
-      const requests: SimulationRequest[] = [
+      const requests: Omit<SimulationRequest, 'entityId'>[] = [
         {
           actionType: 'CREATE_TASK',
           target: 'tasks',
           parameters: { title: 'Task 1' },
-          entityId: defaultEntityId,
         },
         {
           actionType: 'SEND_MESSAGE',
           target: 'messages',
           parameters: { recipientId: 'user-1', channel: 'EMAIL' },
-          entityId: defaultEntityId,
         },
         {
           actionType: 'DELETE_CONTACT',
           target: 'contacts/c-1',
           parameters: { contactId: 'c-1' },
-          entityId: defaultEntityId,
         },
       ];
 
-      const results = await simulateMultipleActions(requests);
+      const results = await simulateMultipleActions(requests, ENTITY);
 
       expect(results).toHaveLength(3);
       expect(results[0].request.actionType).toBe('CREATE_TASK');
@@ -467,7 +449,7 @@ describe('SimulationEngine', () => {
     });
 
     it('should return empty array for empty input', async () => {
-      const results = await simulateMultipleActions([]);
+      const results = await simulateMultipleActions([], ENTITY);
       expect(results).toHaveLength(0);
     });
   });
@@ -478,8 +460,7 @@ describe('SimulationEngine', () => {
         actionType: 'SEND_MESSAGE',
         target: 'messages',
         parameters: { recipientId: 'user-1', channel: 'EMAIL' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       const report = generateImpactReport(result);
 
@@ -499,8 +480,7 @@ describe('SimulationEngine', () => {
         actionType: 'DELETE_CONTACT',
         target: 'contacts/c-1',
         parameters: { contactId: 'c-1' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       const report = generateImpactReport(result);
       expect(report).toContain('--- Side Effects');
@@ -511,8 +491,7 @@ describe('SimulationEngine', () => {
         actionType: 'CALL_API',
         target: 'api/endpoint',
         parameters: { endpoint: 'https://example.com' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       const report = generateImpactReport(result);
       expect(report).toContain('--- Warnings');
@@ -524,8 +503,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_CONTACT',
         target: 'contacts',
         parameters: { name: 'Test' },
-        entityId: defaultEntityId,
-      });
+      }, ENTITY);
 
       const report = generateImpactReport(result);
       expect(report).not.toContain('--- Side Effects');
@@ -552,8 +530,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'AI test' },
-        entityId: 'entity-test-001',
-      });
+      }, ENTITY);
 
       expect(generateJSON).toHaveBeenCalled();
       expect(result.sideEffects.some((e) => e.model === 'AuditLog')).toBe(true);
@@ -572,8 +549,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'Test', projectId: 'proj-1', assigneeId: 'user-1' },
-        entityId: 'entity-test-001',
-      });
+      }, ENTITY);
 
       // Rule-based: 2 side effects (project update + assignee notification)
       // AI: 1 additional (Slack)
@@ -587,8 +563,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_TASK',
         target: 'tasks',
         parameters: { title: 'Fallback test', projectId: 'proj-1' },
-        entityId: 'entity-test-001',
-      });
+      }, ENTITY);
 
       expect(result.wouldDo).toHaveLength(1);
       expect(result.wouldDo[0].model).toBe('Task');
@@ -607,8 +582,7 @@ describe('SimulationEngine', () => {
         actionType: 'CREATE_CONTACT',
         target: 'contacts',
         parameters: { name: 'Test' },
-        entityId: 'entity-test-001',
-      });
+      }, ENTITY);
 
       expect((result as unknown as Record<string, unknown>).aiRiskAssessment).toBe('This is a low-risk operation');
     });

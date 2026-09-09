@@ -1,4 +1,10 @@
 // Mock Prisma client before imports
+//
+// P-09: the timeline is no longer built from every ActionLog row in the window.
+// `ActionLog` has no entityId column and the schema is frozen, so the scope now
+// comes from `QueuedAction`, which carries both the log id and the entity. That
+// means these tests need the queue delegate too -- and it is what makes the
+// tenancy assertions below possible at all.
 jest.mock('@/lib/db', () => ({
   __esModule: true,
   default: {
@@ -6,6 +12,9 @@ jest.mock('@/lib/db', () => ({
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(null),
       count: jest.fn().mockResolvedValue(0),
+    },
+    queuedAction: {
+      findMany: jest.fn().mockResolvedValue([]),
     },
   },
 }));
@@ -19,6 +28,25 @@ import {
 } from '@/modules/execution/services/operator-console';
 import prisma from '@/lib/db';
 import type { ActionLog } from '@/shared/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const ENTITY = verifiedEntityIdForTest('entity-1');
+const OTHER_ENTITY = verifiedEntityIdForTest('entity-2');
+
+/**
+ * Say which ActionLog ids this entity's queued actions point at.
+ *
+ * This IS the scope: `scopedLogIndex` reads it with the entity in the WHERE
+ * clause, so anything not listed here is unreachable for that tenant.
+ */
+function ownsLogs(entityId: string, ...logIds: string[]): void {
+  (prisma.queuedAction.findMany as jest.Mock).mockImplementation(
+    async (args: { where: { entityId: string } }) =>
+      args.where.entityId === entityId
+        ? logIds.map((actionLogId) => ({ actionLogId, entityId, projectId: null }))
+        : []
+  );
+}
 
 // Helper to build a mock Prisma ActionLog record
 function makePrismaActionLog(overrides: Partial<{
@@ -54,6 +82,8 @@ function makePrismaActionLog(overrides: Partial<{
 describe('OperatorConsole', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Unless a test says otherwise, every log id in play belongs to ENTITY.
+    ownsLogs(ENTITY, 'log-1', 'log-2', 'entry-42');
   });
 
   // ─── getTimeline ───────────────────────────────────────────────────
@@ -63,7 +93,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      const result = await getTimeline({});
+      const result = await getTimeline(ENTITY, {});
 
       expect(result.data).toEqual([]);
       expect(result.total).toBe(0);
@@ -77,7 +107,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(2);
 
-      const result = await getTimeline({});
+      const result = await getTimeline(ENTITY, {});
 
       expect(result.data).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -90,7 +120,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await getTimeline({ actor: 'SYSTEM' });
+      await getTimeline(ENTITY, { actor: 'SYSTEM' });
 
       const whereArg = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0].where;
       expect(whereArg.actor).toBe('SYSTEM');
@@ -102,7 +132,7 @@ describe('OperatorConsole', () => {
 
       const from = new Date('2026-01-01');
       const to = new Date('2026-01-31');
-      await getTimeline({ dateRange: { from, to } });
+      await getTimeline(ENTITY, { dateRange: { from, to } });
 
       const whereArg = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0].where;
       expect(whereArg.timestamp).toEqual({ gte: from, lte: to });
@@ -112,7 +142,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await getTimeline({ blastRadius: 'HIGH' });
+      await getTimeline(ENTITY, { blastRadius: 'HIGH' });
 
       const whereArg = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0].where;
       expect(whereArg.blastRadius).toBe('HIGH');
@@ -122,26 +152,44 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await getTimeline({}, 3, 20);
+      await getTimeline(ENTITY, {}, 3, 20);
 
       const findArgs = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0];
       expect(findArgs.skip).toBe(40); // (3-1) * 20
       expect(findArgs.take).toBe(20);
     });
 
-    it('should filter by entityId in-memory after DB query', async () => {
-      const mockLogs = [
-        makePrismaActionLog({ id: 'log-1', target: 'entity-A' }),
-        makePrismaActionLog({ id: 'log-2', target: 'entity-B' }),
-      ];
-      (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
-      (prisma.actionLog.count as jest.Mock).mockResolvedValue(2);
+    it('puts the tenant scope in the WHERE clause, not in a post-filter', async () => {
+      // CORRECTED BY P-09. This test used to be called "should filter by
+      // entityId in-memory after DB query" and it passed -- against a filter
+      // that compared an entity id to a TARGET STRING and therefore matched
+      // nothing. The filter ran on every request and removed nothing, so
+      // GET /api/execution/timeline returned every tenant's audit trail.
+      //
+      // The scope is now the set of log ids reachable from this entity's queued
+      // actions, and it is in the query.
+      ownsLogs(ENTITY, 'log-1');
+      (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([
+        makePrismaActionLog({ id: 'log-1' }),
+      ]);
+      (prisma.actionLog.count as jest.Mock).mockResolvedValue(1);
 
-      const result = await getTimeline({ entityId: 'entity-A' });
+      const result = await getTimeline(ENTITY, {});
 
-      // entityId is extracted from target, so only 'entity-A' target should match
-      expect(result.data).toHaveLength(1);
-      expect(result.data[0].entityId).toBe('entity-A');
+      const whereArg = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0].where;
+      expect(whereArg.id).toEqual({ in: ['log-1'] });
+      expect(result.data[0].entityId).toBe(ENTITY);
+    });
+
+    it('returns nothing for a tenant with no actions, without querying logs', async () => {
+      // Fail closed, and fail early: an entity that owns no queued actions can
+      // reach no log rows, so the log query is never issued at all.
+      ownsLogs(ENTITY, 'log-1');
+
+      const result = await getTimeline(OTHER_ENTITY, {});
+
+      expect(result).toEqual({ data: [], total: 0 });
+      expect(prisma.actionLog.findMany).not.toHaveBeenCalled();
     });
 
     it('should filter by search term across description, actionType, target, and actorName', async () => {
@@ -153,7 +201,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(2);
 
       // Search for "delete" should match the second entry's actionType
-      const result = await getTimeline({ search: 'delete' });
+      const result = await getTimeline(ENTITY, { search: 'delete' });
 
       expect(result.data).toHaveLength(1);
       expect(result.data[0].id).toBe('log-2');
@@ -163,7 +211,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await getTimeline({});
+      await getTimeline(ENTITY, {});
 
       const findArgs = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0];
       expect(findArgs.skip).toBe(0);
@@ -176,14 +224,24 @@ describe('OperatorConsole', () => {
 
   describe('getTimelineEntry', () => {
     it('should return null when the entry does not exist', async () => {
+      ownsLogs(ENTITY, 'nonexistent-id');
       (prisma.actionLog.findUnique as jest.Mock).mockResolvedValue(null);
 
-      const result = await getTimelineEntry('nonexistent-id');
+      const result = await getTimelineEntry('nonexistent-id', ENTITY);
 
       expect(result).toBeNull();
       expect(prisma.actionLog.findUnique).toHaveBeenCalledWith({
         where: { id: 'nonexistent-id' },
       });
+    });
+
+    it("returns null for another tenant's entry, without reading it", async () => {
+      ownsLogs(OTHER_ENTITY, 'entry-42');
+
+      const result = await getTimelineEntry('entry-42', ENTITY);
+
+      expect(result).toBeNull();
+      expect(prisma.actionLog.findUnique).not.toHaveBeenCalled();
     });
 
     it('should return a mapped timeline entry when found', async () => {
@@ -196,7 +254,7 @@ describe('OperatorConsole', () => {
       });
       (prisma.actionLog.findUnique as jest.Mock).mockResolvedValue(mockLog);
 
-      const result = await getTimelineEntry('entry-42');
+      const result = await getTimelineEntry('entry-42', ENTITY);
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe('entry-42');
@@ -244,7 +302,11 @@ describe('OperatorConsole', () => {
       expect(result[0].target).toBe('tasks');
       expect(result[0].blastRadius).toBe('LOW');
       expect(result[0].status).toBe('EXECUTED');
-      expect(result[0].entityId).toBe('tasks'); // extractEntityId returns target
+      // CORRECTED BY P-09: this used to assert `entityId === 'tasks'` with the
+      // comment "extractEntityId returns target". Returning the target string
+      // as an entity id is what made the tenant filter a no-op. With no owner
+      // index supplied, the entry now carries no entity rather than a wrong one.
+      expect(result[0].entityId).toBe('');
       expect(result[0].entityName).toBeUndefined();
       expect(result[0].projectId).toBeUndefined();
       expect(result[0].projectName).toBeUndefined();
@@ -337,7 +399,7 @@ describe('OperatorConsole', () => {
     it('should return zero counts when no logs exist in range', async () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getActivitySummary('entity-1', {
+      const result = await getActivitySummary(ENTITY, {
         from: new Date('2026-01-01'),
         to: new Date('2026-01-31'),
       });
@@ -358,7 +420,7 @@ describe('OperatorConsole', () => {
       ];
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
 
-      const result = await getActivitySummary('entity-1', {
+      const result = await getActivitySummary(ENTITY, {
         from: new Date('2026-01-01'),
         to: new Date('2026-01-31'),
       });
@@ -380,7 +442,7 @@ describe('OperatorConsole', () => {
       ];
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
 
-      const result = await getActivitySummary('entity-1', {
+      const result = await getActivitySummary(ENTITY, {
         from: new Date('2026-01-01'),
         to: new Date('2026-01-31'),
       });
@@ -397,7 +459,7 @@ describe('OperatorConsole', () => {
       );
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
 
-      const result = await getActivitySummary('entity-1', {
+      const result = await getActivitySummary(ENTITY, {
         from: new Date('2026-01-01'),
         to: new Date('2026-01-31'),
       });
@@ -410,11 +472,13 @@ describe('OperatorConsole', () => {
 
       const from = new Date('2026-02-01');
       const to = new Date('2026-02-28');
-      await getActivitySummary('entity-1', { from, to });
+      await getActivitySummary(ENTITY, { from, to });
 
       expect(prisma.actionLog.findMany).toHaveBeenCalledWith({
         where: {
           timestamp: { gte: from, lte: to },
+          // The scope, alongside the date range.
+          id: { in: ['log-1', 'log-2', 'entry-42'] },
         },
       });
     });
@@ -430,7 +494,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue(mockLogs);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(1);
 
-      const result = await searchTimeline('email');
+      const result = await searchTimeline('email', ENTITY);
 
       // Should find the entry because 'email' is in actionType 'SEND_EMAIL'
       expect(result).toHaveLength(1);
@@ -441,7 +505,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await searchTimeline('task', { actor: 'AI', blastRadius: 'LOW' });
+      await searchTimeline('task', ENTITY, { actor: 'AI', blastRadius: 'LOW' });
 
       const findArgs = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0];
       expect(findArgs.where.actor).toBe('AI');
@@ -452,7 +516,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      await searchTimeline('anything');
+      await searchTimeline('anything', ENTITY);
 
       const findArgs = (prisma.actionLog.findMany as jest.Mock).mock.calls[0][0];
       expect(findArgs.take).toBe(100);
@@ -462,7 +526,7 @@ describe('OperatorConsole', () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      const result = await searchTimeline('nonexistent-xyz');
+      const result = await searchTimeline('nonexistent-xyz', ENTITY);
       expect(result).toEqual([]);
     });
   });

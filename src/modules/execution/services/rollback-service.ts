@@ -2,14 +2,46 @@
 // Rollback / Undo Service
 // Creates and executes rollback plans for executed actions
 // ============================================================================
+//
+// P-09 (T-007): rollback plans lived in a module-level `Map`. A rollback plan
+// is the promise the consent receipt makes -- "this is reversible, here is
+// how" -- so a plan that evaporates on restart silently turns a reversible
+// action into an irreversible one. Plans now live in `RollbackPlan`.
+//
+// P-09 (T-001): `RollbackPlan` has no `entityId` column, and should not have
+// one: the plan belongs to the action. The scope is therefore proved on the
+// PARENT -- the queued action -- and every entry point returns early when that
+// action is not this tenant's.
 
 import prisma from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { RollbackPlan, RollbackStep, RollbackResult } from '../types';
-import { _getActionStore } from './action-queue';
+import {
+  getActionById,
+  markActionRolledBackForEntityOwner,
+} from './action-queue';
 
-// --- In-Memory Rollback Plan Store ---
+// --- Row <-> interface reconciliation ---
 
-const rollbackPlanStore = new Map<string, RollbackPlan>();
+interface RollbackPlanRow {
+  actionId: string;
+  steps: unknown;
+  estimatedDuration: number;
+  canAutoRollback: boolean;
+  requiresManualSteps: boolean;
+  manualInstructions: string | null;
+}
+
+function toRollbackPlan(row: RollbackPlanRow): RollbackPlan {
+  return {
+    actionId: row.actionId,
+    steps: (row.steps as RollbackStep[]) ?? [],
+    estimatedDuration: row.estimatedDuration,
+    canAutoRollback: row.canAutoRollback,
+    requiresManualSteps: row.requiresManualSteps,
+    manualInstructions: row.manualInstructions ?? undefined,
+  };
+}
 
 // --- Action Type to Rollback Step Mapping ---
 
@@ -155,10 +187,11 @@ const ROLLBACK_STRATEGIES: Record<
 // --- Public API ---
 
 export async function createRollbackPlan(
-  actionId: string
+  actionId: string,
+  entityId: VerifiedEntityId
 ): Promise<RollbackPlan> {
-  const actionStore = _getActionStore();
-  const action = actionStore.get(actionId);
+  // Scope proved on the parent: a foreign action is simply not found.
+  const action = await getActionById(actionId, entityId);
 
   if (!action) {
     throw new Error(`Action ${actionId} not found`);
@@ -178,31 +211,47 @@ export async function createRollbackPlan(
 
   const canAutoRollback = steps.every((s) => s.type !== 'MANUAL');
   const requiresManualSteps = steps.some((s) => s.type === 'MANUAL');
+  const manualInstructions = requiresManualSteps
+    ? steps
+        .filter((s) => s.type === 'MANUAL')
+        .map((s) => s.description)
+        .join('\n')
+    : null;
 
-  const plan: RollbackPlan = {
-    actionId,
-    steps,
-    estimatedDuration: steps.length * 1000,
-    canAutoRollback,
-    requiresManualSteps,
-    manualInstructions: requiresManualSteps
-      ? steps
-          .filter((s) => s.type === 'MANUAL')
-          .map((s) => s.description)
-          .join('\n')
-      : undefined,
-  };
+  const row = await prisma.rollbackPlan.upsert({
+    where: { actionId },
+    create: {
+      actionId,
+      steps: steps as unknown as object,
+      estimatedDuration: steps.length * 1000,
+      canAutoRollback,
+      requiresManualSteps,
+      manualInstructions,
+    },
+    update: {
+      steps: steps as unknown as object,
+      estimatedDuration: steps.length * 1000,
+      canAutoRollback,
+      requiresManualSteps,
+      manualInstructions,
+    },
+  });
 
-  rollbackPlanStore.set(actionId, plan);
-  return plan;
+  return toRollbackPlan(row as RollbackPlanRow);
 }
 
 export async function executeRollback(
-  actionId: string
+  actionId: string,
+  entityId: VerifiedEntityId
 ): Promise<RollbackResult> {
-  let plan = rollbackPlanStore.get(actionId);
+  const action = await getActionById(actionId, entityId);
+  if (!action) {
+    throw new Error(`Action ${actionId} not found`);
+  }
+
+  let plan = await readPlan(actionId);
   if (!plan) {
-    plan = await createRollbackPlan(actionId);
+    plan = await createRollbackPlan(actionId, entityId);
   }
 
   let stepsCompleted = 0;
@@ -270,18 +319,19 @@ export async function executeRollback(
     }
   }
 
+  // Persist the outcome of every step: the record of what was reversed has to
+  // survive the restart this whole service exists to be trusted across.
+  await prisma.rollbackPlan.updateMany({
+    where: { actionId },
+    data: { steps: plan.steps as unknown as object },
+  });
+
   // Update ActionLog status
-  const actionStore = _getActionStore();
-  const action = actionStore.get(actionId);
-  if (action) {
-    await prisma.actionLog.update({
-      where: { id: action.actionLogId },
-      data: { status: 'ROLLED_BACK' },
-    });
-    action.status = 'ROLLED_BACK';
-    action.updatedAt = new Date();
-    actionStore.set(actionId, action);
-  }
+  await prisma.actionLog.update({
+    where: { id: action.actionLogId },
+    data: { status: 'ROLLED_BACK' },
+  });
+  await markActionRolledBackForEntityOwner(actionId);
 
   let status: RollbackResult['status'];
   if (stepsFailed === 0 && stepsSkipped === 0) {
@@ -303,16 +353,19 @@ export async function executeRollback(
 }
 
 export async function getRollbackPlan(
-  actionId: string
+  actionId: string,
+  entityId: VerifiedEntityId
 ): Promise<RollbackPlan | null> {
-  return rollbackPlanStore.get(actionId) ?? null;
+  const action = await getActionById(actionId, entityId);
+  if (!action) return null;
+  return readPlan(actionId);
 }
 
 export async function canRollback(
-  actionId: string
+  actionId: string,
+  entityId: VerifiedEntityId
 ): Promise<{ canRollback: boolean; reason?: string }> {
-  const actionStore = _getActionStore();
-  const action = actionStore.get(actionId);
+  const action = await getActionById(actionId, entityId);
 
   if (!action) {
     return { canRollback: false, reason: 'Action not found' };
@@ -339,8 +392,16 @@ export async function canRollback(
   return { canRollback: true };
 }
 
+// --- Internal ---
+
+async function readPlan(actionId: string): Promise<RollbackPlan | null> {
+  const row = await prisma.rollbackPlan.findUnique({ where: { actionId } });
+  return row ? toRollbackPlan(row as RollbackPlanRow) : null;
+}
+
 // --- Testing Helpers ---
 
-export function _clearRollbackStore(): void {
-  rollbackPlanStore.clear();
+/** Remove every rollback plan. A real delete now -- there is no Map to clear. */
+export async function _clearRollbackStore(): Promise<void> {
+  await prisma.rollbackPlan.deleteMany({});
 }

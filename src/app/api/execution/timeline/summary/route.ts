@@ -1,7 +1,16 @@
+// ============================================================================
+// GET /api/execution/timeline/summary - Aggregated activity for one entity
+// ============================================================================
+//
+// P-09 (T-001): required `entityId` and never verified it, then aggregated
+// every ActionLog row in the window regardless -- so the summary was both
+// unauthorized and, separately, wrong. Both halves are fixed: the entity is
+// verified here, and the aggregate is scoped through QueuedAction.
+
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { getActivitySummary } from '@/modules/execution/services/operator-console';
 
 function defaultFrom(): string {
@@ -15,7 +24,7 @@ function defaultTo(): string {
 }
 
 const SummaryQuerySchema = z.object({
-  entityId: z.string().min(1, 'entityId is required'),
+  entityId: z.string().optional(),
   from: z
     .string()
     .datetime({ offset: true })
@@ -29,7 +38,7 @@ const SummaryQuerySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = new URL(req.url);
       const rawQuery: Record<string, string> = {};
@@ -48,7 +57,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const { entityId, from, to } = parsed.data;
+      const { from, to } = parsed.data;
 
       const summary = await getActivitySummary(entityId, {
         from: new Date(from),

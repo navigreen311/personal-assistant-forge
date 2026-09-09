@@ -13,6 +13,7 @@ import type {
   RetryPolicy,
 } from '@/modules/workflows/types';
 import type { BlastRadius } from '@/shared/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { executeWorkflow } from './workflow-executor';
 
 // In-memory agent registry
@@ -546,9 +547,18 @@ const BLAST_RADIUS_LEVELS: Record<string, number> = {
   CRITICAL: 4,
 };
 
+/**
+ * Run a workflow autonomously on behalf of an agent.
+ *
+ * P-09 (T-001): `executeWorkflow` now requires a VerifiedEntityId, so this
+ * caller has to say which tenant the agent is acting for. An agent run is
+ * autonomous execution against real records -- if anything in the codebase
+ * should be unable to reach the wrong tenant, it is this.
+ */
 export async function executeAutonomousWorkflow(
   workflowId: string,
   agentId: string,
+  entityId: VerifiedEntityId,
   maxSteps?: number
 ): Promise<WorkflowExecution> {
   const agent = agentRegistry.get(agentId);
@@ -561,6 +571,7 @@ export async function executeAutonomousWorkflow(
     workflowId,
     agentId,
     'AGENT',
+    entityId,
     {
       __agentId: agentId,
       __autonomyLevel: agent.autonomyLevel,

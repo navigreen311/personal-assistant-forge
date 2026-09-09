@@ -1,16 +1,59 @@
+// ============================================================================
+// GET /api/rules/:id/audit - Where a policy rule has been applied
+// ============================================================================
+//
+// P-09 (T-001): no scope. The rule's name and its whole application history --
+// action logs and the consent receipts attached to them -- were readable by id.
+
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
-import { withAuth } from '@/shared/middleware/auth';
+import {
+  withAuth,
+  withEntityScope,
+  type VerifiedEntityId,
+} from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
+
+async function withRuleScope(
+  request: NextRequest,
+  ruleId: string,
+  handler: (
+    req: NextRequest,
+    session: AuthSession,
+    entityId: VerifiedEntityId | null
+  ) => Promise<Response>
+): Promise<Response> {
+  return withAuth(request, async (authedReq, session) => {
+    const owner = await prisma.rule.findUnique({
+      where: { id: ruleId },
+      select: { entityId: true },
+    });
+    if (!owner) {
+      return error('NOT_FOUND', `Rule ${ruleId} not found`, 404);
+    }
+
+    // A platform-wide rule has no owning entity; its audit trail is readable
+    // by any authenticated user, the same as the rule itself.
+    if (owner.entityId === null) {
+      return handler(authedReq, session, null);
+    }
+
+    return withEntityScope(
+      authedReq,
+      (req, innerSession, entityId) => handler(req, innerSession, entityId),
+      owner.entityId
+    );
+  });
+}
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (_req, _session) => {
+  const { id } = await params;
+  return withRuleScope(request, id, async () => {
     try {
-      const { id } = await params;
-
       // Find the rule
       const rule = await prisma.rule.findUnique({ where: { id } });
       if (!rule) {
@@ -31,17 +74,14 @@ export async function GET(
       });
 
       // Get associated consent receipts
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const actionIds = actionLogs.map((l: any) => l.id as string);
+      const actionIds = actionLogs.map((l) => l.id);
       const receipts = await prisma.consentReceipt.findMany({
         where: { actionId: { in: actionIds } },
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const receiptMap = new Map(receipts.map((r: any) => [r.actionId as string, r]));
+      const receiptMap = new Map(receipts.map((r) => [r.actionId, r]));
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const auditEntries = actionLogs.map((log: any) => ({
+      const auditEntries = actionLogs.map((log) => ({
         actionId: log.id,
         timestamp: log.timestamp,
         actor: log.actor,

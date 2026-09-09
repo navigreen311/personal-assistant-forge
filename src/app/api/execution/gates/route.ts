@@ -4,11 +4,17 @@
 // PUT /api/execution/gates    - Update an existing execution gate
 // DELETE /api/execution/gates - Delete an execution gate
 // ============================================================================
+//
+// P-09 (T-001): all four handlers discarded the session as `_session` and took
+// `entityId` off the request. A gate is what STOPS an action, so both
+// directions mattered: a caller could list another tenant's gates, and could
+// delete them. They now run under `withEntityScope`, and the service puts the
+// verified entity in the WHERE clause of every statement.
 
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import {
   listGates,
   createGate,
@@ -20,6 +26,7 @@ import {
 
 const listFiltersSchema = z.object({
   scope: z.enum(['GLOBAL', 'ENTITY', 'RUNBOOK']).optional(),
+  // Still accepted, still verified by withEntityScope, never trusted here.
   entityId: z.string().optional(),
 });
 
@@ -44,12 +51,13 @@ const updateGateSchema = z.object({
 
 const deleteGateSchema = z.object({
   id: z.string().min(1),
+  entityId: z.string().optional(),
 });
 
 // --- Handlers ---
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = new URL(req.url);
 
@@ -67,9 +75,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const { scope, entityId } = parsed.data;
-
-      const gates = listGates(scope, entityId);
+      const gates = await listGates(entityId, parsed.data.scope);
       return success(gates);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';
@@ -79,7 +85,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body: unknown = await req.json();
 
@@ -93,7 +99,9 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const gate = createGate(parsed.data);
+      // Drop the caller's own entityId; the verified one is the owner.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const gate = await createGate(draft, entityId);
       return success(gate, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';
@@ -103,7 +111,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body: unknown = await req.json();
 
@@ -117,8 +125,8 @@ export async function PUT(request: NextRequest) {
         );
       }
 
-      const { id, ...updates } = parsed.data;
-      const gate = updateGate(id, updates);
+      const { id, entityId: _requested, ...updates } = parsed.data;
+      const gate = await updateGate(id, updates, entityId);
       return success(gate);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';
@@ -131,7 +139,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body: unknown = await req.json();
 
@@ -145,7 +153,7 @@ export async function DELETE(request: NextRequest) {
         );
       }
 
-      deleteGate(parsed.data.id);
+      await deleteGate(parsed.data.id, entityId);
       return success({ deleted: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';

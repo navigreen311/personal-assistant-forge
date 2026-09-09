@@ -1,11 +1,19 @@
 // ============================================================================
 // POST /api/execution/queue/bulk  - Bulk approve or reject queued actions
 // ============================================================================
+//
+// P-09 (T-001): the bulk route was the worst shape of the bug. It discarded the
+// session, took a list of ids with no tenant scope, and took `approverId` off
+// the body -- so one request could approve an arbitrary set of another tenant's
+// pending actions, in a name of the caller's choosing.
+//
+// Now: the entity is verified once, every id is scoped to it inside the
+// service, and a foreign id simply counts as `failed`. Nothing is written.
 
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withRole } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import {
   bulkApprove,
   bulkReject,
@@ -17,19 +25,26 @@ const bulkActionSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('APPROVE'),
     actionIds: z.array(z.string().min(1)).min(1),
-    approverId: z.string().min(1),
+    // Accepted for backwards compatibility and deliberately ignored.
+    approverId: z.string().min(1).optional(),
+    entityId: z.string().optional(),
   }),
   z.object({
     action: z.literal('REJECT'),
     actionIds: z.array(z.string().min(1)).min(1),
     reason: z.string().min(1),
+    entityId: z.string().optional(),
   }),
 ]);
 
 // --- Handler ---
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin', 'owner'], async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
+    if (session.role !== 'admin' && session.role !== 'owner') {
+      return error('FORBIDDEN', 'Insufficient permissions', 403);
+    }
+
     try {
       const body: unknown = await req.json();
 
@@ -47,11 +62,19 @@ export async function POST(request: NextRequest) {
 
       switch (payload.action) {
         case 'APPROVE': {
-          const result = await bulkApprove(payload.actionIds, payload.approverId);
+          const result = await bulkApprove(
+            payload.actionIds,
+            session.userId,
+            entityId
+          );
           return success(result);
         }
         case 'REJECT': {
-          const result = await bulkReject(payload.actionIds, payload.reason);
+          const result = await bulkReject(
+            payload.actionIds,
+            payload.reason,
+            entityId
+          );
           return success(result);
         }
       }

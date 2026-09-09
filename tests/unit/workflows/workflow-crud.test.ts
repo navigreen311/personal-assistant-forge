@@ -10,18 +10,36 @@ const mockWorkflowCreate = jest.fn();
 const mockWorkflowFindUnique = jest.fn();
 const mockWorkflowFindMany = jest.fn();
 const mockWorkflowUpdate = jest.fn();
+const mockWorkflowUpdateMany = jest.fn();
 const mockWorkflowCount = jest.fn();
+const mockSyncCronTriggers = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
     workflow: {
       create: (...args: unknown[]) => mockWorkflowCreate(...args),
+      // P-09 trap 1: the reads moved from findUnique to findFirst so the entity
+      // can ride in the WHERE clause. Aliased, so a mock that only knows
+      // findUnique cannot silently return undefined.
       findUnique: (...args: unknown[]) => mockWorkflowFindUnique(...args),
+      findFirst: (...args: unknown[]) => mockWorkflowFindUnique(...args),
       findMany: (...args: unknown[]) => mockWorkflowFindMany(...args),
       update: (...args: unknown[]) => mockWorkflowUpdate(...args),
+      // P-09: writes are updateMany with { id, entityId }; a unique WHERE
+      // cannot carry the tenant.
+      updateMany: (...args: unknown[]) => mockWorkflowUpdateMany(...args),
       count: (...args: unknown[]) => mockWorkflowCount(...args),
     },
   },
+}));
+
+// P-09 (P-11 finding 1): workflow-crud is now the cron PRODUCER, so a workflow
+// carrying a TIME trigger reconciles BullMQ's repeat state on save. That is a
+// Redis call; this suite is offline, so the producer is stubbed and asserted
+// on directly.
+jest.mock('@/lib/queue/scheduler', () => ({
+  syncCronTriggers: (...args: unknown[]) => mockSyncCronTriggers(...args),
+  cronExpressionsOf: jest.requireActual('@/lib/queue/scheduler').cronExpressionsOf,
 }));
 
 import {
@@ -33,6 +51,9 @@ import {
   duplicateWorkflow,
 } from '@/modules/workflows/services/workflow-crud';
 import type { WorkflowGraph, TriggerNodeConfig } from '@/modules/workflows/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const ENTITY = verifiedEntityIdForTest('ent-1');
 
 // --- Helpers ---
 
@@ -93,6 +114,8 @@ function makePrismaWorkflow(overrides: Partial<{
 describe('WorkflowCRUD', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockWorkflowUpdateMany.mockResolvedValue({ count: 1 });
+    mockSyncCronTriggers.mockResolvedValue({ registered: [], cleared: false });
   });
 
   // ─── createWorkflow ────────────────────────────────────
@@ -106,10 +129,9 @@ describe('WorkflowCRUD', () => {
 
       const result = await createWorkflow({
         name: 'Test Workflow',
-        entityId: 'ent-1',
         graph,
         triggers,
-      });
+      }, ENTITY);
 
       expect(result.id).toBe('wf-1');
       expect(result.name).toBe('Test Workflow');
@@ -132,7 +154,7 @@ describe('WorkflowCRUD', () => {
         })
       );
 
-      await createWorkflow({ name: 'New', entityId: 'ent-1', graph, triggers });
+      await createWorkflow({ name: 'New', graph, triggers }, ENTITY);
 
       expect(mockWorkflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -155,10 +177,9 @@ describe('WorkflowCRUD', () => {
 
       const result = await createWorkflow({
         name: 'Scheduled',
-        entityId: 'ent-1',
         graph,
         triggers,
-      });
+      }, ENTITY);
 
       expect(result.triggers).toHaveLength(1);
       expect(mockWorkflowCreate).toHaveBeenCalledWith(
@@ -178,7 +199,7 @@ describe('WorkflowCRUD', () => {
       const prismaRecord = makePrismaWorkflow();
       mockWorkflowCreate.mockResolvedValue(prismaRecord);
 
-      await createWorkflow({ name: 'With Graph', entityId: 'ent-1', graph, triggers });
+      await createWorkflow({ name: 'With Graph', graph, triggers }, ENTITY);
 
       expect(mockWorkflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -197,7 +218,7 @@ describe('WorkflowCRUD', () => {
       const prismaRecord = makePrismaWorkflow({ id: 'wf-42', name: 'Found Workflow' });
       mockWorkflowFindUnique.mockResolvedValue(prismaRecord);
 
-      const result = await getWorkflow('wf-42');
+      const result = await getWorkflow('wf-42', ENTITY);
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe('wf-42');
@@ -208,7 +229,7 @@ describe('WorkflowCRUD', () => {
     it('should return null when workflow does not exist', async () => {
       mockWorkflowFindUnique.mockResolvedValue(null);
 
-      const result = await getWorkflow('nonexistent');
+      const result = await getWorkflow('nonexistent', ENTITY);
 
       expect(result).toBeNull();
     });
@@ -217,7 +238,7 @@ describe('WorkflowCRUD', () => {
       const prismaRecord = makePrismaWorkflow({ lastRun: null });
       mockWorkflowFindUnique.mockResolvedValue(prismaRecord);
 
-      const result = await getWorkflow('wf-1');
+      const result = await getWorkflow('wf-1', ENTITY);
 
       expect(result).not.toBeNull();
       expect(result!.lastRun).toBeUndefined();
@@ -228,7 +249,7 @@ describe('WorkflowCRUD', () => {
       const prismaRecord = makePrismaWorkflow({ lastRun: lastRunDate });
       mockWorkflowFindUnique.mockResolvedValue(prismaRecord);
 
-      const result = await getWorkflow('wf-1');
+      const result = await getWorkflow('wf-1', ENTITY);
 
       expect(result).not.toBeNull();
       expect(result!.lastRun).toEqual(lastRunDate);
@@ -240,14 +261,19 @@ describe('WorkflowCRUD', () => {
   describe('updateWorkflow', () => {
     it('should update name when provided', async () => {
       const updated = makePrismaWorkflow({ name: 'Updated Workflow' });
-      mockWorkflowUpdate.mockResolvedValue(updated);
+      mockWorkflowFindUnique.mockResolvedValue(updated);
 
-      const result = await updateWorkflow('wf-1', { name: 'Updated Workflow' });
+      const result = await updateWorkflow('wf-1', { name: 'Updated Workflow' }, ENTITY);
 
       expect(result.name).toBe('Updated Workflow');
-      expect(mockWorkflowUpdate).toHaveBeenCalledWith(
+      // CORRECTED BY P-09. This assertion used to require
+      // `update({ where: { id: 'wf-1' } })` -- a unique WHERE with no entity in
+      // it, which is precisely the defect: anyone who knew a workflow id could
+      // rewrite another tenant's automation. The tenant is in the WHERE now,
+      // and the write is updateMany because a unique WHERE cannot carry it.
+      expect(mockWorkflowUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'wf-1' },
+          where: { id: 'wf-1', entityId: ENTITY },
           data: expect.objectContaining({ name: 'Updated Workflow' }),
         })
       );
@@ -255,9 +281,9 @@ describe('WorkflowCRUD', () => {
 
     it('should update status when provided', async () => {
       const updated = makePrismaWorkflow({ status: 'ACTIVE' });
-      mockWorkflowUpdate.mockResolvedValue(updated);
+      mockWorkflowFindUnique.mockResolvedValue(updated);
 
-      const result = await updateWorkflow('wf-1', { status: 'ACTIVE' });
+      const result = await updateWorkflow('wf-1', { status: 'ACTIVE' }, ENTITY);
 
       expect(result.status).toBe('ACTIVE');
     });
@@ -278,11 +304,11 @@ describe('WorkflowCRUD', () => {
         edges: [],
       });
       const updated = makePrismaWorkflow({ steps: newGraph });
-      mockWorkflowUpdate.mockResolvedValue(updated);
+      mockWorkflowFindUnique.mockResolvedValue(updated);
 
-      await updateWorkflow('wf-1', { graph: newGraph });
+      await updateWorkflow('wf-1', { graph: newGraph }, ENTITY);
 
-      expect(mockWorkflowUpdate).toHaveBeenCalledWith(
+      expect(mockWorkflowUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             steps: newGraph,
@@ -293,11 +319,11 @@ describe('WorkflowCRUD', () => {
 
     it('should only include defined fields in update data', async () => {
       const updated = makePrismaWorkflow({ name: 'Only Name' });
-      mockWorkflowUpdate.mockResolvedValue(updated);
+      mockWorkflowFindUnique.mockResolvedValue(updated);
 
-      await updateWorkflow('wf-1', { name: 'Only Name' });
+      await updateWorkflow('wf-1', { name: 'Only Name' }, ENTITY);
 
-      const updateCall = mockWorkflowUpdate.mock.calls[0][0];
+      const updateCall = mockWorkflowUpdateMany.mock.calls[0][0];
       expect(updateCall.data).toEqual({ name: 'Only Name' });
       expect(updateCall.data.status).toBeUndefined();
       expect(updateCall.data.steps).toBeUndefined();
@@ -311,11 +337,11 @@ describe('WorkflowCRUD', () => {
       const updated = makePrismaWorkflow({
         triggers: [{ type: 'EVENT', config: newTriggers[0] }],
       });
-      mockWorkflowUpdate.mockResolvedValue(updated);
+      mockWorkflowFindUnique.mockResolvedValue(updated);
 
-      await updateWorkflow('wf-1', { triggers: newTriggers });
+      await updateWorkflow('wf-1', { triggers: newTriggers }, ENTITY);
 
-      expect(mockWorkflowUpdate).toHaveBeenCalledWith(
+      expect(mockWorkflowUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             triggers: expect.arrayContaining([
@@ -331,22 +357,31 @@ describe('WorkflowCRUD', () => {
 
   describe('deleteWorkflow', () => {
     it('should soft-delete by setting status to ARCHIVED', async () => {
-      mockWorkflowUpdate.mockResolvedValue({});
+      mockWorkflowFindUnique.mockResolvedValue(makePrismaWorkflow({ status: 'ARCHIVED' }));
 
-      await deleteWorkflow('wf-1');
+      await deleteWorkflow('wf-1', ENTITY);
 
-      expect(mockWorkflowUpdate).toHaveBeenCalledWith({
-        where: { id: 'wf-1' },
+      // CORRECTED BY P-09: `where: { id }` alone let any caller archive any
+      // tenant's workflow. The entity is in the WHERE now.
+      expect(mockWorkflowUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'wf-1', entityId: ENTITY },
         data: { status: 'ARCHIVED' },
       });
     });
 
     it('should return void (no return value)', async () => {
-      mockWorkflowUpdate.mockResolvedValue({});
+      mockWorkflowFindUnique.mockResolvedValue(makePrismaWorkflow({ status: 'ARCHIVED' }));
 
-      const result = await deleteWorkflow('wf-1');
+      const result = await deleteWorkflow('wf-1', ENTITY);
 
       expect(result).toBeUndefined();
+    });
+
+    it("refuses to archive another tenant's workflow, and writes nothing", async () => {
+      // The scoped updateMany matches no row: count === 0 is not-found.
+      mockWorkflowUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(deleteWorkflow('wf-1', ENTITY)).rejects.toThrow('not found');
     });
   });
 
@@ -362,7 +397,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue(mockRecords);
       mockWorkflowCount.mockResolvedValue(2);
 
-      const result = await listWorkflows('ent-1');
+      const result = await listWorkflows(ENTITY);
 
       expect(result.data).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -373,7 +408,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue([mockRecords[0]]);
       mockWorkflowCount.mockResolvedValue(1);
 
-      const result = await listWorkflows('ent-1', { status: 'DRAFT' });
+      const result = await listWorkflows(ENTITY, { status: 'DRAFT' });
 
       expect(result.data).toHaveLength(1);
       expect(mockWorkflowFindMany).toHaveBeenCalledWith(
@@ -387,7 +422,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue([mockRecords[1]]);
       mockWorkflowCount.mockResolvedValue(2);
 
-      await listWorkflows('ent-1', undefined, 2, 1);
+      await listWorkflows(ENTITY, undefined, 2, 1);
 
       expect(mockWorkflowFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -401,7 +436,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue(mockRecords);
       mockWorkflowCount.mockResolvedValue(2);
 
-      await listWorkflows('ent-1');
+      await listWorkflows(ENTITY);
 
       expect(mockWorkflowFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -414,7 +449,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue([]);
       mockWorkflowCount.mockResolvedValue(0);
 
-      const result = await listWorkflows('ent-1', { status: 'ACTIVE' });
+      const result = await listWorkflows(ENTITY, { status: 'ACTIVE' });
 
       expect(result.data).toHaveLength(0);
       expect(result.total).toBe(0);
@@ -424,7 +459,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindMany.mockResolvedValue(mockRecords);
       mockWorkflowCount.mockResolvedValue(2);
 
-      await listWorkflows('ent-1');
+      await listWorkflows(ENTITY);
 
       expect(mockWorkflowFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -459,7 +494,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindUnique.mockResolvedValue(original);
       mockWorkflowCreate.mockResolvedValue(duplicated);
 
-      const result = await duplicateWorkflow('wf-original', 'Copy of Original');
+      const result = await duplicateWorkflow('wf-original', 'Copy of Original', ENTITY);
 
       expect(result.id).toBe('wf-copy');
       expect(result.name).toBe('Copy of Original');
@@ -479,7 +514,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindUnique.mockResolvedValue(null);
 
       await expect(
-        duplicateWorkflow('nonexistent', 'Copy')
+        duplicateWorkflow('nonexistent', 'Copy', ENTITY)
       ).rejects.toThrow('Workflow nonexistent not found');
     });
 
@@ -516,7 +551,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindUnique.mockResolvedValue(original);
       mockWorkflowCreate.mockResolvedValue(duplicated);
 
-      await duplicateWorkflow('wf-src', 'Duplicated');
+      await duplicateWorkflow('wf-src', 'Duplicated', ENTITY);
 
       expect(mockWorkflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -535,7 +570,7 @@ describe('WorkflowCRUD', () => {
       mockWorkflowFindUnique.mockResolvedValue(original);
       mockWorkflowCreate.mockResolvedValue(duplicated);
 
-      await duplicateWorkflow('wf-active', 'Active Copy');
+      await duplicateWorkflow('wf-active', 'Active Copy', ENTITY);
 
       expect(mockWorkflowCreate).toHaveBeenCalledWith(
         expect.objectContaining({
