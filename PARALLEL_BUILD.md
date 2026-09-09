@@ -297,7 +297,73 @@ which is why P-22 is explicitly forbidden from touching `.github/**`, and why
 only in CI, for two entirely different environmental reasons. When a test passes
 on this machine and fails on the runner, the machine is usually the one lying.
 
-## WHAT NOW STANDS BETWEEN THIS REPO AND ITS FIRST GREEN CI RUN
+## THE BOARD WENT GREEN (2026-09-09)
+
+**Master CI at `9c26e85`: 4 of 5 jobs pass.**
+
+```
+Lint, Type Check & Test   PASS   <- never passed before, in 115 runs
+Build                     PASS   <- had never RUN; it needs the lint job green
+Docker Build              PASS   <- had never RUN
+Real-Database Tests       PASS
+Security Scan             FAIL   <- newly REACHED, see below
+```
+
+Local on master at `06dadfa`: `tsc` **0**, unit **320/320 suites, 5269/5269
+tests**, `test:db` **138/138**.
+
+Every one of the four blockers recorded above is closed. The thing that had never
+happened in this repository's history has now happened.
+
+### The one red job, and why it is progress rather than a regression
+
+`Security Scan` runs `npm audit --audit-level=moderate` and exits 1 on **30
+pre-existing dependency vulnerabilities (1 low, 8 moderate, 17 high, 4
+critical)** — `ws`, `uuid` via `bullmq` and `next-auth`, `sharp`/`libvips`.
+
+None of this is new. It was simply **unreachable**: `Security Scan` and `Build`
+both depend on `lint-typecheck-test`, so while that job was red they never
+executed. Opening the gate did not create this debt, it revealed it — the same
+shape as P-02 making `tsc` 0 and thereby exposing ten Linux-only test failures
+nobody had ever seen.
+
+**→ P-24 — dependency remediation.** Needs its own card. `npm audit fix --force`
+across `bullmq` and `next-auth` is a real major upgrade with real blast radius,
+and it touches `package.json` / `package-lock.json`, which no in-flight package
+may hold. It must run alone.
+
+## FINDINGS FROM WAVE 1 THAT CHANGE OTHER PACKAGES' CARDS
+
+**P-09 — the cron scheduler has no producer.** P-11 found `registerCronTrigger`
+has **zero callers**. A user who sets a schedule gets no schedule. P-11 also found
+the `workflow-cron` queue had no *consumer* — which the audit missed entirely,
+because unlike the other three there was no `createXWorker` symbol sitting
+uncalled for a grep to notice. The consumer is fixed; the producer is P-09's.
+
+**P-09 — a cron-started run stays `PENDING` forever.** The workflow worker never
+updates `WorkflowExecutionRecord.status`, and `workflow-executor` still keeps its
+`executionStore` in a `Map`. This mattered less when nothing ever fired. Ticks
+fire now.
+
+**P-09 — `activeSchedules` is an in-memory `Map`.** After a restart a repeatable
+job survives in Redis while the process forgets it: a schedule that can never be
+cancelled.
+
+**P-13 — `CaptureService` never touches Prisma.** It stores everything in a `Map`,
+so the capture worker consumes jobs and writes no row. Untestable against a
+database by construction until P-13 persists it.
+
+**P-13 — `uuid@13` is pure ESM and this repo's Jest cannot load it.** Any test
+importing the real `capture-service` dies at import; the existing capture unit
+test only survives by mocking the service away. P-11 shipped a shim. The real fix
+is one `moduleNameMapper` line in `jest.config.ts`, which is coordinator-owned —
+ask for it rather than working around it again.
+
+**P-13 — `completeTask` sets `task.completedAt` unconditionally**, including on a
+no-op re-completion, so the returned checklist disagrees with the stored one.
+Invisible today because callers re-read. Found by P-22.
+
+## WHAT PREVIOUSLY STOOD BETWEEN THIS REPO AND ITS FIRST GREEN CI RUN
 
 `tsc` is 0 as of P-02. The type errors were never the only thing. **P-19 cannot
 declare CI green until all four of these are closed**, and my plan sized P-19 as
@@ -384,6 +450,10 @@ One row per merge. Appended by the coordinator at merge time.
 | 2 | P-01 db harness | [#58](https://github.com/navigreen311/personal-assistant-forge/pull/58) | `5c3256b` | 67 | 319/320 | 5267/5268 | **45/45** | **none** | 2026-09-09 19:2xZ |
 | 3 | P-02 typecheck repair | [#59](https://github.com/navigreen311/personal-assistant-forge/pull/59) | `a271698` | **0** | 319/320 | 5267/5268 | 45/45 | **none** | 2026-09-09 19:4xZ |
 | 4 | P-03 entity identity | [#60](https://github.com/navigreen311/personal-assistant-forge/pull/60) | `701d821` | 0 | 319/320 | 5264/5265 | **83/83** | **none** | 2026-09-09 20:1xZ |
+| 5 | P-04 tasks tenancy (reference impl) | [#61](https://github.com/navigreen311/personal-assistant-forge/pull/61) | `f121dfe` | 0 | 319/320 | 5268/5269 | 125/125 | **none** |
+| — | P-00b interface amendment (coordinator) | — | `6291c36`, `f6cb268` | 0 | 319/320 | 5268/5269 | 131/131 | **none** |
+| 6 | P-22 green-board test repair | [#62](https://github.com/navigreen311/personal-assistant-forge/pull/62) | `9c26e85` | 0 | **320/320** | **5269/5269** | 131/131 | **none** |
+| 7 | P-11 queue workers | [#63](https://github.com/navigreen311/personal-assistant-forge/pull/63) | `06dadfa` | 0 | **320/320** | **5269/5269** | **138/138** | **none** |
 
 ---
 
