@@ -1,9 +1,10 @@
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { AccuracyScorecard } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 export async function generateScorecard(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<AccuracyScorecard> {
   const { startDate, endDate } = parsePeriod(period);
@@ -92,7 +93,7 @@ export async function generateScorecard(
 }
 
 export async function getScorecardHistory(
-  entityId: string,
+  entityId: VerifiedEntityId,
   periods: number
 ): Promise<AccuracyScorecard[]> {
   const results: AccuracyScorecard[] = [];

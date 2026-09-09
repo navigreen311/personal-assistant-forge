@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { OverrideRecord, OverrideAnalysis } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // In-memory store for overrides
 const overrideStore: OverrideRecord[] = [];
@@ -30,7 +31,7 @@ export async function recordOverride(
 }
 
 export async function analyzeOverrides(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<OverrideAnalysis> {
   const { startDate, endDate } = parsePeriod(period);
@@ -114,7 +115,7 @@ const DEFAULT_FIX_SUGGESTIONS: Record<string, string> = {
 };
 
 export async function getOverridePatterns(
-  _entityId: string
+  _entityId: VerifiedEntityId
 ): Promise<{ pattern: string; count: number; suggestedFix: string }[]> {
   // Group by reason first
   const patternMap = new Map<string, { count: number; samples: { original: string; overridden: string }[] }>();

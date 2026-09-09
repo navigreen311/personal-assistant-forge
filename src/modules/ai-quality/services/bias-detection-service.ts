@@ -1,9 +1,10 @@
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 import type { BiasReport, BiasDimension } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 export async function detectBias(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<BiasReport> {
   const { startDate, endDate } = parsePeriod(period);
