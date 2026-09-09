@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Message, MessageChannel, Contact, Commitment, ContactPreferences } from '@/shared/types';
 import type {
   InboxItem,
@@ -14,13 +15,20 @@ import type {
 import { TriageService } from './triage.service';
 
 // --- Auth ---
-// Extracts userId from the x-user-id header, falling back to 'default-user'
-export function getCurrentUserId(headers?: Record<string, string | string[] | undefined>): string {
-  if (!headers) return 'default-user';
-  const userId = headers['x-user-id'];
-  if (typeof userId === 'string' && userId.length > 0) return userId;
-  return 'default-user';
-}
+//
+// T-005. `getCurrentUserId(headers?)` stood here. It read the `x-user-id`
+// REQUEST HEADER and, failing that, returned the literal string
+// 'default-user'. Two call sites below (createFollowUp, createCannedResponse)
+// invoked it with NO ARGUMENT AT ALL, so every follow-up reminder and every
+// canned response in the system was stamped with the same hardcoded identity
+// -- not a trusted header, an invented user. `FollowUpReminder.userId` and
+// `CannedResponse.userId` are foreign keys to `User`, so those writes could
+// only ever succeed against a database that happened to contain a user with
+// that id; everywhere else they failed at the constraint.
+//
+// The authenticated caller now arrives as an explicit `userId` argument from
+// the route, and the entity in scope as a `VerifiedEntityId` that only
+// withEntityScope can mint. See docs/parallel-build/tenancy-pattern.md.
 
 // --- Compatibility shims for tests ---
 // These objects maintain backward-compatible interfaces with a clear() method,
@@ -180,9 +188,17 @@ function mapContactRow(row: any): Contact {
 }
 
 export class InboxService {
+  /**
+   * The inbox for ONE verified entity.
+   *
+   * `entityId` is the leading, required argument and is NOT a field on the
+   * filter bag: the bag is parsed wholesale off the query string, so a scope
+   * living inside it would be the caller's own value again. See
+   * docs/parallel-build/tenancy-pattern.md sec.2.
+   */
   async listInbox(
-    userId: string,
-    params: InboxListParams
+    entityId: VerifiedEntityId,
+    params: Omit<InboxListParams, 'entityId'> = {}
   ): Promise<{
     items: InboxItem[];
     total: number;
@@ -198,7 +214,6 @@ export class InboxService {
     // Build Prisma where clause
     const where: Record<string, unknown> = {};
 
-    if (params.entityId) where.entityId = params.entityId;
     if (params.channel) where.channel = params.channel;
     if (params.sensitivity) where.sensitivity = params.sensitivity;
     if (params.intent) where.intent = params.intent;
@@ -232,6 +247,10 @@ export class InboxService {
     if (params.isStarred !== undefined) {
       where.starred = params.isStarred;
     }
+
+    // The scope, applied LAST and unconditionally, so no combination of
+    // filters above can widen it.
+    where.entityId = entityId;
 
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
@@ -277,26 +296,28 @@ export class InboxService {
       };
     });
 
-    const stats = await this.getInboxStats(userId, params.entityId);
+    const stats = await this.getInboxStats(entityId);
 
     return { items, total, page, pageSize, stats };
   }
 
   async getMessageDetail(
     messageId: string,
-    _userId: string
+    entityId: VerifiedEntityId
   ): Promise<InboxItem | null> {
-    const msg = await prisma.message.findUnique({
-      where: { id: messageId },
+    // findFirst, not findUnique: the scope is in the WHERE clause, so another
+    // tenant's message is simply not found and there is no check to forget.
+    const msg = await prisma.message.findFirst({
+      where: { id: messageId, entityId },
       include: { entity: true, contact: true },
     });
 
     if (!msg) return null;
 
-    // Load thread messages
+    // Load thread messages -- every hop is scoped.
     let threadMessages: Message[] | undefined;
     if (msg.threadId) {
-      const thread = await this.getThread(msg.threadId, msg.entityId);
+      const thread = await this.getThread(msg.threadId, entityId);
       threadMessages = thread;
     }
 
@@ -348,7 +369,7 @@ export class InboxService {
     };
   }
 
-  async getThread(threadId: string, entityId: string): Promise<Message[]> {
+  async getThread(threadId: string, entityId: VerifiedEntityId): Promise<Message[]> {
     const messages = await prisma.message.findMany({
       where: { threadId, entityId },
       orderBy: { createdAt: 'asc' },
@@ -358,36 +379,45 @@ export class InboxService {
     return messages.map((msg: any) => mapMessageRow(msg));
   }
 
-  async markAsRead(messageId: string, isRead: boolean): Promise<void> {
-    const msg = await prisma.message.findUnique({ where: { id: messageId } });
-    if (!msg) throw new Error(`Message not found: ${messageId}`);
-    await prisma.message.update({
-      where: { id: messageId },
+  async markAsRead(
+    messageId: string,
+    isRead: boolean,
+    entityId: VerifiedEntityId
+  ): Promise<void> {
+    // updateMany, because a unique WHERE cannot also carry the entity.
+    // count === 0 is "not yours or not there" -- indistinguishable on purpose.
+    const result = await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: { read: isRead },
     });
+    if (result.count === 0) throw new Error(`Message not found: ${messageId}`);
   }
 
-  async toggleStar(messageId: string): Promise<void> {
-    const msg = await prisma.message.findUnique({ where: { id: messageId } });
+  async toggleStar(messageId: string, entityId: VerifiedEntityId): Promise<void> {
+    const msg = await prisma.message.findFirst({ where: { id: messageId, entityId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
     const current = msg.starred ?? false;
-    await prisma.message.update({
-      where: { id: messageId },
+    const result = await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: { starred: !current },
     });
+    if (result.count === 0) throw new Error(`Message not found: ${messageId}`);
   }
 
-  async sendDraft(messageId: string, _userId: string): Promise<Message> {
-    const msg = await prisma.message.findUnique({ where: { id: messageId } });
+  async sendDraft(messageId: string, entityId: VerifiedEntityId): Promise<Message> {
+    const msg = await prisma.message.findFirst({ where: { id: messageId, entityId } });
     if (!msg) throw new Error(`Message not found: ${messageId}`);
     if (msg.draftStatus !== 'DRAFT' && msg.draftStatus !== 'APPROVED') {
       throw new Error(`Message is not a draft: ${messageId}`);
     }
 
-    const updated = await prisma.message.update({
-      where: { id: messageId },
+    const sent = await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: { draftStatus: 'SENT' },
     });
+    if (sent.count === 0) throw new Error(`Message not found: ${messageId}`);
+
+    const updated = { ...msg, draftStatus: 'SENT' };
 
     return {
       id: updated.id,
@@ -408,19 +438,19 @@ export class InboxService {
     };
   }
 
-  async archiveMessage(messageId: string): Promise<void> {
-    const msg = await prisma.message.findUnique({ where: { id: messageId } });
-    if (!msg) throw new Error(`Message not found: ${messageId}`);
+  async archiveMessage(messageId: string, entityId: VerifiedEntityId): Promise<void> {
     // Mark as read and un-star when archived
-    await prisma.message.update({
-      where: { id: messageId },
+    const result = await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: { read: true, starred: false },
     });
+    if (result.count === 0) throw new Error(`Message not found: ${messageId}`);
   }
 
-  async getInboxStats(userId: string, entityId?: string): Promise<InboxStats> {
-    const where: Record<string, unknown> = {};
-    if (entityId) where.entityId = entityId;
+  async getInboxStats(entityId: VerifiedEntityId): Promise<InboxStats> {
+    // entityId is required, not optional. It used to be optional, and an
+    // omitted value counted every message in the database.
+    const where: Record<string, unknown> = { entityId };
 
     const messages = await prisma.message.findMany({
       where,
@@ -482,9 +512,18 @@ export class InboxService {
 
   // --- Follow-Up Management ---
 
-  async createFollowUp(input: CreateFollowUpInput): Promise<FollowUpReminder> {
-    const msg = await prisma.message.findUnique({
-      where: { id: input.messageId },
+  /**
+   * T-005 call site 1 of 2. This wrote `userId: getCurrentUserId()` -- with no
+   * argument, so always the literal 'default-user'. It now takes the
+   * authenticated caller, and the message must be inside the verified entity.
+   */
+  async createFollowUp(
+    input: Omit<CreateFollowUpInput, 'entityId'>,
+    entityId: VerifiedEntityId,
+    userId: string
+  ): Promise<FollowUpReminder> {
+    const msg = await prisma.message.findFirst({
+      where: { id: input.messageId, entityId },
     });
     if (!msg) throw new Error(`Message not found: ${input.messageId}`);
 
@@ -493,11 +532,11 @@ export class InboxService {
 
     const row = await prisma.followUpReminder.create({
       data: {
-        userId: getCurrentUserId(),
+        userId,
         messageId: input.messageId,
         description: reason,
         dueDate: input.reminderAt,
-        priority: encodeFollowUpPriority(status, input.entityId),
+        priority: encodeFollowUpPriority(status, entityId),
         completed: false,
       },
     });
@@ -507,7 +546,7 @@ export class InboxService {
 
   async listFollowUps(
     userId: string,
-    entityId?: string
+    entityId?: VerifiedEntityId
   ): Promise<FollowUpReminder[]> {
     const rows = await prisma.followUpReminder.findMany({
       where: {
@@ -527,14 +566,22 @@ export class InboxService {
     );
   }
 
-  async completeFollowUp(followUpId: string): Promise<void> {
-    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+  // FollowUpReminder has no entityId column -- the schema is frozen and the
+  // entity is encoded into `priority`. Its real scope column is `userId`, a
+  // foreign key to User, so that is what goes in the WHERE clause. `update`
+  // takes a unique WHERE and cannot carry it, so these use findFirst +
+  // updateMany and treat count === 0 as not-found.
+
+  async completeFollowUp(followUpId: string, userId: string): Promise<void> {
+    const row = await prisma.followUpReminder.findFirst({
+      where: { id: followUpId, userId },
+    });
     if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
 
     const { entityId } = decodeFollowUpPriority(row.priority);
 
-    await prisma.followUpReminder.update({
-      where: { id: followUpId },
+    await prisma.followUpReminder.updateMany({
+      where: { id: followUpId, userId },
       data: {
         completed: true,
         completedAt: new Date(),
@@ -543,15 +590,17 @@ export class InboxService {
     });
   }
 
-  async snoozeFollowUp(followUpId: string, newDate: Date): Promise<void> {
-    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+  async snoozeFollowUp(followUpId: string, newDate: Date, userId: string): Promise<void> {
+    const row = await prisma.followUpReminder.findFirst({
+      where: { id: followUpId, userId },
+    });
     if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
 
     const { entityId } = decodeFollowUpPriority(row.priority);
 
     // Reset to pending with new date (matching original behavior)
-    await prisma.followUpReminder.update({
-      where: { id: followUpId },
+    await prisma.followUpReminder.updateMany({
+      where: { id: followUpId, userId },
       data: {
         dueDate: newDate,
         priority: encodeFollowUpPriority('PENDING', entityId),
@@ -561,14 +610,16 @@ export class InboxService {
     });
   }
 
-  async cancelFollowUp(followUpId: string): Promise<void> {
-    const row = await prisma.followUpReminder.findUnique({ where: { id: followUpId } });
+  async cancelFollowUp(followUpId: string, userId: string): Promise<void> {
+    const row = await prisma.followUpReminder.findFirst({
+      where: { id: followUpId, userId },
+    });
     if (!row) throw new Error(`Follow-up not found: ${followUpId}`);
 
     const { entityId } = decodeFollowUpPriority(row.priority);
 
-    await prisma.followUpReminder.update({
-      where: { id: followUpId },
+    await prisma.followUpReminder.updateMany({
+      where: { id: followUpId, userId },
       data: {
         priority: encodeFollowUpPriority('CANCELLED', entityId),
       },
@@ -577,11 +628,17 @@ export class InboxService {
 
   // --- Canned Response CRUD ---
 
+  /**
+   * T-005 call site 2 of 2. Same defect, same fix: the row is owned by the
+   * authenticated caller, and it names a verified entity.
+   */
   async createCannedResponse(
-    input: CreateCannedResponseInput
+    input: Omit<CreateCannedResponseInput, 'entityId'>,
+    entityId: VerifiedEntityId,
+    userId: string
   ): Promise<CannedResponse> {
     const meta: CannedResponseMeta = {
-      entityId: input.entityId,
+      entityId,
       channel: input.channel,
       category: input.category,
       subject: input.subject,
@@ -591,7 +648,7 @@ export class InboxService {
 
     const row = await prisma.cannedResponse.create({
       data: {
-        userId: getCurrentUserId(),
+        userId,
         title: input.name,
         content: input.body,
         tags: input.variables ?? [],
@@ -602,11 +659,18 @@ export class InboxService {
     return mapCannedResponseRow(row);
   }
 
+  // CannedResponse likewise has no entityId column; `userId` is the scope in
+  // the database and the entity is metadata inside `shortcut`. Both are
+  // applied: the WHERE clause narrows to the caller's own rows, and the
+  // decoded entity narrows further to the verified entity.
+
   async listCannedResponses(
-    entityId: string,
+    entityId: VerifiedEntityId,
+    userId: string,
     channel?: MessageChannel
   ): Promise<CannedResponse[]> {
     const rows = await prisma.cannedResponse.findMany({
+      where: { userId },
       orderBy: { title: 'asc' },
     });
 
@@ -621,23 +685,34 @@ export class InboxService {
     return responses.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async getCannedResponse(responseId: string): Promise<CannedResponse | null> {
-    const row = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
+  async getCannedResponse(
+    responseId: string,
+    userId: string
+  ): Promise<CannedResponse | null> {
+    const row = await prisma.cannedResponse.findFirst({
+      where: { id: responseId, userId },
+    });
     if (!row) return null;
     return mapCannedResponseRow(row);
   }
 
   async updateCannedResponse(
     responseId: string,
-    updates: Partial<CreateCannedResponseInput>
+    updates: Omit<Partial<CreateCannedResponseInput>, 'entityId'>,
+    userId: string
   ): Promise<CannedResponse> {
-    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
+    const existing = await prisma.cannedResponse.findFirst({
+      where: { id: responseId, userId },
+    });
     if (!existing) throw new Error(`Canned response not found: ${responseId}`);
 
     const currentMeta = decodeCannedResponseMeta(existing.shortcut);
 
     const newMeta: CannedResponseMeta = {
-      entityId: updates.entityId ?? currentMeta.entityId,
+      // The entity is NOT re-assignable through an update body. It used to be
+      // `updates.entityId ?? currentMeta.entityId`, which moved a canned
+      // response into any entity the caller cared to name, verified by nobody.
+      entityId: currentMeta.entityId,
       channel: updates.channel ?? currentMeta.channel,
       category: updates.category ?? currentMeta.category,
       subject: updates.subject !== undefined ? updates.subject : currentMeta.subject,
@@ -646,36 +721,50 @@ export class InboxService {
       lastUsed: currentMeta.lastUsed,
     };
 
-    const row = await prisma.cannedResponse.update({
-      where: { id: responseId },
+    const nextRow = {
+      ...existing,
+      title: updates.name ?? existing.title,
+      content: updates.body ?? existing.content,
+      tags: updates.variables ?? existing.tags,
+      shortcut: encodeCannedResponseMeta(newMeta),
+    };
+
+    const updated = await prisma.cannedResponse.updateMany({
+      where: { id: responseId, userId },
       data: {
-        title: updates.name ?? existing.title,
-        content: updates.body ?? existing.content,
-        tags: updates.variables ?? existing.tags,
-        shortcut: encodeCannedResponseMeta(newMeta),
+        title: nextRow.title,
+        content: nextRow.content,
+        tags: nextRow.tags,
+        shortcut: nextRow.shortcut,
       },
     });
-
-    return mapCannedResponseRow(row);
-  }
-
-  async deleteCannedResponse(responseId: string): Promise<void> {
-    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
-    if (!existing) {
+    if (updated.count === 0) {
       throw new Error(`Canned response not found: ${responseId}`);
     }
-    await prisma.cannedResponse.delete({ where: { id: responseId } });
+
+    return mapCannedResponseRow(nextRow);
   }
 
-  async incrementCannedResponseUsage(responseId: string): Promise<void> {
-    const existing = await prisma.cannedResponse.findUnique({ where: { id: responseId } });
+  async deleteCannedResponse(responseId: string, userId: string): Promise<void> {
+    const removed = await prisma.cannedResponse.deleteMany({
+      where: { id: responseId, userId },
+    });
+    if (removed.count === 0) {
+      throw new Error(`Canned response not found: ${responseId}`);
+    }
+  }
+
+  async incrementCannedResponseUsage(responseId: string, userId: string): Promise<void> {
+    const existing = await prisma.cannedResponse.findFirst({
+      where: { id: responseId, userId },
+    });
     if (existing) {
       const meta = decodeCannedResponseMeta(existing.shortcut);
       meta.usageCount += 1;
       meta.lastUsed = new Date().toISOString();
 
-      await prisma.cannedResponse.update({
-        where: { id: responseId },
+      await prisma.cannedResponse.updateMany({
+        where: { id: responseId, userId },
         data: {
           shortcut: encodeCannedResponseMeta(meta),
         },

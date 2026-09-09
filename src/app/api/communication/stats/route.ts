@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
 const querySchema = z.object({
@@ -9,30 +9,20 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  // This route used to verify entity ownership ONLY when an entityId was
+  // supplied, and to spread the scope into each count only when one was
+  // supplied -- so omitting the parameter entirely skipped both, and any
+  // authenticated user got counts over EVERY message and contact row in the
+  // database. withEntityScope always resolves an entity (query string, body,
+  // or the session's active entity) and always proves ownership, so there is
+  // no longer an unscoped path through this handler.
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
 
       if (!parsed.success) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
-
-      const entityId = parsed.data.entityId;
-
-      // Verify entity ownership if entityId is provided
-      if (entityId) {
-        const entity = await prisma.entity.findUnique({
-          where: { id: entityId },
-        });
-
-        if (!entity) {
-          return error('NOT_FOUND', 'Entity not found', 404);
-        }
-
-        if (entity.userId !== session.userId) {
-          return error('FORBIDDEN', 'You do not have access to this entity', 403);
-        }
       }
 
       const now = new Date();
@@ -43,7 +33,7 @@ export async function GET(request: NextRequest) {
       try {
         draftsToday = await (prisma as any).message.count({
           where: {
-            ...(entityId ? { entityId } : {}),
+            entityId,
             draftStatus: 'draft',
             createdAt: { gte: startOfDay },
           },
@@ -57,7 +47,7 @@ export async function GET(request: NextRequest) {
       try {
         sentToday = await (prisma as any).message.count({
           where: {
-            ...(entityId ? { entityId } : {}),
+            entityId,
             draftStatus: 'sent',
             createdAt: { gte: startOfDay },
           },
@@ -71,7 +61,7 @@ export async function GET(request: NextRequest) {
       try {
         const contacts = await (prisma as any).contact.findMany({
           where: {
-            ...(entityId ? { entityId } : {}),
+            entityId,
             deletedAt: null,
           },
           select: { preferences: true, lastTouch: true },
@@ -103,7 +93,7 @@ export async function GET(request: NextRequest) {
       try {
         const contacts = await (prisma as any).contact.findMany({
           where: {
-            ...(entityId ? { entityId } : {}),
+            entityId,
             deletedAt: null,
           },
           select: { preferences: true, lastTouch: true },

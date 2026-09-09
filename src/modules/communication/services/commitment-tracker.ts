@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateJSON } from '@/lib/ai';
 import type { Prisma } from '@prisma/client';
 import type { Commitment } from '@/shared/types';
@@ -14,9 +15,10 @@ import type { Commitment } from '@/shared/types';
  */
 export async function addCommitment(
   contactId: string,
-  commitment: Omit<Commitment, 'id' | 'createdAt'>
+  commitment: Omit<Commitment, 'id' | 'createdAt'>,
+  entityId: VerifiedEntityId
 ): Promise<Commitment> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const existingCommitments = (contact.commitments as unknown as Commitment[]) ?? [];
@@ -27,12 +29,13 @@ export async function addCommitment(
     createdAt: new Date(),
   };
 
-  await prisma.contact.update({
-    where: { id: contactId },
+  const written = await prisma.contact.updateMany({
+    where: { id: contactId, entityId },
     data: {
       commitments: [...existingCommitments, newCommitment] as unknown as Prisma.InputJsonValue,
     },
   });
+  if (written.count === 0) throw new Error(`Contact not found: ${contactId}`);
 
   return newCommitment;
 }
@@ -41,7 +44,7 @@ export async function addCommitment(
  * Get all open commitments for an entity, optionally filtered by direction.
  */
 export async function getOpenCommitments(
-  entityId: string,
+  entityId: VerifiedEntityId,
   direction?: 'TO' | 'FROM'
 ): Promise<Commitment[]> {
   const contacts = await prisma.contact.findMany({
@@ -68,9 +71,16 @@ export async function getOpenCommitments(
 /**
  * Mark a commitment as fulfilled.
  */
-export async function markFulfilled(commitmentId: string): Promise<void> {
-  // Find the contact that has this commitment
+export async function markFulfilled(
+  commitmentId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  // The scan used to be unscoped: `contact.findMany({ select: ... })` over
+  // EVERY contact in the database, then an update on whichever tenant's row
+  // happened to hold a commitment with this id. A commitment id was therefore
+  // enough to write into any tenant's contact.
   const contacts = await prisma.contact.findMany({
+    where: { entityId },
     select: { id: true, commitments: true },
   });
 
@@ -81,8 +91,8 @@ export async function markFulfilled(commitmentId: string): Promise<void> {
     if (index >= 0) {
       commitments[index] = { ...commitments[index], status: 'FULFILLED' };
 
-      await prisma.contact.update({
-        where: { id: contact.id },
+      await prisma.contact.updateMany({
+        where: { id: contact.id, entityId },
         data: {
           commitments: commitments as unknown as Prisma.InputJsonValue,
         },
@@ -99,7 +109,7 @@ export async function markFulfilled(commitmentId: string): Promise<void> {
  * Get all overdue commitments for an entity.
  * A commitment is overdue if it is OPEN and its dueDate has passed.
  */
-export async function getOverdueCommitments(entityId: string): Promise<Commitment[]> {
+export async function getOverdueCommitments(entityId: VerifiedEntityId): Promise<Commitment[]> {
   const contacts = await prisma.contact.findMany({
     where: { entityId },
     select: { commitments: true },
@@ -126,7 +136,7 @@ export async function getOverdueCommitments(entityId: string): Promise<Commitmen
 export async function extractCommitmentsFromText(
   text: string,
   _contactId: string,
-  _entityId: string
+  _entityId: VerifiedEntityId
 ): Promise<Commitment[]> {
   const result = await generateJSON<{
     commitments: Array<{
@@ -165,17 +175,21 @@ Return JSON with a "commitments" array. Each commitment should have:
 export async function extractAndSaveCommitments(
   text: string,
   contactId: string,
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<Commitment[]> {
   const commitments = await extractCommitmentsFromText(text, contactId, entityId);
 
   for (const commitment of commitments) {
-    await addCommitment(contactId, {
-      description: commitment.description,
-      direction: commitment.direction,
-      dueDate: commitment.dueDate,
-      status: commitment.status,
-    });
+    await addCommitment(
+      contactId,
+      {
+        description: commitment.description,
+        direction: commitment.direction,
+        dueDate: commitment.dueDate,
+        status: commitment.status,
+      },
+      entityId
+    );
   }
 
   return commitments;

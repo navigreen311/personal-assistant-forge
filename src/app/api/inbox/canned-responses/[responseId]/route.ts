@@ -7,14 +7,17 @@ import { updateCannedResponseSchema } from '@/modules/inbox/inbox.validation';
 
 const inboxService = new InboxService();
 
+// CannedResponse has no entityId column (frozen schema); its scope column is
+// `userId`, which the service puts in every WHERE clause.
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ responseId: string }> }
 ) {
-  return withAuth(request, async (_req, _session) => {
+  return withAuth(request, async (_req, session) => {
     try {
       const { responseId } = await params;
-      const response = await inboxService.getCannedResponse(responseId);
+      const response = await inboxService.getCannedResponse(responseId, session.userId);
 
       if (!response) {
         return error('NOT_FOUND', `Canned response not found: ${responseId}`, 404);
@@ -32,7 +35,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ responseId: string }> }
 ) {
-  return withAuth(request, async (req, _session) => {
+  return withAuth(request, async (req, session) => {
     try {
       const { responseId } = await params;
       const body = await req.json();
@@ -44,9 +47,13 @@ export async function PATCH(
         });
       }
 
+      // entityId is not re-assignable through an update body.
+      const { entityId: _requested, ...updates } = parsed.data;
+
       const updated = await inboxService.updateCannedResponse(
         responseId,
-        parsed.data
+        updates,
+        session.userId
       );
       return success(updated);
     } catch (err) {
@@ -63,10 +70,10 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ responseId: string }> }
 ) {
-  return withAuth(request, async (_req, _session) => {
+  return withAuth(request, async (_req, session) => {
     try {
       const { responseId } = await params;
-      await inboxService.deleteCannedResponse(responseId);
+      await inboxService.deleteCannedResponse(responseId, session.userId);
       return success({ responseId, deleted: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';

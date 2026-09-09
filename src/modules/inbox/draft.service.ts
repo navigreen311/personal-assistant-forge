@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateText, chat } from '@/lib/ai';
 import type { Tone } from '@/shared/types';
 import type { DraftRequest, DraftResponse, MessageIntent } from './inbox.types';
@@ -200,9 +201,12 @@ const ALTERNATIVE_TONES: Record<Tone, Tone[]> = {
 };
 
 export class DraftService {
-  async generateDraft(request: DraftRequest): Promise<DraftResponse> {
-    const message = await prisma.message.findUnique({
-      where: { id: request.messageId },
+  async generateDraft(
+    request: Omit<DraftRequest, 'entityId'>,
+    entityId: VerifiedEntityId
+  ): Promise<DraftResponse> {
+    const message = await prisma.message.findFirst({
+      where: { id: request.messageId, entityId },
     });
 
     if (!message) {
@@ -219,7 +223,7 @@ export class DraftService {
     // Add disclaimers if needed
     const complianceNotes: string[] = [];
     if (request.includeDisclaimer) {
-      const disclaimers = await this.getDisclaimers(request.entityId);
+      const disclaimers = await this.getDisclaimers(entityId);
       complianceNotes.push(...disclaimers);
     }
 
@@ -419,7 +423,7 @@ Write only the reply body text. Do not include subject lines or metadata.`;
     return result;
   }
 
-  async getDisclaimers(entityId: string): Promise<string[]> {
+  async getDisclaimers(entityId: VerifiedEntityId): Promise<string[]> {
     const entity = await prisma.entity.findUnique({
       where: { id: entityId },
     });

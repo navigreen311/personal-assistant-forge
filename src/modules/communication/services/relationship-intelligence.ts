@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateJSON } from '@/lib/ai';
 import { differenceInDays } from 'date-fns';
 import type { MessageChannel, Tone } from '@/shared/types';
@@ -17,15 +18,21 @@ import type {
  * Calculate a relationship score (0-100) for a contact.
  * Uses 4 signals: frequency, recency, sentiment, commitment fulfillment.
  */
-export async function calculateRelationshipScore(contactId: string): Promise<number> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+export async function calculateRelationshipScore(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<number> {
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const now = new Date();
 
   // Signal 1: Interaction frequency (0-25 points)
+  // Every hop is scoped: the OR over sender/recipient is a filter, and the
+  // entity is applied beside it so no combination can widen the set.
   const messages = await prisma.message.findMany({
     where: {
+      entityId,
       OR: [{ senderId: contactId }, { recipientId: contactId }],
     },
     orderBy: { createdAt: 'desc' },
@@ -48,7 +55,7 @@ export async function calculateRelationshipScore(contactId: string): Promise<num
 
   // Signal 3: Sentiment from calls (0-25 points)
   const calls = await prisma.call.findMany({
-    where: { contactId },
+    where: { contactId, entityId },
     orderBy: { createdAt: 'desc' },
     take: 20,
   });
@@ -74,7 +81,7 @@ export async function calculateRelationshipScore(contactId: string): Promise<num
 /**
  * Build a relationship graph for an entity's contacts.
  */
-export async function getRelationshipGraph(entityId: string): Promise<RelationshipNode[]> {
+export async function getRelationshipGraph(entityId: VerifiedEntityId): Promise<RelationshipNode[]> {
   const contacts = await prisma.contact.findMany({
     where: { entityId },
     include: { messages: true, calls: true },
@@ -114,8 +121,11 @@ export async function getRelationshipGraph(entityId: string): Promise<Relationsh
 /**
  * Detect if a contact has gone silent beyond their typical cadence.
  */
-export async function detectGhosting(contactId: string): Promise<GhostingAnalysis> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+export async function detectGhosting(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<GhostingAnalysis> {
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const now = new Date();
@@ -123,6 +133,7 @@ export async function detectGhosting(contactId: string): Promise<GhostingAnalysi
   // Get message timestamps to compute average cadence
   const messages = await prisma.message.findMany({
     where: {
+      entityId,
       OR: [{ senderId: contactId }, { recipientId: contactId }],
     },
     orderBy: { createdAt: 'asc' },
@@ -173,15 +184,18 @@ export async function detectGhosting(contactId: string): Promise<GhostingAnalysi
 /**
  * Suggest a re-engagement strategy for a dormant contact.
  */
-export async function suggestReengagement(contactId: string): Promise<ReengagementStrategy> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+export async function suggestReengagement(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<ReengagementStrategy> {
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const preferences = (contact.preferences as Record<string, unknown>) ?? {};
   const preferredChannel = (preferences.preferredChannel as MessageChannel) ?? 'EMAIL';
   const _preferredTone = (preferences.preferredTone as Tone) ?? 'WARM';
 
-  const ghosting = await detectGhosting(contactId);
+  const ghosting = await detectGhosting(contactId, entityId);
 
   let approach: string;
   let suggestedMessage: string;
@@ -208,14 +222,17 @@ export async function suggestReengagement(contactId: string): Promise<Reengageme
 /**
  * Get AI-powered insights for a contact relationship.
  */
-export async function getRelationshipInsights(contactId: string): Promise<{
+export async function getRelationshipInsights(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<{
   healthScore: number;
   riskFactors: string[];
   opportunities: string[];
   suggestedActions: string[];
 }> {
-  const contact = await prisma.contact.findUnique({
-    where: { id: contactId },
+  const contact = await prisma.contact.findFirst({
+    where: { id: contactId, entityId },
     include: {
       messages: { take: 20, orderBy: { createdAt: 'desc' } },
       calls: { take: 10, orderBy: { createdAt: 'desc' } },
@@ -224,8 +241,8 @@ export async function getRelationshipInsights(contactId: string): Promise<{
 
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
-  const score = await calculateRelationshipScore(contactId);
-  const ghosting = await detectGhosting(contactId);
+  const score = await calculateRelationshipScore(contactId, entityId);
+  const ghosting = await detectGhosting(contactId, entityId);
 
   try {
     const result = await generateJSON<{
@@ -271,7 +288,7 @@ Return JSON with:
  * Get contacts that need attention based on low scores or no recent contact.
  */
 export async function getContactsNeedingAttention(
-  entityId: string,
+  entityId: VerifiedEntityId,
   limit = 10
 ): Promise<Array<{ contactId: string; name: string; score: number; reason: string }>> {
   const contacts = await prisma.contact.findMany({

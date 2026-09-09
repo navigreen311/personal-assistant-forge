@@ -3,6 +3,7 @@
 // Module-specific types for AI Communication Hub + CRM
 // ============================================================================
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { MessageChannel, Tone } from '@/shared/types';
 
 // --- Relationship Intelligence ---
@@ -55,7 +56,8 @@ export interface PowerDynamicAnalysis {
 
 export interface DraftRequest {
   recipientId: string;
-  entityId: string;
+  /** Proven to belong to the caller. Only withEntityScope can produce one. */
+  entityId: VerifiedEntityId;
   channel: MessageChannel;
   intent: string;
   tone: Tone;
@@ -120,7 +122,8 @@ export interface FollowUpCadence {
 // --- Broadcast ---
 
 export interface BroadcastRequest {
-  entityId: string;
+  /** Proven to belong to the caller. Only withEntityScope can produce one. */
+  entityId: VerifiedEntityId;
   recipientIds: string[];
   template: string;
   mergeFields: Record<string, string>[];

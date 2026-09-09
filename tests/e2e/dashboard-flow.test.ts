@@ -258,7 +258,12 @@ describe('Dashboard Flow E2E Tests', () => {
       const body = await expectSuccessResponse(res, 200);
 
       expect(body.data).toEqual(mockStats);
-      expect(mockGetInboxStats).toHaveBeenCalledWith('user-1', 'entity-1');
+      // CORRECTED (P-06). getInboxStats used to take (userId, entityId?) with
+      // the entity OPTIONAL, and an omitted entity counted every message row in
+      // the database. It now takes a single, required VerifiedEntityId, which
+      // withEntityScope has already proven belongs to the caller -- so the
+      // userId is redundant and the scope cannot be skipped.
+      expect(mockGetInboxStats).toHaveBeenCalledWith('entity-1');
     });
 
     it('should load finance dashboard summary', async () => {

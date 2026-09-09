@@ -15,6 +15,7 @@
 const mockPrisma = {
   message: {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     findMany: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
@@ -23,6 +24,7 @@ const mockPrisma = {
   },
   contact: {
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     findMany: jest.fn(),
   },
   entity: {
@@ -35,6 +37,7 @@ const mockPrisma = {
     findFirst: jest.fn(),
     findUnique: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     delete: jest.fn(),
     deleteMany: jest.fn(),
   },
@@ -42,7 +45,9 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     delete: jest.fn(),
     deleteMany: jest.fn(),
   },
@@ -67,6 +72,13 @@ import { InboxService } from '@/modules/inbox/inbox.service';
 import { TriageService } from '@/modules/inbox/triage.service';
 import { DraftService } from '@/modules/inbox/draft.service';
 import { generateJSON, generateText, chat } from '@/lib/ai';
+// P-06: these services now take a VerifiedEntityId for the entity in scope and
+// the authenticated userId for rows they own. See
+// docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+const USER = 'user-1';
 
 const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 const mockedGenerateText = generateText as jest.MockedFunction<typeof generateText>;
@@ -137,10 +149,13 @@ describe('Inbox Management E2E Tests', () => {
     followUpIdCounter = 1;
     cannedIdCounter = 1;
 
+    // Message writes now go through updateMany and read { count }.
+    mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+
     // Default empty returns for list/message queries
     mockPrisma.followUpReminder.findMany.mockImplementation(() => Promise.resolve(followUpStore));
     mockPrisma.followUpReminder.findFirst.mockImplementation(() => Promise.resolve(null));
-    mockPrisma.followUpReminder.findUnique.mockImplementation((args: { where: { id: string } }) => {
+    mockPrisma.followUpReminder.findFirst.mockImplementation((args: { where: { id: string } }) => {
       return Promise.resolve(followUpStore.find((f: any) => f.id === args.where.id) ?? null);
     });
     mockPrisma.followUpReminder.create.mockImplementation((args: { data: any }) => {
@@ -148,17 +163,19 @@ describe('Inbox Management E2E Tests', () => {
       followUpStore.push(row);
       return Promise.resolve(row);
     });
-    mockPrisma.followUpReminder.update.mockImplementation((args: { where: { id: string }; data: any }) => {
+    // updateMany / deleteMany return a { count }, and the service reads
+    // count === 0 as not-found -- the scope now rides in the WHERE clause.
+    mockPrisma.followUpReminder.updateMany.mockImplementation((args: { where: { id: string }; data: any }) => {
       const idx = followUpStore.findIndex((f: any) => f.id === args.where.id);
       if (idx >= 0) {
         followUpStore[idx] = { ...followUpStore[idx], ...args.data };
-        return Promise.resolve(followUpStore[idx]);
+        return Promise.resolve({ count: 1 });
       }
-      return Promise.reject(new Error('Not found'));
+      return Promise.resolve({ count: 0 });
     });
 
     mockPrisma.cannedResponse.findMany.mockImplementation(() => Promise.resolve(cannedStore));
-    mockPrisma.cannedResponse.findUnique.mockImplementation((args: { where: { id: string } }) => {
+    mockPrisma.cannedResponse.findFirst.mockImplementation((args: { where: { id: string } }) => {
       return Promise.resolve(cannedStore.find((c: any) => c.id === args.where.id) ?? null);
     });
     mockPrisma.cannedResponse.create.mockImplementation((args: { data: any }) => {
@@ -166,21 +183,21 @@ describe('Inbox Management E2E Tests', () => {
       cannedStore.push(row);
       return Promise.resolve(row);
     });
-    mockPrisma.cannedResponse.update.mockImplementation((args: { where: { id: string }; data: any }) => {
+    mockPrisma.cannedResponse.updateMany.mockImplementation((args: { where: { id: string }; data: any }) => {
       const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
       if (idx >= 0) {
         cannedStore[idx] = { ...cannedStore[idx], ...args.data, updatedAt: new Date() };
-        return Promise.resolve(cannedStore[idx]);
+        return Promise.resolve({ count: 1 });
       }
-      return Promise.reject(new Error('Not found'));
+      return Promise.resolve({ count: 0 });
     });
-    mockPrisma.cannedResponse.delete.mockImplementation((args: { where: { id: string } }) => {
+    mockPrisma.cannedResponse.deleteMany.mockImplementation((args: { where: { id: string } }) => {
       const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
       if (idx >= 0) {
-        const removed = cannedStore.splice(idx, 1);
-        return Promise.resolve(removed[0]);
+        cannedStore.splice(idx, 1);
+        return Promise.resolve({ count: 1 });
       }
-      return Promise.reject(new Error('Not found'));
+      return Promise.resolve({ count: 0 });
     });
   });
 
@@ -199,8 +216,7 @@ describe('Inbox Management E2E Tests', () => {
         .mockResolvedValueOnce(messages);
       mockPrisma.message.count.mockResolvedValue(2);
 
-      const result = await inboxService.listInbox('user-1', {
-        entityId: 'entity-1',
+      const result = await inboxService.listInbox(SCOPE, {
         page: 1,
         pageSize: 20,
       });
@@ -225,46 +241,55 @@ describe('Inbox Management E2E Tests', () => {
         createMockMessage({ id: 'thread-msg-2', threadId: 'thread-1' }),
       ];
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
       mockPrisma.message.findMany.mockResolvedValue(threadMessages);
 
-      const detail = await inboxService.getMessageDetail('detail-msg', 'user-1');
+      const detail = await inboxService.getMessageDetail('detail-msg', SCOPE);
 
       expect(detail).not.toBeNull();
       expect(detail!.message.id).toBe('detail-msg');
       expect(detail!.threadMessages).toHaveLength(2);
     });
 
-    it('should mark a message as read and toggle star', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(
+    it('should mark a message as read and toggle star, scoped to the entity', async () => {
+      mockPrisma.message.findFirst.mockResolvedValue(
         createMockMessage({ id: 'rw-msg' })
       );
 
-      await inboxService.markAsRead('rw-msg', true);
-      await inboxService.toggleStar('rw-msg');
+      await inboxService.markAsRead('rw-msg', true, SCOPE);
+      await inboxService.toggleStar('rw-msg', SCOPE);
 
-      expect(mockPrisma.message.findUnique).toHaveBeenCalledWith({
-        where: { id: 'rw-msg' },
+      // markAsRead no longer reads first -- it writes with the scope in the
+      // WHERE clause and treats count === 0 as not-found -- so the assertion
+      // is on the write, and the entity is part of it.
+      expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'rw-msg', entityId: SCOPE },
+        data: { read: true },
+      });
+      expect(mockPrisma.message.findFirst).toHaveBeenCalledWith({
+        where: { id: 'rw-msg', entityId: SCOPE },
       });
     });
 
     it('should throw when marking a nonexistent message as read', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(null);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
-        inboxService.markAsRead('bad-msg', true)
+        inboxService.markAsRead('bad-msg', true, SCOPE)
       ).rejects.toThrow('Message not found: bad-msg');
     });
 
-    it('should archive a message', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(
+    it('should archive a message, scoped to the entity', async () => {
+      mockPrisma.message.findFirst.mockResolvedValue(
         createMockMessage({ id: 'archive-msg' })
       );
 
-      await inboxService.archiveMessage('archive-msg');
+      await inboxService.archiveMessage('archive-msg', SCOPE);
 
-      expect(mockPrisma.message.findUnique).toHaveBeenCalledWith({
-        where: { id: 'archive-msg' },
+      expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'archive-msg', entityId: SCOPE },
+        data: { read: true, starred: false },
       });
     });
 
@@ -272,25 +297,25 @@ describe('Inbox Management E2E Tests', () => {
       const draftMsg = createMockMessage({ id: 'draft-msg', draftStatus: 'DRAFT' });
       const sentMsg = createMockMessage({ id: 'draft-msg', draftStatus: 'SENT' });
 
-      mockPrisma.message.findUnique.mockResolvedValue(draftMsg);
-      mockPrisma.message.update.mockResolvedValue(sentMsg);
+      mockPrisma.message.findFirst.mockResolvedValue(draftMsg);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const sent = await inboxService.sendDraft('draft-msg', 'user-1');
+      const sent = await inboxService.sendDraft('draft-msg', SCOPE);
 
       expect(sent.draftStatus).toBe('SENT');
-      expect(mockPrisma.message.update).toHaveBeenCalledWith({
-        where: { id: 'draft-msg' },
+      expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'draft-msg', entityId: SCOPE },
         data: { draftStatus: 'SENT' },
       });
     });
 
     it('should reject sending a non-draft message', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(
+      mockPrisma.message.findFirst.mockResolvedValue(
         createMockMessage({ id: 'not-draft', draftStatus: null })
       );
 
       await expect(
-        inboxService.sendDraft('not-draft', 'user-1')
+        inboxService.sendDraft('not-draft', SCOPE)
       ).rejects.toThrow('Message is not a draft');
     });
   });
@@ -306,12 +331,12 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Urgent: Contract Review',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(urgentMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(urgentMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(urgentMessage);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await triageService.triageMessage('urgent-msg', 'entity-1');
+      const result = await triageService.triageMessage('urgent-msg', SCOPE);
 
       expect(result.messageId).toBe('urgent-msg');
       expect(result.urgencyScore).toBeGreaterThanOrEqual(5);
@@ -328,12 +353,12 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Invoice #12345',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(financialMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(financialMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(financialMessage);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await triageService.triageMessage('fin-msg', 'entity-1');
+      const result = await triageService.triageMessage('fin-msg', SCOPE);
 
       expect(result.intent).toBe('FINANCIAL');
       expect(result.category).toBe('FINANCE');
@@ -357,12 +382,12 @@ describe('Inbox Management E2E Tests', () => {
         preferences: {},
       };
 
-      mockPrisma.message.findUnique.mockResolvedValue(vipMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(vipContact);
+      mockPrisma.message.findFirst.mockResolvedValue(vipMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(vipContact);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(vipMessage);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await triageService.triageMessage('vip-msg', 'entity-1');
+      const result = await triageService.triageMessage('vip-msg', SCOPE);
 
       expect(result.urgencyScore).toBeGreaterThanOrEqual(5);
       expect(result.flags.some((f) => f.type === 'VIP_SENDER')).toBe(true);
@@ -374,12 +399,12 @@ describe('Inbox Management E2E Tests', () => {
         body: 'SSN: 123-45-6789. Date of birth: 03/15/1985. Please update the records.',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(piiMessage);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(piiMessage);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(piiMessage);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await triageService.triageMessage('pii-msg', 'entity-1');
+      const result = await triageService.triageMessage('pii-msg', SCOPE);
 
       expect(result.sensitivity).toBe('RESTRICTED');
       expect(result.flags.some((f) => f.type === 'PII_DETECTED')).toBe(true);
@@ -388,15 +413,15 @@ describe('Inbox Management E2E Tests', () => {
     it('should persist triage score and intent back to the message', async () => {
       const msg = createMockMessage({ id: 'persist-msg', body: 'Please help with this request.' });
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(msg);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const result = await triageService.triageMessage('persist-msg', 'entity-1');
+      const result = await triageService.triageMessage('persist-msg', SCOPE);
 
-      expect(mockPrisma.message.update).toHaveBeenCalledWith({
-        where: { id: 'persist-msg' },
+      expect(mockPrisma.message.updateMany).toHaveBeenCalledWith({
+        where: { id: 'persist-msg', entityId: SCOPE },
         data: expect.objectContaining({
           triageScore: result.urgencyScore,
           intent: result.intent,
@@ -411,10 +436,10 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Manual Override Test',
       });
 
-      mockPrisma.message.update.mockResolvedValue(msg);
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
 
-      const result = await triageService.updateTriageScore('manual-msg', 9, 'Escalated by manager');
+      const result = await triageService.updateTriageScore('manual-msg', 9, 'Escalated by manager', SCOPE);
 
       expect(result.urgencyScore).toBe(9);
       expect(result.suggestedPriority).toBe('P0');
@@ -434,14 +459,13 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Quarterly Report',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
 
       const draft = await draftService.generateDraft({
         messageId: 'draft-reply-msg',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       expect(draft.messageId).toBe('draft-reply-msg');
       expect(draft.draftBody).toBeTruthy();
@@ -459,20 +483,18 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Meeting Request',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
 
       const formalDraft = await draftService.generateDraft({
         messageId: 'multi-tone-msg',
-        entityId: 'entity-1',
         tone: 'FORMAL',
-      });
+      }, SCOPE);
 
       const casualDraft = await draftService.generateDraft({
         messageId: 'multi-tone-msg',
-        entityId: 'entity-1',
         tone: 'CASUAL',
-      });
+      }, SCOPE);
 
       expect(formalDraft.tone).toBe('FORMAL');
       expect(casualDraft.tone).toBe('CASUAL');
@@ -501,15 +523,14 @@ describe('Inbox Management E2E Tests', () => {
       const msg = createMockMessage({ id: 'hipaa-msg', body: 'Patient records update.' });
       const hipaaEntity = createMockEntity({ complianceProfile: ['HIPAA'] });
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
       mockPrisma.entity.findUnique.mockResolvedValue(hipaaEntity);
 
       const draft = await draftService.generateDraft({
         messageId: 'hipaa-msg',
-        entityId: 'entity-1',
         tone: 'FORMAL',
         includeDisclaimer: true,
-      });
+      }, SCOPE);
 
       expect(draft.complianceNotes.length).toBeGreaterThan(0);
       expect(draft.draftBody).toContain('HIPAA');
@@ -531,80 +552,76 @@ describe('Inbox Management E2E Tests', () => {
   // =========================================================================
   describe('Follow-up creation and tracking', () => {
     it('should create a follow-up, list it, and complete it', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(createMockMessage({ id: 'fu-msg' }));
+      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'fu-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'fu-msg',
-        entityId: 'entity-1',
         reminderAt: new Date('2026-03-01T09:00:00Z'),
         reason: 'Awaiting contract signature',
-      });
+      }, SCOPE, USER);
 
       expect(followUp.id).toBeTruthy();
       expect(followUp.messageId).toBe('fu-msg');
       expect(followUp.status).toBe('PENDING');
       expect(followUp.reason).toBe('Awaiting contract signature');
 
-      const followUps = await inboxService.listFollowUps('user-1', 'entity-1');
+      const followUps = await inboxService.listFollowUps(USER, SCOPE);
       expect(followUps.length).toBeGreaterThanOrEqual(1);
       expect(followUps.some((f) => f.id === followUp.id)).toBe(true);
 
-      await inboxService.completeFollowUp(followUp.id);
+      await inboxService.completeFollowUp(followUp.id, USER);
 
-      const updatedList = await inboxService.listFollowUps('user-1', 'entity-1');
+      const updatedList = await inboxService.listFollowUps(USER, SCOPE);
       const completed = updatedList.find((f) => f.id === followUp.id);
       expect(completed?.status).toBe('COMPLETED');
     });
 
     it('should snooze a follow-up to a new date', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(createMockMessage({ id: 'snooze-msg' }));
+      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'snooze-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'snooze-msg',
-        entityId: 'entity-1',
         reminderAt: new Date('2026-03-01T09:00:00Z'),
-      });
+      }, SCOPE, USER);
 
       const newDate = new Date('2026-03-15T09:00:00Z');
-      await inboxService.snoozeFollowUp(followUp.id, newDate);
+      await inboxService.snoozeFollowUp(followUp.id, newDate, USER);
 
-      const followUps = await inboxService.listFollowUps('user-1', 'entity-1');
+      const followUps = await inboxService.listFollowUps(USER, SCOPE);
       const snoozed = followUps.find((f) => f.id === followUp.id);
       expect(snoozed?.reminderAt).toEqual(newDate);
       expect(snoozed?.status).toBe('PENDING');
     });
 
     it('should cancel a follow-up', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(createMockMessage({ id: 'cancel-fu-msg' }));
+      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'cancel-fu-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'cancel-fu-msg',
-        entityId: 'entity-1',
         reminderAt: new Date('2026-04-01T09:00:00Z'),
-      });
+      }, SCOPE, USER);
 
-      await inboxService.cancelFollowUp(followUp.id);
+      await inboxService.cancelFollowUp(followUp.id, USER);
 
-      const followUps = await inboxService.listFollowUps('user-1', 'entity-1');
+      const followUps = await inboxService.listFollowUps(USER, SCOPE);
       const cancelled = followUps.find((f) => f.id === followUp.id);
       expect(cancelled?.status).toBe('CANCELLED');
     });
 
     it('should throw when completing a nonexistent follow-up', async () => {
       await expect(
-        inboxService.completeFollowUp('nonexistent-fu')
+        inboxService.completeFollowUp('nonexistent-fu', USER)
       ).rejects.toThrow('Follow-up not found');
     });
 
     it('should throw when creating a follow-up for a nonexistent message', async () => {
-      mockPrisma.message.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(null);
 
       await expect(
         inboxService.createFollowUp({
           messageId: 'bad-msg',
-          entityId: 'entity-1',
           reminderAt: new Date(),
-        })
+        }, SCOPE, USER)
       ).rejects.toThrow('Message not found');
     });
   });
@@ -616,67 +633,68 @@ describe('Inbox Management E2E Tests', () => {
     it('should CRUD canned responses end-to-end', async () => {
       const canned = await inboxService.createCannedResponse({
         name: 'Out of Office',
-        entityId: 'entity-1',
         channel: 'EMAIL',
         category: 'auto-reply',
         subject: 'Out of Office',
         body: 'I am currently out of office and will return on {{return_date}}.',
         variables: ['return_date'],
         tone: 'FORMAL',
-      });
+      }, SCOPE, USER);
 
       expect(canned.id).toBeTruthy();
       expect(canned.name).toBe('Out of Office');
       expect(canned.variables).toContain('return_date');
       expect(canned.usageCount).toBe(0);
 
-      const fetched = await inboxService.getCannedResponse(canned.id);
+      const fetched = await inboxService.getCannedResponse(canned.id, USER);
       expect(fetched).not.toBeNull();
       expect(fetched!.name).toBe('Out of Office');
 
-      const list = await inboxService.listCannedResponses('entity-1');
+      const list = await inboxService.listCannedResponses(SCOPE, USER);
       expect(list.length).toBeGreaterThanOrEqual(1);
       expect(list.some((r) => r.id === canned.id)).toBe(true);
 
-      const updated = await inboxService.updateCannedResponse(canned.id, {
-        body: 'I am out of office. Back on {{return_date}}. For urgent matters, contact {{backup_contact}}.',
-        variables: ['return_date', 'backup_contact'],
-      });
+      const updated = await inboxService.updateCannedResponse(
+        canned.id,
+        {
+          body: 'I am out of office. Back on {{return_date}}. For urgent matters, contact {{backup_contact}}.',
+          variables: ['return_date', 'backup_contact'],
+        },
+        USER
+      );
 
       expect(updated.variables).toContain('backup_contact');
       expect(updated.body).toContain('urgent');
 
-      await inboxService.incrementCannedResponseUsage(canned.id);
-      const afterUsage = await inboxService.getCannedResponse(canned.id);
+      await inboxService.incrementCannedResponseUsage(canned.id, USER);
+      const afterUsage = await inboxService.getCannedResponse(canned.id, USER);
       expect(afterUsage!.usageCount).toBe(1);
       expect(afterUsage!.lastUsed).toBeInstanceOf(Date);
 
-      await inboxService.deleteCannedResponse(canned.id);
-      const afterDelete = await inboxService.getCannedResponse(canned.id);
+      await inboxService.deleteCannedResponse(canned.id, USER);
+      const afterDelete = await inboxService.getCannedResponse(canned.id, USER);
       expect(afterDelete).toBeNull();
     });
 
     it('should filter canned responses by channel', async () => {
       await inboxService.createCannedResponse({
         name: 'Email Welcome',
-        entityId: 'entity-1',
         channel: 'EMAIL',
         category: 'welcome',
         body: 'Welcome via email!',
         tone: 'WARM',
-      });
+      }, SCOPE, USER);
 
       await inboxService.createCannedResponse({
         name: 'SMS Confirmation',
-        entityId: 'entity-1',
         channel: 'SMS',
         category: 'confirmation',
         body: 'Confirmed via SMS.',
         tone: 'DIRECT',
-      });
+      }, SCOPE, USER);
 
-      const emailOnly = await inboxService.listCannedResponses('entity-1', 'EMAIL');
-      const smsOnly = await inboxService.listCannedResponses('entity-1', 'SMS');
+      const emailOnly = await inboxService.listCannedResponses(SCOPE, USER, 'EMAIL');
+      const smsOnly = await inboxService.listCannedResponses(SCOPE, USER, 'SMS');
 
       expect(emailOnly.every((r) => r.channel === 'EMAIL')).toBe(true);
       expect(smsOnly.every((r) => r.channel === 'SMS')).toBe(true);
@@ -684,13 +702,13 @@ describe('Inbox Management E2E Tests', () => {
 
     it('should throw when updating a nonexistent canned response', async () => {
       await expect(
-        inboxService.updateCannedResponse('nonexistent', { body: 'new body' })
+        inboxService.updateCannedResponse('nonexistent', { body: 'new body' }, USER)
       ).rejects.toThrow('Canned response not found');
     });
 
     it('should throw when deleting a nonexistent canned response', async () => {
       await expect(
-        inboxService.deleteCannedResponse('nonexistent')
+        inboxService.deleteCannedResponse('nonexistent', USER)
       ).rejects.toThrow('Canned response not found');
     });
   });
@@ -712,17 +730,17 @@ describe('Inbox Management E2E Tests', () => {
       );
 
       let findUniqueCallIndex = 0;
-      mockPrisma.message.findUnique.mockImplementation(() => {
+      mockPrisma.message.findFirst.mockImplementation(() => {
         const msg = messages[findUniqueCallIndex % messages.length];
         findUniqueCallIndex++;
         return Promise.resolve(msg);
       });
 
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue({});
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
-      const batchResult = await triageService.batchTriage({ entityId: 'entity-1' });
+      const batchResult = await triageService.batchTriage({}, SCOPE);
 
       expect(batchResult.processed).toBe(4);
       expect(batchResult.results).toHaveLength(4);
@@ -746,20 +764,19 @@ describe('Inbox Management E2E Tests', () => {
       ];
 
       let callIdx = 0;
-      mockPrisma.message.findUnique.mockImplementation(() => {
+      mockPrisma.message.findFirst.mockImplementation(() => {
         const msg = messages[callIdx % messages.length];
         callIdx++;
         return Promise.resolve(msg);
       });
 
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue({});
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await triageService.batchTriage({
-        entityId: 'entity-1',
         messageIds: ['specific-1', 'specific-2'],
-      });
+      }, SCOPE);
 
       expect(result.processed).toBe(2);
       expect(result.results).toHaveLength(2);
@@ -777,22 +794,21 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Contract Review Request',
       });
 
-      mockPrisma.message.findUnique.mockResolvedValue(msg);
-      mockPrisma.contact.findUnique.mockResolvedValue(null);
+      mockPrisma.message.findFirst.mockResolvedValue(msg);
+      mockPrisma.contact.findFirst.mockResolvedValue(null);
       mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.update.mockResolvedValue(msg);
+      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
 
       // Step 1: Triage
-      const triageResult = await triageService.triageMessage('cross-msg', 'entity-1');
+      const triageResult = await triageService.triageMessage('cross-msg', SCOPE);
       expect(triageResult.urgencyScore).toBeGreaterThanOrEqual(3);
       expect(triageResult.flags.some((f) => f.type === 'DEADLINE_MENTIONED')).toBe(true);
 
       // Step 2: Generate draft
       const draft = await draftService.generateDraft({
         messageId: 'cross-msg',
-        entityId: 'entity-1',
         tone: 'DIPLOMATIC',
-      });
+      }, SCOPE);
       expect(draft.draftBody).toBeTruthy();
       expect(draft.suggestedSubject).toBe('Re: Contract Review Request');
 
@@ -808,10 +824,9 @@ describe('Inbox Management E2E Tests', () => {
       // Step 4: Set follow-up
       const followUp = await inboxService.createFollowUp({
         messageId: 'cross-msg',
-        entityId: 'entity-1',
         reminderAt: new Date('2026-03-05T09:00:00Z'),
         reason: 'Follow up on contract review response',
-      });
+      }, SCOPE, USER);
       expect(followUp.status).toBe('PENDING');
       expect(followUp.reason).toContain('contract review');
     });
@@ -831,7 +846,7 @@ describe('Inbox Management E2E Tests', () => {
 
       mockPrisma.message.findMany.mockResolvedValue(messages);
 
-      const stats = await inboxService.getInboxStats('user-1', 'entity-1');
+      const stats = await inboxService.getInboxStats(SCOPE);
 
       expect(stats.total).toBe(4);
       expect(stats.unread).toBe(4);

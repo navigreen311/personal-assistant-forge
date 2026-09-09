@@ -1,17 +1,17 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 
 const inboxService = new InboxService();
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId') ?? undefined;
-
-      const stats = await inboxService.getInboxStats(session.userId, entityId);
+      // entityId used to be optional here, and an omitted one made
+      // getInboxStats count every message row in the database.
+      const stats = await inboxService.getInboxStats(entityId);
       return success(stats);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Internal server error';

@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { addDays, addWeeks, addMonths, isBefore } from 'date-fns';
 import type { CadenceFrequency, FollowUpCadence } from '@/modules/communication/types';
 
@@ -40,7 +41,8 @@ function parseCadencePreferences(preferences: unknown): { frequency?: CadenceFre
  */
 export async function setCadence(
   contactId: string,
-  frequency: string
+  frequency: string,
+  entityId: VerifiedEntityId
 ): Promise<FollowUpCadence> {
   const validFrequencies: CadenceFrequency[] = ['DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY', 'QUARTERLY'];
   const cadenceFrequency = frequency.toUpperCase() as CadenceFrequency;
@@ -49,7 +51,7 @@ export async function setCadence(
     throw new Error(`Invalid frequency: ${frequency}. Must be one of: ${validFrequencies.join(', ')}`);
   }
 
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const existingPrefs = (contact.preferences as Record<string, unknown>) ?? {};
@@ -59,10 +61,11 @@ export async function setCadence(
     escalationAfterMisses: (existingPrefs.escalationAfterMisses as number) ?? 3,
   };
 
-  await prisma.contact.update({
-    where: { id: contactId },
+  const written = await prisma.contact.updateMany({
+    where: { id: contactId, entityId },
     data: { preferences: updatedPrefs },
   });
+  if (written.count === 0) throw new Error(`Contact not found: ${contactId}`);
 
   const nextDue = computeNextDue(contact.lastTouch, cadenceFrequency);
 
@@ -78,7 +81,7 @@ export async function setCadence(
 /**
  * Get all overdue follow-ups for an entity.
  */
-export async function getOverdueFollowUps(entityId: string): Promise<FollowUpCadence[]> {
+export async function getOverdueFollowUps(entityId: VerifiedEntityId): Promise<FollowUpCadence[]> {
   const contacts = await prisma.contact.findMany({
     where: { entityId },
   });
@@ -110,8 +113,11 @@ export async function getOverdueFollowUps(entityId: string): Promise<FollowUpCad
  * Escalate a follow-up after missed cadence windows.
  * Updates the contact's preferences to flag for human review.
  */
-export async function escalateFollowUp(contactId: string): Promise<void> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+export async function escalateFollowUp(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) throw new Error(`Contact not found: ${contactId}`);
 
   const existingPrefs = (contact.preferences as Record<string, unknown>) ?? {};
@@ -122,17 +128,18 @@ export async function escalateFollowUp(contactId: string): Promise<void> {
     escalationReason: 'Missed follow-up cadence — requires human review',
   };
 
-  await prisma.contact.update({
-    where: { id: contactId },
+  const written = await prisma.contact.updateMany({
+    where: { id: contactId, entityId },
     data: { preferences: updatedPrefs },
   });
+  if (written.count === 0) throw new Error(`Contact not found: ${contactId}`);
 }
 
 /**
  * Get upcoming follow-ups within the next N days for an entity.
  */
 export async function getNextFollowUps(
-  entityId: string,
+  entityId: VerifiedEntityId,
   days: number
 ): Promise<FollowUpCadence[]> {
   const contacts = await prisma.contact.findMany({
@@ -170,13 +177,16 @@ export async function getNextFollowUps(
  * Create Notification records for overdue cadences.
  * Skips contacts that already have a reminder for the current period.
  */
-export async function triggerCadenceReminders(entityId: string): Promise<number> {
+export async function triggerCadenceReminders(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<number> {
   const overdue = await getOverdueFollowUps(entityId);
   let triggered = 0;
 
   for (const cadence of overdue) {
-    const contact = await prisma.contact.findUnique({
-      where: { id: cadence.contactId },
+    const contact = await prisma.contact.findFirst({
+      where: { id: cadence.contactId, entityId },
       select: { name: true, entityId: true },
     });
 
@@ -204,7 +214,10 @@ export async function triggerCadenceReminders(entityId: string): Promise<number>
         body: `${contact.name} is overdue for a ${cadence.frequency.toLowerCase()} follow-up.`,
         priority: cadence.isOverdue ? 'high' : 'normal',
         entityId,
-        userId: entityId,
+        // Was `userId: entityId`. Notification.userId is a foreign key to
+        // User, so this wrote an entity id into a user column -- a row that
+        // could only ever insert if some user happened to share the id.
+        userId,
         metadata: {
           contactId: cadence.contactId,
           frequency: cadence.frequency,
@@ -222,8 +235,11 @@ export async function triggerCadenceReminders(entityId: string): Promise<number>
 /**
  * Get cadence status for a single contact.
  */
-export async function getCadenceStatus(contactId: string): Promise<FollowUpCadence | null> {
-  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+export async function getCadenceStatus(
+  contactId: string,
+  entityId: VerifiedEntityId
+): Promise<FollowUpCadence | null> {
+  const contact = await prisma.contact.findFirst({ where: { id: contactId, entityId } });
   if (!contact) return null;
 
   const { frequency, escalationAfterMisses } = parseCadencePreferences(contact.preferences);

@@ -5,6 +5,7 @@ jest.mock('@/lib/db', () => ({
     contact: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
     message: {
       create: jest.fn(),
@@ -33,6 +34,13 @@ import { sendEmail } from '@/lib/integrations/email/client';
 import { sendSMS } from '@/lib/integrations/sms/client';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot
+// mint the brand, so it uses the one sanctioned helper (P-00b) rather than a
+// local cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
 
 describe('broadcast-manager', () => {
   beforeEach(() => {
@@ -79,7 +87,7 @@ describe('broadcast-manager', () => {
         { id: 'c-2', preferences: {}, channels: [{ type: 'EMAIL', handle: 'b@b.com' }] },
       ]);
 
-      const result = await validateRecipients(['c-1', 'c-2']);
+      const result = await validateRecipients(['c-1', 'c-2'], SCOPE);
       expect(result.valid).toContain('c-2');
       expect(result.invalid).toContain('c-1');
     });
@@ -89,7 +97,7 @@ describe('broadcast-manager', () => {
         { id: 'c-1', preferences: {}, channels: [] },
       ]);
 
-      const result = await validateRecipients(['c-1']);
+      const result = await validateRecipients(['c-1'], SCOPE);
       expect(result.invalid).toContain('c-1');
       expect(result.valid).toHaveLength(0);
     });
@@ -97,13 +105,13 @@ describe('broadcast-manager', () => {
     it('should mark nonexistent contacts as invalid', async () => {
       (mockPrisma.contact.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await validateRecipients(['nonexistent-1', 'nonexistent-2']);
+      const result = await validateRecipients(['nonexistent-1', 'nonexistent-2'], SCOPE);
       expect(result.invalid).toHaveLength(2);
       expect(result.valid).toHaveLength(0);
     });
 
     it('should handle empty recipient list', async () => {
-      const result = await validateRecipients([]);
+      const result = await validateRecipients([], SCOPE);
       expect(result.valid).toHaveLength(0);
       expect(result.invalid).toHaveLength(0);
     });
@@ -114,7 +122,7 @@ describe('broadcast-manager', () => {
         { id: 'c-2', preferences: { doNotContact: false }, channels: [{ type: 'SMS', handle: '555-0100' }] },
       ]);
 
-      const result = await validateRecipients(['c-1', 'c-2']);
+      const result = await validateRecipients(['c-1', 'c-2'], SCOPE);
       expect(result.valid).toHaveLength(2);
       expect(result.invalid).toHaveLength(0);
     });
@@ -127,11 +135,11 @@ describe('broadcast-manager', () => {
         { id: 'c-2', preferences: { doNotContact: true }, channels: [{ type: 'EMAIL', handle: 'b@b.com' }] },
       ]);
       (mockPrisma.message.create as jest.Mock).mockResolvedValue({});
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({ email: 'a@b.com', name: 'Alice' });
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({ email: 'a@b.com', name: 'Alice' });
       (sendEmail as jest.Mock).mockResolvedValue(true);
 
       const result = await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1', 'c-2'],
         template: 'Hello {{name}}!',
         mergeFields: [{ name: 'Alice' }, { name: 'Bob' }],
@@ -149,11 +157,11 @@ describe('broadcast-manager', () => {
         { id: 'c-1', preferences: {}, channels: [{ type: 'EMAIL', handle: 'a@b.com' }] },
       ]);
       (mockPrisma.message.create as jest.Mock).mockResolvedValue({});
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({ email: 'test@example.com', name: 'Test' });
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({ email: 'test@example.com', name: 'Test' });
       (sendEmail as jest.Mock).mockResolvedValue(true);
 
       await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1'],
         template: 'Hello!',
         mergeFields: [{}],
@@ -173,11 +181,11 @@ describe('broadcast-manager', () => {
         { id: 'c-1', preferences: {}, channels: [{ type: 'SMS', handle: '555-0100' }] },
       ]);
       (mockPrisma.message.create as jest.Mock).mockResolvedValue({});
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({ phone: '+15550100', name: 'Test' });
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({ phone: '+15550100', name: 'Test' });
       (sendSMS as jest.Mock).mockResolvedValue('sms-sid-123');
 
       await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1'],
         template: 'Hello!',
         mergeFields: [{}],
@@ -199,7 +207,7 @@ describe('broadcast-manager', () => {
       (mockPrisma.message.create as jest.Mock).mockRejectedValue(new Error('DB connection lost'));
 
       const result = await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1'],
         template: 'Hello!',
         mergeFields: [{}],
@@ -216,11 +224,11 @@ describe('broadcast-manager', () => {
         { id: 'c-1', preferences: {}, channels: [{ type: 'EMAIL', handle: 'a@b.com' }] },
       ]);
       (mockPrisma.message.create as jest.Mock).mockResolvedValue({});
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({ email: 'a@b.com', name: 'Alice' });
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({ email: 'a@b.com', name: 'Alice' });
       (sendEmail as jest.Mock).mockRejectedValue(new Error('SMTP error'));
 
       const result = await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1'],
         template: 'Hello!',
         mergeFields: [{}],
@@ -237,10 +245,10 @@ describe('broadcast-manager', () => {
         { id: 'c-2', preferences: {}, channels: [{ type: 'EMAIL', handle: 'b@b.com' }] },
       ]);
       (mockPrisma.message.create as jest.Mock).mockResolvedValue({});
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
       await sendBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1', 'c-2'],
         template: 'Hello {{name}}, welcome!',
         mergeFields: [{ name: 'Alice' }, { name: 'Bob' }],
@@ -263,7 +271,7 @@ describe('broadcast-manager', () => {
       });
 
       const result = await scheduleBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1', 'c-2'],
         template: 'Hello!',
         mergeFields: [{}],
@@ -284,7 +292,7 @@ describe('broadcast-manager', () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({ id: 'doc-456' });
 
       await scheduleBroadcast({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         recipientIds: ['c-1'],
         template: 'Test',
         mergeFields: [{}],
@@ -307,12 +315,12 @@ describe('broadcast-manager', () => {
         { id: 'm-3', subject: 'Broadcast: Goodbye!', createdAt: new Date('2026-01-02') },
       ]);
 
-      const result = await getBroadcastHistory('entity-1');
+      const result = await getBroadcastHistory(verifiedEntityIdForTest('entity-1'));
 
       expect(mockPrisma.message.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            entityId: 'entity-1',
+            entityId: verifiedEntityIdForTest('entity-1'),
             subject: { startsWith: 'Broadcast:' },
           }),
         })
@@ -327,7 +335,7 @@ describe('broadcast-manager', () => {
         { id: 'm-3', subject: 'Broadcast: Promo', createdAt: new Date('2026-01-01') },
       ]);
 
-      const result = await getBroadcastHistory('entity-1');
+      const result = await getBroadcastHistory(verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(result[0].totalSent).toBe(3);

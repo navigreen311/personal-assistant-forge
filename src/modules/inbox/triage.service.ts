@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateJSON } from '@/lib/ai';
 import type { Message, Sensitivity, Contact } from '@/shared/types';
 import type {
@@ -248,21 +249,23 @@ Return JSON with these exact fields:
 
   async triageMessage(
     messageId: string,
-    entityId: string
+    entityId: VerifiedEntityId
   ): Promise<TriageResult> {
-    const message = await prisma.message.findUnique({
-      where: { id: messageId },
+    // The scope is in the WHERE clause: another tenant's message is not found.
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, entityId },
     });
 
     if (!message) {
       throw new Error(`Message not found: ${messageId}`);
     }
 
-    // Try to load sender contact
+    // Try to load sender contact -- scoped too, so triaging a message cannot
+    // be used to read a contact record belonging to another entity.
     let sender: Contact | undefined;
     try {
-      const contactRecord = await prisma.contact.findUnique({
-        where: { id: message.senderId },
+      const contactRecord = await prisma.contact.findFirst({
+        where: { id: message.senderId, entityId },
       });
       if (contactRecord) {
         sender = {
@@ -345,8 +348,8 @@ Return JSON with these exact fields:
     };
 
     // Persist triage score and intent back to message
-    await prisma.message.update({
-      where: { id: messageId },
+    await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: {
         triageScore: urgencyScore,
         intent,
@@ -357,7 +360,10 @@ Return JSON with these exact fields:
     return result;
   }
 
-  async batchTriage(request: BatchTriageRequest): Promise<BatchTriageResult> {
+  async batchTriage(
+    request: Omit<BatchTriageRequest, 'entityId'>,
+    entityId: VerifiedEntityId
+  ): Promise<BatchTriageResult> {
     const startTime = Date.now();
     const maxMessages = request.maxMessages ?? 50;
 
@@ -366,7 +372,7 @@ Return JSON with these exact fields:
       // Find untriaged messages (default score of 5 and no intent)
       const untriaged = await prisma.message.findMany({
         where: {
-          entityId: request.entityId,
+          entityId,
           intent: null,
         },
         select: { id: true },
@@ -382,7 +388,9 @@ Return JSON with these exact fields:
     const results: TriageResult[] = [];
     for (const id of messageIds) {
       try {
-        const result = await this.triageMessage(id, request.entityId);
+        // Caller-supplied ids are NOT trusted: triageMessage scopes each one,
+        // so a foreign id simply throws and is skipped rather than triaged.
+        const result = await this.triageMessage(id, entityId);
         results.push(result);
       } catch {
         // Skip messages that fail triage
@@ -411,17 +419,21 @@ Return JSON with these exact fields:
   async updateTriageScore(
     messageId: string,
     newScore: number,
-    reason: string
+    reason: string,
+    entityId: VerifiedEntityId
   ): Promise<TriageResult> {
     const clamped = Math.max(1, Math.min(10, newScore));
 
-    await prisma.message.update({
-      where: { id: messageId },
+    const written = await prisma.message.updateMany({
+      where: { id: messageId, entityId },
       data: { triageScore: clamped },
     });
+    if (written.count === 0) {
+      throw new Error(`Message not found: ${messageId}`);
+    }
 
-    const message = await prisma.message.findUnique({
-      where: { id: messageId },
+    const message = await prisma.message.findFirst({
+      where: { id: messageId, entityId },
     });
 
     if (!message) {

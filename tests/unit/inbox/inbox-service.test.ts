@@ -5,14 +5,21 @@
  *   1. Follow-up CRUD (4 tests): create, list, complete, delete/cancel
  *   2. Canned Response CRUD (4 tests): create, list, update, delete
  *   3. Message read/starred state (4 tests): markAsRead, toggleStar, check read, check starred
- *   4. getCurrentUserId (2 tests): with x-user-id header, without header (fallback)
  *
  * Mocks @/lib/db with jest.fn() for all Prisma models used (followUpReminder,
  * cannedResponse, message). Tests validate function signatures and return shapes,
  * working regardless of whether the service uses Maps or Prisma internally.
  */
 
-import { InboxService, getCurrentUserId } from '@/modules/inbox/inbox.service';
+import { InboxService } from '@/modules/inbox/inbox.service';
+// P-06 / T-005: `getCurrentUserId` was imported here. It is gone; identity now
+// arrives from the session. A unit test cannot mint a VerifiedEntityId, so it
+// uses the one sanctioned helper (P-00b) rather than a local cast. See
+// docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+const USER = 'user-1';
 
 // Mock Prisma client with all models used by InboxService
 jest.mock('@/lib/db', () => ({
@@ -34,6 +41,7 @@ jest.mock('@/lib/db', () => ({
       findUnique: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
     },
@@ -41,7 +49,9 @@ jest.mock('@/lib/db', () => ({
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
     },
@@ -146,6 +156,12 @@ describe('InboxService', () => {
   beforeEach(() => {
     service = new InboxService();
     jest.clearAllMocks();
+    // The service now writes through updateMany / deleteMany (the scope cannot
+    // ride on a unique WHERE) and reads count to decide not-found.
+    mockedPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+    mockedPrisma.followUpReminder.updateMany.mockResolvedValue({ count: 1 });
+    mockedPrisma.cannedResponse.updateMany.mockResolvedValue({ count: 1 });
+    mockedPrisma.cannedResponse.deleteMany.mockResolvedValue({ count: 1 });
   });
 
   // =========================================================================
@@ -154,7 +170,7 @@ describe('InboxService', () => {
   describe('Follow-up CRUD', () => {
     it('should create a follow-up reminder and return expected shape', async () => {
       // Arrange: message exists in DB
-      mockedPrisma.message.findUnique.mockResolvedValue(makeMessageRow());
+      mockedPrisma.message.findFirst.mockResolvedValue(makeMessageRow());
 
       // Mock prisma.followUpReminder.create to return a valid row
       const createdRow = makeFollowUpRow({
@@ -169,10 +185,9 @@ describe('InboxService', () => {
       // Act
       const followUp = await service.createFollowUp({
         messageId: 'msg-100',
-        entityId: 'entity-1',
         reminderAt: new Date('2025-06-01T09:00:00Z'),
         reason: 'Check status of proposal',
-      });
+      }, SCOPE, USER);
 
       // Assert: return shape matches FollowUpReminder interface
       expect(followUp).toEqual(
@@ -207,7 +222,7 @@ describe('InboxService', () => {
       mockedPrisma.followUpReminder.findMany.mockResolvedValue([earlyRow, lateRow]);
 
       // Act
-      const list = await service.listFollowUps('default-user');
+      const list = await service.listFollowUps(USER);
 
       // Assert
       expect(Array.isArray(list)).toBe(true);
@@ -238,7 +253,7 @@ describe('InboxService', () => {
         id: 'fu-to-complete',
         priority: 'PENDING:entity-1',
       });
-      mockedPrisma.followUpReminder.findUnique.mockResolvedValue(existingRow);
+      mockedPrisma.followUpReminder.findFirst.mockResolvedValue(existingRow);
 
       // Mock update to return the completed row
       const completedRow = {
@@ -247,15 +262,15 @@ describe('InboxService', () => {
         completedAt: new Date(),
         priority: 'COMPLETED:entity-1',
       };
-      mockedPrisma.followUpReminder.update.mockResolvedValue(completedRow);
+      mockedPrisma.followUpReminder.updateMany.mockResolvedValue(completedRow);
 
       // Act
-      await service.completeFollowUp('fu-to-complete');
+      await service.completeFollowUp('fu-to-complete', USER);
 
       // Assert: prisma update was called with the correct status encoding
-      expect(mockedPrisma.followUpReminder.update).toHaveBeenCalledWith(
+      expect(mockedPrisma.followUpReminder.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'fu-to-complete' },
+          where: { id: 'fu-to-complete', userId: USER },
           data: expect.objectContaining({
             completed: true,
             priority: expect.stringContaining('COMPLETED'),
@@ -270,21 +285,21 @@ describe('InboxService', () => {
         id: 'fu-to-cancel',
         priority: 'PENDING:entity-1',
       });
-      mockedPrisma.followUpReminder.findUnique.mockResolvedValue(existingRow);
+      mockedPrisma.followUpReminder.findFirst.mockResolvedValue(existingRow);
 
       const cancelledRow = {
         ...existingRow,
         priority: 'CANCELLED:entity-1',
       };
-      mockedPrisma.followUpReminder.update.mockResolvedValue(cancelledRow);
+      mockedPrisma.followUpReminder.updateMany.mockResolvedValue(cancelledRow);
 
       // Act
-      await service.cancelFollowUp('fu-to-cancel');
+      await service.cancelFollowUp('fu-to-cancel', USER);
 
       // Assert
-      expect(mockedPrisma.followUpReminder.update).toHaveBeenCalledWith(
+      expect(mockedPrisma.followUpReminder.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'fu-to-cancel' },
+          where: { id: 'fu-to-cancel', userId: USER },
           data: expect.objectContaining({
             priority: expect.stringContaining('CANCELLED'),
           }),
@@ -318,14 +333,13 @@ describe('InboxService', () => {
       // Act
       const response = await service.createCannedResponse({
         name: 'Welcome Reply',
-        entityId: 'entity-1',
         channel: 'EMAIL',
         category: 'Onboarding',
         subject: 'Welcome!',
         body: 'Thank you for reaching out. We look forward to working with you.',
         variables: ['{{name}}', '{{company}}'],
         tone: 'WARM',
-      });
+      }, SCOPE, USER);
 
       // Assert: return shape matches CannedResponse interface
       expect(response).toEqual(
@@ -362,7 +376,7 @@ describe('InboxService', () => {
       mockedPrisma.cannedResponse.findMany.mockResolvedValue([row1, row2]);
 
       // Act
-      const entity1Responses = await service.listCannedResponses('entity-1');
+      const entity1Responses = await service.listCannedResponses(verifiedEntityIdForTest('entity-1'), USER);
 
       // Assert: only entity-1 responses returned
       expect(Array.isArray(entity1Responses)).toBe(true);
@@ -397,7 +411,7 @@ describe('InboxService', () => {
           usageCount: 3,
         },
       });
-      mockedPrisma.cannedResponse.findUnique.mockResolvedValue(existingRow);
+      mockedPrisma.cannedResponse.findFirst.mockResolvedValue(existingRow);
 
       // Mock update to return the updated row
       const updatedRow = makeCannedResponseRow({
@@ -413,13 +427,13 @@ describe('InboxService', () => {
           usageCount: 3,
         },
       });
-      mockedPrisma.cannedResponse.update.mockResolvedValue(updatedRow);
+      mockedPrisma.cannedResponse.updateMany.mockResolvedValue(updatedRow);
 
       // Act: update only name and body
       const updated = await service.updateCannedResponse('cr-to-update', {
         name: 'Updated Name',
         body: 'Updated body text',
-      });
+      }, USER);
 
       // Assert: updated fields changed
       expect(updated.name).toBe('Updated Name');
@@ -435,25 +449,24 @@ describe('InboxService', () => {
     });
 
     it('should delete a canned response so it is no longer retrievable', async () => {
-      // Arrange: response exists for first findUnique call (for delete check)
-      const existingRow = makeCannedResponseRow({ id: 'cr-to-delete' });
-      mockedPrisma.cannedResponse.findUnique
-        .mockResolvedValueOnce(existingRow) // exists check in deleteCannedResponse
-        .mockResolvedValueOnce(null);       // getCannedResponse after delete returns null
-      mockedPrisma.cannedResponse.delete.mockResolvedValue(existingRow);
+      // Arrange. deleteCannedResponse no longer reads the row first: the scope
+      // rides in the deleteMany WHERE clause and count === 0 is not-found, so
+      // the only read left is the getCannedResponse check below.
+      mockedPrisma.cannedResponse.findFirst.mockResolvedValue(null);
+      mockedPrisma.cannedResponse.deleteMany.mockResolvedValue({ count: 1 });
 
       // Act
-      await service.deleteCannedResponse('cr-to-delete');
+      await service.deleteCannedResponse('cr-to-delete', USER);
 
       // Assert: delete was called
-      expect(mockedPrisma.cannedResponse.delete).toHaveBeenCalledWith(
+      expect(mockedPrisma.cannedResponse.deleteMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'cr-to-delete' },
+          where: { id: 'cr-to-delete', userId: USER },
         })
       );
 
       // Assert: no longer retrievable
-      const afterDelete = await service.getCannedResponse('cr-to-delete');
+      const afterDelete = await service.getCannedResponse('cr-to-delete', USER);
       expect(afterDelete).toBeNull();
     });
   });
@@ -464,16 +477,16 @@ describe('InboxService', () => {
   describe('Message read/starred state', () => {
     it('should mark a message as read', async () => {
       // Arrange: message exists
-      mockedPrisma.message.findUnique.mockResolvedValue(makeMessageRow({ id: 'msg-read-1' }));
-      mockedPrisma.message.update.mockResolvedValue(makeMessageRow({ id: 'msg-read-1', read: true }));
+      mockedPrisma.message.findFirst.mockResolvedValue(makeMessageRow({ id: 'msg-read-1' }));
+      mockedPrisma.message.updateMany.mockResolvedValue(makeMessageRow({ id: 'msg-read-1', read: true }));
 
       // Act
-      await service.markAsRead('msg-read-1', true);
+      await service.markAsRead('msg-read-1', true, SCOPE);
 
       // Assert: prisma.message.update was called with the correct read value
-      expect(mockedPrisma.message.update).toHaveBeenCalledWith(
+      expect(mockedPrisma.message.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'msg-read-1' },
+          where: { id: 'msg-read-1', entityId: SCOPE },
           data: expect.objectContaining({ read: true }),
         })
       );
@@ -481,20 +494,20 @@ describe('InboxService', () => {
 
     it('should toggle starred state via toggleStar', async () => {
       // Arrange: message exists, currently not starred
-      mockedPrisma.message.findUnique.mockResolvedValue(
+      mockedPrisma.message.findFirst.mockResolvedValue(
         makeMessageRow({ id: 'msg-star-1', starred: false })
       );
-      mockedPrisma.message.update.mockResolvedValue(
+      mockedPrisma.message.updateMany.mockResolvedValue(
         makeMessageRow({ id: 'msg-star-1', starred: true })
       );
 
       // Act: toggle should set starred to true (opposite of current false)
-      await service.toggleStar('msg-star-1');
+      await service.toggleStar('msg-star-1', SCOPE);
 
       // Assert
-      expect(mockedPrisma.message.update).toHaveBeenCalledWith(
+      expect(mockedPrisma.message.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'msg-star-1' },
+          where: { id: 'msg-star-1', entityId: SCOPE },
           data: expect.objectContaining({ starred: true }),
         })
       );
@@ -510,7 +523,7 @@ describe('InboxService', () => {
       mockedPrisma.followUpReminder.findMany.mockResolvedValue([]);
 
       // Act
-      const result = await service.listInbox('user-1', { page: 1, pageSize: 20 });
+      const result = await service.listInbox(SCOPE, { page: 1, pageSize: 20 });
 
       // Assert
       expect(result.items).toBeDefined();
@@ -532,7 +545,7 @@ describe('InboxService', () => {
       mockedPrisma.followUpReminder.findMany.mockResolvedValue([]);
 
       // Act
-      const result = await service.listInbox('user-1', { page: 1, pageSize: 20 });
+      const result = await service.listInbox(SCOPE, { page: 1, pageSize: 20 });
 
       // Assert
       expect(result.items).toBeDefined();
@@ -546,97 +559,83 @@ describe('InboxService', () => {
   });
 
   // =========================================================================
-  // 4. getCurrentUserId (2 tests)
+  // 4. getCurrentUserId -- REMOVED (T-005)
+  //
+  // Two tests stood here. One asserted that the userId came from an `x-user-id`
+  // REQUEST HEADER; the other asserted that with no header at all every caller
+  // collapsed onto one shared fallback string, 'default-user'. Both encoded the
+  // defect rather than a requirement: a client sets its own headers, and
+  // 'default-user' is a hardcoded identity that is not any real user.
+  //
+  // The function is gone. Identity comes from the verified session and is passed
+  // in as `userId`; tests/db/inbox-tenancy.test.ts proves a forged `x-user-id`
+  // header changes nothing.
   // =========================================================================
-  describe('getCurrentUserId', () => {
-    it('should return the user ID from x-user-id header when present', () => {
-      const headers = { 'x-user-id': 'user-abc-123' };
-      const userId = getCurrentUserId(headers);
-
-      expect(typeof userId).toBe('string');
-      expect(userId).toBe('user-abc-123');
-    });
-
-    it('should return fallback default value when no header context is available', () => {
-      // Case 1: no headers argument at all
-      const userId1 = getCurrentUserId();
-      expect(typeof userId1).toBe('string');
-      expect(userId1.length).toBeGreaterThan(0);
-
-      // Case 2: empty headers object
-      const userId2 = getCurrentUserId({});
-      expect(typeof userId2).toBe('string');
-      expect(userId2.length).toBeGreaterThan(0);
-
-      // Case 3: headers with missing x-user-id
-      const userId3 = getCurrentUserId({ 'other-header': 'value' });
-      expect(typeof userId3).toBe('string');
-      expect(userId3.length).toBeGreaterThan(0);
-
-      // All fallback cases should return the same default
-      expect(userId1).toBe(userId2);
-      expect(userId2).toBe(userId3);
-    });
-  });
 
   // =========================================================================
   // Additional error-case tests for completeness
   // =========================================================================
   describe('Follow-up error handling', () => {
     it('should throw when creating follow-up for non-existent message', async () => {
-      mockedPrisma.message.findUnique.mockResolvedValue(null);
+      mockedPrisma.message.findFirst.mockResolvedValue(null);
 
       await expect(
         service.createFollowUp({
           messageId: 'nonexistent-msg',
-          entityId: 'entity-1',
           reminderAt: new Date('2025-06-01'),
           reason: 'Should fail',
-        })
+        }, SCOPE, USER)
       ).rejects.toThrow(/not found/i);
     });
 
     it('should throw when completing a non-existent follow-up', async () => {
-      mockedPrisma.followUpReminder.findUnique.mockResolvedValue(null);
+      mockedPrisma.followUpReminder.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.completeFollowUp('nonexistent-follow-up-id')
+        service.completeFollowUp('nonexistent-follow-up-id', USER)
       ).rejects.toThrow(/not found/i);
     });
   });
 
   describe('Canned Response error handling', () => {
     it('should throw when updating a non-existent canned response', async () => {
-      mockedPrisma.cannedResponse.findUnique.mockResolvedValue(null);
+      mockedPrisma.cannedResponse.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.updateCannedResponse('nonexistent-id', { name: 'New' })
+        service.updateCannedResponse('nonexistent-id', { name: 'New' }, USER)
       ).rejects.toThrow(/not found/i);
     });
 
     it('should throw when deleting a non-existent canned response', async () => {
-      mockedPrisma.cannedResponse.findUnique.mockResolvedValue(null);
+      // "Not found" is now the write reporting count === 0, not a read
+      // returning null: the scope rides in the deleteMany WHERE clause, so a
+      // row belonging to another user is simply not deleted.
+      mockedPrisma.cannedResponse.findFirst.mockResolvedValue(null);
+      mockedPrisma.cannedResponse.deleteMany.mockResolvedValue({ count: 0 });
 
       await expect(
-        service.deleteCannedResponse('nonexistent-id')
+        service.deleteCannedResponse('nonexistent-id', USER)
       ).rejects.toThrow(/not found/i);
     });
   });
 
   describe('Message state error handling', () => {
     it('should throw when marking a non-existent message as read', async () => {
-      mockedPrisma.message.findUnique.mockResolvedValue(null);
+      // Same shift: markAsRead writes with the scope in the WHERE clause and
+      // reads count === 0 as not-found.
+      mockedPrisma.message.findFirst.mockResolvedValue(null);
+      mockedPrisma.message.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
-        service.markAsRead('nonexistent-msg', true)
+        service.markAsRead('nonexistent-msg', true, SCOPE)
       ).rejects.toThrow(/not found/i);
     });
 
     it('should throw when toggling star on a non-existent message', async () => {
-      mockedPrisma.message.findUnique.mockResolvedValue(null);
+      mockedPrisma.message.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.toggleStar('nonexistent-msg')
+        service.toggleStar('nonexistent-msg', SCOPE)
       ).rejects.toThrow(/not found/i);
     });
   });
@@ -657,7 +656,7 @@ describe('InboxService', () => {
       mockedPrisma.followUpReminder.findMany.mockResolvedValue([rowA, rowB]);
 
       // Act
-      const entityAList = await service.listFollowUps('default-user', 'entity-A');
+      const entityAList = await service.listFollowUps(USER, verifiedEntityIdForTest('entity-A'));
 
       // Assert: only entity-A follow-ups returned
       expect(entityAList.length).toBe(1);
@@ -681,7 +680,7 @@ describe('InboxService', () => {
       mockedPrisma.cannedResponse.findMany.mockResolvedValue([emailRow, smsRow]);
 
       // Act
-      const emailOnly = await service.listCannedResponses('entity-filter', 'EMAIL');
+      const emailOnly = await service.listCannedResponses(verifiedEntityIdForTest('entity-filter'), USER, 'EMAIL');
 
       // Assert
       expect(emailOnly.length).toBe(1);
@@ -704,12 +703,11 @@ describe('InboxService', () => {
       // Act
       const response = await service.createCannedResponse({
         name: 'No Variables',
-        entityId: 'entity-1',
         channel: 'EMAIL',
         category: 'Simple',
         body: 'Plain body with no variables',
         tone: 'DIRECT',
-      });
+      }, SCOPE, USER);
 
       // Assert
       expect(response.variables).toEqual([]);

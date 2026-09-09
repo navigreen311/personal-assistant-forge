@@ -1,11 +1,12 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
+// entityId is optional: withEntityScope resolves and verifies it.
 const draftSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   recipientId: z.string().min(1),
   channel: z.string().min(1),
   intent: z.string().min(1),
@@ -17,7 +18,7 @@ const draftSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = draftSchema.safeParse(body);
@@ -27,7 +28,6 @@ export async function POST(request: NextRequest) {
       }
 
       const {
-        entityId,
         recipientId,
         channel,
         intent,
@@ -37,24 +37,13 @@ export async function POST(request: NextRequest) {
         complianceScan,
       } = parsed.data;
 
-      // Verify entity ownership
-      const entity = await prisma.entity.findUnique({
-        where: { id: entityId },
-      });
-
-      if (!entity) {
-        return error('NOT_FOUND', 'Entity not found', 404);
-      }
-
-      if (entity.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this entity', 403);
-      }
-
-      // Look up recipient name for context
+      // Look up recipient name for context. Scoped: this used to be a bare
+      // findUnique by id, so naming any contact id in the request body echoed
+      // that tenant's contact NAME back in the response.
       let recipientName = 'Recipient';
       try {
-        const contact = await (prisma as any).contact.findUnique({
-          where: { id: recipientId },
+        const contact = await prisma.contact.findFirst({
+          where: { id: recipientId, entityId },
           select: { name: true },
         });
         if (contact) {

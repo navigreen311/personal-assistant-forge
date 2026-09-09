@@ -4,6 +4,8 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     contact: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      updateMany: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
     },
@@ -25,6 +27,13 @@ import { generateJSON } from '@/lib/ai';
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot
+// mint the brand, so it uses the one sanctioned helper (P-00b) rather than a
+// local cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+
 describe('commitment-tracker', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -32,56 +41,59 @@ describe('commitment-tracker', () => {
 
   describe('addCommitment', () => {
     it('should add a commitment to a contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         commitments: [],
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({});
 
       const result = await addCommitment('c-1', {
         description: 'Deliver proposal by Friday',
         direction: 'TO',
         status: 'OPEN',
         dueDate: new Date('2026-03-01'),
-      });
+      }, SCOPE);
 
       expect(result.id).toBe('commitment-uuid-123');
       expect(result.description).toBe('Deliver proposal by Friday');
       expect(result.direction).toBe('TO');
       expect(result.status).toBe('OPEN');
       expect(result.createdAt).toBeInstanceOf(Date);
-      expect(mockPrisma.contact.update).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: 'c-1' } })
+      // The write is now updateMany with the scope in the WHERE clause: a
+      // unique WHERE cannot carry the entity, so a foreign contact is simply
+      // not updated.
+      expect(mockPrisma.contact.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'c-1', entityId: SCOPE } })
       );
     });
 
     it('should append to existing commitments', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         commitments: [{ id: 'existing-1', description: 'Old', direction: 'FROM', status: 'FULFILLED', createdAt: new Date() }],
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({});
 
       await addCommitment('c-1', {
         description: 'New commitment',
         direction: 'TO',
         status: 'OPEN',
-      });
+      }, SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       const updatedCommitments = updateCall.data.commitments;
       expect(updatedCommitments).toHaveLength(2);
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
       await expect(
         addCommitment('nonexistent', {
           description: 'Test',
           direction: 'TO',
           status: 'OPEN',
-        })
+        }, SCOPE)
       ).rejects.toThrow('Contact not found');
     });
   });
@@ -98,7 +110,7 @@ describe('commitment-tracker', () => {
         },
       ]);
 
-      const result = await getOpenCommitments('entity-1');
+      const result = await getOpenCommitments(verifiedEntityIdForTest('entity-1'));
       expect(result).toHaveLength(2);
       expect(result.every((c) => c.status === 'OPEN')).toBe(true);
     });
@@ -113,7 +125,7 @@ describe('commitment-tracker', () => {
         },
       ]);
 
-      const result = await getOpenCommitments('entity-1', 'TO');
+      const result = await getOpenCommitments(verifiedEntityIdForTest('entity-1'), 'TO');
       expect(result).toHaveLength(1);
       expect(result[0].direction).toBe('TO');
     });
@@ -123,7 +135,7 @@ describe('commitment-tracker', () => {
         { commitments: [] },
       ]);
 
-      const result = await getOpenCommitments('entity-1');
+      const result = await getOpenCommitments(verifiedEntityIdForTest('entity-1'));
       expect(result).toHaveLength(0);
     });
   });
@@ -138,11 +150,11 @@ describe('commitment-tracker', () => {
           ],
         },
       ]);
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({});
 
-      await markFulfilled('commit-1');
+      await markFulfilled('commit-1', SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       expect(updateCall.data.commitments[0].status).toBe('FULFILLED');
     });
 
@@ -151,7 +163,7 @@ describe('commitment-tracker', () => {
         { id: 'c-1', commitments: [] },
       ]);
 
-      await expect(markFulfilled('nonexistent')).rejects.toThrow('Commitment not found');
+      await expect(markFulfilled('nonexistent', SCOPE)).rejects.toThrow('Commitment not found');
     });
   });
 
@@ -170,7 +182,7 @@ describe('commitment-tracker', () => {
         },
       ]);
 
-      const result = await getOverdueCommitments('entity-1');
+      const result = await getOverdueCommitments(verifiedEntityIdForTest('entity-1'));
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('1');
     });
@@ -184,7 +196,7 @@ describe('commitment-tracker', () => {
         },
       ]);
 
-      const result = await getOverdueCommitments('entity-1');
+      const result = await getOverdueCommitments(verifiedEntityIdForTest('entity-1'));
       expect(result).toHaveLength(0);
     });
   });
@@ -197,7 +209,7 @@ describe('commitment-tracker', () => {
         ],
       });
 
-      await extractCommitmentsFromText('I will send you the report by Friday', 'contact-1', 'entity-1');
+      await extractCommitmentsFromText('I will send you the report by Friday', 'contact-1', verifiedEntityIdForTest('entity-1'));
 
       expect(mockedGenerateJSON).toHaveBeenCalled();
       const prompt = mockedGenerateJSON.mock.calls[0][0] as string;
@@ -212,7 +224,7 @@ describe('commitment-tracker', () => {
         ],
       });
 
-      const result = await extractCommitmentsFromText('Test text', 'contact-1', 'entity-1');
+      const result = await extractCommitmentsFromText('Test text', 'contact-1', verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(2);
       expect(result[0].description).toBe('Deliver proposal');
@@ -231,7 +243,7 @@ describe('commitment-tracker', () => {
         ],
       });
 
-      const result = await extractCommitmentsFromText('Test', 'contact-1', 'entity-1');
+      const result = await extractCommitmentsFromText('Test', 'contact-1', verifiedEntityIdForTest('entity-1'));
 
       expect(result.every((c) => c.status === 'OPEN')).toBe(true);
     });
@@ -239,7 +251,7 @@ describe('commitment-tracker', () => {
     it('should handle AI response with empty commitments array', async () => {
       mockedGenerateJSON.mockResolvedValue({ commitments: [] });
 
-      const result = await extractCommitmentsFromText('Just a casual hello', 'contact-1', 'entity-1');
+      const result = await extractCommitmentsFromText('Just a casual hello', 'contact-1', verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(0);
     });
@@ -248,7 +260,7 @@ describe('commitment-tracker', () => {
       mockedGenerateJSON.mockRejectedValue(new Error('AI service unavailable'));
 
       await expect(
-        extractCommitmentsFromText('Test text', 'contact-1', 'entity-1')
+        extractCommitmentsFromText('Test text', 'contact-1', verifiedEntityIdForTest('entity-1'))
       ).rejects.toThrow('AI service unavailable');
     });
   });

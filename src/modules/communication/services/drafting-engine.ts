@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { generateText, generateJSON } from '@/lib/ai';
 import type { Contact, Tone, ComplianceProfile, MessageChannel } from '@/shared/types';
 import type {
@@ -115,8 +116,11 @@ function buildDraftBody(intent: string, tone: Tone, channel: MessageChannel, con
 export async function generateDrafts(request: DraftRequest): Promise<DraftResponse> {
   const { recipientId, entityId, channel, intent, tone, context, replyToMessageId: _replyToMessageId } = request;
 
-  // Fetch recipient
-  const contact = await prisma.contact.findUnique({ where: { id: recipientId } });
+  // Fetch recipient -- scoped, so a draft cannot be composed to, and about,
+  // another tenant's contact.
+  const contact = await prisma.contact.findFirst({
+    where: { id: recipientId, entityId },
+  });
   if (!contact) {
     throw new Error(`Contact not found: ${recipientId}`);
   }
@@ -137,7 +141,7 @@ export async function generateDrafts(request: DraftRequest): Promise<DraftRespon
     topTopics: extractTopTopics(messages.map((m) => m.intent).filter(Boolean) as string[]),
   };
 
-  // Fetch entity for compliance profile
+  // Fetch entity for compliance profile. entityId is already verified.
   const entity = await prisma.entity.findUnique({ where: { id: entityId } });
   const complianceProfiles = (entity?.complianceProfile ?? []) as ComplianceProfile[];
 
@@ -186,7 +190,7 @@ Write only the message body. Be concise and appropriate for the channel.`,
   }
 
   // Power dynamics
-  const powerAnalysis = await analyzePowerDynamics(entityId, recipientId);
+  const powerAnalysis = await analyzePowerDynamics(entityId, recipientId, entityId);
 
   return {
     variants,
@@ -239,9 +243,12 @@ Return JSON with these exact fields:
  */
 export async function analyzePowerDynamics(
   senderId: string,
-  recipientId: string
+  recipientId: string,
+  entityId: VerifiedEntityId
 ): Promise<PowerDynamicAnalysis> {
-  const contact = await prisma.contact.findUnique({ where: { id: recipientId } });
+  const contact = await prisma.contact.findFirst({
+    where: { id: recipientId, entityId },
+  });
   if (!contact) {
     return { dynamic: 'PEER', recommendation: 'Treat as peer — no additional context available.' };
   }

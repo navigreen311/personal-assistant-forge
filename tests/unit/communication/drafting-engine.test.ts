@@ -6,6 +6,7 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     contact: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
     },
     message: {
@@ -35,6 +36,13 @@ const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockedGenerateText = generateText as jest.MockedFunction<typeof generateText>;
 const mockedGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
 
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot
+// mint the brand, so it uses the one sanctioned helper (P-00b) rather than a
+// local cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+
 describe('drafting-engine', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -47,7 +55,7 @@ describe('drafting-engine', () => {
     });
 
     it('should return 2-3 draft variants', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'contact-1',
         name: 'John Doe',
         preferences: { preferredTone: 'DIRECT', preferredChannel: 'EMAIL' },
@@ -61,7 +69,7 @@ describe('drafting-engine', () => {
 
       const result = await generateDrafts({
         recipientId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         channel: 'EMAIL',
         intent: 'Schedule a meeting to discuss Q1 results',
         tone: 'DIPLOMATIC',
@@ -72,7 +80,7 @@ describe('drafting-engine', () => {
     });
 
     it('should include recipient profile in response', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'contact-1',
         name: 'Jane Smith',
         preferences: { preferredTone: 'WARM', preferredChannel: 'SLACK' },
@@ -86,7 +94,7 @@ describe('drafting-engine', () => {
 
       const result = await generateDrafts({
         recipientId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         channel: 'EMAIL',
         intent: 'Follow up on proposal',
         tone: 'DIRECT',
@@ -98,7 +106,7 @@ describe('drafting-engine', () => {
     });
 
     it('should each variant have valid fields', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'contact-1',
         name: 'Test',
         preferences: {},
@@ -112,7 +120,7 @@ describe('drafting-engine', () => {
 
       const result = await generateDrafts({
         recipientId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         channel: 'EMAIL',
         intent: 'Discuss budget',
         tone: 'FIRM',
@@ -130,12 +138,12 @@ describe('drafting-engine', () => {
     });
 
     it('should throw when contact not found', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
       await expect(
         generateDrafts({
           recipientId: 'nonexistent',
-          entityId: 'entity-1',
+          entityId: verifiedEntityIdForTest('entity-1'),
           channel: 'EMAIL',
           intent: 'Test',
           tone: 'DIRECT',
@@ -144,7 +152,7 @@ describe('drafting-engine', () => {
     });
 
     it('should include power dynamic note', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'contact-1',
         name: 'Client VIP',
         preferences: {},
@@ -158,7 +166,7 @@ describe('drafting-engine', () => {
 
       const result = await generateDrafts({
         recipientId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         channel: 'EMAIL',
         intent: 'Invoice follow-up',
         tone: 'DIRECT',
@@ -171,7 +179,7 @@ describe('drafting-engine', () => {
     it('should fall back to template-based body when AI fails', async () => {
       mockedGenerateText.mockRejectedValue(new Error('AI unavailable'));
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'contact-1',
         name: 'Test',
         preferences: {},
@@ -185,7 +193,7 @@ describe('drafting-engine', () => {
 
       const result = await generateDrafts({
         recipientId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         channel: 'EMAIL',
         intent: 'Test intent',
         tone: 'DIRECT',
@@ -242,7 +250,7 @@ describe('drafting-engine', () => {
     it('should adapt draft to contact preferred tone', () => {
       const contact: Contact = {
         id: 'c-1',
-        entityId: 'e-1',
+        entityId: verifiedEntityIdForTest('e-1'),
         name: 'Test',
         channels: [],
         relationshipScore: 50,
@@ -261,39 +269,39 @@ describe('drafting-engine', () => {
 
   describe('analyzePowerDynamics', () => {
     it('should detect CLIENT dynamic from tags', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         tags: ['client', 'VIP'],
       });
 
-      const result = await analyzePowerDynamics('entity-1', 'c-1');
+      const result = await analyzePowerDynamics('entity-1', 'c-1', SCOPE);
       expect(result.dynamic).toBe('CLIENT');
     });
 
     it('should detect VENDOR dynamic from tags', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         tags: ['vendor'],
       });
 
-      const result = await analyzePowerDynamics('entity-1', 'c-1');
+      const result = await analyzePowerDynamics('entity-1', 'c-1', SCOPE);
       expect(result.dynamic).toBe('VENDOR');
     });
 
     it('should default to PEER when no tags match', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         tags: ['friend'],
       });
 
-      const result = await analyzePowerDynamics('entity-1', 'c-1');
+      const result = await analyzePowerDynamics('entity-1', 'c-1', SCOPE);
       expect(result.dynamic).toBe('PEER');
     });
 
     it('should return PEER when contact not found', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await analyzePowerDynamics('entity-1', 'nonexistent');
+      const result = await analyzePowerDynamics('entity-1', 'nonexistent', SCOPE);
       expect(result.dynamic).toBe('PEER');
     });
   });

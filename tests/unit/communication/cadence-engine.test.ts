@@ -4,8 +4,10 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     contact: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     notification: {
       create: jest.fn(),
@@ -18,6 +20,13 @@ import { prisma } from '@/lib/db';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
+// P-06: the services below now take a VerifiedEntityId. A unit test cannot
+// mint the brand, so it uses the one sanctioned helper (P-00b) rather than a
+// local cast. See docs/parallel-build/tenancy-pattern.md trap 3.
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const SCOPE = verifiedEntityIdForTest('entity-1');
+
 describe('cadence-engine', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -25,14 +34,14 @@ describe('cadence-engine', () => {
 
   describe('setCadence', () => {
     it('should set follow-up cadence for a contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: {},
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      const result = await setCadence('c-1', 'WEEKLY');
+      const result = await setCadence('c-1', 'WEEKLY', SCOPE);
       expect(result.contactId).toBe('c-1');
       expect(result.frequency).toBe('WEEKLY');
       expect(result.nextDue).toBeInstanceOf(Date);
@@ -41,60 +50,60 @@ describe('cadence-engine', () => {
     });
 
     it('should throw for invalid frequency', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: {},
       });
 
-      await expect(setCadence('c-1', 'HOURLY')).rejects.toThrow('Invalid frequency');
+      await expect(setCadence('c-1', 'HOURLY', SCOPE)).rejects.toThrow('Invalid frequency');
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
-      await expect(setCadence('nonexistent', 'WEEKLY')).rejects.toThrow('Contact not found');
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
+      await expect(setCadence('nonexistent', 'WEEKLY', SCOPE)).rejects.toThrow('Contact not found');
     });
 
     it('should preserve existing preferences', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: { preferredTone: 'WARM', preferredChannel: 'EMAIL' },
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      await setCadence('c-1', 'MONTHLY');
+      await setCadence('c-1', 'MONTHLY', SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       const updatedPrefs = updateCall.data.preferences;
       expect(updatedPrefs.preferredTone).toBe('WARM');
       expect(updatedPrefs.cadenceFrequency).toBe('MONTHLY');
     });
 
     it('should store cadence in contact preferences', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: {},
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      await setCadence('c-1', 'DAILY');
+      await setCadence('c-1', 'DAILY', SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       expect(updateCall.data.preferences.cadenceFrequency).toBe('DAILY');
     });
 
     it('should calculate next due date based on lastTouch', async () => {
       const lastTouch = new Date('2026-01-01');
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch,
         preferences: {},
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      const result = await setCadence('c-1', 'WEEKLY');
+      const result = await setCadence('c-1', 'WEEKLY', SCOPE);
       // Next due should be 7 days after lastTouch
       expect(result.nextDue.getTime()).toBeGreaterThan(lastTouch.getTime());
     });
@@ -117,7 +126,7 @@ describe('cadence-engine', () => {
         },
       ]);
 
-      const overdue = await getOverdueFollowUps('entity-1');
+      const overdue = await getOverdueFollowUps(verifiedEntityIdForTest('entity-1'));
       expect(overdue.some((c) => c.contactId === 'c-1')).toBe(true);
       expect(overdue.every((c) => c.isOverdue)).toBe(true);
     });
@@ -131,7 +140,7 @@ describe('cadence-engine', () => {
         },
       ]);
 
-      const overdue = await getOverdueFollowUps('entity-1');
+      const overdue = await getOverdueFollowUps(verifiedEntityIdForTest('entity-1'));
       expect(overdue).toHaveLength(0);
     });
 
@@ -146,7 +155,7 @@ describe('cadence-engine', () => {
         },
       ]);
 
-      const overdue = await getOverdueFollowUps('entity-1');
+      const overdue = await getOverdueFollowUps(verifiedEntityIdForTest('entity-1'));
       expect(overdue).toHaveLength(1);
       expect(overdue[0].isOverdue).toBe(true);
     });
@@ -163,14 +172,14 @@ describe('cadence-engine', () => {
           preferences: { cadenceFrequency: 'WEEKLY' },
         },
       ]);
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         name: 'Alice',
         entityId: 'entity-1',
       });
       (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
       (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
 
-      const triggered = await triggerCadenceReminders('entity-1');
+      const triggered = await triggerCadenceReminders(verifiedEntityIdForTest('entity-1'), 'user-1');
 
       expect(triggered).toBe(1);
       expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
@@ -189,13 +198,13 @@ describe('cadence-engine', () => {
           preferences: { cadenceFrequency: 'WEEKLY' },
         },
       ]);
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         name: 'Alice',
         entityId: 'entity-1',
       });
       (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue({ id: 'existing-notif' });
 
-      const triggered = await triggerCadenceReminders('entity-1');
+      const triggered = await triggerCadenceReminders(verifiedEntityIdForTest('entity-1'), 'user-1');
 
       expect(triggered).toBe(0);
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
@@ -211,14 +220,14 @@ describe('cadence-engine', () => {
           preferences: { cadenceFrequency: 'WEEKLY' },
         },
       ]);
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         name: 'Bob',
         entityId: 'entity-1',
       });
       (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
       (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
 
-      await triggerCadenceReminders('entity-1');
+      await triggerCadenceReminders(verifiedEntityIdForTest('entity-1'), 'user-1');
 
       const createCall = (mockPrisma.notification.create as jest.Mock).mock.calls[0][0];
       expect(createCall.data.priority).toBe('high');
@@ -231,26 +240,26 @@ describe('cadence-engine', () => {
         { id: 'c-1', lastTouch: thirtyDaysAgo, preferences: { cadenceFrequency: 'WEEKLY' } },
         { id: 'c-2', lastTouch: thirtyDaysAgo, preferences: { cadenceFrequency: 'DAILY' } },
       ]);
-      (mockPrisma.contact.findUnique as jest.Mock)
+      (mockPrisma.contact.findFirst as jest.Mock)
         .mockResolvedValueOnce({ name: 'Alice', entityId: 'entity-1' })
         .mockResolvedValueOnce({ name: 'Bob', entityId: 'entity-1' });
       (mockPrisma.notification.findFirst as jest.Mock).mockResolvedValue(null);
       (mockPrisma.notification.create as jest.Mock).mockResolvedValue({});
 
-      const triggered = await triggerCadenceReminders('entity-1');
+      const triggered = await triggerCadenceReminders(verifiedEntityIdForTest('entity-1'), 'user-1');
       expect(triggered).toBe(2);
     });
   });
 
   describe('getCadenceStatus', () => {
     it('should return cadence info for a contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: { cadenceFrequency: 'WEEKLY', escalationAfterMisses: 5 },
       });
 
-      const result = await getCadenceStatus('c-1');
+      const result = await getCadenceStatus('c-1', SCOPE);
       expect(result).not.toBeNull();
       expect(result!.contactId).toBe('c-1');
       expect(result!.frequency).toBe('WEEKLY');
@@ -259,33 +268,33 @@ describe('cadence-engine', () => {
     });
 
     it('should return null for contacts without cadence', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: new Date(),
         preferences: {},
       });
 
-      const result = await getCadenceStatus('c-1');
+      const result = await getCadenceStatus('c-1', SCOPE);
       expect(result).toBeNull();
     });
 
     it('should return null for nonexistent contacts', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await getCadenceStatus('nonexistent');
+      const result = await getCadenceStatus('nonexistent', SCOPE);
       expect(result).toBeNull();
     });
 
     it('should calculate isOverdue correctly', async () => {
       const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
 
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         lastTouch: sixtyDaysAgo,
         preferences: { cadenceFrequency: 'WEEKLY' },
       });
 
-      const result = await getCadenceStatus('c-1');
+      const result = await getCadenceStatus('c-1', SCOPE);
       expect(result).not.toBeNull();
       expect(result!.isOverdue).toBe(true);
     });
@@ -293,35 +302,35 @@ describe('cadence-engine', () => {
 
   describe('escalateFollowUp', () => {
     it('should mark contact as escalated', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         preferences: { cadenceFrequency: 'WEEKLY' },
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      await escalateFollowUp('c-1');
+      await escalateFollowUp('c-1', SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       expect(updateCall.data.preferences.escalated).toBe(true);
       expect(updateCall.data.preferences.escalationReason).toContain('human review');
     });
 
     it('should include escalation timestamp', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue({
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue({
         id: 'c-1',
         preferences: {},
       });
-      (mockPrisma.contact.update as jest.Mock).mockResolvedValue({});
+      (mockPrisma.contact.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
 
-      await escalateFollowUp('c-1');
+      await escalateFollowUp('c-1', SCOPE);
 
-      const updateCall = (mockPrisma.contact.update as jest.Mock).mock.calls[0][0];
+      const updateCall = (mockPrisma.contact.updateMany as jest.Mock).mock.calls[0][0];
       expect(updateCall.data.preferences.escalatedAt).toBeDefined();
     });
 
     it('should throw for nonexistent contact', async () => {
-      (mockPrisma.contact.findUnique as jest.Mock).mockResolvedValue(null);
-      await expect(escalateFollowUp('nonexistent')).rejects.toThrow('Contact not found');
+      (mockPrisma.contact.findFirst as jest.Mock).mockResolvedValue(null);
+      await expect(escalateFollowUp('nonexistent', SCOPE)).rejects.toThrow('Contact not found');
     });
   });
 
@@ -342,7 +351,7 @@ describe('cadence-engine', () => {
         },
       ]);
 
-      const upcoming = await getNextFollowUps('entity-1', 14);
+      const upcoming = await getNextFollowUps(verifiedEntityIdForTest('entity-1'), 14);
       expect(upcoming.some((c) => c.contactId === 'c-1')).toBe(true);
     });
 
@@ -363,7 +372,7 @@ describe('cadence-engine', () => {
         },
       ]);
 
-      const upcoming = await getNextFollowUps('entity-1', 30);
+      const upcoming = await getNextFollowUps(verifiedEntityIdForTest('entity-1'), 30);
       if (upcoming.length >= 2) {
         expect(upcoming[0].nextDue.getTime()).toBeLessThanOrEqual(upcoming[1].nextDue.getTime());
       }
@@ -374,7 +383,7 @@ describe('cadence-engine', () => {
         { id: 'c-1', lastTouch: new Date(), preferences: {} },
       ]);
 
-      const upcoming = await getNextFollowUps('entity-1', 7);
+      const upcoming = await getNextFollowUps(verifiedEntityIdForTest('entity-1'), 7);
       expect(upcoming).toHaveLength(0);
     });
   });
