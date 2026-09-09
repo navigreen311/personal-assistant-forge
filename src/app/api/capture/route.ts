@@ -1,12 +1,25 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, verifyEntityForUser } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 import type { CaptureSource, CaptureContentType } from '@/modules/capture/types';
 
+// P-13 / tenancy-pattern.md 0 and 5b.
+//
+// POST -- SINGLE-ENTITY. A capture is filed against one entity, so
+// `withEntityScope` is right and narrows nothing. `userId` used to be a REQUIRED
+// field of the request body, so the caller named the owner of the row they were
+// creating; it now comes from the session and the body field is gone.
+//
+// GET -- CROSS-ENTITY. The capture inbox is "everything I captured", across
+// entities, so it keeps `withAuth` and scopes by `session.userId`.
+// `?userId=` used to be a REQUIRED query parameter -- both halves of "whose
+// captures are these" were caller-supplied, and `GET /api/capture?userId=<B>`
+// returned tenant B's inbox with a 200. `entityId` survives as an optional
+// FILTER and is proved with `verifyEntityForUser` before it narrows anything.
+
 const CreateCaptureSchema = z.object({
-  userId: z.string().min(1),
   source: z.enum([
     'VOICE', 'SCREENSHOT', 'CLIPBOARD', 'SHARE_SHEET', 'BROWSER_EXTENSION',
     'EMAIL_FORWARD', 'SMS_BRIDGE', 'DESKTOP_TRAY', 'CAMERA_SCAN', 'MANUAL',
@@ -29,7 +42,7 @@ const CreateCaptureSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CreateCaptureSchema.safeParse(body);
@@ -38,13 +51,15 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
+      // `userId` and `entityId` last, deliberately: they overwrite anything the
+      // caller sent.
       const capture = await captureService.createCapture({
-        userId: parsed.data.userId,
         source: parsed.data.source as CaptureSource,
         contentType: parsed.data.contentType as CaptureContentType,
         rawContent: parsed.data.rawContent,
-        entityId: parsed.data.entityId,
         metadata: parsed.data.metadata,
+        userId: session.userId,
+        entityId,
       });
 
       return success(capture, 201);
@@ -56,27 +71,31 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withAuth(request, async (req, session) => {
     try {
       const { searchParams } = new URL(req.url);
-      const userId = searchParams.get('userId');
-
-      if (!userId) {
-        return error('VALIDATION_ERROR', 'userId query parameter is required', 400);
-      }
 
       const source = searchParams.get('source') as CaptureSource | null;
       const status = searchParams.get('status');
-      const entityId = searchParams.get('entityId');
+      const requestedEntityId = searchParams.get('entityId');
       const page = parseInt(searchParams.get('page') ?? '1', 10);
       const pageSize = parseInt(searchParams.get('pageSize') ?? '20', 10);
 
+      let entityId;
+      if (requestedEntityId) {
+        const verified = await verifyEntityForUser(requestedEntityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        entityId = verified;
+      }
+
       const result = await captureService.listCaptures(
-        userId,
+        session.userId,
         {
           source: source ?? undefined,
           status: status ?? undefined,
-          entityId: entityId ?? undefined,
+          entityId,
         },
         page,
         pageSize,

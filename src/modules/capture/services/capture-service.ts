@@ -13,7 +13,34 @@ import type {
 } from '@/modules/capture/types';
 import { routingService } from '@/modules/capture/services/routing-service';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
+/**
+ * ============================================================================
+ * P-13 -- SCOPE, AND WHAT IS STILL MISSING
+ * ============================================================================
+ *
+ * Every by-id entry point below now takes the OWNER's user id and matches on it,
+ * so another tenant's capture is simply not found. Before this, `getCaptureById`,
+ * `processCapture` and `archiveCapture` took only the capture id, and the routes
+ * read `userId` off the QUERY STRING -- both halves of "whose capture is this"
+ * were caller-supplied.
+ *
+ * NOT FIXED, and it cannot be from inside this package: this service still keeps
+ * everything in a `Map`, because `prisma/schema.prisma` has no `Capture` model
+ * and the schema is frozen for this run. Persisting captures needs a migration,
+ * which is out of scope here. Consequences that remain true:
+ *
+ *   - the capture worker consumes jobs and writes no row;
+ *   - captures do not survive a restart, and are not shared between the web
+ *     process and the worker process;
+ *   - `tests/db/analytics-tenancy.test.ts` therefore proves capture tenancy
+ *     through the HTTP surface (403/404 and "nothing changed"), not by counting
+ *     rows, because there are no rows to count.
+ *
+ * The scoping here is still worth having: it is what a persisted implementation
+ * has to do anyway, and it closes the read-across-tenants hole today.
+ */
 class CaptureService {
   private captures = new Map<string, CaptureItem>();
   private latencyMetrics: CaptureLatencyMetrics[] = [];
@@ -23,7 +50,7 @@ class CaptureService {
     source: CaptureSource;
     contentType: CaptureContentType;
     rawContent: string;
-    entityId?: string;
+    entityId?: VerifiedEntityId;
     metadata?: Partial<CaptureMetadata>;
   }): Promise<CaptureItem> {
     const now = new Date();
@@ -46,9 +73,10 @@ class CaptureService {
     return capture;
   }
 
-  async processCapture(captureId: string): Promise<CaptureItem> {
+  async processCapture(captureId: string, userId: string): Promise<CaptureItem> {
     const capture = this.captures.get(captureId);
-    if (!capture) {
+    if (!capture || capture.userId !== userId) {
+      // Deliberately indistinguishable from a genuinely missing capture.
       throw new Error(`Capture "${captureId}" not found`);
     }
 
@@ -65,7 +93,7 @@ class CaptureService {
 
       // Route the processed capture
       const routeStart = Date.now();
-      const routingResult = await routingService.routeAndStore(capture);
+      const routingResult = await routingService.routeAndStore(capture, userId);
       const routeEnd = Date.now();
       const processedToRoutedMs = routeEnd - routeStart;
 
@@ -76,6 +104,7 @@ class CaptureService {
       // Track latency
       capture.metadata.processingTimeMs = captureToProcessedMs;
       this.latencyMetrics.push({
+        userId,
         captureToProcessedMs,
         processedToRoutedMs,
         totalMs: captureToProcessedMs + processedToRoutedMs,
@@ -114,13 +143,15 @@ class CaptureService {
     }
   }
 
-  async classifyCaptureWithAI(captureId: string): Promise<{
+  async classifyCaptureWithAI(captureId: string, userId: string): Promise<{
     category: string;
     confidence: number;
     suggestedActions: string[];
   }> {
     const capture = this.captures.get(captureId);
-    if (!capture) throw new Error(`Capture "${captureId}" not found`);
+    if (!capture || capture.userId !== userId) {
+      throw new Error(`Capture "${captureId}" not found`);
+    }
 
     try {
       const result = await generateJSON<{
@@ -152,8 +183,10 @@ Return JSON with:
     }
   }
 
-  async getCaptureById(captureId: string): Promise<CaptureItem | null> {
-    return this.captures.get(captureId) ?? null;
+  async getCaptureById(captureId: string, userId: string): Promise<CaptureItem | null> {
+    const capture = this.captures.get(captureId);
+    if (!capture || capture.userId !== userId) return null;
+    return capture;
   }
 
   async listCaptures(
@@ -161,7 +194,7 @@ Return JSON with:
     filters?: {
       source?: CaptureSource;
       status?: string;
-      entityId?: string;
+      entityId?: VerifiedEntityId;
     },
     page = 1,
     pageSize = 20,
@@ -190,18 +223,19 @@ Return JSON with:
     return { data, total };
   }
 
-  async archiveCapture(captureId: string): Promise<void> {
+  async archiveCapture(captureId: string, userId: string): Promise<void> {
     const capture = this.captures.get(captureId);
-    if (!capture) {
+    if (!capture || capture.userId !== userId) {
       throw new Error(`Capture "${captureId}" not found`);
     }
     capture.status = 'ARCHIVED';
     capture.updatedAt = new Date();
   }
 
-  async getCaptureMetrics(_userId: string): Promise<CaptureLatencyMetrics[]> {
-    // In production, filter by userId via DB query
-    return [...this.latencyMetrics];
+  async getCaptureMetrics(userId: string): Promise<CaptureLatencyMetrics[]> {
+    // This used to return `[...this.latencyMetrics]` -- every tenant's samples,
+    // with the userId argument named `_userId` and discarded.
+    return this.latencyMetrics.filter((m) => m.userId === userId);
   }
 
   // For testing

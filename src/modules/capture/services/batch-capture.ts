@@ -14,6 +14,23 @@ import type {
 } from '@/modules/capture/types';
 import { captureService } from '@/modules/capture/services/capture-service';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * P-13. Batch sessions live in a `Map` keyed by an opaque id, and every entry
+ * point took ONLY that id -- so any authenticated caller who learned a session
+ * id could add items to another tenant's batch or complete it. The owner is now
+ * part of every lookup.
+ *
+ * `startBatchSession` also took `userId` straight from the request body, so a
+ * caller opened a session in someone else's name; it now comes from the session.
+ *
+ * Separately, `completeBatch` wrote its summary Document with
+ * `entityId: session.userId` -- a USER id in `Document.entityId`, which is a
+ * required foreign key to `Entity`. Against a real Postgres that insert fails,
+ * so completing a batch always threw. The session now carries a proven entity
+ * and the summary is skipped when there is none.
+ */
 
 const VALID_SOURCES: CaptureSource[] = [
   'VOICE', 'SCREENSHOT', 'CLIPBOARD', 'SHARE_SHEET', 'BROWSER_EXTENSION',
@@ -23,10 +40,11 @@ const VALID_SOURCES: CaptureSource[] = [
 class BatchCaptureService {
   private sessions = new Map<string, BatchCaptureSession>();
 
-  startBatchSession(userId: string): BatchCaptureSession {
+  startBatchSession(userId: string, entityId?: VerifiedEntityId): BatchCaptureSession {
     const session: BatchCaptureSession = {
       id: uuidv4(),
       userId,
+      entityId,
       items: [],
       status: 'ACTIVE',
       startedAt: new Date(),
@@ -38,12 +56,14 @@ class BatchCaptureService {
 
   addToBatch(
     sessionId: string,
+    userId: string,
     rawContent: string,
     source: CaptureSource = 'VOICE',
     contentType: CaptureContentType = 'TEXT',
   ): CaptureItem {
     const session = this.sessions.get(sessionId);
-    if (!session) {
+    if (!session || session.userId !== userId) {
+      // Deliberately indistinguishable from a genuinely missing session.
       throw new Error(`Batch session "${sessionId}" not found`);
     }
 
@@ -65,6 +85,7 @@ class BatchCaptureService {
     const item: CaptureItem = {
       id: uuidv4(),
       userId: session.userId,
+      entityId: session.entityId,
       source,
       contentType,
       rawContent,
@@ -78,9 +99,9 @@ class BatchCaptureService {
     return item;
   }
 
-  async completeBatch(sessionId: string): Promise<CaptureItem[]> {
+  async completeBatch(sessionId: string, userId: string): Promise<CaptureItem[]> {
     const session = this.sessions.get(sessionId);
-    if (!session) {
+    if (!session || session.userId !== userId) {
       throw new Error(`Batch session "${sessionId}" not found`);
     }
 
@@ -98,12 +119,12 @@ class BatchCaptureService {
           source: item.source,
           contentType: item.contentType,
           rawContent: item.rawContent,
-          entityId: item.entityId,
+          entityId: session.entityId as VerifiedEntityId | undefined,
           metadata: item.metadata,
         });
 
         // Process and route it
-        const processed = await captureService.processCapture(created.id);
+        const processed = await captureService.processCapture(created.id, session.userId);
         processedItems.push(processed);
       } catch {
         // Mark individual item as failed but continue with the rest
@@ -117,11 +138,14 @@ class BatchCaptureService {
     session.completedAt = new Date();
     session.items = processedItems;
 
-    // Store batch summary in Prisma Document
+    // Store batch summary in Prisma Document. `Document.entityId` is a required
+    // FK to Entity, so with no proven entity there is nowhere to file it and
+    // guessing one is the bug this package exists to close.
+    if (session.entityId) {
     await prisma.document.create({
       data: {
         title: `Batch Capture ${session.id}`,
-        entityId: session.userId,
+        entityId: session.entityId,
         type: 'BATCH_CAPTURE',
         content: JSON.stringify({
           sessionId: session.id,
@@ -133,12 +157,15 @@ class BatchCaptureService {
         status: 'APPROVED',
       },
     });
+    }
 
     return processedItems;
   }
 
-  getBatchStatus(sessionId: string): BatchCaptureSession | null {
-    return this.sessions.get(sessionId) ?? null;
+  getBatchStatus(sessionId: string, userId: string): BatchCaptureSession | null {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.userId !== userId) return null;
+    return session;
   }
 
   // For testing

@@ -24,8 +24,23 @@ export async function createMemory(
   return mapPrismaMemory(entry);
 }
 
-export async function recallMemory(id: string): Promise<MemoryEntry | null> {
-  const entry = await prisma.memoryEntry.findUnique({ where: { id } });
+/**
+ * P-13: `MemoryEntry` is keyed by `userId` and has no `entityId` column, so the
+ * owning USER is the tenancy scope for memories. Every by-id entry point below
+ * now takes it and puts it in the WHERE clause.
+ *
+ * Before this, `recallMemory(id)`, `updateMemory(id, ...)` and
+ * `deleteMemory(id)` took only the row id, and the four `/api/memory/[id]`
+ * handlers passed the path param straight through: any authenticated caller who
+ * knew a memory id could read, rewrite or delete another user's memory. Memories
+ * are the assistant's private notes about a person, so a read across that line
+ * is the whole disclosure.
+ */
+export async function recallMemory(
+  id: string,
+  userId: string
+): Promise<MemoryEntry | null> {
+  const entry = await prisma.memoryEntry.findFirst({ where: { id, userId } });
   if (!entry) return null;
 
   const config = getDecayConfig();
@@ -33,13 +48,17 @@ export async function recallMemory(id: string): Promise<MemoryEntry | null> {
   // Reinforce on access
   const newStrength = Math.min(entry.strength + config.reinforcementBoost, 1.0);
 
-  const updated = await prisma.memoryEntry.update({
-    where: { id },
+  // updateMany, not update: a unique WHERE cannot carry the owner.
+  await prisma.memoryEntry.updateMany({
+    where: { id, userId },
     data: {
       strength: newStrength,
       lastAccessed: new Date(),
     },
   });
+
+  const updated = await prisma.memoryEntry.findFirst({ where: { id, userId } });
+  if (!updated) return null;
 
   return mapPrismaMemory(updated);
 }
@@ -154,22 +173,30 @@ export async function getMemoriesByType(
 
 export async function updateMemory(
   id: string,
+  userId: string,
   updates: { content?: string; context?: string; type?: MemoryType }
 ): Promise<MemoryEntry> {
-  const entry = await prisma.memoryEntry.update({
-    where: { id },
+  const result = await prisma.memoryEntry.updateMany({
+    where: { id, userId },
     data: {
       ...(updates.content !== undefined && { content: updates.content }),
       ...(updates.context !== undefined && { context: updates.context }),
       ...(updates.type !== undefined && { type: updates.type }),
     },
   });
+  // count === 0 is not-found; a foreign row is indistinguishable from a missing
+  // one, which is the point.
+  if (result.count === 0) throw new Error(`Memory not found: ${id}`);
+
+  const entry = await prisma.memoryEntry.findFirst({ where: { id, userId } });
+  if (!entry) throw new Error(`Memory not found: ${id}`);
 
   return mapPrismaMemory(entry);
 }
 
-export async function deleteMemory(id: string): Promise<void> {
-  await prisma.memoryEntry.delete({ where: { id } });
+export async function deleteMemory(id: string, userId: string): Promise<void> {
+  const result = await prisma.memoryEntry.deleteMany({ where: { id, userId } });
+  if (result.count === 0) throw new Error(`Memory not found: ${id}`);
 }
 
 export async function getMemoryStats(userId: string): Promise<MemoryStats> {

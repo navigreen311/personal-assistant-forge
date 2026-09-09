@@ -1,11 +1,22 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 
+// P-13 / tenancy-pattern.md 4 -- SINGLE-RECORD.
+//
+// A capture belongs to a user (and optionally to one of that user's entities).
+// All three handlers used to pass the path id to a service that looked the row
+// up by id alone, so any authenticated caller who knew a capture id could read
+// its raw content, re-file it into an entity of their choosing, or archive it.
+//
+// PATCH's `entityId` is the interesting one: it moves the capture to a different
+// entity, and it was taken straight off the body. It is now proved against the
+// caller before it is applied.
+
 const UpdateCaptureSchema = z.object({
-  entityId: z.string().optional(),
+  entityId: z.string().min(1).optional(),
   status: z.enum(['PENDING', 'PROCESSING', 'ROUTED', 'FAILED', 'ARCHIVED']).optional(),
 });
 
@@ -14,10 +25,10 @@ interface RouteParams {
 }
 
 export async function GET(_request: NextRequest, { params }: RouteParams) {
-  return withAuth(_request, async (_req, _session) => {
+  return withAuth(_request, async (_req, session) => {
     try {
       const { id } = await params;
-      const capture = await captureService.getCaptureById(id);
+      const capture = await captureService.getCaptureById(id, session.userId);
 
       if (!capture) {
         return error('NOT_FOUND', `Capture "${id}" not found`, 404);
@@ -32,7 +43,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
-  return withAuth(request, async (req, _session) => {
+  return withAuth(request, async (req, session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -42,14 +53,17 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const capture = await captureService.getCaptureById(id);
+      const capture = await captureService.getCaptureById(id, session.userId);
       if (!capture) {
         return error('NOT_FOUND', `Capture "${id}" not found`, 404);
       }
 
-      // Apply updates directly (in production, use a proper update method)
       if (parsed.data.entityId !== undefined) {
-        capture.entityId = parsed.data.entityId;
+        const verified = await verifyEntityForUser(parsed.data.entityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        capture.entityId = verified;
       }
       if (parsed.data.status !== undefined) {
         capture.status = parsed.data.status;
@@ -65,10 +79,14 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 }
 
 export async function DELETE(_request: NextRequest, { params }: RouteParams) {
-  return withAuth(_request, async (_req, _session) => {
+  return withAuth(_request, async (_req, session) => {
     try {
       const { id } = await params;
-      await captureService.archiveCapture(id);
+      const capture = await captureService.getCaptureById(id, session.userId);
+      if (!capture) {
+        return error('NOT_FOUND', `Capture "${id}" not found`, 404);
+      }
+      await captureService.archiveCapture(id, session.userId);
       return success({ archived: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to archive capture';
