@@ -1,3 +1,24 @@
+// P-00/T-003: identity no longer comes from request headers in production.
+// These middlewares now ask the auth layer, which reads the verified JWT and
+// checks entity ownership against the database.
+//
+// In THESE TESTS ONLY, the mock below resolves identity from the x-user-id /
+// x-entity-id headers, so each case can inject "a verified session for this
+// user and entity" in one line and every existing assertion keeps its meaning.
+// The header is the test's injection point; it is not a trusted input in the
+// code under test. See resolveActor / resolveVerifiedEntityId in
+// src/shared/middleware/auth.ts.
+jest.mock('@/shared/middleware/auth', () => ({
+  resolveActor: jest.fn(async (req: { headers: { get: (k: string) => string | null } }) => {
+    const id = req.headers.get('x-user-id');
+    return id ? { actor: id, actorId: id } : null;
+  }),
+  resolveVerifiedEntityId: jest.fn(
+    async (req: { headers: { get: (k: string) => string | null } }) =>
+      req.headers.get('x-entity-id')
+  ),
+}));
+
 jest.mock('@/modules/security/services/audit-service', () => ({
   auditService: {
     logAuditEntry: jest.fn().mockResolvedValue(undefined),

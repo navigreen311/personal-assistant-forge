@@ -77,6 +77,64 @@ jobs:
           path: coverage/
           retention-days: 7
 
+
+  db-tests:
+    name: Real-Database Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: lint-typecheck-test
+
+    # P-00: this job exists because the audit found 186 of 320 test files calling
+    # jest.mock('@/lib/db'), and zero tests touching a real database. A suite that
+    # stubs Prisma cannot see a missing tenant check, an unstarted worker, or an
+    # in-memory audit log -- which is every BLOCKER in the audit. The Postgres
+    # service container below was already declared for the unit job and used by
+    # no test at all.
+    #
+    # P-01 lands the harness. P-04..P-14 each add a cross-tenant refusal test.
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/paf_dbtest
+      NEXTAUTH_SECRET: ci-test-secret-do-not-use-in-production
+      NEXTAUTH_URL: http://localhost:3000
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: paf_dbtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+
+      - name: Run real-database tests
+        run: npm run test:db
+
   build:
     name: Build
     runs-on: ubuntu-latest

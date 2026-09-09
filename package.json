@@ -12,7 +12,11 @@
     "lint": "eslint",
     "db:seed": "npx prisma db seed",
     "db:reset": "npx prisma migrate reset --force",
-    "db:generate": "npx prisma generate"
+    "db:generate": "npx prisma generate",
+    "test": "jest --passWithNoTests",
+    "test:db": "jest --config jest.db.config.ts --runInBand",
+    "typecheck": "tsc --noEmit",
+    "worker": "node scripts/worker.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
