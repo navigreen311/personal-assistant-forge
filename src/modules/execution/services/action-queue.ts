@@ -463,20 +463,13 @@ async function requireAction(
 }
 
 /**
- * Look an action up by id with no tenant scope, and record the outcome of a
- * rollback against it.
+ * Record that a rollback of this action has completed.
  *
- * TRUSTED PROVENANCE ONLY -- for the rollback engine, which has already proved
- * the scope of this exact action id one statement earlier. Deliberately not
- * re-exported from the module index.
+ * TRUSTED PROVENANCE ONLY -- the single caller is the rollback engine, which
+ * proved the scope of this exact action id one statement earlier via
+ * `getActionById(actionId, entityId)`. Deliberately not re-exported from the
+ * module index, and deliberately the only unscoped write in this file.
  */
-export async function getActionForEntityOwner(
-  actionId: string
-): Promise<QueuedAction | null> {
-  const row = await prisma.queuedAction.findUnique({ where: { id: actionId } });
-  return row ? toQueuedAction(row as ActionRow) : null;
-}
-
 export async function markActionRolledBackForEntityOwner(
   actionId: string
 ): Promise<void> {
