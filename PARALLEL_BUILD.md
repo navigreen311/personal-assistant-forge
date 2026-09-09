@@ -352,19 +352,19 @@ history with **all five CI jobs green**.
 
 Every one of these was invisible to a 5,269-test suite and to the audit:
 
-- ** queried  five times, and
-  no such model has ever existed.** Confirmed by the coordinator:
+- **`GET /api/execution/stats` queried `(prisma as any).actionQueue` five times,
+  and no such model has ever existed.** Confirmed by the coordinator:
   `grep '^model ActionQueue' prisma/schema.prisma` returns **0**. The `as any`
   defeated the check that would have caught it and every throw was swallowed, so
   the endpoint returned a confident row of zeroes from the day it was written.
   Identical in shape to `shadow/compliance` calling four models that were not
   there — **the second instance of this exact failure mode in one codebase.**
-- ** compared an entity id against a target string**,
+- **`GET /api/execution/timeline` compared an entity id against a target string**,
   so its tenant filter matched nothing and every request returned the whole
   platform's audit trail. `getDailyCostSummary` had the same shape with a literal
   `|| true`.
-- ** let any signed-in user cast a valid approval as
-  anyone** — the request chose the name written to the audit trail.
+- **`POST /api/workflows/approvals` let any signed-in user cast a valid approval
+  as anyone** — the request chose the name written to the audit trail.
 - **`markFulfilled` scanned every contact in the database** and wrote to whichever
   tenant held the id; **`validateRecipients`** would have let `sendBroadcast` email
   and text another tenant's contacts.
