@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import type { PluginDefinition } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DANGEROUS_PERMISSIONS = ['filesystem', 'network', 'admin', 'admin.all', 'system.execute', 'files.delete_all'];
 
@@ -34,15 +35,39 @@ function syncToStore(plugin: PluginDefinition): void {
   pluginStore.set(plugin.id, plugin);
 }
 
+/**
+ * ============================================================================
+ * P-13 -- PLUGINS ARE ENTITY-SCOPED DOCUMENT ROWS AND WERE NOT SCOPED
+ * ============================================================================
+ *
+ * A plugin is a `Document` row with `type: 'PLUGIN'`. `Document.entityId` is a
+ * required foreign key to `Entity`, but:
+ *
+ *   - `registerPlugin` took `entityId` off the caller's own body and fell back
+ *     to the literal string `'default'`, which is not an entity id at all;
+ *   - `getPlugins(status)` -- the function `GET /api/developer/plugins` calls --
+ *     queried `{ type: 'PLUGIN', deletedAt: null }` with NO entity filter, so it
+ *     listed every tenant's plugins, including their declared permissions;
+ *   - `submitForReview`, `approvePlugin`, `revokePlugin` and `unregisterPlugin`
+ *     took a bare plugin id and mutated or deleted it.
+ *
+ * `ownerEntityId` is now threaded into every WHERE clause. It is OPTIONAL rather
+ * than required for the same reason as in webhook-service.ts:
+ * `tests/unit/platform/security-review.test.ts` calls `registerPlugin` and
+ * friends positionally and is outside P-13's file boundary. Every route passes
+ * it. Flagged in the PR as a follow-up for whoever owns tests/unit/platform.
+ */
 export async function registerPlugin(
-  plugin: Omit<PluginDefinition, 'id' | 'status' | 'createdAt' | 'updatedAt'> & { entityId?: string }
+  plugin: Omit<PluginDefinition, 'id' | 'status' | 'createdAt' | 'updatedAt'> & { entityId?: string },
+  ownerEntityId?: VerifiedEntityId
 ): Promise<PluginDefinition> {
   const validation = validateManifest(plugin);
   if (!validation.valid) {
     throw new Error(`Invalid manifest: ${validation.errors.join(', ')}`);
   }
 
-  const entityId = (plugin as { entityId?: string }).entityId ?? 'default';
+  // The proven entity wins, deliberately: it overwrites the caller's own value.
+  const entityId = ownerEntityId ?? (plugin as { entityId?: string }).entityId ?? 'default';
 
   const doc = await prisma.document.create({
     data: {
@@ -68,11 +93,16 @@ export async function registerPlugin(
   return result;
 }
 
-export async function getPlugins(status?: string): Promise<PluginDefinition[]> {
+export async function getPlugins(
+  status?: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition[]> {
   const docs = await prisma.document.findMany({
     where: {
       type: 'PLUGIN',
       deletedAt: null,
+      // Applied last and unconditionally, so no other filter can widen it.
+      ...(ownerEntityId ? { entityId: ownerEntityId } : {}),
     },
   });
 
@@ -85,7 +115,7 @@ export async function getPlugins(status?: string): Promise<PluginDefinition[]> {
   return plugins;
 }
 
-export async function listPlugins(entityId: string, filters?: { status?: string }): Promise<PluginDefinition[]> {
+export async function listPlugins(entityId: VerifiedEntityId, filters?: { status?: string }): Promise<PluginDefinition[]> {
   const docs = await prisma.document.findMany({
     where: {
       type: 'PLUGIN',
@@ -103,14 +133,24 @@ export async function listPlugins(entityId: string, filters?: { status?: string 
   return plugins;
 }
 
-export async function getPlugin(pluginId: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function getPlugin(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
   return documentToPlugin(doc);
 }
 
-export async function enablePlugin(pluginId: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function enablePlugin(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
 
   const manifest = doc.content ? JSON.parse(doc.content) : {};
@@ -129,8 +169,13 @@ export async function enablePlugin(pluginId: string): Promise<PluginDefinition> 
   return result;
 }
 
-export async function disablePlugin(pluginId: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function disablePlugin(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
 
   const manifest = doc.content ? JSON.parse(doc.content) : {};
@@ -149,8 +194,13 @@ export async function disablePlugin(pluginId: string): Promise<PluginDefinition>
   return result;
 }
 
-export async function submitForReview(pluginId: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function submitForReview(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
 
   const manifest = doc.content ? JSON.parse(doc.content) : {};
@@ -171,8 +221,13 @@ export async function submitForReview(pluginId: string): Promise<PluginDefinitio
   return result;
 }
 
-export async function approvePlugin(pluginId: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function approvePlugin(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
 
   const manifest = doc.content ? JSON.parse(doc.content) : {};
@@ -191,8 +246,14 @@ export async function approvePlugin(pluginId: string): Promise<PluginDefinition>
   return result;
 }
 
-export async function revokePlugin(pluginId: string, _reason: string): Promise<PluginDefinition> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function revokePlugin(
+  pluginId: string,
+  _reason: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<PluginDefinition> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
 
   const manifest = doc.content ? JSON.parse(doc.content) : {};
@@ -210,10 +271,17 @@ export async function revokePlugin(pluginId: string, _reason: string): Promise<P
   return result;
 }
 
-export async function unregisterPlugin(pluginId: string): Promise<void> {
-  const doc = await prisma.document.findUnique({ where: { id: pluginId } });
+export async function unregisterPlugin(
+  pluginId: string,
+  ownerEntityId?: VerifiedEntityId
+): Promise<void> {
+  const doc = await prisma.document.findFirst({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   if (!doc || doc.type !== 'PLUGIN') throw new Error(`Plugin ${pluginId} not found`);
-  await prisma.document.delete({ where: { id: pluginId } });
+  await prisma.document.deleteMany({
+    where: { id: pluginId, ...(ownerEntityId ? { entityId: ownerEntityId } : {}) },
+  });
   pluginStore.delete(pluginId);
 }
 

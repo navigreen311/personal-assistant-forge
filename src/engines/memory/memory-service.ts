@@ -49,18 +49,15 @@ export async function recallMemory(
   const newStrength = Math.min(entry.strength + config.reinforcementBoost, 1.0);
 
   // updateMany, not update: a unique WHERE cannot carry the owner.
+  const lastAccessed = new Date();
   await prisma.memoryEntry.updateMany({
     where: { id, userId },
-    data: {
-      strength: newStrength,
-      lastAccessed: new Date(),
-    },
+    data: { strength: newStrength, lastAccessed },
   });
 
-  const updated = await prisma.memoryEntry.findFirst({ where: { id, userId } });
-  if (!updated) return null;
-
-  return mapPrismaMemory(updated);
+  // Built from the row we already proved plus the values we just wrote, rather
+  // than a second round-trip.
+  return mapPrismaMemory({ ...entry, strength: newStrength, lastAccessed });
 }
 
 export async function searchMemories(

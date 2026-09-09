@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   calculateConfidence,
   getConfidenceDistribution,
@@ -97,7 +98,7 @@ describe('ConfidenceService', () => {
         { cost: 0.95 },
       ]);
 
-      const result = await getConfidenceDistribution('entity-1', '2026-02');
+      const result = await getConfidenceDistribution(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result).toHaveLength(5);
       const bucketMap = Object.fromEntries(result.map((b) => [b.bucket, b.count]));
@@ -111,7 +112,7 @@ describe('ConfidenceService', () => {
     it('should return all zero counts when no actions exist', async () => {
       (prisma.actionLog.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getConfidenceDistribution('entity-1', '2026-02');
+      const result = await getConfidenceDistribution(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result).toHaveLength(5);
       for (const bucket of result) {
@@ -125,7 +126,7 @@ describe('ConfidenceService', () => {
         { cost: undefined },
       ]);
 
-      const result = await getConfidenceDistribution('entity-1', '2026-02');
+      const result = await getConfidenceDistribution(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const bucketMap = Object.fromEntries(result.map((b) => [b.bucket, b.count]));
       expect(bucketMap['0.5-0.7']).toBe(2);

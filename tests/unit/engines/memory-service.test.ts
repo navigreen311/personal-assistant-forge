@@ -7,18 +7,32 @@ jest.mock('@/lib/ai', () => ({
   chat: jest.fn().mockResolvedValue('AI conversational response'),
 }));
 
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    memoryEntry: {
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
-      update: jest.fn(),
-      create: jest.fn(),
-      delete: jest.fn(),
-      count: jest.fn(),
+// P-13, tenancy-pattern.md 8 trap 1: the service now scopes by owner, so it
+// calls findFirst/updateMany instead of findUnique/update. A mock without those
+// delegates returns `undefined` and the test fails as if the product broke, so
+// they are aliased onto the SAME jest.fn -- the existing assertions on
+// `findUnique` / `update` therefore still describe the calls the service makes.
+// Declared inside the factory because jest hoists `jest.mock` above any
+// module-scope `const`.
+jest.mock('@/lib/db', () => {
+  const findUnique = jest.fn();
+  const update = jest.fn();
+  return {
+    prisma: {
+      memoryEntry: {
+        findMany: jest.fn(),
+        findUnique,
+        findFirst: findUnique,
+        update,
+        updateMany: update,
+        create: jest.fn(),
+        delete: jest.fn(),
+        deleteMany: jest.fn(),
+        count: jest.fn(),
+      },
     },
-  },
-}));
+  };
+});
 
 import { prisma } from '@/lib/db';
 
@@ -163,7 +177,7 @@ describe('recallMemory', () => {
       });
     });
 
-    const result = await recallMemory('m1');
+    const result = await recallMemory('m1', 'u1');
 
     expect(result).not.toBeNull();
     expect(result!.strength).toBeGreaterThan(0.5);
@@ -186,7 +200,7 @@ describe('recallMemory', () => {
       });
     });
 
-    const result = await recallMemory('m1');
+    const result = await recallMemory('m1', 'u1');
 
     expect(result!.lastAccessed.getTime()).toBeGreaterThan(oldDate.getTime());
   });
@@ -194,7 +208,7 @@ describe('recallMemory', () => {
   it('should return null for non-existent memory', async () => {
     (mockPrisma.memoryEntry.findUnique as jest.Mock).mockResolvedValue(null);
 
-    const result = await recallMemory('nonexistent');
+    const result = await recallMemory('nonexistent', 'u1');
 
     expect(result).toBeNull();
     expect(mockPrisma.memoryEntry.update).not.toHaveBeenCalled();

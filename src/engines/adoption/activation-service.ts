@@ -168,7 +168,16 @@ export async function completeTask(userId: string, taskId: string): Promise<Acti
       }
       isAhaMoment = task.isAhaMoment;
       task.isComplete = true;
-      task.completedAt = new Date();
+      // P-13 (finding raised by P-22): `completedAt` used to be stamped with
+      // `new Date()` unconditionally, including on a no-op re-completion. The
+      // `if (!alreadyComplete)` guard below means the STORED row keeps its
+      // original timestamp, so the checklist this function returned disagreed
+      // with the row it left behind -- "completed 3 seconds ago" for a task
+      // finished last week. It stayed invisible only because every caller
+      // re-reads. A re-completion now leaves the timestamp exactly as it was.
+      if (!alreadyComplete) {
+        task.completedAt = new Date();
+      }
       break;
     }
   }

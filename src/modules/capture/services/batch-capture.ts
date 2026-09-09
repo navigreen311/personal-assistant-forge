@@ -119,7 +119,7 @@ class BatchCaptureService {
           source: item.source,
           contentType: item.contentType,
           rawContent: item.rawContent,
-          entityId: session.entityId as VerifiedEntityId | undefined,
+          entityId: session.entityId,
           metadata: item.metadata,
         });
 

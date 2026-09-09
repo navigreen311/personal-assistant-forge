@@ -1,3 +1,5 @@
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
 // ============================================================================
 // Capture Module — Type Definitions
 // Items, routing, batch sessions, offline queue, and latency metrics
@@ -29,7 +31,13 @@ export type CaptureContentType =
 export interface CaptureItem {
   id: string;
   userId: string;
-  entityId?: string;
+  /**
+   * P-13: branded, so a capture cannot be filed against an entity that was
+   * never proven to belong to its user. `routeAndStore` writes a Task /
+   * KnowledgeEntry / Document into this entity, so an unbranded string here was
+   * a write target chosen by the caller.
+   */
+  entityId?: VerifiedEntityId;
   source: CaptureSource;
   contentType: CaptureContentType;
   rawContent: string; // original text, base64 image, audio URL, etc.
@@ -98,7 +106,7 @@ export interface BatchCaptureSession {
   id: string;
   userId: string;
   /** P-13: the proven entity every item in this batch is filed against. */
-  entityId?: string;
+  entityId?: VerifiedEntityId;
   items: CaptureItem[];
   status: 'ACTIVE' | 'COMPLETED';
   startedAt: Date;

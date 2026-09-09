@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 jest.mock('@/lib/db', () => ({
   prisma: {
     usageRecord: {
@@ -40,7 +41,7 @@ describe('getCostsByModule', () => {
       { module: 'calendar', model: 'claude-haiku', cost: 0.01, inputTokens: 200, outputTokens: 100 },
     ]);
 
-    const result = await getCostsByModule('entity-1');
+    const result = await getCostsByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toHaveLength(2);
     const inbox = result.find((r) => r.module === 'inbox');
@@ -58,7 +59,7 @@ describe('getCostsByModule', () => {
       end: new Date('2026-02-28'),
     };
 
-    await getCostsByModule('entity-1', dateRange);
+    await getCostsByModule(verifiedEntityIdForTest('entity-1'), dateRange);
 
     expect(mockPrisma.usageRecord.findMany).toHaveBeenCalledWith({
       where: {
@@ -75,7 +76,7 @@ describe('getCostsByModule', () => {
       { module: 'chat', model: 'claude-sonnet', cost: 0.12, inputTokens: 2500, outputTokens: 1200 },
     ]);
 
-    const result = await getCostsByModule('entity-1');
+    const result = await getCostsByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toHaveLength(1);
     expect(result[0].requestCount).toBe(3);
@@ -90,7 +91,7 @@ describe('getCostsByPeriod', () => {
       { module: 'calendar', cost: 0.07, inputTokens: 1500, outputTokens: 700, createdAt: new Date('2026-02-15T12:00:00Z') },
     ]);
 
-    const result = await getCostsByPeriod('entity-1', 'month');
+    const result = await getCostsByPeriod(verifiedEntityIdForTest('entity-1'), 'month');
 
     expect(result).toHaveLength(1); // All in Feb 2026
     expect(result[0].period).toBe('2026-02');
@@ -104,7 +105,7 @@ describe('getTotalCost', () => {
       _sum: { cost: 42.50 },
     });
 
-    const result = await getTotalCost('entity-1');
+    const result = await getTotalCost(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toBe(42.50);
   });
@@ -114,7 +115,7 @@ describe('getTotalCost', () => {
       _sum: { cost: null },
     });
 
-    const result = await getTotalCost('entity-1');
+    const result = await getTotalCost(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toBe(0);
   });
@@ -128,7 +129,7 @@ describe('getCostTrend', () => {
       .mockResolvedValueOnce({ _sum: { cost: 15 } })
       .mockResolvedValueOnce({ _sum: { cost: 12 } });
 
-    const result = await getCostTrend('entity-1', 3);
+    const result = await getCostTrend(verifiedEntityIdForTest('entity-1'), 3);
 
     expect(result).toHaveLength(3);
     expect(result[0].changePercent).toBe(0); // First period has no previous
@@ -146,7 +147,7 @@ describe('getCostForecast', () => {
     }));
     mockPrisma.usageRecord.findMany.mockResolvedValue(records);
 
-    const result = await getCostForecast('entity-1', 30);
+    const result = await getCostForecast(verifiedEntityIdForTest('entity-1'), 30);
 
     expect(result.forecastedCost).toBeGreaterThan(0);
     expect(result.confidence).toBeGreaterThan(0);
@@ -156,7 +157,7 @@ describe('getCostForecast', () => {
   it('should handle insufficient data gracefully', async () => {
     mockPrisma.usageRecord.findMany.mockResolvedValue([]);
 
-    const result = await getCostForecast('entity-1', 30);
+    const result = await getCostForecast(verifiedEntityIdForTest('entity-1'), 30);
 
     expect(result.forecastedCost).toBe(0);
     expect(result.confidence).toBe(0);
@@ -172,7 +173,7 @@ describe('getTokenUsageSummary', () => {
       { module: 'calendar', cost: 0.10, inputTokens: 2000, outputTokens: 1000 },
     ]);
 
-    const result = await getTokenUsageSummary('entity-1');
+    const result = await getTokenUsageSummary(verifiedEntityIdForTest('entity-1'));
 
     expect(result.totalInputTokens).toBe(3800);
     expect(result.totalOutputTokens).toBe(1800);
@@ -186,7 +187,7 @@ describe('getTokenUsageSummary', () => {
       { module: 'chat', cost: 0.02, inputTokens: 400, outputTokens: 200 },
     ]);
 
-    const result = await getTokenUsageSummary('entity-1');
+    const result = await getTokenUsageSummary(verifiedEntityIdForTest('entity-1'));
 
     expect(result.mostExpensiveModule).toBe('calendar');
   });
@@ -194,7 +195,7 @@ describe('getTokenUsageSummary', () => {
   it('should handle empty records', async () => {
     mockPrisma.usageRecord.findMany.mockResolvedValue([]);
 
-    const result = await getTokenUsageSummary('entity-1');
+    const result = await getTokenUsageSummary(verifiedEntityIdForTest('entity-1'));
 
     expect(result.totalInputTokens).toBe(0);
     expect(result.totalOutputTokens).toBe(0);
@@ -210,7 +211,7 @@ describe('getCostDashboard', () => {
       { module: 'calendar', cost: 5.0, inputTokens: 50000, outputTokens: 25000, createdAt: new Date() },
     ]);
 
-    const result = await getCostDashboard('entity-1', '2026-02');
+    const result = await getCostDashboard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
     expect(result.totalCostUsd).toBe(15);
     expect(result.byFeature).toHaveLength(2);

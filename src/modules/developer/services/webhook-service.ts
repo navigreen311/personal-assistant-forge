@@ -3,6 +3,39 @@ import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 import type { WebhookConfig, WebhookEvent } from '../types';
 
+/**
+ * ============================================================================
+ * P-13 -- WEBHOOKS ARE USER-SCOPED, AND THE SCOPE WAS CALLER-SUPPLIED
+ * ============================================================================
+ *
+ * `WebhookConfig` is keyed by `userId`. This file called that column `entityId`
+ * throughout (`createWebhook(entityId, ...)` wrote `userId: entityId`;
+ * `getWebhooks(entityId)` queried `where: { userId: entityId }`), and
+ * `/api/developer/webhooks` took that value straight off `?entityId=`.
+ *
+ * So `GET /api/developer/webhooks?entityId=<another user's id>` returned that
+ * user's webhooks -- and `dbToWebhookConfig` returns `secret`, the HMAC signing
+ * key. An attacker who read it could forge signed deliveries into that user's
+ * endpoint. The by-id calls (`triggerWebhook`, `getWebhookEvents`,
+ * `deleteWebhook`, `retryFailedEvent`) took a bare webhook id and checked
+ * nothing, so any known id could be fired, listed or deleted.
+ *
+ * The parameter is now named `userId`, and every by-id function takes a
+ * trailing `ownerUserId` that goes into the WHERE clause.
+ *
+ * WHY `ownerUserId` IS OPTIONAL, AND WHY THE UNSCOPED BRANCH STILL EXISTS:
+ * `tests/unit/platform/webhook-service.test.ts` calls these functions
+ * positionally with a mocked Prisma that defines only `findUnique`/`update`/
+ * `delete`, and it is outside P-13's file boundary. Making the argument
+ * required, or switching the delegate unconditionally, breaks a file this
+ * package may not edit. So each function branches: with an owner it uses the
+ * scoped delegate and the owner is IN THE WHERE CLAUSE; without one it behaves
+ * exactly as before. Every route under `src/app/api/developer/` passes the
+ * session's user id, so no production path takes the unscoped branch.
+ *
+ * A follow-up that owns `tests/unit/platform/` should delete the branch and make
+ * `ownerUserId` required -- flagged in the PR.
+ */
 const MAX_ATTEMPTS = 3;
 const BACKOFF_DELAYS = [1000, 5000, 25000]; // exponential: 1s, 5s, 25s
 
@@ -62,7 +95,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function createWebhook(
-  entityId: string,
+  userId: string,
   direction: string,
   url: string,
   events: string[]
@@ -73,7 +106,7 @@ export async function createWebhook(
 
   const row = await prisma.webhookConfig.create({
     data: {
-      userId: entityId,
+      userId,
       url,
       events: events as unknown as import('@prisma/client').Prisma.InputJsonValue,
       secret,
@@ -84,26 +117,38 @@ export async function createWebhook(
   return dbToWebhookConfig(row);
 }
 
-export async function getWebhooks(entityId: string): Promise<WebhookConfig[]> {
+export async function getWebhooks(userId: string): Promise<WebhookConfig[]> {
   const rows = await prisma.webhookConfig.findMany({
-    where: { userId: entityId },
+    where: { userId },
   });
   return rows.map(dbToWebhookConfig);
 }
 
-export async function deleteWebhook(webhookId: string): Promise<void> {
+export async function deleteWebhook(webhookId: string, ownerUserId?: string): Promise<void> {
+  // deleteMany, not delete: a unique WHERE cannot carry the owner. `count === 0`
+  // is not-found, and a foreign webhook is indistinguishable from a missing one.
+  if (ownerUserId) {
+    const result = await prisma.webhookConfig.deleteMany({
+      where: { id: webhookId, userId: ownerUserId },
+    });
+    if (result.count === 0) throw new Error(`Webhook ${webhookId} not found`);
+    return;
+  }
+
   const existing = await prisma.webhookConfig.findUnique({ where: { id: webhookId } });
   if (!existing) throw new Error(`Webhook ${webhookId} not found`);
-
   await prisma.webhookConfig.delete({ where: { id: webhookId } });
 }
 
 export async function triggerWebhook(
   webhookId: string,
   event: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  ownerUserId?: string
 ): Promise<WebhookEvent> {
-  const webhookRow = await prisma.webhookConfig.findUnique({ where: { id: webhookId } });
+  const webhookRow = ownerUserId
+    ? await prisma.webhookConfig.findFirst({ where: { id: webhookId, userId: ownerUserId } })
+    : await prisma.webhookConfig.findUnique({ where: { id: webhookId } });
   if (!webhookRow) throw new Error(`Webhook ${webhookId} not found`);
 
   const webhook = dbToWebhookConfig(webhookRow);
@@ -183,7 +228,21 @@ export async function triggerWebhook(
   return dbToWebhookEvent(eventRow);
 }
 
-export async function getWebhookEvents(webhookId: string, limit = 50): Promise<WebhookEvent[]> {
+export async function getWebhookEvents(
+  webhookId: string,
+  limit = 50,
+  ownerUserId?: string
+): Promise<WebhookEvent[]> {
+  // `WebhookEvent` has no owner column of its own -- tenancy-pattern.md 3, the
+  // child-table case. Prove the scope on the PARENT and return early.
+  if (ownerUserId) {
+    const parent = await prisma.webhookConfig.findFirst({
+      where: { id: webhookId, userId: ownerUserId },
+      select: { id: true },
+    });
+    if (!parent) return [];
+  }
+
   const rows = await prisma.webhookEvent.findMany({
     where: { webhookConfigId: webhookId },
     orderBy: { createdAt: 'desc' },
@@ -192,13 +251,21 @@ export async function getWebhookEvents(webhookId: string, limit = 50): Promise<W
   return rows.map(dbToWebhookEvent);
 }
 
-export async function retryFailedEvent(eventId: string): Promise<WebhookEvent> {
+export async function retryFailedEvent(
+  eventId: string,
+  ownerUserId?: string
+): Promise<WebhookEvent> {
   const eventRow = await prisma.webhookEvent.findUnique({ where: { id: eventId } });
   if (!eventRow) throw new Error(`Event ${eventId} not found`);
 
-  const webhookRow = await prisma.webhookConfig.findUnique({
-    where: { id: eventRow.webhookConfigId },
-  });
+  // Scope every hop of the walk (tenancy-pattern.md 3).
+  const webhookRow = ownerUserId
+    ? await prisma.webhookConfig.findFirst({
+        where: { id: eventRow.webhookConfigId, userId: ownerUserId },
+      })
+    : await prisma.webhookConfig.findUnique({
+        where: { id: eventRow.webhookConfigId },
+      });
   if (!webhookRow) throw new Error(`Webhook ${eventRow.webhookConfigId} not found`);
 
   const webhook = dbToWebhookConfig(webhookRow);

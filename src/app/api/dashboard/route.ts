@@ -94,10 +94,13 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: true, data: buildDefaultDashboard(userName) });
     }
 
-    // Resolve the entity name once for use across aggregations
+    // P-13 / tenancy-pattern.md 3: the scope goes in the WHERE clause. The
+    // active entity comes off the session rather than the request, but a stale
+    // or reassigned `activeEntityId` should not open another tenant's dashboard,
+    // so ownership is matched here rather than assumed.
     const entity = await safeQuery(
-      () => prisma.entity.findUnique({
-        where: { id: activeEntityId },
+      () => prisma.entity.findFirst({
+        where: { id: activeEntityId, userId: user.userId },
         select: { id: true, name: true },
       }),
       null
@@ -178,9 +181,19 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
         [] as any[]
       ),
 
-      // Last 10 action log entries ordered by timestamp desc
+      // Last 10 action log entries ordered by timestamp desc.
+      //
+      // P-13: this had NO `where` clause at all, so the activity feed showed the
+      // last ten actions taken ANYWHERE ON THE PLATFORM -- every tenant's actor,
+      // action type, target and reason -- to anyone who loaded the dashboard.
+      // A leak in an aggregate list, invisible to every single-record 403 test.
+      //
+      // `ActionLog` has no `entityId` column (the schema is frozen, so one
+      // cannot be added). Its `actorId` is the available scope, so the feed is
+      // now the caller's own actions.
       safeQuery(
         () => prisma.actionLog.findMany({
+          where: { actorId: user.userId },
           orderBy: { timestamp: 'desc' },
           take: 10,
           select: {
