@@ -1,11 +1,14 @@
 # docker-compose.yml
-version: '3.8'
+#
+# T-032: the top-level `version:` key was removed from the Compose
+# specification. Compose v2 ignores it and warns on every command.
 
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
     container_name: paf-app
     ports:
       - "3000:3000"
@@ -40,6 +43,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: runner
     container_name: paf-init
     command: npx -y prisma@6.19.2 migrate deploy
     environment:
@@ -50,6 +54,49 @@ services:
     networks:
       - paf-network
     restart: "no"
+
+  # P-11 / T-006 -- the consumer.
+  #
+  # Without this service the `app` container enqueues workflow executions, cron
+  # ticks, capture items and every JobType into the `redis` service below, and
+  # nothing ever reads them back out. The queue was declared, wired and
+  # configured with three attempts and exponential backoff; it had no consumer,
+  # so no job was ever attempted once.
+  #
+  # Same image build, different stage and different command. It publishes no
+  # port: it is reached only through Redis.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: paf-worker
+    env_file:
+      - .env.local
+    environment:
+      - DATABASE_URL=postgresql://paf_user:paf_password@postgres:5432/paf_dev
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-5}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # SIGTERM is what scripts/worker.ts listens for, and the grace period is set
+    # longer than the entrypoint's own 30s force-exit deadline so the process
+    # always gets to finish its drain and exit on its own terms. If Docker
+    # SIGKILLed first, in-flight jobs would stay in BullMQ's `active` set holding
+    # a lock until a later worker's stalled check expired it.
+    stop_signal: SIGTERM
+    stop_grace_period: 40s
+    networks:
+      - paf-network
 
   postgres:
     image: postgres:16-alpine
