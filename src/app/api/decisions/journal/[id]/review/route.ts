@@ -1,7 +1,10 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
+import { prisma } from '@/lib/db';
 import { reviewEntry } from '@/modules/decisions/services/decision-journal';
 
 const ReviewSchema = z.object({
@@ -10,13 +13,41 @@ const ReviewSchema = z.object({
   lessonsLearned: z.string().min(1),
 });
 
+/**
+ * tenancy-pattern.md sec.4. Journal entries are Document rows of type 'REPORT'.
+ * Duplicated per route file on purpose (sec.8 trap 3d).
+ */
+async function withJournalScope(
+  request: NextRequest,
+  entryId: string,
+  handler: (
+    req: NextRequest,
+    session: AuthSession,
+    entityId: VerifiedEntityId
+  ) => Promise<Response>
+): Promise<Response> {
+  return withAuth(request, async (authedReq) => {
+    const owner = await prisma.document.findUnique({
+      where: { id: entryId },
+      select: { entityId: true, type: true, deletedAt: true },
+    });
+
+    if (!owner || owner.type !== 'REPORT' || owner.deletedAt) {
+      return error('NOT_FOUND', `Journal entry ${entryId} not found`, 404);
+    }
+
+    return withEntityScope(authedReq, handler, owner.entityId);
+  });
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, _session) => {
+  const { id } = await params;
+
+  return withJournalScope(request, id, async (req, _session, entityId) => {
     try {
-      const { id } = await params;
       const body = await req.json();
       const parsed = ReviewSchema.safeParse(body);
 
@@ -28,6 +59,7 @@ export async function PUT(
 
       const entry = await reviewEntry(
         id,
+        entityId,
         parsed.data.actualOutcomes,
         parsed.data.status,
         parsed.data.lessonsLearned

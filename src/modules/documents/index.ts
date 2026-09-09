@@ -10,6 +10,7 @@ export {
   createSignRequest,
   getSignStatus,
   cancelSignRequest,
+  listSignRequests,
 } from './services/esign-service';
 export {
   getDefaultTemplates,

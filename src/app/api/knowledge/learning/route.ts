@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { addLearningItem } from '@/modules/knowledge/services/learning-tracker';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import type { StoredLearningData, LearningItem } from '@/modules/knowledge/types';
 
 const addLearningSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   title: z.string().min(1),
   type: z.enum(['BOOK', 'COURSE', 'ARTICLE', 'PODCAST', 'VIDEO', 'PAPER']),
   status: z.enum(['QUEUED', 'IN_PROGRESS', 'COMPLETED', 'ABANDONED']),
@@ -44,15 +44,9 @@ function toLearningItem(entry: Record<string, unknown>): LearningItem {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
-      const { searchParams } = req.nextUrl;
-      const entityId = searchParams.get('entityId');
-      const status = searchParams.get('status');
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId is required', 400);
-      }
+      const status = req.nextUrl.searchParams.get('status');
 
       const entries = await prisma.knowledgeEntry.findMany({
         where: {
@@ -76,7 +70,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = addLearningSchema.safeParse(body);
@@ -85,14 +79,15 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
+      const { entityId: _requested, ...draft } = parsed.data;
       const data = {
-        ...parsed.data,
-        startedAt: parsed.data.startedAt ? new Date(parsed.data.startedAt) : undefined,
-        completedAt: parsed.data.completedAt ? new Date(parsed.data.completedAt) : undefined,
-        nextReviewDate: parsed.data.nextReviewDate ? new Date(parsed.data.nextReviewDate) : undefined,
+        ...draft,
+        startedAt: draft.startedAt ? new Date(draft.startedAt) : undefined,
+        completedAt: draft.completedAt ? new Date(draft.completedAt) : undefined,
+        nextReviewDate: draft.nextReviewDate ? new Date(draft.nextReviewDate) : undefined,
       };
 
-      const item = await addLearningItem(data);
+      const item = await addLearningItem(data, entityId);
       return success(item, 201);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to add learning item', 500);

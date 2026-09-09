@@ -1,13 +1,25 @@
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    document: {
-      create: jest.fn(),
-      findUnique: jest.fn(),
-      findMany: jest.fn(),
-      update: jest.fn(),
+// tenancy-pattern.md sec.8 trap 1: reviewEntry now reads with findFirst (scope in
+// the WHERE) and writes with updateMany, so both are aliased onto the same
+// jest.fn as the delegates the old suite stubbed.
+jest.mock('@/lib/db', () => {
+  const findUnique = jest.fn();
+  const update = jest.fn();
+  return {
+    prisma: {
+      document: {
+        create: jest.fn(),
+        findUnique,
+        findFirst: (...a: unknown[]) => findUnique(...a),
+        findMany: jest.fn(),
+        update,
+        updateMany: (...a: unknown[]) => {
+          update(...a);
+          return Promise.resolve({ count: 1 });
+        },
+      },
     },
-  },
-}));
+  };
+});
 
 import { prisma } from '@/lib/db';
 import {
@@ -17,8 +29,11 @@ import {
   getDecisionAccuracy,
 } from '@/modules/decisions/services/decision-journal';
 import type { JournalEntry } from '@/modules/decisions/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+const ENTITY_E1 = verifiedEntityIdForTest('e1');
 
 describe('Decision Journal', () => {
   beforeEach(() => {
@@ -77,29 +92,35 @@ describe('Decision Journal', () => {
         status: 'PENDING_REVIEW',
       };
 
-      (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue({
-        id: 'journal-1',
-        title: 'Decision',
-        content: JSON.stringify(content),
-        createdAt: now,
-        updatedAt: now,
-      });
+      // reviewEntry writes with updateMany (the scope must be in the WHERE) and
+      // then re-reads the row, so the read has to observe the write.
+      let written = JSON.stringify(content);
 
-      (mockPrisma.document.update as jest.Mock).mockResolvedValue({
+      (mockPrisma.document.findUnique as jest.Mock).mockImplementation(async () => ({
         id: 'journal-1',
         title: 'Decision',
-        content: JSON.stringify({
-          ...content,
-          actualOutcomes: ['It worked'],
-          status: 'REVIEWED_CORRECT',
-          lessonsLearned: 'Trust the data',
-        }),
+        type: 'REPORT',
+        content: written,
         createdAt: now,
         updatedAt: now,
-      });
+      }));
+
+      (mockPrisma.document.update as jest.Mock).mockImplementation(
+        async ({ data }: { data: { content: string } }) => {
+          written = data.content;
+          return {
+            id: 'journal-1',
+            title: 'Decision',
+            content: written,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+      );
 
       const result = await reviewEntry(
         'journal-1',
+        ENTITY_E1,
         ['It worked'],
         'REVIEWED_CORRECT',
         'Trust the data'
@@ -114,8 +135,25 @@ describe('Decision Journal', () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
 
       await expect(
-        reviewEntry('nope', ['x'], 'REVIEWED_CORRECT', 'lesson')
+        reviewEntry('nope', ENTITY_E1, ['x'], 'REVIEWED_CORRECT', 'lesson')
       ).rejects.toThrow('not found');
+    });
+
+    it("refuses an entry outside the caller's entity, and writes nothing", async () => {
+      // The scope is in the WHERE, so another tenant's entry is simply absent.
+      (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        reviewEntry(
+          'journal-1',
+          verifiedEntityIdForTest('someone-else'),
+          ['x'],
+          'REVIEWED_CORRECT',
+          'lesson'
+        )
+      ).rejects.toThrow('not found');
+
+      expect(mockPrisma.document.update as jest.Mock).not.toHaveBeenCalled();
     });
   });
 
@@ -160,7 +198,7 @@ describe('Decision Journal', () => {
         },
       ]);
 
-      const results = await getUpcomingReviews('e1', 30);
+      const results = await getUpcomingReviews(ENTITY_E1, 30);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe('j1');
     });
@@ -188,7 +226,7 @@ describe('Decision Journal', () => {
         },
       ]);
 
-      const results = await getUpcomingReviews('e1', 30);
+      const results = await getUpcomingReviews(ENTITY_E1, 30);
       expect(results).toHaveLength(0);
     });
   });
@@ -221,7 +259,7 @@ describe('Decision Journal', () => {
         makeDoc('j5', 'PENDING_REVIEW'),
       ]);
 
-      const result = await getDecisionAccuracy('e1');
+      const result = await getDecisionAccuracy(ENTITY_E1);
       expect(result.total).toBe(4); // excludes PENDING
       expect(result.correct).toBe(2);
       expect(result.incorrect).toBe(1);
@@ -232,7 +270,7 @@ describe('Decision Journal', () => {
     it('should return 0 accuracy when no reviewed entries', async () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getDecisionAccuracy('e1');
+      const result = await getDecisionAccuracy(ENTITY_E1);
       expect(result.total).toBe(0);
       expect(result.accuracy).toBe(0);
     });
@@ -249,7 +287,7 @@ describe('Decision Journal', () => {
         },
       ]);
 
-      const result = await getDecisionAccuracy('e1');
+      const result = await getDecisionAccuracy(ENTITY_E1);
       expect(result.accuracy).toBe(1);
     });
   });

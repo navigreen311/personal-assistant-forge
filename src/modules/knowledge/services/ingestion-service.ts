@@ -1,4 +1,5 @@
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { IngestionRequest, IngestionResult, CapturedEntry } from '@/modules/knowledge/types';
 import { capture } from './capture-service';
 
@@ -131,7 +132,10 @@ Return:
   }
 }
 
-export async function ingestDocument(request: IngestionRequest): Promise<IngestionResult> {
+export async function ingestDocument(
+  request: Omit<IngestionRequest, 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<IngestionResult> {
   const chunks = chunkContent(request.content);
   const wordCount = request.content.split(/\s+/).filter(Boolean).length;
 
@@ -144,14 +148,16 @@ export async function ingestDocument(request: IngestionRequest): Promise<Ingesti
 
   const entries: CapturedEntry[] = [];
   for (let i = 0; i < chunks.length; i++) {
-    const entry = await capture({
-      entityId: request.entityId,
-      type: 'ARTICLE',
-      content: chunks[i],
-      title: `${request.filename} - Section ${i + 1}`,
-      source: request.source,
-      tags: keywords.slice(0, 5),
-    });
+    const entry = await capture(
+      {
+        type: 'ARTICLE',
+        content: chunks[i],
+        title: `${request.filename} - Section ${i + 1}`,
+        source: request.source,
+        tags: keywords.slice(0, 5),
+      },
+      entityId
+    );
     entries.push(entry);
   }
 

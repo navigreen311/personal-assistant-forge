@@ -1,8 +1,11 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
+import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { getSOP, updateSOP } from '@/modules/knowledge/services/sop-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
 
 const sopStepSchema = z.object({
   order: z.number(),
@@ -21,14 +24,42 @@ const updateSOPSchema = z.object({
   status: z.enum(['DRAFT', 'ACTIVE', 'ARCHIVED']).optional(),
 });
 
+/**
+ * tenancy-pattern.md sec.4. SOPs are stored as Document rows of type 'SOP'.
+ * Duplicated per route file on purpose (sec.8 trap 3d).
+ */
+async function withSOPScope(
+  request: NextRequest,
+  sopId: string,
+  handler: (
+    req: NextRequest,
+    session: AuthSession,
+    entityId: VerifiedEntityId
+  ) => Promise<Response>
+): Promise<Response> {
+  return withAuth(request, async (authedReq) => {
+    const owner = await prisma.document.findUnique({
+      where: { id: sopId },
+      select: { entityId: true, type: true, deletedAt: true },
+    });
+
+    if (!owner || owner.type !== 'SOP' || owner.deletedAt) {
+      return error('NOT_FOUND', 'SOP not found', 404);
+    }
+
+    return withEntityScope(authedReq, handler, owner.entityId);
+  });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (_req, _session) => {
+  const { id } = await params;
+
+  return withSOPScope(request, id, async (_req, _session, entityId) => {
     try {
-      const { id } = await params;
-      const sop = await getSOP(id);
+      const sop = await getSOP(id, entityId);
 
       if (!sop) {
         return error('NOT_FOUND', 'SOP not found', 404);
@@ -45,9 +76,10 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, _session) => {
+  const { id } = await params;
+
+  return withSOPScope(request, id, async (req, _session, entityId) => {
     try {
-      const { id } = await params;
       const body = await req.json();
       const parsed = updateSOPSchema.safeParse(body);
 
@@ -55,7 +87,7 @@ export async function PUT(
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const sop = await updateSOP(id, parsed.data);
+      const sop = await updateSOP(id, entityId, parsed.data);
       return success(sop);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update SOP';

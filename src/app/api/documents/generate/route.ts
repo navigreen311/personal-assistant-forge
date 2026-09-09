@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { generateDocument } from '@/modules/documents/services/document-generation-service';
 
 const generateSchema = z.object({
   templateId: z.string().min(1),
   variables: z.record(z.string(), z.string()),
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   brandKit: z.object({
     primaryColor: z.string(),
     secondaryColor: z.string(),
@@ -20,13 +20,15 @@ const generateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = generateSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const doc = await generateDocument(parsed.data as Parameters<typeof generateDocument>[0]);
+      // entityId LAST: it overwrites whatever the caller asked for.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const doc = await generateDocument({ ...draft, entityId });
       return success(doc, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

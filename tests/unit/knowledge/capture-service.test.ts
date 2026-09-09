@@ -1,5 +1,8 @@
 import { generateAutoTags, generateTitle, capture, batchCapture } from '@/modules/knowledge/services/capture-service';
 import type { CaptureType } from '@/modules/knowledge/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -105,12 +108,14 @@ describe('capture-service', () => {
         updatedAt: now,
       });
 
-      const result = await capture({
-        entityId: 'entity-1',
-        type: 'NOTE',
-        content: 'TypeScript best practices for large codebases',
-        source: 'manual',
-      });
+      const result = await capture(
+        {
+          type: 'NOTE',
+          content: 'TypeScript best practices for large codebases',
+          source: 'manual',
+        },
+        ENTITY_1
+      );
 
       expect(result.id).toBe('test-id');
       expect(result.type).toBe('NOTE');
@@ -137,14 +142,16 @@ describe('capture-service', () => {
         updatedAt: now,
       });
 
-      const result = await capture({
-        entityId: 'entity-1',
-        type: 'BOOKMARK',
-        content: 'Some content',
-        title: 'My Custom Title',
-        source: 'web-clip',
-        tags: ['dev'],
-      });
+      const result = await capture(
+        {
+          type: 'BOOKMARK',
+          content: 'Some content',
+          title: 'My Custom Title',
+          source: 'web-clip',
+          tags: ['dev'],
+        },
+        ENTITY_1
+      );
 
       expect(result.title).toBe('My Custom Title');
     });
@@ -162,18 +169,38 @@ describe('capture-service', () => {
         updatedAt: now,
       }));
 
-      await capture({
-        entityId: 'entity-1',
-        type: 'NOTE',
-        content: 'React hooks are powerful for state management',
-        source: 'manual',
-        tags: ['react', 'frontend'],
-      });
+      await capture(
+        {
+          type: 'NOTE',
+          content: 'React hooks are powerful for state management',
+          source: 'manual',
+          tags: ['react', 'frontend'],
+        },
+        ENTITY_1
+      );
 
       const callArgs = mockCreate.mock.calls[0][0].data;
       const tags = callArgs.tags as string[];
       expect(tags).toContain('react');
       expect(tags).toContain('frontend');
+    });
+
+    it('writes the verified scope, not anything from the payload', async () => {
+      const now = new Date();
+      mockCreate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'scoped',
+        content: data.content,
+        tags: data.tags,
+        entityId: data.entityId,
+        source: data.source,
+        linkedEntities: data.linkedEntities,
+        createdAt: now,
+        updatedAt: now,
+      }));
+
+      await capture({ type: 'NOTE', content: 'anything', source: 'manual' }, ENTITY_1);
+
+      expect(mockCreate.mock.calls[0][0].data.entityId).toBe('entity-1');
     });
   });
 
@@ -195,11 +222,14 @@ describe('capture-service', () => {
         };
       });
 
-      const results = await batchCapture([
-        { entityId: 'entity-1', type: 'NOTE', content: 'Note 1', source: 'manual' },
-        { entityId: 'entity-1', type: 'NOTE', content: 'Note 2', source: 'manual' },
-        { entityId: 'entity-1', type: 'NOTE', content: 'Note 3', source: 'manual' },
-      ]);
+      const results = await batchCapture(
+        [
+          { type: 'NOTE', content: 'Note 1', source: 'manual' },
+          { type: 'NOTE', content: 'Note 2', source: 'manual' },
+          { type: 'NOTE', content: 'Note 3', source: 'manual' },
+        ],
+        ENTITY_1
+      );
 
       expect(results).toHaveLength(3);
       expect(mockCreate).toHaveBeenCalledTimes(3);

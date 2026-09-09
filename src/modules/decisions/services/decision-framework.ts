@@ -4,6 +4,7 @@
 
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   DecisionRequest,
   DecisionBrief,
@@ -16,7 +17,8 @@ import type {
  * persist it in the Document table, and return the structured brief.
  */
 export async function createDecisionBrief(
-  request: DecisionRequest
+  request: Omit<DecisionRequest, 'entityId'>,
+  entityId: VerifiedEntityId
 ): Promise<DecisionBrief> {
   let options: DecisionOption[];
   try {
@@ -46,7 +48,8 @@ export async function createDecisionBrief(
   const doc = await prisma.document.create({
     data: {
       title: request.title,
-      entityId: request.entityId,
+      // From the verified scope, never from the caller's payload.
+      entityId,
       type: 'BRIEF',
       content: JSON.stringify({
         ...brief,
@@ -75,9 +78,11 @@ export async function createDecisionBrief(
  * Retrieve a decision brief by ID from the Document table.
  */
 export async function getDecisionBrief(
-  id: string
+  id: string,
+  entityId: VerifiedEntityId
 ): Promise<DecisionBrief | null> {
-  const doc = await prisma.document.findUnique({ where: { id } });
+  // Scope in the WHERE: another tenant's brief is simply not found.
+  const doc = await prisma.document.findFirst({ where: { id, entityId } });
   if (!doc || doc.type !== 'BRIEF' || !doc.content) return null;
 
   const data = JSON.parse(doc.content);
@@ -96,7 +101,7 @@ export async function getDecisionBrief(
  * List decision briefs for an entity with pagination.
  */
 export async function listDecisionBriefs(
-  entityId: string,
+  entityId: VerifiedEntityId,
   page: number,
   pageSize: number
 ): Promise<{ briefs: DecisionBrief[]; total: number }> {
@@ -131,7 +136,7 @@ export async function listDecisionBriefs(
 // --- AI-Powered Generators ---
 
 async function generateThreeOptionsWithAI(
-  request: DecisionRequest
+  request: Omit<DecisionRequest, 'entityId'>
 ): Promise<DecisionOption[]> {
   const result = await generateJSON<{
     options: Array<{
@@ -202,7 +207,7 @@ For each option provide: label, stance, description, pros (3-5), cons (2-4), est
 }
 
 async function identifyBlindSpotsWithAI(
-  request: DecisionRequest
+  request: Omit<DecisionRequest, 'entityId'>
 ): Promise<string[]> {
   const result = await generateJSON<{ blindSpots: string[] }>(
     `Identify potential blind spots for this decision.
@@ -227,7 +232,7 @@ List 3-6 specific blind spots — things the decision-maker might be overlooking
 
 // --- Fallback Rule-Based Generators ---
 
-function generateThreeOptions(request: DecisionRequest): DecisionOption[] {
+function generateThreeOptions(request: Omit<DecisionRequest, 'entityId'>): DecisionOption[] {
   const conservative: DecisionOption = {
     id: `opt-conservative-${Date.now()}`,
     label: 'Conservative Approach',
@@ -321,7 +326,7 @@ function generateOptionEffects(strategy: string): SecondOrderEffect[] {
 
 function deriveRecommendation(
   options: DecisionOption[],
-  request: DecisionRequest
+  request: Omit<DecisionRequest, 'entityId'>
 ): string {
   if (request.blastRadius === 'CRITICAL' || request.blastRadius === 'HIGH') {
     return `Recommend the Conservative Approach given the ${request.blastRadius} blast radius. ` +
@@ -332,7 +337,7 @@ function deriveRecommendation(
     'for this decision context. It addresses the core problem without excessive risk.';
 }
 
-function computeConfidence(request: DecisionRequest): number {
+function computeConfidence(request: Omit<DecisionRequest, 'entityId'>): number {
   let score = 0.5;
 
   // More context → higher confidence
@@ -348,7 +353,7 @@ function computeConfidence(request: DecisionRequest): number {
   return Math.round(Math.max(0, Math.min(1, score)) * 100) / 100;
 }
 
-function identifyBlindSpots(request: DecisionRequest): string[] {
+function identifyBlindSpots(request: Omit<DecisionRequest, 'entityId'>): string[] {
   const spots: string[] = [];
 
   if (request.stakeholders.length === 0) {

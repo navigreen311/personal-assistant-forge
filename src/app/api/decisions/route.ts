@@ -1,14 +1,16 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import {
   createDecisionBrief,
   listDecisionBriefs,
 } from '@/modules/decisions/services/decision-framework';
 
 const CreateDecisionSchema = z.object({
-  entityId: z.string().min(1),
+  // Optional: omitted means the session's active entity. A supplied value is
+  // verified and then discarded in favour of the scope.
+  entityId: z.string().min(1).optional(),
   title: z.string().min(1).max(200),
   description: z.string().min(1),
   context: z.string().min(1),
@@ -19,16 +21,11 @@ const CreateDecisionSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = req.nextUrl;
-      const entityId = searchParams.get('entityId');
       const page = Math.max(1, Number(searchParams.get('page') ?? '1'));
       const pageSize = Math.min(100, Math.max(1, Number(searchParams.get('pageSize') ?? '20')));
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query parameter is required', 400);
-      }
 
       const result = await listDecisionBriefs(entityId, page, pageSize);
       return paginated(result.briefs, result.total, page, pageSize);
@@ -39,7 +36,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CreateDecisionSchema.safeParse(body);
@@ -50,10 +47,14 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const brief = await createDecisionBrief({
-        ...parsed.data,
-        deadline: parsed.data.deadline ? new Date(parsed.data.deadline) : undefined,
-      });
+      const { entityId: _requested, ...draft } = parsed.data;
+      const brief = await createDecisionBrief(
+        {
+          ...draft,
+          deadline: draft.deadline ? new Date(draft.deadline) : undefined,
+        },
+        entityId
+      );
 
       return success(brief, 201);
     } catch (_err) {

@@ -12,18 +12,32 @@
 
 // --- Infrastructure mocks (must be before imports) ---
 
+// tenancy-pattern.md sec.8 trap 1: reads are now findFirst (scope in the WHERE) and
+// writes updateMany, so those delegates are aliased onto the same jest.fn the
+// suite already stubs. updateMany additionally resolves { count: 1 }, which the
+// services check before reporting success.
 const mockPrisma = {
   knowledgeEntry: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    findFirst: (...a: unknown[]) => mockPrisma.knowledgeEntry.findUnique(...a),
     findMany: jest.fn(),
     update: jest.fn(),
+    updateMany: async (...a: unknown[]) => {
+      await mockPrisma.knowledgeEntry.update(...a);
+      return { count: 1 };
+    },
   },
   document: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    findFirst: (...a: unknown[]) => mockPrisma.document.findUnique(...a),
     findMany: jest.fn(),
     update: jest.fn(),
+    updateMany: async (...a: unknown[]) => {
+      await mockPrisma.document.update(...a);
+      return { count: 1 };
+    },
   },
 };
 
@@ -45,7 +59,12 @@ import { generateJSON } from '@/lib/ai';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { KnowledgeGraph, SearchResult } from '@/modules/knowledge/types';
 
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
 const mockGenerateJSON = generateJSON as jest.Mock;
+
+/** The scope every call in this suite runs under. */
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 // --- Test helpers ---
 
@@ -135,13 +154,16 @@ describe('Knowledge Management E2E', () => {
       });
       mockPrisma.knowledgeEntry.create.mockResolvedValue(createdEntry);
 
-      const result = await capture({
-        entityId: 'entity-1',
-        type: 'NOTE',
-        content: 'React hooks are a powerful feature for managing state in functional components',
-        source: 'manual',
-        tags: ['react'],
-      });
+      const result = await capture(
+        {
+          type: 'NOTE',
+          content:
+            'React hooks are a powerful feature for managing state in functional components',
+          source: 'manual',
+          tags: ['react'],
+        },
+        ENTITY_1
+      );
 
       expect(result.id).toBe('entry-new');
       expect(mockPrisma.knowledgeEntry.create).toHaveBeenCalledTimes(1);
@@ -191,7 +213,7 @@ describe('Knowledge Management E2E', () => {
         makeKnowledgeEntry({ id: 'e3', tags: ['python'] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.nodes.filter((n) => n.type === 'KNOWLEDGE').length).toBe(3);
       expect(graph.nodes.filter((n) => n.type === 'TAG').length).toBe(3);
     });
@@ -202,7 +224,7 @@ describe('Knowledge Management E2E', () => {
         makeKnowledgeEntry({ id: 'e2', linkedEntities: ['e1'], tags: [] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       const relatedEdges = graph.edges.filter((e) => e.relationship === 'related_to');
       expect(relatedEdges.length).toBeGreaterThan(0);
     });
@@ -212,7 +234,7 @@ describe('Knowledge Management E2E', () => {
         makeKnowledgeEntry({ id: 'e1', tags: ['react', 'typescript'] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       const tagEdges = graph.edges.filter((e) => e.relationship === 'tagged_with');
       expect(tagEdges.length).toBe(2);
     });
@@ -223,7 +245,7 @@ describe('Knowledge Management E2E', () => {
         makeKnowledgeEntry({ id: 'e2', tags: [] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.stats.totalNodes).toBe(3);
       expect(graph.stats.totalEdges).toBe(1);
       expect(graph.stats.isolatedNodes).toBe(1);
@@ -231,7 +253,7 @@ describe('Knowledge Management E2E', () => {
 
     it('should handle empty entries gracefully', async () => {
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue([]);
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.nodes).toEqual([]);
       expect(graph.edges).toEqual([]);
     });
@@ -245,7 +267,7 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.knowledgeEntry.findUnique.mockResolvedValue(entries[0]);
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue(entries);
 
-      const { nodes } = await findConnections('e1', 1);
+      const { nodes } = await findConnections('e1', ENTITY_1, 1);
       const nodeIds = nodes.map((n) => n.id);
       expect(nodeIds).toContain('e1');
       expect(nodes.length).toBeGreaterThan(1);
@@ -253,7 +275,7 @@ describe('Knowledge Management E2E', () => {
 
     it('should return empty for non-existent entry connections', async () => {
       mockPrisma.knowledgeEntry.findUnique.mockResolvedValue(null);
-      const { nodes, edges } = await findConnections('nonexistent', 1);
+      const { nodes, edges } = await findConnections('nonexistent', ENTITY_1, 1);
       expect(nodes).toEqual([]);
       expect(edges).toEqual([]);
     });
@@ -288,7 +310,7 @@ describe('Knowledge Management E2E', () => {
         makeKnowledgeEntry({ id: 'e2', tags: [] }),
       ]);
 
-      const isolated = await getIsolatedNodes('entity-1');
+      const isolated = await getIsolatedNodes(ENTITY_1);
       const isolatedIds = isolated.map((n) => n.id);
       expect(isolatedIds).toContain('e2');
       expect(isolatedIds).not.toContain('e1');
@@ -300,7 +322,6 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.document.create.mockResolvedValue(makeSOPDoc({ id: 'sop-new', title: 'Employee Onboarding' }));
 
       const sop = await createSOP({
-        entityId: 'entity-1',
         title: 'Employee Onboarding',
         description: 'Steps for onboarding new employees',
         steps: [
@@ -310,7 +331,7 @@ describe('Knowledge Management E2E', () => {
         triggerConditions: ['new employee', 'onboarding'],
         tags: ['hr', 'onboarding'],
         status: 'ACTIVE',
-      });
+      }, ENTITY_1);
 
       expect(sop.title).toBe('Employee Onboarding');
       expect(mockPrisma.document.create).toHaveBeenCalledTimes(1);
@@ -318,14 +339,14 @@ describe('Knowledge Management E2E', () => {
 
     it('should retrieve SOP by ID', async () => {
       mockPrisma.document.findUnique.mockResolvedValue(makeSOPDoc({ id: 'sop-1' }));
-      const sop = await getSOP('sop-1');
+      const sop = await getSOP('sop-1', ENTITY_1);
       expect(sop).not.toBeNull();
       expect(sop!.id).toBe('sop-1');
     });
 
     it('should return null for non-existent SOP', async () => {
       mockPrisma.document.findUnique.mockResolvedValue(null);
-      const sop = await getSOP('nonexistent');
+      const sop = await getSOP('nonexistent', ENTITY_1);
       expect(sop).toBeNull();
     });
 
@@ -333,7 +354,7 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.document.findUnique.mockResolvedValue(makeSOPDoc({ id: 'sop-1', version: 1 }));
       mockPrisma.document.update.mockResolvedValue(makeSOPDoc({ id: 'sop-1', version: 2, title: 'Updated SOP' }));
 
-      await updateSOP('sop-1', { title: 'Updated SOP' });
+      await updateSOP('sop-1', ENTITY_1, { title: 'Updated SOP' });
 
       expect(mockPrisma.document.update).toHaveBeenCalledTimes(1);
       const updateCall = (mockPrisma.document.update as jest.Mock).mock.calls[0][0];
@@ -342,7 +363,7 @@ describe('Knowledge Management E2E', () => {
 
     it('should throw when updating non-existent SOP', async () => {
       mockPrisma.document.findUnique.mockResolvedValue(null);
-      await expect(updateSOP('nonexistent', { title: 'Test' })).rejects.toThrow();
+      await expect(updateSOP('nonexistent', ENTITY_1, { title: 'Test' })).rejects.toThrow();
     });
 
     it('should match SOPs to context via trigger conditions', async () => {
@@ -351,7 +372,7 @@ describe('Knowledge Management E2E', () => {
         makeSOPDoc({ id: 'sop-2', triggerConditions: ['monthly report', 'audit'] }),
       ]);
 
-      const matches = await matchSOPToContext('new employee just started onboarding', 'entity-1');
+      const matches = await matchSOPToContext('new employee just started onboarding', ENTITY_1);
       expect(matches.some((s) => s.id === 'sop-1')).toBe(true);
     });
 
@@ -359,7 +380,7 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.document.findUnique.mockResolvedValue(makeSOPDoc({ id: 'sop-1', useCount: 5 }));
       mockPrisma.document.update.mockResolvedValue({});
 
-      await recordUsage('sop-1');
+      await recordUsage('sop-1', ENTITY_1);
 
       const updateCall = (mockPrisma.document.update as jest.Mock).mock.calls[0][0];
       const updatedContent = JSON.parse(updateCall.data.content);
@@ -368,31 +389,41 @@ describe('Knowledge Management E2E', () => {
 
     it('should throw when recording usage for non-existent SOP', async () => {
       mockPrisma.document.findUnique.mockResolvedValue(null);
-      await expect(recordUsage('nonexistent')).rejects.toThrow();
+      await expect(recordUsage('nonexistent', ENTITY_1)).rejects.toThrow();
     });
   });
 
   describe('Learning Tracker with Spaced Repetition', () => {
     it('should add a new learning item with reviewCount 0', async () => {
       mockPrisma.knowledgeEntry.create.mockResolvedValue(makeLearningEntry());
-      const item = await addLearningItem({ entityId: 'entity-1', title: 'Test Book', type: 'BOOK', status: 'QUEUED', progress: 0, notes: [], keyTakeaways: [], tags: ['learning'] });
+      const item = await addLearningItem({ title: 'Test Book', type: 'BOOK', status: 'QUEUED', progress: 0, notes: [], keyTakeaways: [], tags: ['learning'] }, ENTITY_1);
       expect(item.reviewCount).toBe(0);
     });
 
+    /**
+     * updateProgress now writes with updateMany (the scope must be in the WHERE)
+     * and re-reads the row, rather than relying on `update`'s return value. Wire
+     * the read so it observes the write.
+     */
+    function wireLearningEntry(entry: ReturnType<typeof makeLearningEntry>) {
+      let written = entry.content;
+      mockPrisma.knowledgeEntry.findUnique.mockImplementation(async () => ({ ...entry, content: written }));
+      mockPrisma.knowledgeEntry.update.mockImplementation(async ({ data }: { data: { content: string } }) => {
+        written = data.content;
+        return { ...entry, content: written };
+      });
+    }
+
     it('should auto-complete when progress reaches 100', async () => {
-      const entry = makeLearningEntry({ id: 'learn-1', progress: 50, status: 'IN_PROGRESS' });
-      mockPrisma.knowledgeEntry.findUnique.mockResolvedValue(entry);
-      mockPrisma.knowledgeEntry.update.mockImplementation(async ({ data }: { data: { content: string } }) => ({ ...entry, content: data.content }));
-      const item = await updateProgress('learn-1', 100);
+      wireLearningEntry(makeLearningEntry({ id: 'learn-1', progress: 50, status: 'IN_PROGRESS' }));
+      const item = await updateProgress('learn-1', ENTITY_1, 100);
       expect(item.status).toBe('COMPLETED');
       expect(item.progress).toBe(100);
     });
 
     it('should transition QUEUED to IN_PROGRESS when progress > 0', async () => {
-      const entry = makeLearningEntry({ id: 'learn-1', progress: 0, status: 'QUEUED' });
-      mockPrisma.knowledgeEntry.findUnique.mockResolvedValue(entry);
-      mockPrisma.knowledgeEntry.update.mockImplementation(async ({ data }: { data: { content: string } }) => ({ ...entry, content: data.content }));
-      const item = await updateProgress('learn-1', 25);
+      wireLearningEntry(makeLearningEntry({ id: 'learn-1', progress: 0, status: 'QUEUED' }));
+      const item = await updateProgress('learn-1', ENTITY_1, 25);
       expect(item.status).toBe('IN_PROGRESS');
     });
 
@@ -403,7 +434,7 @@ describe('Knowledge Management E2E', () => {
         makeLearningEntry({ id: 'learn-1', nextReviewDate: pastDate }),
         makeLearningEntry({ id: 'learn-2', nextReviewDate: futureDate }),
       ]);
-      const due = await getDueForReview('entity-1');
+      const due = await getDueForReview(ENTITY_1);
       expect(due.map((i) => i.id)).toContain('learn-1');
       expect(due.map((i) => i.id)).not.toContain('learn-2');
     });
@@ -412,7 +443,7 @@ describe('Knowledge Management E2E', () => {
       const entry = makeLearningEntry({ id: 'learn-1', reviewCount: 0, easeFactor: 2.5 });
       mockPrisma.knowledgeEntry.findUnique.mockResolvedValue(entry);
       mockPrisma.knowledgeEntry.update.mockResolvedValue(entry);
-      const schedule = await recordReview('learn-1', 5);
+      const schedule = await recordReview('learn-1', ENTITY_1, 5);
       expect(schedule.interval).toBe(1);
       expect(schedule.easeFactor).toBeCloseTo(2.6, 1);
     });
@@ -450,7 +481,7 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue([
         makeKnowledgeEntry({ id: '1', title: 'React hooks deep dive', body: 'React hooks are powerful', tags: ['react', 'hooks'], updatedAt: new Date() }),
       ]);
-      const result = await search({ entityId: 'entity-1', query: 'react' });
+      const result = await search({ query: 'react' }, ENTITY_1);
       expect(result.results.length).toBeGreaterThan(0);
     });
 
@@ -459,7 +490,7 @@ describe('Knowledge Management E2E', () => {
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue([
         makeKnowledgeEntry({ id: '1', title: 'React hooks', body: 'React hooks are powerful', tags: ['react'], updatedAt: new Date() }),
       ]);
-      const result = await search({ entityId: 'entity-1', query: 'react' });
+      const result = await search({ query: 'react' }, ENTITY_1);
       expect(result.results.length).toBeGreaterThan(0);
     });
 
@@ -467,7 +498,7 @@ describe('Knowledge Management E2E', () => {
       mockGenerateJSON.mockRejectedValue(new Error('fail'));
       const entries = Array.from({ length: 10 }, (_, i) => makeKnowledgeEntry({ id: `entry-${i}`, title: `React entry ${i}`, body: `React content ${i}` }));
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue(entries);
-      const result = await search({ entityId: 'entity-1', query: 'react', page: 1, pageSize: 3 });
+      const result = await search({ query: 'react', page: 1, pageSize: 3 }, ENTITY_1);
       expect(result.results.length).toBe(3);
       expect(result.total).toBe(10);
     });
@@ -498,15 +529,15 @@ describe('Knowledge Management E2E', () => {
     it('should capture entry, build graph, then search for it', async () => {
       const capturedEntry = makeKnowledgeEntry({ id: 'lifecycle-1', title: 'Docker deployment', body: 'Docker containers should be stateless', tags: ['docker', 'deployment'] });
       mockPrisma.knowledgeEntry.create.mockResolvedValue(capturedEntry);
-      const captured = await capture({ entityId: 'entity-1', type: 'NOTE', content: 'Docker containers should be stateless', source: 'manual', tags: ['docker'] });
+      const captured = await capture({ type: 'NOTE', content: 'Docker containers should be stateless', source: 'manual', tags: ['docker'] }, ENTITY_1);
       expect(captured.id).toBe('lifecycle-1');
 
       mockPrisma.knowledgeEntry.findMany.mockResolvedValue([capturedEntry]);
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.nodes.some((n) => n.id === 'lifecycle-1')).toBe(true);
 
       mockGenerateJSON.mockRejectedValue(new Error('no AI'));
-      const searchResult = await search({ entityId: 'entity-1', query: 'docker' });
+      const searchResult = await search({ query: 'docker' }, ENTITY_1);
       expect(searchResult.results.length).toBeGreaterThan(0);
     });
   });

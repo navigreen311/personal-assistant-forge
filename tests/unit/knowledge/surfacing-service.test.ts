@@ -21,8 +21,12 @@ jest.mock('@/lib/ai', () => ({
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
 const mockGenerateText = generateText as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?: string } = {}): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -52,10 +56,12 @@ describe('surfacing-service', () => {
       ]);
       mockGenerateText.mockResolvedValue('This entry covers React patterns for scalable apps.');
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'working on react components',
-      });
+        },
+        ENTITY_1
+      );
 
       const ids = results.map((r) => r.entry.id);
       expect(ids).toContain('e1');
@@ -68,10 +74,12 @@ describe('surfacing-service', () => {
         makeEntry({ id: 'e2', tags: ['python', 'django'], body: 'Python web development' }),
       ]);
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'working on react components',
-      });
+        },
+        ENTITY_1
+      );
 
       const ids = results.map((r) => r.entry.id);
       expect(ids).toContain('e1');
@@ -84,10 +92,12 @@ describe('surfacing-service', () => {
       );
       mockFindMany.mockResolvedValue(entries);
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'working on react project',
-      });
+        },
+        ENTITY_1
+      );
 
       expect(results.length).toBeLessThanOrEqual(5);
     });
@@ -99,11 +109,13 @@ describe('surfacing-service', () => {
         makeEntry({ id: 'e2', tags: ['cooking'] }),
       ]);
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'doing stuff',
         currentTags: ['deployment'],
-      });
+        },
+        ENTITY_1
+      );
 
       const ids = results.map((r) => r.entry.id);
       expect(ids).toContain('e1');
@@ -116,11 +128,13 @@ describe('surfacing-service', () => {
         makeEntry({ id: 'e2', linkedEntities: [] }),
       ]);
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'meeting preparation',
         activeContactIds: ['contact-1'],
-      });
+        },
+        ENTITY_1
+      );
 
       if (results.length >= 2) {
         const e1Result = results.find((r) => r.entry.id === 'e1');
@@ -138,10 +152,12 @@ describe('surfacing-service', () => {
         makeEntry({ id: 'e2', tags: ['react', 'typescript'], body: 'React TypeScript hooks development' }),
       ]);
 
-      const results = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results = await surfaceRelevant(
+        {
         currentActivity: 'react typescript development',
-      });
+        },
+        ENTITY_1
+      );
 
       for (let i = 1; i < results.length; i++) {
         expect(results[i - 1].relevanceScore).toBeGreaterThanOrEqual(results[i].relevanceScore);
@@ -158,20 +174,24 @@ describe('surfacing-service', () => {
       mockFindMany.mockResolvedValue(entries);
 
       // First call should surface e1
-      const results1 = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results1 = await surfaceRelevant(
+        {
         currentActivity: 'react work',
-      });
+        },
+        ENTITY_1
+      );
       expect(results1.some((r) => r.entry.id === 'e1')).toBe(true);
 
       // Dismiss it
       await dismissSuggestion('e1', 'entity-1:react work:');
 
       // Second call should not surface e1
-      const results2 = await surfaceRelevant({
-        entityId: 'entity-1',
+      const results2 = await surfaceRelevant(
+        {
         currentActivity: 'react work',
-      });
+        },
+        ENTITY_1
+      );
       expect(results2.some((r) => r.entry.id === 'e1')).toBe(false);
     });
   });

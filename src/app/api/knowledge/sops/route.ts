@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createSOP, listSOPs } from '@/modules/knowledge/services/sop-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const sopStepSchema = z.object({
   order: z.number(),
@@ -13,7 +13,7 @@ const sopStepSchema = z.object({
 });
 
 const createSOPSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   steps: z.array(sopStepSchema).min(1),
@@ -24,16 +24,11 @@ const createSOPSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = req.nextUrl;
-      const entityId = searchParams.get('entityId');
       const status = searchParams.get('status');
       const tags = searchParams.get('tags');
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId is required', 400);
-      }
 
       const sops = await listSOPs(entityId, {
         status: status || undefined,
@@ -48,7 +43,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createSOPSchema.safeParse(body);
@@ -57,12 +52,13 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
+      const { entityId: _requested, ...draft } = parsed.data;
       const data = {
-        ...parsed.data,
-        lastUsed: parsed.data.lastUsed ? new Date(parsed.data.lastUsed) : undefined,
+        ...draft,
+        lastUsed: draft.lastUsed ? new Date(draft.lastUsed) : undefined,
       };
 
-      const sop = await createSOP(data);
+      const sop = await createSOP(data, entityId);
       return success(sop, 201);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create SOP', 500);

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { LearningItem, SpacedRepetitionSchedule, StoredLearningData } from '@/modules/knowledge/types';
 
 function toLearningItem(entry: Record<string, unknown>): LearningItem {
@@ -43,7 +44,8 @@ function _toStoredData(item: Partial<LearningItem> & Pick<LearningItem, 'title' 
 }
 
 export async function addLearningItem(
-  data: Omit<LearningItem, 'id' | 'reviewCount' | 'createdAt' | 'updatedAt'>
+  data: Omit<LearningItem, 'id' | 'entityId' | 'reviewCount' | 'createdAt' | 'updatedAt'>,
+  entityId: VerifiedEntityId
 ): Promise<LearningItem> {
   const stored: StoredLearningData = {
     title: data.title,
@@ -65,7 +67,8 @@ export async function addLearningItem(
     data: {
       content: JSON.stringify(stored),
       tags: data.tags,
-      entityId: data.entityId,
+      // From the verified scope, never from the caller's payload.
+      entityId,
       source: `learning://${data.type.toLowerCase()}`,
       linkedEntities: [],
     },
@@ -74,8 +77,13 @@ export async function addLearningItem(
   return toLearningItem(entry as unknown as Record<string, unknown>);
 }
 
-export async function updateProgress(id: string, progress: number): Promise<LearningItem> {
-  const entry = await prisma.knowledgeEntry.findUnique({ where: { id } });
+export async function updateProgress(
+  id: string,
+  entityId: VerifiedEntityId,
+  progress: number
+): Promise<LearningItem> {
+  // Scope in the WHERE: another tenant's item is simply not found.
+  const entry = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
   if (!entry) throw new Error(`Learning item ${id} not found`);
 
   const data = JSON.parse((entry as unknown as { content: string }).content) as StoredLearningData;
@@ -89,15 +97,19 @@ export async function updateProgress(id: string, progress: number): Promise<Lear
     data.startedAt = data.startedAt || new Date().toISOString();
   }
 
-  const updated = await prisma.knowledgeEntry.update({
-    where: { id },
+  const result = await prisma.knowledgeEntry.updateMany({
+    where: { id, entityId },
     data: { content: JSON.stringify(data) },
   });
+  if (result.count === 0) throw new Error(`Learning item ${id} not found`);
+
+  const updated = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
+  if (!updated) throw new Error(`Learning item ${id} not found`);
 
   return toLearningItem(updated as unknown as Record<string, unknown>);
 }
 
-export async function getDueForReview(entityId: string): Promise<LearningItem[]> {
+export async function getDueForReview(entityId: VerifiedEntityId): Promise<LearningItem[]> {
   const entries = await prisma.knowledgeEntry.findMany({
     where: {
       entityId,
@@ -155,9 +167,10 @@ export function calculateNextReview(
 
 export async function recordReview(
   id: string,
+  entityId: VerifiedEntityId,
   quality: number
 ): Promise<SpacedRepetitionSchedule> {
-  const entry = await prisma.knowledgeEntry.findUnique({ where: { id } });
+  const entry = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
   if (!entry) throw new Error(`Learning item ${id} not found`);
 
   const data = JSON.parse((entry as unknown as { content: string }).content) as StoredLearningData;
@@ -169,10 +182,11 @@ export async function recordReview(
   data.interval = schedule.interval;
   data.nextReviewDate = schedule.nextReviewDate.toISOString();
 
-  await prisma.knowledgeEntry.update({
-    where: { id },
+  const written = await prisma.knowledgeEntry.updateMany({
+    where: { id, entityId },
     data: { content: JSON.stringify(data) },
   });
+  if (written.count === 0) throw new Error(`Learning item ${id} not found`);
 
   return schedule;
 }

@@ -4,6 +4,7 @@
 
 import { prisma } from '@/lib/db';
 import { addDays } from 'date-fns';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   JournalEntry,
   JournalStatus,
@@ -28,6 +29,15 @@ interface JournalDocContent {
 
 /**
  * Create a new journal entry, stored in the Document table.
+ *
+ * ESCALATED, see the PR body: this is the one write in the package whose
+ * entityId parameter is still an unbranded `string`. It has a caller outside
+ * this package's file list -- src/lib/shadow/meeting/processor.ts, a
+ * server-side pipeline reading the entity off a CalendarEvent row -- and the
+ * tenancy pattern's answer for that (sec.5, the `<verb><Noun>ForEntityOwner` dual
+ * entry point) needs a one-line edit at that call site, which P-08 may not
+ * make. The HTTP path is fully closed regardless: POST /api/decisions/journal
+ * uses withEntityScope and passes the verified id, discarding the caller's.
  */
 export async function createEntry(
   entry: Omit<JournalEntry, 'id' | 'createdAt' | 'updatedAt'>
@@ -65,11 +75,16 @@ export async function createEntry(
  */
 export async function reviewEntry(
   id: string,
+  entityId: VerifiedEntityId,
   actualOutcomes: string[],
   status: string,
   lessonsLearned: string
 ): Promise<JournalEntry> {
-  const doc = await prisma.document.findUnique({ where: { id } });
+  // Scope in the WHERE: another tenant's journal entry is not found, so the
+  // review below can never be written onto it.
+  const doc = await prisma.document.findFirst({
+    where: { id, entityId, type: JOURNAL_DOC_TYPE },
+  });
   if (!doc || !doc.content) {
     throw new Error(`Journal entry ${id} not found`);
   }
@@ -79,13 +94,22 @@ export async function reviewEntry(
   data.status = status as JournalStatus;
   data.lessonsLearned = lessonsLearned;
 
-  const updated = await prisma.document.update({
-    where: { id },
+  // updateMany, not update: a unique WHERE cannot carry the entity.
+  const result = await prisma.document.updateMany({
+    where: { id, entityId, type: JOURNAL_DOC_TYPE },
     data: {
       content: JSON.stringify(data),
       status: 'APPROVED',
     },
   });
+  if (result.count === 0) {
+    throw new Error(`Journal entry ${id} not found`);
+  }
+
+  const updated = await prisma.document.findFirst({ where: { id, entityId } });
+  if (!updated) {
+    throw new Error(`Journal entry ${id} not found`);
+  }
 
   return docToJournalEntry(updated);
 }
@@ -94,7 +118,7 @@ export async function reviewEntry(
  * Get journal entries with reviewDate within N days from now.
  */
 export async function getUpcomingReviews(
-  entityId: string,
+  entityId: VerifiedEntityId,
   days: number
 ): Promise<JournalEntry[]> {
   const docs = await prisma.document.findMany({
@@ -124,7 +148,7 @@ export async function getUpcomingReviews(
  * Calculate decision accuracy stats for an entity.
  */
 export async function getDecisionAccuracy(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<DecisionAccuracy> {
   const docs = await prisma.document.findMany({
     where: {

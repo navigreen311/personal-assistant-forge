@@ -1,16 +1,22 @@
 import type { DecisionRequest } from '@/modules/decisions/types';
 
 // Mock prisma before importing the service
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    document: {
-      create: jest.fn(),
-      findUnique: jest.fn(),
-      findMany: jest.fn(),
-      count: jest.fn(),
+// tenancy-pattern.md sec.8 trap 1: getDecisionBrief now reads with findFirst so the
+// scope sits in the WHERE clause. Aliased onto the same jest.fn as findUnique.
+jest.mock('@/lib/db', () => {
+  const findUnique = jest.fn();
+  return {
+    prisma: {
+      document: {
+        create: jest.fn(),
+        findUnique,
+        findFirst: (...a: unknown[]) => findUnique(...a),
+        findMany: jest.fn(),
+        count: jest.fn(),
+      },
     },
-  },
-}));
+  };
+});
 
 // Mock AI client
 jest.mock('@/lib/ai', () => ({
@@ -25,8 +31,12 @@ import {
   listDecisionBriefs,
 } from '@/modules/decisions/services/decision-framework';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 describe('Decision Framework', () => {
   beforeEach(() => {
@@ -52,8 +62,7 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      const request: DecisionRequest = {
-        entityId: 'entity-1',
+      const request: Omit<DecisionRequest, 'entityId'> = {
         title: 'Test Decision',
         description: 'Should we do this?',
         context: 'We are evaluating options for the next quarter.',
@@ -62,7 +71,7 @@ describe('Decision Framework', () => {
         blastRadius: 'MEDIUM',
       };
 
-      const brief = await createDecisionBrief(request);
+      const brief = await createDecisionBrief(request, ENTITY_1);
       expect(brief.options).toHaveLength(3);
       expect(mockGenerateJSON).toHaveBeenCalled();
     });
@@ -85,15 +94,17 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      await createDecisionBrief({
-        entityId: 'entity-1',
+      await createDecisionBrief(
+        {
         title: 'Expand to Europe',
         description: 'European expansion plan',
         context: 'Growing demand from EU customers',
         stakeholders: ['CEO'],
         constraints: ['Budget: $50k'],
         blastRadius: 'HIGH',
-      });
+      },
+      ENTITY_1
+      );
 
       const prompt = mockGenerateJSON.mock.calls[0][0] as string;
       expect(prompt).toContain('Expand to Europe');
@@ -110,8 +121,7 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      const request: DecisionRequest = {
-        entityId: 'entity-1',
+      const request: Omit<DecisionRequest, 'entityId'> = {
         title: 'Test',
         description: 'Desc',
         context: 'Context',
@@ -120,7 +130,7 @@ describe('Decision Framework', () => {
         blastRadius: 'LOW',
       };
 
-      const brief = await createDecisionBrief(request);
+      const brief = await createDecisionBrief(request, ENTITY_1);
       // Should still produce 3 options via fallback
       expect(brief.options).toHaveLength(3);
       const strategies = brief.options.map((o) => o.strategy);
@@ -147,15 +157,17 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      await createDecisionBrief({
-        entityId: 'entity-1',
+      await createDecisionBrief(
+        {
         title: 'Test',
         description: 'D',
         context: 'C',
         stakeholders: [],
         constraints: [],
         blastRadius: 'LOW',
-      });
+      },
+      ENTITY_1
+      );
 
       expect(mockPrisma.document.create).toHaveBeenCalledTimes(1);
       const createCall = (mockPrisma.document.create as jest.Mock).mock.calls[0][0];
@@ -173,8 +185,7 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      const request: DecisionRequest = {
-        entityId: 'entity-1',
+      const request: Omit<DecisionRequest, 'entityId'> = {
         title: 'Test',
         description: 'Desc',
         context: 'A long context with enough detail to boost confidence score above baseline.',
@@ -183,7 +194,7 @@ describe('Decision Framework', () => {
         blastRadius: 'CRITICAL',
       };
 
-      const brief = await createDecisionBrief(request);
+      const brief = await createDecisionBrief(request, ENTITY_1);
       expect(brief.confidenceScore).toBeGreaterThanOrEqual(0);
       expect(brief.confidenceScore).toBeLessThanOrEqual(1);
     });
@@ -198,8 +209,7 @@ describe('Decision Framework', () => {
         updatedAt: new Date(),
       });
 
-      const request: DecisionRequest = {
-        entityId: 'entity-1',
+      const request: Omit<DecisionRequest, 'entityId'> = {
         title: 'Test',
         description: 'D',
         context: 'C',
@@ -208,7 +218,7 @@ describe('Decision Framework', () => {
         blastRadius: 'LOW',
       };
 
-      const brief = await createDecisionBrief(request);
+      const brief = await createDecisionBrief(request, ENTITY_1);
       expect(brief.blindSpots.length).toBeGreaterThan(0);
     });
   });
@@ -217,7 +227,7 @@ describe('Decision Framework', () => {
     it('should return null for non-existent brief', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
 
-      const result = await getDecisionBrief('non-existent');
+      const result = await getDecisionBrief('non-existent', ENTITY_1);
       expect(result).toBeNull();
     });
 
@@ -230,7 +240,7 @@ describe('Decision Framework', () => {
         createdAt: new Date(),
       });
 
-      const result = await getDecisionBrief('doc-1');
+      const result = await getDecisionBrief('doc-1', ENTITY_1);
       expect(result).toBeNull();
     });
 
@@ -253,7 +263,7 @@ describe('Decision Framework', () => {
         createdAt: new Date(),
       });
 
-      const result = await getDecisionBrief('doc-1');
+      const result = await getDecisionBrief('doc-1', ENTITY_1);
       expect(result).not.toBeNull();
       expect(result!.title).toBe('Test');
       expect(result!.confidenceScore).toBe(0.7);
@@ -268,7 +278,7 @@ describe('Decision Framework', () => {
       ]);
       (mockPrisma.document.count as jest.Mock).mockResolvedValue(2);
 
-      const result = await listDecisionBriefs('entity-1', 1, 10);
+      const result = await listDecisionBriefs(ENTITY_1, 1, 10);
       expect(result.briefs).toHaveLength(2);
       expect(result.total).toBe(2);
     });

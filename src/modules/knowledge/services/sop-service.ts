@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { SOP, StoredSOPData } from '@/modules/knowledge/types';
 
 function toSOP(doc: Record<string, unknown>): SOP {
@@ -34,7 +35,8 @@ function _toStoredData(sop: Partial<SOP> & Pick<SOP, 'title' | 'description' | '
 }
 
 export async function createSOP(
-  data: Omit<SOP, 'id' | 'version' | 'useCount' | 'createdAt' | 'updatedAt'>
+  data: Omit<SOP, 'id' | 'entityId' | 'version' | 'useCount' | 'createdAt' | 'updatedAt'>,
+  entityId: VerifiedEntityId
 ): Promise<SOP> {
   const sopData: StoredSOPData = {
     title: data.title,
@@ -49,7 +51,8 @@ export async function createSOP(
   const doc = await prisma.document.create({
     data: {
       title: data.title,
-      entityId: data.entityId,
+      // From the verified scope, never from the caller's payload.
+      entityId,
       type: 'SOP',
       version: 1,
       content: JSON.stringify(sopData),
@@ -61,14 +64,16 @@ export async function createSOP(
   return toSOP(doc as unknown as Record<string, unknown>);
 }
 
-export async function getSOP(id: string): Promise<SOP | null> {
-  const doc = await prisma.document.findUnique({ where: { id } });
+export async function getSOP(id: string, entityId: VerifiedEntityId): Promise<SOP | null> {
+  // Scope in the WHERE: another tenant's SOP is not found, so there is no
+  // check-then-act for a later edit to forget.
+  const doc = await prisma.document.findFirst({ where: { id, entityId, type: 'SOP' } });
   if (!doc) return null;
   return toSOP(doc as unknown as Record<string, unknown>);
 }
 
 export async function listSOPs(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters: { status?: string; tags?: string[] }
 ): Promise<SOP[]> {
   const docs = await prisma.document.findMany({
@@ -93,8 +98,12 @@ export async function listSOPs(
   return sops;
 }
 
-export async function updateSOP(id: string, data: Partial<SOP>): Promise<SOP> {
-  const existing = await getSOP(id);
+export async function updateSOP(
+  id: string,
+  entityId: VerifiedEntityId,
+  data: Partial<Omit<SOP, 'entityId'>>
+): Promise<SOP> {
+  const existing = await getSOP(id, entityId);
   if (!existing) throw new Error(`SOP ${id} not found`);
 
   const updated = { ...existing, ...data };
@@ -110,8 +119,9 @@ export async function updateSOP(id: string, data: Partial<SOP>): Promise<SOP> {
     useCount: updated.useCount,
   };
 
-  const doc = await prisma.document.update({
-    where: { id },
+  // updateMany, not update: a unique WHERE cannot carry the entity.
+  const result = await prisma.document.updateMany({
+    where: { id, entityId, type: 'SOP' },
     data: {
       title: updated.title,
       version: newVersion,
@@ -119,11 +129,18 @@ export async function updateSOP(id: string, data: Partial<SOP>): Promise<SOP> {
       status: updated.status === 'ACTIVE' ? 'APPROVED' : updated.status === 'ARCHIVED' ? 'ARCHIVED' : 'DRAFT',
     },
   });
+  if (result.count === 0) throw new Error(`SOP ${id} not found`);
+
+  const doc = await prisma.document.findFirst({ where: { id, entityId } });
+  if (!doc) throw new Error(`SOP ${id} not found`);
 
   return toSOP(doc as unknown as Record<string, unknown>);
 }
 
-export async function matchSOPToContext(context: string, entityId: string): Promise<SOP[]> {
+export async function matchSOPToContext(
+  context: string,
+  entityId: VerifiedEntityId
+): Promise<SOP[]> {
   const sops = await listSOPs(entityId, { status: 'ACTIVE' });
   const contextKeywords = context
     .toLowerCase()
@@ -138,8 +155,8 @@ export async function matchSOPToContext(context: string, entityId: string): Prom
   );
 }
 
-export async function recordUsage(id: string): Promise<void> {
-  const existing = await getSOP(id);
+export async function recordUsage(id: string, entityId: VerifiedEntityId): Promise<void> {
+  const existing = await getSOP(id, entityId);
   if (!existing) throw new Error(`SOP ${id} not found`);
 
   const sopData: StoredSOPData = {
@@ -152,8 +169,9 @@ export async function recordUsage(id: string): Promise<void> {
     useCount: existing.useCount + 1,
   };
 
-  await prisma.document.update({
-    where: { id },
+  const result = await prisma.document.updateMany({
+    where: { id, entityId, type: 'SOP' },
     data: { content: JSON.stringify(sopData) },
   });
+  if (result.count === 0) throw new Error(`SOP ${id} not found`);
 }

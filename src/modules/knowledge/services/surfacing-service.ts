@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { SurfacingContext, SurfacedKnowledge } from '@/modules/knowledge/types';
 import { knowledgeEntryToCaptured, parseStoredData } from './capture-service';
@@ -11,7 +12,10 @@ function generateContextHash(context: SurfacingContext): string {
   return `${context.entityId}:${context.currentActivity}:${(context.currentTags || []).join(',')}`;
 }
 
-function scoreForContext(entry: KnowledgeEntry, context: SurfacingContext): number {
+function scoreForContext(
+  entry: KnowledgeEntry,
+  context: Omit<SurfacingContext, 'entityId'>
+): number {
   let score = 0;
 
   // Match tags from current activity
@@ -51,12 +55,15 @@ function scoreForContext(entry: KnowledgeEntry, context: SurfacingContext): numb
   return Math.min(1, score / 20);
 }
 
-export async function surfaceRelevant(context: SurfacingContext): Promise<SurfacedKnowledge[]> {
+export async function surfaceRelevant(
+  context: Omit<SurfacingContext, 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<SurfacedKnowledge[]> {
   const entries = await prisma.knowledgeEntry.findMany({
-    where: { entityId: context.entityId },
+    where: { entityId },
   });
 
-  const contextHash = generateContextHash(context);
+  const contextHash = generateContextHash({ ...context, entityId });
   const dismissed = dismissals.get(contextHash) || new Set();
 
   const scored: SurfacedKnowledge[] = [];

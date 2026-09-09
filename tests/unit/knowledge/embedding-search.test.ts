@@ -1,4 +1,4 @@
-import { semanticSearch } from '@/modules/knowledge/services/search-service';
+import { aiRerankedSearch } from '@/modules/knowledge/services/search-service';
 import type { KnowledgeEntry } from '@/shared/types';
 
 jest.mock('@/lib/db', () => ({
@@ -16,8 +16,12 @@ jest.mock('@/lib/ai', () => ({
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
 const mockGenerateJSON = generateJSON as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?: string } = {}): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -34,7 +38,13 @@ function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?:
   };
 }
 
-describe('semanticSearch', () => {
+/**
+ * T-017: this suite covers the keyword-search + AI-re-ranking path, which used
+ * to be an overload of `semanticSearch`. It is the only genuinely semantic
+ * search in the module (the model doing the re-ranking is), so it keeps a
+ * name that says so: `aiRerankedSearch`.
+ */
+describe('aiRerankedSearch', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -45,7 +55,7 @@ describe('semanticSearch', () => {
       makeEntry({ id: '2' }),
     ]);
 
-    const result = await semanticSearch({ entityId: 'entity-1', query: '' });
+    const result = await aiRerankedSearch({ query: '' }, ENTITY_1);
 
     expect(result.results.length).toBe(2);
     // generateJSON should only be called for expandQueryWithAI (not for re-ranking)
@@ -67,7 +77,7 @@ describe('semanticSearch', () => {
     // Second call: re-ranking — AI wants Gamma first, then Alpha, then Beta
     mockGenerateJSON.mockResolvedValueOnce({ rankedIds: [2, 0, 1] });
 
-    const result = await semanticSearch({ entityId: 'entity-1', query: 'react' });
+    const result = await aiRerankedSearch({ query: 'react' }, ENTITY_1);
 
     expect(result.results.length).toBe(3);
     // AI was called twice: once for query expansion, once for re-ranking
@@ -95,7 +105,7 @@ describe('semanticSearch', () => {
     // re-ranking fails
     mockGenerateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
-    const result = await semanticSearch({ entityId: 'entity-1', query: 'react' });
+    const result = await aiRerankedSearch({ query: 'react' }, ENTITY_1);
 
     // Should still return results (keyword-based)
     expect(result.results.length).toBeGreaterThan(0);
@@ -108,7 +118,7 @@ describe('semanticSearch', () => {
     // expandQueryWithAI won't even be called meaningfully with no entries
     mockGenerateJSON.mockResolvedValueOnce({ expandedQuery: 'nonexistent query terms' });
 
-    const result = await semanticSearch({ entityId: 'entity-1', query: 'nonexistent' });
+    const result = await aiRerankedSearch({ query: 'nonexistent' }, ENTITY_1);
 
     expect(result.results).toEqual([]);
     expect(result.total).toBe(0);
@@ -124,7 +134,7 @@ describe('semanticSearch', () => {
     // AI returns object without rankedIds
     mockGenerateJSON.mockResolvedValueOnce({ something: 'else' });
 
-    const result = await semanticSearch({ entityId: 'entity-1', query: 'react' });
+    const result = await aiRerankedSearch({ query: 'react' }, ENTITY_1);
 
     // Should fall back to keyword results
     expect(result.results.length).toBe(1);

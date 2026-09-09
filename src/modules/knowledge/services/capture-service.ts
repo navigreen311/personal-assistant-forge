@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { CaptureRequest, CapturedEntry, CaptureType, StoredKnowledgeData } from '@/modules/knowledge/types';
 
@@ -73,7 +74,10 @@ function parseStoredData(content: string): StoredKnowledgeData {
   }
 }
 
-export async function capture(request: CaptureRequest): Promise<CapturedEntry> {
+export async function capture(
+  request: Omit<CaptureRequest, 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<CapturedEntry> {
   const autoTags = generateAutoTags(request.content);
   const title = request.title || generateTitle(request.content, request.type);
   const allTags = Array.from(new Set([...(request.tags || []), ...autoTags]));
@@ -90,7 +94,8 @@ export async function capture(request: CaptureRequest): Promise<CapturedEntry> {
     data: {
       content: JSON.stringify(stored),
       tags: allTags,
-      entityId: request.entityId,
+      // From the verified scope, never from the request payload.
+      entityId,
       source: request.source,
       linkedEntities: [],
     },
@@ -99,10 +104,13 @@ export async function capture(request: CaptureRequest): Promise<CapturedEntry> {
   return knowledgeEntryToCaptured(entry as unknown as KnowledgeEntry);
 }
 
-export async function batchCapture(requests: CaptureRequest[]): Promise<CapturedEntry[]> {
+export async function batchCapture(
+  requests: Omit<CaptureRequest, 'entityId'>[],
+  entityId: VerifiedEntityId
+): Promise<CapturedEntry[]> {
   const results: CapturedEntry[] = [];
   for (const request of requests) {
-    results.push(await capture(request));
+    results.push(await capture(request, entityId));
   }
   return results;
 }

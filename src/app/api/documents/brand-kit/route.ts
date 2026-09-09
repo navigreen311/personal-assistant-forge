@@ -1,11 +1,13 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { getBrandKit, updateBrandKit } from '@/modules/documents/services/brand-kit-service';
 
 const updateBrandKitSchema = z.object({
-  entityId: z.string().min(1),
+  // Optional on purpose: a client that omits it gets its session's active
+  // entity. A client that sends one still has it verified before use.
+  entityId: z.string().min(1).optional(),
   primaryColor: z.string().optional(),
   secondaryColor: z.string().optional(),
   logoUrl: z.string().optional(),
@@ -16,11 +18,8 @@ const updateBrandKitSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
-
       const brandKit = await getBrandKit(entityId);
       return success(brandKit);
     } catch (err) {
@@ -30,13 +29,14 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = updateBrandKitSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const { entityId, ...config } = parsed.data;
+      // The caller's entityId is discarded: `entityId` from the scope wins.
+      const { entityId: _requested, ...config } = parsed.data;
       const brandKit = await updateBrandKit(entityId, config);
       return success(brandKit);
     } catch (err) {

@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { BlastRadius } from '@/shared/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Decision Framework ---
 
@@ -174,7 +175,8 @@ export type SourceType = 'WEB' | 'DOCUMENT' | 'KNOWLEDGE';
 
 export interface ResearchRequest {
   query: string;
-  entityId: string;
+  /** Proven to belong to the caller before any knowledge base is read. */
+  entityId: VerifiedEntityId;
   depth: ResearchDepth;
   sourceTypes: SourceType[];
   maxSources: number;
