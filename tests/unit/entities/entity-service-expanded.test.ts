@@ -6,7 +6,6 @@
  * - Entity health calculations (detailed scenarios)
  * - Multi-entity switching / executive view
  * - Shared contacts detection
- * - Auth stub
  */
 
 import { EntityService } from '@/modules/entities/entity.service';
@@ -646,24 +645,10 @@ describe('EntityService -- Expanded Tests', () => {
     });
   });
 
-  // --- getCurrentUserId -- Auth Stub ---
-
-  describe('getCurrentUserId', () => {
-    it('should return user ID from x-user-id header', () => {
-      const { getCurrentUserId } = require('@/modules/entities/entity.service');
-      const headers = new Headers({ 'x-user-id': 'user-from-header' });
-      expect(getCurrentUserId(headers)).toBe('user-from-header');
-    });
-
-    it('should return stub user ID when no headers', () => {
-      const { getCurrentUserId } = require('@/modules/entities/entity.service');
-      expect(getCurrentUserId()).toBe('stub-user-id');
-    });
-
-    it('should return stub user ID when header is missing x-user-id', () => {
-      const { getCurrentUserId } = require('@/modules/entities/entity.service');
-      const headers = new Headers({ 'content-type': 'application/json' });
-      expect(getCurrentUserId(headers)).toBe('stub-user-id');
-    });
-  });
+  // The `getCurrentUserId` suite that stood here asserted that identity comes
+  // from a client-supplied `x-user-id` header, and that its absence yields a
+  // single shared 'stub-user-id'. That is the P-03 bypass written down as a
+  // requirement, so it went with the function. Identity is now proven from the
+  // session; the replacement lives in tests/db/entities-tenancy.test.ts, which
+  // runs the real decrypt path against a real database.
 });
