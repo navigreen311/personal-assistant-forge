@@ -36,6 +36,19 @@ import {
 } from '../../../src/modules/travel/services/itinerary-service';
 import type { Itinerary, ItineraryLeg } from '../../../src/modules/travel/types';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column. The scope is now a `VerifiedEntityId`, which a
+ * plain string is not assignable to, so a call site handing a service an
+ * unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const makeCalendarEvent = (overrides: Record<string, unknown> = {}) => ({
   id: 'ce-1',
   title: 'Trip — FLIGHT: DFW → NRT',
@@ -83,7 +96,7 @@ describe('createItinerary', () => {
       },
     ];
 
-    await createItinerary('user-1', 'Tokyo Trip', legs);
+    await createItinerary(entity('1'), 'user-1', 'Tokyo Trip', legs);
 
     expect(mockCalendarEventCreate).toHaveBeenCalledTimes(2);
   });
@@ -97,7 +110,7 @@ describe('createItinerary', () => {
       },
     ];
 
-    await createItinerary('user-1', 'Tokyo Trip', legs);
+    await createItinerary(entity('1'), 'user-1', 'Tokyo Trip', legs);
 
     expect(mockCalendarEventCreate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -124,7 +137,7 @@ describe('createItinerary', () => {
       },
     ];
 
-    const result = await createItinerary('user-1', 'Tokyo Trip', legs);
+    const result = await createItinerary(entity('1'), 'user-1', 'Tokyo Trip', legs);
 
     expect(result.userId).toBe('user-1');
     expect(result.name).toBe('Tokyo Trip');
@@ -143,7 +156,7 @@ describe('getItinerary', () => {
   it('should reconstruct Itinerary from CalendarEvent records', async () => {
     mockCalendarEventFindMany.mockResolvedValue([makeCalendarEvent()]);
 
-    const result = await getItinerary('itin-1');
+    const result = await getItinerary(entity('1'), 'itin-1');
 
     expect(result).not.toBeNull();
     expect(result!.id).toBe('itin-1');
@@ -156,7 +169,7 @@ describe('getItinerary', () => {
   it('should return null when itinerary not found', async () => {
     mockCalendarEventFindMany.mockResolvedValue([]);
 
-    const result = await getItinerary('nonexistent');
+    const result = await getItinerary(entity('1'), 'nonexistent');
 
     expect(result).toBeNull();
   });
@@ -181,7 +194,7 @@ describe('listItineraries', () => {
       }),
     ]);
 
-    const result = await listItineraries('user-1');
+    const result = await listItineraries(entity('1'));
 
     expect(result).toHaveLength(2);
   });
@@ -193,7 +206,7 @@ describe('listItineraries', () => {
       }),
     ]);
 
-    const result = await listItineraries('user-1', 'DRAFT');
+    const result = await listItineraries(entity('1'), 'DRAFT');
 
     expect(result).toHaveLength(0);
   });

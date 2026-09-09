@@ -22,6 +22,21 @@ import {
   getUpcomingRenewals,
 } from '@/modules/household/services/warranty-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
 describe('warranty-service', () => {
@@ -34,7 +49,7 @@ describe('warranty-service', () => {
       const endDate = addDays(new Date(), 365);
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'warranty-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'WARRANTY',
         content: JSON.stringify({
           itemName: 'Samsung TV',
@@ -45,7 +60,7 @@ describe('warranty-service', () => {
         }),
       });
 
-      const result = await addWarranty('user-1', {
+      const result = await addWarranty(entity('1'), 'user-1', {
         userId: 'user-1',
         itemName: 'Samsung TV',
         purchaseDate: new Date(),
@@ -58,7 +73,7 @@ describe('warranty-service', () => {
         data: expect.objectContaining({
           type: 'WARRANTY',
           title: 'Samsung TV',
-          entityId: 'user-1',
+          entityId: 'entity-1',
         }),
       });
       expect(result.itemName).toBe('Samsung TV');
@@ -68,7 +83,7 @@ describe('warranty-service', () => {
       const expiringDate = addDays(new Date(), 15);
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'warranty-2',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({
           itemName: 'Expiring Item',
           purchaseDate: new Date().toISOString(),
@@ -77,7 +92,7 @@ describe('warranty-service', () => {
         }),
       });
 
-      const result = await addWarranty('user-1', {
+      const result = await addWarranty(entity('1'), 'user-1', {
         userId: 'user-1',
         itemName: 'Expiring Item',
         purchaseDate: new Date(),
@@ -93,7 +108,7 @@ describe('warranty-service', () => {
       const pastDate = addDays(new Date(), -10);
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'warranty-3',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({
           itemName: 'Expired Item',
           purchaseDate: new Date('2020-01-01').toISOString(),
@@ -102,7 +117,7 @@ describe('warranty-service', () => {
         }),
       });
 
-      const result = await addWarranty('user-1', {
+      const result = await addWarranty(entity('1'), 'user-1', {
         userId: 'user-1',
         itemName: 'Expired Item',
         purchaseDate: new Date('2020-01-01'),
@@ -120,7 +135,7 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'w-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             itemName: 'TV',
             purchaseDate: new Date().toISOString(),
@@ -130,7 +145,7 @@ describe('warranty-service', () => {
         },
       ]);
 
-      const result = await getWarranties('user-1');
+      const result = await getWarranties(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].isExpired).toBe(false);
@@ -146,7 +161,7 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'w-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             itemName: 'Expiring',
             purchaseDate: new Date().toISOString(),
@@ -156,7 +171,7 @@ describe('warranty-service', () => {
         },
         {
           id: 'w-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             itemName: 'Not Expiring',
             purchaseDate: new Date().toISOString(),
@@ -166,7 +181,7 @@ describe('warranty-service', () => {
         },
       ]);
 
-      const result = await getExpiringWarranties('user-1', 30);
+      const result = await getExpiringWarranties(entity('1'), 'user-1', 30);
 
       expect(result).toHaveLength(1);
       expect(result[0].itemName).toBe('Expiring');
@@ -178,7 +193,7 @@ describe('warranty-service', () => {
     it('should create Document with type SUBSCRIPTION', async () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'sub-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'SUBSCRIPTION',
         content: JSON.stringify({
           name: 'Netflix',
@@ -191,7 +206,7 @@ describe('warranty-service', () => {
         }),
       });
 
-      const result = await addSubscription('user-1', {
+      const result = await addSubscription(entity('1'), 'user-1', {
         userId: 'user-1',
         name: 'Netflix',
         costPerMonth: 15.99,
@@ -217,17 +232,17 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 's-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Netflix', costPerMonth: 15.99, billingCycle: 'MONTHLY', renewalDate: new Date().toISOString(), category: 'Entertainment', isActive: true, autoRenew: true }),
         },
         {
           id: 's-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Gym', costPerMonth: 49.00, billingCycle: 'MONTHLY', renewalDate: new Date().toISOString(), category: 'Health', isActive: true, autoRenew: false }),
         },
       ]);
 
-      const result = await getMonthlySubscriptionCost('user-1');
+      const result = await getMonthlySubscriptionCost(entity('1'), 'user-1');
 
       expect(result).toBeCloseTo(64.99);
     });
@@ -236,12 +251,12 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 's-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Adobe CC', costPerMonth: 120, billingCycle: 'ANNUAL', renewalDate: new Date().toISOString(), category: 'Software', isActive: true, autoRenew: true }),
         },
       ]);
 
-      const result = await getMonthlySubscriptionCost('user-1');
+      const result = await getMonthlySubscriptionCost(entity('1'), 'user-1');
 
       expect(result).toBeCloseTo(10);
     });
@@ -250,12 +265,12 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 's-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Cancelled', costPerMonth: 99, billingCycle: 'MONTHLY', renewalDate: new Date().toISOString(), category: 'Other', isActive: false, autoRenew: false }),
         },
       ]);
 
-      const result = await getMonthlySubscriptionCost('user-1');
+      const result = await getMonthlySubscriptionCost(entity('1'), 'user-1');
 
       expect(result).toBe(0);
     });
@@ -269,17 +284,17 @@ describe('warranty-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 's-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Netflix', costPerMonth: 15.99, billingCycle: 'MONTHLY', renewalDate: soonDate.toISOString(), category: 'Entertainment', isActive: true, autoRenew: true }),
         },
         {
           id: 's-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Adobe', costPerMonth: 120, billingCycle: 'ANNUAL', renewalDate: farDate.toISOString(), category: 'Software', isActive: true, autoRenew: true }),
         },
       ]);
 
-      const result = await getUpcomingRenewals('user-1', 30);
+      const result = await getUpcomingRenewals(entity('1'), 'user-1', 30);
 
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('Netflix');

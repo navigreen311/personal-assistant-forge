@@ -1,12 +1,32 @@
 import { addDays } from 'date-fns';
 
+/**
+ * These stand in for `document.findFirst`/`findFirstOrThrow`/`updateMany`.
+ *
+ * `jest.mock` factories are hoisted above imports, so the aliases inside the
+ * factory must close over module-level `jest.fn()`s declared here. Each is wired
+ * to the corresponding `findUnique`/`update` mock below in `beforeEach`, so a
+ * test that sets `findUnique.mockResolvedValue(...)` still drives the scoped
+ * finder the service now calls.
+ */
+const mockDocumentFindUnique = jest.fn();
+const mockDocumentUpdateMany = jest.fn();
+const mockDocumentReread = jest.fn();
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     document: {
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      // The service moved from findUnique/update to scoped finders and
+      // updateMany. A mock with no findFirst returns undefined and the test
+      // passes for the wrong reason -- tenancy pattern, trap 1. Alias them onto
+      // the same jest.fn so existing mockResolvedValue setups keep working.
+      findFirst: (...a: unknown[]) => mockDocumentFindUnique(...a),
+      findFirstOrThrow: (...a: unknown[]) => mockDocumentReread(...a),
       update: jest.fn(),
+      updateMany: (...a: unknown[]) => mockDocumentUpdateMany(...a),
     },
   },
 }));
@@ -20,18 +40,53 @@ import {
   checkExpiringDocuments,
 } from '@/modules/household/services/vehicle-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
 describe('vehicle-service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+
+  // Route the scoped finders at the same fixtures the unscoped ones use, and
+  // make updateMany report a row changed so the service's `count === 0` guard
+  // reads as "found".
+  // `findFirst` answers from the same fixture `findUnique` used to, so a test
+  // that stubs `findUnique` still drives the scoped read the service now does.
+  mockDocumentFindUnique.mockImplementation((...a: unknown[]) =>
+    (mockPrisma.document.findUnique as jest.Mock)(...a)
+  );
+  // `updateMany` performs the stubbed `update` and reports `count` from whether
+  // the row was there, which is how the service distinguishes not-found.
+  let lastDocumentWrite: unknown = null;
+  mockDocumentUpdateMany.mockImplementation(async (...a: unknown[]) => {
+    const before = await (mockPrisma.document.findUnique as jest.Mock)(...a);
+    if (!before) return { count: 0 };
+    lastDocumentWrite = await (mockPrisma.document.update as jest.Mock)(...a);
+    return { count: 1 };
+  });
+  // The service re-reads the row after writing; hand back what the write produced.
+  mockDocumentReread.mockImplementation(async () => lastDocumentWrite);
   });
 
   describe('addVehicle', () => {
     it('should create Document with type VEHICLE', async () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'vehicle-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'VEHICLE',
         title: 'Tesla Model 3 2024',
         content: JSON.stringify({
@@ -43,7 +98,7 @@ describe('vehicle-service', () => {
         }),
       });
 
-      const result = await addVehicle('user-1', {
+      const result = await addVehicle(entity('1'), 'user-1', {
         userId: 'user-1',
         make: 'Tesla',
         model: 'Model 3',
@@ -54,7 +109,7 @@ describe('vehicle-service', () => {
       expect(mockPrisma.document.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           type: 'VEHICLE',
-          entityId: 'user-1',
+          entityId: 'entity-1',
         }),
       });
       expect(result.make).toBe('Tesla');
@@ -64,12 +119,12 @@ describe('vehicle-service', () => {
     it('should set title to make model year', async () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'vehicle-2',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         title: 'Honda Civic 2023',
         content: JSON.stringify({ make: 'Honda', model: 'Civic', year: 2023, mileage: 5000, maintenanceHistory: [] }),
       });
 
-      await addVehicle('user-1', {
+      await addVehicle(entity('1'), 'user-1', {
         userId: 'user-1',
         make: 'Honda',
         model: 'Civic',
@@ -86,11 +141,11 @@ describe('vehicle-service', () => {
     it('should query documents with type VEHICLE', async () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getVehicles('user-1');
+      await getVehicles(entity('1'), 'user-1');
 
       expect(mockPrisma.document.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'VEHICLE',
           deletedAt: null,
         },
@@ -102,7 +157,7 @@ describe('vehicle-service', () => {
     it('should append entry to maintenance history in content', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue({
         id: 'vehicle-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({
           make: 'Tesla',
           model: 'Model 3',
@@ -115,7 +170,7 @@ describe('vehicle-service', () => {
       const entryDate = new Date('2026-02-01');
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({
         id: 'vehicle-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({
           make: 'Tesla',
           model: 'Model 3',
@@ -127,7 +182,7 @@ describe('vehicle-service', () => {
         }),
       });
 
-      const result = await logMaintenance('vehicle-1', {
+      const result = await logMaintenance(entity('1'), 'user-1', 'vehicle-1', {
         date: entryDate,
         type: 'Oil Change',
         cost: 75,
@@ -142,17 +197,17 @@ describe('vehicle-service', () => {
     it('should update mileage', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue({
         id: 'vehicle-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({ make: 'Tesla', model: 'Model 3', year: 2024, mileage: 15000, maintenanceHistory: [] }),
       });
 
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({
         id: 'vehicle-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({ make: 'Tesla', model: 'Model 3', year: 2024, mileage: 20000, maintenanceHistory: [{ date: new Date().toISOString(), type: 'Service', cost: 100, mileage: 20000, provider: 'Test' }] }),
       });
 
-      const result = await logMaintenance('vehicle-1', {
+      const result = await logMaintenance(entity('1'), 'user-1', 'vehicle-1', {
         date: new Date(),
         type: 'Service',
         cost: 100,
@@ -167,7 +222,7 @@ describe('vehicle-service', () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
 
       await expect(
-        logMaintenance('bad-id', { date: new Date(), type: 'Test', cost: 0, mileage: 0, provider: 'X' })
+        logMaintenance(entity('1'), 'user-1', 'bad-id', { date: new Date(), type: 'Test', cost: 0, mileage: 0, provider: 'X' })
       ).rejects.toThrow('Vehicle bad-id not found');
     });
   });
@@ -178,7 +233,7 @@ describe('vehicle-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'v-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             make: 'Tesla',
             model: 'Model 3',
@@ -191,7 +246,7 @@ describe('vehicle-service', () => {
         },
       ]);
 
-      const result = await getUpcomingService('user-1');
+      const result = await getUpcomingService(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].nextServiceType).toBe('Tire Rotation');
@@ -204,7 +259,7 @@ describe('vehicle-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'v-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             make: 'Tesla',
             model: 'Model 3',
@@ -216,7 +271,7 @@ describe('vehicle-service', () => {
         },
       ]);
 
-      const result = await checkExpiringDocuments('user-1');
+      const result = await checkExpiringDocuments(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('insurance');
@@ -227,7 +282,7 @@ describe('vehicle-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'v-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             make: 'Honda',
             model: 'Civic',
@@ -239,7 +294,7 @@ describe('vehicle-service', () => {
         },
       ]);
 
-      const result = await checkExpiringDocuments('user-1');
+      const result = await checkExpiringDocuments(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('registration');
@@ -250,7 +305,7 @@ describe('vehicle-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'v-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({
             make: 'Tesla',
             model: 'Model 3',
@@ -263,7 +318,7 @@ describe('vehicle-service', () => {
         },
       ]);
 
-      const result = await checkExpiringDocuments('user-1');
+      const result = await checkExpiringDocuments(entity('1'), 'user-1');
 
       expect(result).toHaveLength(0);
     });

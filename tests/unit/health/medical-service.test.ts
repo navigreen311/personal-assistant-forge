@@ -31,6 +31,21 @@ import {
   checkOverdueAppointments,
 } from '@/modules/health/services/medical-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 
 describe('medical-service', () => {
@@ -45,7 +60,7 @@ describe('medical-service', () => {
 
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'doc-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'MEDICAL',
         title: 'Annual Physical',
         status: 'APPOINTMENT',
@@ -64,7 +79,7 @@ describe('medical-service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await addRecord('user-1', {
+      const result = await addRecord(entity('1'), 'user-1', {
         userId: 'user-1',
         type: 'APPOINTMENT',
         title: 'Annual Physical',
@@ -77,7 +92,7 @@ describe('medical-service', () => {
 
       expect(mockPrisma.document.create).toHaveBeenCalledWith({
         data: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'MEDICAL',
           title: 'Annual Physical',
           status: 'APPOINTMENT',
@@ -98,11 +113,11 @@ describe('medical-service', () => {
     it('queries documents by entityId and type MEDICAL', async () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getRecords('user-1');
+      await getRecords(entity('1'), 'user-1');
 
       expect(mockPrisma.document.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'MEDICAL',
           deletedAt: null,
         },
@@ -113,11 +128,11 @@ describe('medical-service', () => {
     it('filters by sub-type when provided', async () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getRecords('user-1', 'MEDICATION');
+      await getRecords(entity('1'), 'user-1', 'MEDICATION');
 
       expect(mockPrisma.document.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'MEDICAL',
           deletedAt: null,
           status: 'MEDICATION',
@@ -133,7 +148,7 @@ describe('medical-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'doc-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'MEDICAL',
           title: 'Annual Physical',
           status: 'APPOINTMENT',
@@ -153,7 +168,7 @@ describe('medical-service', () => {
         },
       ]);
 
-      const result = await getRecords('user-1');
+      const result = await getRecords(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
@@ -178,7 +193,7 @@ describe('medical-service', () => {
 
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'doc-soon', entityId: 'user-1', type: 'MEDICAL', title: 'Checkup',
+          id: 'doc-soon', entityId: 'entity-1', type: 'MEDICAL', title: 'Checkup',
           status: 'APPOINTMENT',
           citations: {
             provider: 'Dr. A', date: now.toISOString(),
@@ -189,7 +204,7 @@ describe('medical-service', () => {
           createdAt: new Date(), updatedAt: new Date(),
         },
         {
-          id: 'doc-far', entityId: 'user-1', type: 'MEDICAL', title: 'Follow-up',
+          id: 'doc-far', entityId: 'entity-1', type: 'MEDICAL', title: 'Follow-up',
           status: 'APPOINTMENT',
           citations: {
             provider: 'Dr. B', date: now.toISOString(),
@@ -201,7 +216,7 @@ describe('medical-service', () => {
         },
       ]);
 
-      const result = await getUpcomingAppointments('user-1', 7);
+      const result = await getUpcomingAppointments(entity('1'), 'user-1', 7);
 
       // Only the appointment within 7 days should be returned
       expect(result).toHaveLength(1);
@@ -217,7 +232,7 @@ describe('medical-service', () => {
 
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'doc-refill-soon', entityId: 'user-1', type: 'MEDICAL', title: 'Vitamin D',
+          id: 'doc-refill-soon', entityId: 'entity-1', type: 'MEDICAL', title: 'Vitamin D',
           status: 'MEDICATION',
           citations: {
             date: now.toISOString(),
@@ -229,7 +244,7 @@ describe('medical-service', () => {
           createdAt: new Date(), updatedAt: new Date(),
         },
         {
-          id: 'doc-refill-later', entityId: 'user-1', type: 'MEDICAL', title: 'Multivitamin',
+          id: 'doc-refill-later', entityId: 'entity-1', type: 'MEDICAL', title: 'Multivitamin',
           status: 'MEDICATION',
           citations: {
             date: now.toISOString(),
@@ -241,7 +256,7 @@ describe('medical-service', () => {
         },
       ]);
 
-      const result = await getMedicationReminders('user-1');
+      const result = await getMedicationReminders(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].title).toBe('Vitamin D');
@@ -256,7 +271,7 @@ describe('medical-service', () => {
 
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'doc-overdue', entityId: 'user-1', type: 'MEDICAL', title: 'Overdue Checkup',
+          id: 'doc-overdue', entityId: 'entity-1', type: 'MEDICAL', title: 'Overdue Checkup',
           status: 'APPOINTMENT',
           citations: {
             provider: 'Dr. A', date: new Date('2025-06-01').toISOString(),
@@ -267,7 +282,7 @@ describe('medical-service', () => {
           createdAt: new Date(), updatedAt: new Date(),
         },
         {
-          id: 'doc-upcoming', entityId: 'user-1', type: 'MEDICAL', title: 'Upcoming Checkup',
+          id: 'doc-upcoming', entityId: 'entity-1', type: 'MEDICAL', title: 'Upcoming Checkup',
           status: 'APPOINTMENT',
           citations: {
             provider: 'Dr. B', date: new Date('2025-12-01').toISOString(),
@@ -279,7 +294,7 @@ describe('medical-service', () => {
         },
       ]);
 
-      const result = await checkOverdueAppointments('user-1');
+      const result = await checkOverdueAppointments(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].title).toBe('Overdue Checkup');

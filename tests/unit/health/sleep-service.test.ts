@@ -30,6 +30,21 @@ import {
   getSleepScore,
 } from '@/modules/health/services/sleep-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
 
@@ -42,11 +57,11 @@ describe('sleep-service', () => {
     it('queries HealthMetric with type=sleep and date filter', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getSleepHistory('user-1', 14);
+      await getSleepHistory(entity('1'), 14);
 
       expect(mockPrisma.healthMetric.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           recordedAt: { gte: expect.any(Date) },
         },
@@ -57,7 +72,7 @@ describe('sleep-service', () => {
     it('returns empty array when no data exists', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getSleepHistory('user-1', 7);
+      const result = await getSleepHistory(entity('1'), 7);
       expect(result).toEqual([]);
     });
 
@@ -65,7 +80,7 @@ describe('sleep-service', () => {
       const mockRecords = [
         {
           id: 'hm-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           value: 7.5,
           unit: 'hours',
@@ -84,7 +99,7 @@ describe('sleep-service', () => {
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
 
-      const result = await getSleepHistory('user-1', 7);
+      const result = await getSleepHistory(entity('1'), 7);
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
@@ -104,7 +119,7 @@ describe('sleep-service', () => {
       const mockRecords = [
         {
           id: 'hm-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           value: 6.0,
           unit: 'hours',
@@ -116,7 +131,7 @@ describe('sleep-service', () => {
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
 
-      const result = await getSleepHistory('user-1', 7);
+      const result = await getSleepHistory(entity('1'), 7);
 
       expect(result).toHaveLength(1);
       expect(result[0].totalHours).toBe(6.0);
@@ -132,7 +147,7 @@ describe('sleep-service', () => {
       const mockRecords = [
         {
           id: 'hm-score',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           value: 8.0,
           unit: 'hours',
@@ -151,7 +166,7 @@ describe('sleep-service', () => {
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
 
-      const result = await getSleepHistory('user-1', 7);
+      const result = await getSleepHistory(entity('1'), 7);
       const score = result[0].sleepScore;
 
       // Score should be reasonable for typical good sleep (deep=20%, rem=25%, 8h)
@@ -164,7 +179,7 @@ describe('sleep-service', () => {
       const poorSleepRecords = [
         {
           id: 'hm-poor',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           value: 4.0,
           unit: 'hours',
@@ -183,14 +198,14 @@ describe('sleep-service', () => {
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(poorSleepRecords);
 
-      const poorResult = await getSleepHistory('user-1', 7);
+      const poorResult = await getSleepHistory(entity('1'), 7);
       const poorScore = poorResult[0].sleepScore;
 
       // Good sleep for comparison
       const goodSleepRecords = [
         {
           id: 'hm-good',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           value: 8.0,
           unit: 'hours',
@@ -209,7 +224,7 @@ describe('sleep-service', () => {
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(goodSleepRecords);
 
-      const goodResult = await getSleepHistory('user-1', 7);
+      const goodResult = await getSleepHistory(entity('1'), 7);
       const goodScore = goodResult[0].sleepScore;
 
       expect(poorScore).toBeLessThan(goodScore);
@@ -220,7 +235,7 @@ describe('sleep-service', () => {
     it('returns default optimization when no data', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await analyzeSleepPatterns('user-1');
+      const result = await analyzeSleepPatterns(entity('1'), 'user-1');
 
       expect(result).toEqual({
         userId: 'user-1',
@@ -235,7 +250,7 @@ describe('sleep-service', () => {
     it('calls generateJSON with sleep data summary', async () => {
       const mockRecords = [
         {
-          id: 'hm-1', entityId: 'user-1', type: 'sleep', value: 7.5, unit: 'hours',
+          id: 'hm-1', entityId: 'entity-1', type: 'sleep', value: 7.5, unit: 'hours',
           source: 'manual', metadata: { deepSleepHours: 1.5, remSleepHours: 1.5, lightSleepHours: 4.0, awakeMinutes: 10, bedTime: '22:30', wakeTime: '06:00' },
           recordedAt: new Date('2026-02-15'), createdAt: new Date(),
         },
@@ -247,7 +262,7 @@ describe('sleep-service', () => {
         recommendations: ['Go to bed earlier.'],
       });
 
-      const result = await analyzeSleepPatterns('user-1');
+      const result = await analyzeSleepPatterns(entity('1'), 'user-1');
 
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.correlations).toHaveLength(1);
@@ -257,7 +272,7 @@ describe('sleep-service', () => {
     it('falls back to static analysis when AI fails', async () => {
       const mockRecords = [
         {
-          id: 'hm-1', entityId: 'user-1', type: 'sleep', value: 7.0, unit: 'hours',
+          id: 'hm-1', entityId: 'entity-1', type: 'sleep', value: 7.0, unit: 'hours',
           source: 'manual', metadata: { deepSleepHours: 1.0, remSleepHours: 1.5, lightSleepHours: 4.0, awakeMinutes: 15, bedTime: '23:00', wakeTime: '06:00' },
           recordedAt: new Date('2026-02-15'), createdAt: new Date(),
         },
@@ -265,7 +280,7 @@ describe('sleep-service', () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await analyzeSleepPatterns('user-1');
+      const result = await analyzeSleepPatterns(entity('1'), 'user-1');
 
       expect(result.correlations.length).toBeGreaterThan(0);
       expect(result.recommendations.length).toBeGreaterThan(0);
@@ -276,16 +291,16 @@ describe('sleep-service', () => {
   describe('getSleepScore', () => {
     it('returns score for specific date', async () => {
       (mockPrisma.healthMetric.findFirst as jest.Mock).mockResolvedValue({
-        id: 'hm-1', entityId: 'user-1', type: 'sleep', value: 8.0, unit: 'hours',
+        id: 'hm-1', entityId: 'entity-1', type: 'sleep', value: 8.0, unit: 'hours',
         source: 'manual', metadata: { deepSleepHours: 2.0, remSleepHours: 2.0, lightSleepHours: 3.5, awakeMinutes: 10, bedTime: '22:00', wakeTime: '06:00' },
         recordedAt: new Date('2026-02-15'), createdAt: new Date(),
       });
 
-      const score = await getSleepScore('user-1', '2026-02-15');
+      const score = await getSleepScore(entity('1'), '2026-02-15');
 
       expect(mockPrisma.healthMetric.findFirst).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'sleep',
           recordedAt: {
             gte: expect.any(Date),
@@ -299,7 +314,7 @@ describe('sleep-service', () => {
     it('returns 0 when no record found', async () => {
       (mockPrisma.healthMetric.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const score = await getSleepScore('user-1', '2026-01-01');
+      const score = await getSleepScore(entity('1'), '2026-01-01');
       expect(score).toBe(0);
     });
   });
