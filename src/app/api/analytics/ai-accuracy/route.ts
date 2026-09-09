@@ -1,20 +1,20 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import {
   calculateAccuracyMetrics,
   getAccuracyTrend,
 } from '@/modules/analytics/services/ai-accuracy-service';
 
 const querySchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   periods: z.coerce.number().int().min(1).max(52).optional(),
   period: z.string().optional(),
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
 
       if (parsed.data.periods) {
         const trend = await getAccuracyTrend(
-          parsed.data.entityId,
+          entityId,
           parsed.data.periods
         );
         return success(trend);
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
       const period = parsed.data.period ?? 'latest';
       const metrics = await calculateAccuracyMetrics(
-        parsed.data.entityId,
+        entityId,
         period
       );
       return success(metrics);

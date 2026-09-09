@@ -6,7 +6,6 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 
 const querySchema = z.object({
-  userId: z.string().min(1).optional(),
   period: z.enum(['7d', '30d', '90d']).optional().default('30d'),
 });
 
@@ -30,7 +29,8 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
+      // Cross-entity view (tenancy-pattern.md 5b). Scope = the session's user.
+      const userId = session.userId;
       const period = parsed.data.period;
       const days = PERIOD_DAYS[period];
 

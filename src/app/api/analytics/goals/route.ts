@@ -1,20 +1,34 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
 import {
   createGoal,
   getGoals,
 } from '@/modules/analytics/services/goal-tracking-service';
 
+// P-13 / tenancy-pattern.md 5b -- CROSS-ENTITY.
+//
+// `GoalEntry` is keyed by `userId`; its `entityId` is optional, and a goal with
+// no entity is a goal about the person rather than about one business. With no
+// `entityId` this route therefore means "every goal I own" across all of them,
+// so it keeps `withAuth` and scopes by `session.userId`. Narrowing it to
+// `withEntityScope` would silently drop every entity-less goal and every goal
+// filed against a non-active entity -- a behaviour change no 403 test can see.
+//
+// `entityId` is still accepted as a FILTER, and is proved with
+// `verifyEntityForUser` before it reaches the query.
+//
+// `userId` is no longer accepted from the caller at all. It used to be
+// `parsed.data.userId ?? session.userId`, so `GET /api/analytics/goals?userId=<B>`
+// returned tenant B's goals with a 200.
+
 const getQuerySchema = z.object({
-  userId: z.string().min(1).optional(),
-  entityId: z.string().optional(),
+  entityId: z.string().min(1).optional(),
 });
 
 const postBodySchema = z.object({
-  userId: z.string().min(1).optional(),
-  entityId: z.string().optional(),
+  entityId: z.string().min(1).optional(),
   title: z.string().min(1),
   description: z.string().optional(),
   framework: z.enum(['OKR', 'SMART', 'CUSTOM']),
@@ -46,8 +60,16 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
-      const goals = await getGoals(userId, parsed.data.entityId);
+      let entityId;
+      if (parsed.data.entityId) {
+        const verified = await verifyEntityForUser(parsed.data.entityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        entityId = verified;
+      }
+
+      const goals = await getGoals(session.userId, entityId);
       return success(goals);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to fetch goals', 500);
@@ -65,8 +87,22 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
-      const goal = await createGoal({ ...parsed.data, userId });
+      let entityId;
+      if (parsed.data.entityId) {
+        const verified = await verifyEntityForUser(parsed.data.entityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        entityId = verified;
+      }
+
+      // `userId` and `entityId` last, deliberately: they overwrite whatever the
+      // caller sent.
+      const goal = await createGoal({
+        ...parsed.data,
+        entityId,
+        userId: session.userId,
+      });
       return success(goal, 201);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to create goal', 500);
