@@ -195,6 +195,61 @@ actually asserts before assuming your change is wrong.
 
 ---
 
+## PLAN CHANGE — P-13 SPLIT, P-22 CREATED (2026-09-09)
+
+Three of the four green-board blockers sat in **P-13**, which is late in the plan.
+Gating this repository's first green CI run on a late package puts the risk where
+it costs most, so the test-repair work is carved out as **P-22**, running now, in
+parallel with the Wave 2 fan-out instead of ahead of P-19.
+
+**P-13's card is narrowed** to exclude these files, which now belong to P-22:
+
+```
+tests/unit/analytics/goal-tracking.test.ts
+tests/unit/engines/adoption-activation.test.ts
+tests/unit/capture/offline-queue.test.ts
+src/modules/capture/services/offline-queue.ts
+```
+
+### The three were diagnosed before dispatch, and one diagnosis of mine was wrong
+
+**1. `goal-tracking` is a TIME BOMB, not a regression.** The goal runs 2026-01-01
+to 2026-12-31, progress is 2 of 3 tasks = 67%, and the assertion reads the real
+system clock. Today is 69.0% through that window, so required pace (69) exceeds
+actual (67) and `AT_RISK` is **correct**. The source logic is right; the test
+encodes "now" as a hidden input. It passed until ~2 September 2026 (day 243) and
+would start passing again on 1 January 2027 without anyone touching it.
+
+**2. `adoption-activation` is the same family** — real-clock `new Date()` in the
+mocks, compared at 1 ms resolution. Test-only.
+
+**3. `offline-queue` — I described this as "Linux-only" in the P-02 ledger entry
+and that was wrong about the cause.** The real one:
+
+- `beforeEach` calls `await queue.clearQueue()` and times out at 5000 ms.
+- `offline-queue.ts` is Redis/BullMQ-backed via `getRedisUrl()`.
+- The CI `lint-typecheck-test` job provides **only Postgres — there is no Redis
+  service**.
+- The maintainer's Windows machine runs Memurai on `:6379`, which is the entire
+  reason it passes there.
+
+It is not a platform difference. It is **"requires Redis, and CI has none"**.
+
+And that makes it a **source** bug rather than a test bug, because the file's own
+header promises otherwise:
+
+> *"Falls back to in-memory storage temporarily when Redis is unavailable, then
+> drains in-memory items back to Redis once the connection recovers."*
+
+The graceful-degradation path does not work. **Adding a Redis service to CI would
+have made the board green while leaving a broken fallback in production code** —
+which is why P-22 is explicitly forbidden from touching `.github/**`, and why
+"the obvious fix" was the wrong one here.
+
+**Generalisation worth carrying:** two of these three passed locally and failed
+only in CI, for two entirely different environmental reasons. When a test passes
+on this machine and fails on the runner, the machine is usually the one lying.
+
 ## WHAT NOW STANDS BETWEEN THIS REPO AND ITS FIRST GREEN CI RUN
 
 `tsc` is 0 as of P-02. The type errors were never the only thing. **P-19 cannot
@@ -203,9 +258,9 @@ M on the assumption it was only the config flip. It is not.
 
 | # | Blocker | Evidence | Owner |
 |---|---|---|---|
-| 1 | `tests/unit/analytics/goal-tracking.test.ts` fails | `ON_TRACK` expected, `AT_RISK` received, at `:130` | **P-13** |
-| 2 | `tests/unit/engines/adoption-activation.test.ts` flakes | 1 ms wall-clock compare; ~1 run in 4; seen independently by P-01, P-02 and the coordinator | **P-13** |
-| 3 | `tests/unit/capture/offline-queue.test.ts` — 10 failures, **Linux only** | passes on Windows, fails on the CI runner; invisible until P-02 unblocked the step | **P-13** |
+| 1 | `tests/unit/analytics/goal-tracking.test.ts` fails | time bomb: real clock vs a fixed 2026 window; correct as of ~2 Sept | **P-22** |
+| 2 | `tests/unit/engines/adoption-activation.test.ts` flakes | 1 ms wall-clock compare; ~1 run in 4 | **P-22** |
+| 3 | `tests/unit/capture/offline-queue.test.ts` — 10 failures | **NOT Linux-only** — requires Redis, CI has none, Memurai masks it locally. The documented in-memory fallback is broken. | **P-22** |
 | 4 | `npx eslint src` → **192 errors, 65 warnings** | P-19 is meant to remove `continue-on-error: true` from the Lint step. That is not a one-line change. | **P-19**, resize to L |
 
 Blockers 1–3 all land on **P-13**, which my plan sized M. **Resize P-13 to L**, or
