@@ -1,3 +1,22 @@
+/**
+ * Tasks collection routes -- the canonical shape for the P-00 tenancy pattern.
+ *
+ * A NOTE ON `_session`, because it is the thing to grep for and the thing to
+ * misread. The anti-pattern the audit found is
+ *
+ *     withAuth(request, async (req, _session) => { ...body.entityId... })
+ *
+ * -- authenticate, throw the session away, then let the caller name the tenant.
+ * What you see below is
+ *
+ *     withEntityScope(request, async (req, _session, entityId) => ...)
+ *
+ * which is the opposite: the session was consumed by the middleware to PROVE
+ * ownership, and `entityId` is its verified result. The handler underscores the
+ * session only because it has no further use for it -- TypeScript positional
+ * parameters mean it cannot be skipped. If a handler needs the caller's id (for
+ * an actor on an audit row, say), name it `session` and use it; see POST below.
+ */
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
