@@ -19,6 +19,20 @@ export interface TaskFilters {
   isBlocked?: boolean;
 }
 
+/**
+ * The filter bag a service is allowed to receive.
+ *
+ * `entityId` is deliberately removed. A route parses a filter object wholesale
+ * out of the query string, so leaving a tenancy field on it would let the
+ * caller choose their own scope again -- the exact bug this package closes.
+ * The verified scope travels as its own required `VerifiedEntityId` argument
+ * instead, where a plain string cannot reach it.
+ *
+ * `TaskFilters` itself keeps `entityId` because the browser uses it to build
+ * the `?entityId=` query parameter. That value is a *request*, not a scope.
+ */
+export type TaskQueryFilters = Omit<TaskFilters, 'entityId'>;
+
 export interface TaskSortOptions {
   field: 'priority' | 'dueDate' | 'createdAt' | 'updatedAt' | 'title' | 'status';
   direction: 'asc' | 'desc';
@@ -109,6 +123,15 @@ export interface DependencyEdge {
 
 export interface RecurringTaskConfig {
   id: string;
+  /**
+   * The entity this config belongs to.
+   *
+   * Recurring configs live in a process-global in-memory Map (there is no
+   * Prisma model and the schema is frozen this run), so before P-04 every
+   * tenant shared one store and any caller could adjust or deactivate any
+   * config by guessing its id. Every lookup is now scoped by this field.
+   */
+  entityId: string;
   taskTemplateId: string;
   cadence: RecurrenceCadence;
   nextDue: Date;

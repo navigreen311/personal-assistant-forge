@@ -14,9 +14,28 @@ jest.mock('@/lib/db', () => ({
     task: {
       findMany: (...args: unknown[]) => mockFindMany(...args),
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
+      // Reads are scoped now -- findFirst({ id, entityId }). Same stub.
+      findFirst: (...args: unknown[]) => mockFindUnique(...args),
     },
   },
 }));
+
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
 
 const createMockPrismaTask = (id: string, title: string, dependencies: string[] = []) => ({
   id,
@@ -48,7 +67,7 @@ describe('DependencyGraph', () => {
         createMockPrismaTask('t3', 'Task 3', ['t1']),
       ]);
 
-      const graph = await buildDependencyGraph('project-1');
+      const graph = await buildDependencyGraph('project-1', verified('entity-1'));
 
       expect(graph.nodes.length).toBe(3);
       expect(graph.edges.length).toBe(2);
@@ -62,7 +81,7 @@ describe('DependencyGraph', () => {
         createMockPrismaTask('t3', 'Level 2', ['t2']),
       ]);
 
-      const graph = await buildDependencyGraph('project-1');
+      const graph = await buildDependencyGraph('project-1', verified('entity-1'));
 
       const rootNode = graph.nodes.find((n) => n.taskId === 't1');
       const level1Node = graph.nodes.find((n) => n.taskId === 't2');
@@ -81,7 +100,7 @@ describe('DependencyGraph', () => {
         createMockPrismaTask('t4', 'Leaf 2', ['t2']),
       ]);
 
-      const graph = await buildDependencyGraph('project-1');
+      const graph = await buildDependencyGraph('project-1', verified('entity-1'));
 
       const rootNode = graph.nodes.find((n) => n.taskId === 't1');
       const middleNode = graph.nodes.find((n) => n.taskId === 't2');

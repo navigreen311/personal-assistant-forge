@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ResourceAllocation } from '../types';
 
 const DEFAULT_CAPACITY_HOURS = 40;
@@ -8,7 +9,9 @@ const PRIORITY_HOURS: Record<string, number> = {
   P2: 1,
 };
 
-export async function getResourceAllocation(entityId: string): Promise<ResourceAllocation[]> {
+export async function getResourceAllocation(
+  entityId: VerifiedEntityId
+): Promise<ResourceAllocation[]> {
   const tasks = await prisma.task.findMany({
     where: {
       entityId,
@@ -59,13 +62,15 @@ export async function getResourceAllocation(entityId: string): Promise<ResourceA
   return allocations.sort((a, b) => b.utilizationPercent - a.utilizationPercent);
 }
 
-export async function detectOvercommitment(entityId: string): Promise<ResourceAllocation[]> {
+export async function detectOvercommitment(
+  entityId: VerifiedEntityId
+): Promise<ResourceAllocation[]> {
   const allocations = await getResourceAllocation(entityId);
   return allocations.filter((a) => a.isOvercommitted);
 }
 
 export async function suggestRebalancing(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<Array<{ taskId: string; fromUserId: string; toUserId: string; reason: string }>> {
   const allocations = await getResourceAllocation(entityId);
 

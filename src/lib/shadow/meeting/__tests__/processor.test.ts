@@ -16,7 +16,9 @@ jest.mock('@/lib/db', () => ({
 }));
 
 jest.mock('@/modules/tasks/services/task-crud', () => ({
-  createTask: (...args: unknown[]) => mockCreateTask(...args),
+  // P-04 renamed the entry point this pipeline uses: it has no HTTP request and
+  // so cannot hold a VerifiedEntityId. Behaviour is unchanged; only the name is.
+  createTaskForEntityOwner: (...args: unknown[]) => mockCreateTask(...args),
 }));
 
 jest.mock('@/modules/decisions/services/decision-journal', () => ({

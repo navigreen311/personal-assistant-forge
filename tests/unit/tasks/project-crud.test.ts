@@ -11,6 +11,7 @@ const mockProjectCreate = jest.fn();
 const mockProjectFindUnique = jest.fn();
 const mockProjectFindMany = jest.fn();
 const mockProjectUpdate = jest.fn();
+const mockProjectUpdateMany = jest.fn();
 const mockProjectCount = jest.fn();
 const mockTaskFindMany = jest.fn();
 
@@ -22,8 +23,14 @@ jest.mock('@/lib/db', () => ({
     project: {
       create: (...args: unknown[]) => mockProjectCreate(...args),
       findUnique: (...args: unknown[]) => mockProjectFindUnique(...args),
+      // Reads are scoped now -- findFirst({ id, entityId }) instead of
+      // findUnique({ id }). Same stub, so every existing expectation stands.
+      findFirst: (...args: unknown[]) => mockProjectFindUnique(...args),
       findMany: (...args: unknown[]) => mockProjectFindMany(...args),
       update: (...args: unknown[]) => mockProjectUpdate(...args),
+      // deleteProject uses updateMany, because `update` takes a unique WHERE
+      // and cannot carry the entity.
+      updateMany: (...args: unknown[]) => mockProjectUpdateMany(...args),
       count: (...args: unknown[]) => mockProjectCount(...args),
     },
     task: {
@@ -31,6 +38,23 @@ jest.mock('@/lib/db', () => ({
     },
   },
 }));
+
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
 
 import {
   createProject,
@@ -80,11 +104,11 @@ describe('ProjectCRUD', () => {
 
   describe('createProject', () => {
     it('should create a project with required fields', async () => {
-      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1' });
+      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1', userId: 'user-1' });
       const prismaProject = makePrismaProject({ name: 'My Project' });
       mockProjectCreate.mockResolvedValue(prismaProject);
 
-      const result = await createProject({ name: 'My Project', entityId: 'ent-1' });
+      const result = await createProject({ name: 'My Project', entityId: verified('ent-1') }, 'user-1');
 
       expect(result.id).toBe('proj-1');
       expect(result.name).toBe('My Project');
@@ -98,20 +122,23 @@ describe('ProjectCRUD', () => {
       mockEntityFindUnique.mockResolvedValue(null);
 
       await expect(
-        createProject({ name: 'Orphan Project', entityId: 'nonexistent' })
+        createProject({ name: 'Orphan Project', entityId: verified('nonexistent') }, 'user-1')
       ).rejects.toThrow('Entity not found: nonexistent');
     });
 
     it('should pass description when provided', async () => {
-      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1' });
+      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1', userId: 'user-1' });
       const prismaProject = makePrismaProject({ description: 'A description' });
       mockProjectCreate.mockResolvedValue(prismaProject);
 
-      const result = await createProject({
-        name: 'Described Project',
-        entityId: 'ent-1',
-        description: 'A description',
-      });
+      const result = await createProject(
+        {
+          name: 'Described Project',
+          entityId: verified('ent-1'),
+          description: 'A description',
+        },
+        'user-1'
+      );
 
       expect(result.description).toBe('A description');
       expect(mockProjectCreate).toHaveBeenCalledWith(
@@ -124,7 +151,7 @@ describe('ProjectCRUD', () => {
     });
 
     it('should set default status to TODO and health to GREEN', async () => {
-      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1' });
+      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1', userId: 'user-1' });
       mockProjectCreate.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
         Promise.resolve({
           id: 'proj-new',
@@ -134,7 +161,7 @@ describe('ProjectCRUD', () => {
         })
       );
 
-      await createProject({ name: 'Defaults', entityId: 'ent-1' });
+      await createProject({ name: 'Defaults', entityId: verified('ent-1') }, 'user-1');
 
       expect(mockProjectCreate).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -147,18 +174,17 @@ describe('ProjectCRUD', () => {
     });
 
     it('should serialize milestones when provided', async () => {
-      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1' });
+      mockEntityFindUnique.mockResolvedValue({ id: 'ent-1', userId: 'user-1' });
       const milestones = [
         { id: 'm1', title: 'Alpha Release', dueDate: new Date('2026-06-01'), status: 'TODO' as const },
       ];
       const prismaProject = makePrismaProject({ milestones });
       mockProjectCreate.mockResolvedValue(prismaProject);
 
-      const result = await createProject({
-        name: 'With Milestones',
-        entityId: 'ent-1',
-        milestones,
-      });
+      const result = await createProject(
+        { name: 'With Milestones', entityId: verified('ent-1'), milestones },
+        'user-1'
+      );
 
       expect(result.milestones).toHaveLength(1);
       expect(result.milestones[0].title).toBe('Alpha Release');
@@ -172,7 +198,7 @@ describe('ProjectCRUD', () => {
       const prismaProject = makePrismaProject({ id: 'proj-42', name: 'Found' });
       mockProjectFindUnique.mockResolvedValue(prismaProject);
 
-      const result = await getProject('proj-42');
+      const result = await getProject('proj-42', verified('ent-1'));
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe('proj-42');
@@ -183,7 +209,7 @@ describe('ProjectCRUD', () => {
     it('should return null when project does not exist', async () => {
       mockProjectFindUnique.mockResolvedValue(null);
 
-      const result = await getProject('nonexistent');
+      const result = await getProject('nonexistent', verified('ent-1'));
 
       expect(result).toBeNull();
     });
@@ -192,7 +218,7 @@ describe('ProjectCRUD', () => {
       const prismaProject = makePrismaProject({ description: null });
       mockProjectFindUnique.mockResolvedValue(prismaProject);
 
-      const result = await getProject('proj-1');
+      const result = await getProject('proj-1', verified('ent-1'));
 
       expect(result).not.toBeNull();
       expect(result!.description).toBeUndefined();
@@ -208,7 +234,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(existing);
       mockProjectUpdate.mockResolvedValue(updated);
 
-      const result = await updateProject('proj-1', { name: 'New Name' });
+      const result = await updateProject('proj-1', { name: 'New Name' }, verified('ent-1'));
 
       expect(result.name).toBe('New Name');
       expect(mockProjectUpdate).toHaveBeenCalledWith(
@@ -223,7 +249,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(null);
 
       await expect(
-        updateProject('nonexistent', { name: 'Updated' })
+        updateProject('nonexistent', { name: 'Updated' }, verified('ent-1'))
       ).rejects.toThrow('Project not found: nonexistent');
     });
 
@@ -237,11 +263,11 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(existing);
       mockProjectUpdate.mockResolvedValue(updated);
 
-      const result = await updateProject('proj-1', {
-        name: 'Updated',
-        status: 'IN_PROGRESS',
-        health: 'YELLOW',
-      });
+      const result = await updateProject(
+        'proj-1',
+        { name: 'Updated', status: 'IN_PROGRESS', health: 'YELLOW' },
+        verified('ent-1')
+      );
 
       expect(result.name).toBe('Updated');
       expect(result.status).toBe('IN_PROGRESS');
@@ -253,7 +279,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(existing);
       mockProjectUpdate.mockResolvedValue(makePrismaProject({ description: 'Only this' }));
 
-      await updateProject('proj-1', { description: 'Only this' });
+      await updateProject('proj-1', { description: 'Only this' }, verified('ent-1'));
 
       const updateCall = mockProjectUpdate.mock.calls[0][0];
       expect(updateCall.data).toEqual({ description: 'Only this' });
@@ -265,21 +291,38 @@ describe('ProjectCRUD', () => {
   // ─── deleteProject ─────────────────────────────────────
 
   describe('deleteProject', () => {
-    it('should soft-delete by setting status to CANCELLED', async () => {
-      mockProjectUpdate.mockResolvedValue({});
+    // CORRECTED BY P-04. The previous version of this test asserted
+    //     expect(mockProjectUpdate).toHaveBeenCalledWith({
+    //       where: { id: 'proj-1' }, data: { status: 'CANCELLED' } });
+    // -- a WHERE clause with no entity in it. It passed, and what it recorded
+    // as the requirement was the defect: any authenticated caller who knew an
+    // id could cancel any tenant's project. The entity is now in the WHERE
+    // clause and this asserts that instead.
+    it('should soft-delete by setting status to CANCELLED, scoped to the entity', async () => {
+      mockProjectUpdateMany.mockResolvedValue({ count: 1 });
 
-      await deleteProject('proj-1');
+      await deleteProject('proj-1', verified('ent-1'));
 
-      expect(mockProjectUpdate).toHaveBeenCalledWith({
-        where: { id: 'proj-1' },
+      expect(mockProjectUpdateMany).toHaveBeenCalledWith({
+        where: { id: 'proj-1', entityId: 'ent-1' },
         data: { status: 'CANCELLED' },
       });
     });
 
-    it('should return void (no return value)', async () => {
-      mockProjectUpdate.mockResolvedValue({});
+    it('should throw when the project is not in this entity', async () => {
+      // A foreign project matches nothing, so the count is zero -- deliberately
+      // indistinguishable from a project that does not exist.
+      mockProjectUpdateMany.mockResolvedValue({ count: 0 });
 
-      const result = await deleteProject('proj-1');
+      await expect(deleteProject('proj-1', verified('ent-1'))).rejects.toThrow(
+        'Project not found: proj-1'
+      );
+    });
+
+    it('should return void (no return value)', async () => {
+      mockProjectUpdateMany.mockResolvedValue({ count: 1 });
+
+      const result = await deleteProject('proj-1', verified('ent-1'));
 
       expect(result).toBeUndefined();
     });
@@ -297,7 +340,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindMany.mockResolvedValue(mockProjects);
       mockProjectCount.mockResolvedValue(2);
 
-      const result = await listProjects('ent-1');
+      const result = await listProjects(verified('ent-1'));
 
       expect(result.data).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -308,7 +351,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindMany.mockResolvedValue([mockProjects[0]]);
       mockProjectCount.mockResolvedValue(1);
 
-      const result = await listProjects('ent-1', { status: 'TODO' });
+      const result = await listProjects(verified('ent-1'), { status: 'TODO' });
 
       expect(result.data).toHaveLength(1);
       expect(mockProjectFindMany).toHaveBeenCalledWith(
@@ -322,7 +365,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindMany.mockResolvedValue([]);
       mockProjectCount.mockResolvedValue(0);
 
-      const result = await listProjects('ent-1', { health: 'RED' });
+      const result = await listProjects(verified('ent-1'), { health: 'RED' });
 
       expect(result.data).toHaveLength(0);
       expect(result.total).toBe(0);
@@ -337,7 +380,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindMany.mockResolvedValue([mockProjects[1]]);
       mockProjectCount.mockResolvedValue(2);
 
-      await listProjects('ent-1', undefined, 2, 1);
+      await listProjects(verified('ent-1'), undefined, 2, 1);
 
       expect(mockProjectFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -351,7 +394,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindMany.mockResolvedValue(mockProjects);
       mockProjectCount.mockResolvedValue(2);
 
-      await listProjects('ent-1');
+      await listProjects(verified('ent-1'));
 
       expect(mockProjectFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -367,7 +410,7 @@ describe('ProjectCRUD', () => {
     it('should return GREEN when no tasks exist', async () => {
       mockTaskFindMany.mockResolvedValue([]);
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       expect(result).toBe('GREEN');
     });
@@ -382,7 +425,7 @@ describe('ProjectCRUD', () => {
       mockTaskFindMany.mockResolvedValue(tasks);
       mockProjectFindUnique.mockResolvedValue(makePrismaProject({ milestones: [] }));
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       // 2 out of 3 overdue = 66% > 30%, so RED
       expect(result).toBe('RED');
@@ -397,7 +440,7 @@ describe('ProjectCRUD', () => {
       mockTaskFindMany.mockResolvedValue(tasks);
       mockProjectFindUnique.mockResolvedValue(makePrismaProject({ milestones: [] }));
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       // 1 out of 3 blocked = 33% > 20%, so RED
       expect(result).toBe('RED');
@@ -416,7 +459,7 @@ describe('ProjectCRUD', () => {
       mockTaskFindMany.mockResolvedValue(tasks);
       mockProjectFindUnique.mockResolvedValue(makePrismaProject({ milestones: [] }));
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       // 1 out of 6 overdue = ~16.7% (>10% but <=30%), YELLOW
       expect(result).toBe('YELLOW');
@@ -432,7 +475,7 @@ describe('ProjectCRUD', () => {
       mockTaskFindMany.mockResolvedValue(tasks);
       mockProjectFindUnique.mockResolvedValue(makePrismaProject({ milestones: [] }));
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       // 100% completion, 0% overdue, 0% blocked => GREEN
       expect(result).toBe('GREEN');
@@ -454,7 +497,7 @@ describe('ProjectCRUD', () => {
         })
       );
 
-      const result = await calculateProjectHealth('proj-1');
+      const result = await calculateProjectHealth('proj-1', verified('ent-1'));
 
       expect(result).toBe('RED');
     });
@@ -475,7 +518,7 @@ describe('ProjectCRUD', () => {
       ];
       mockTaskFindMany.mockResolvedValue(tasks);
 
-      const result = await getProjectSummary('proj-1');
+      const result = await getProjectSummary('proj-1', verified('ent-1'));
 
       expect(result.project.id).toBe('proj-1');
       expect(result.taskCounts.TODO).toBe(1);
@@ -487,7 +530,7 @@ describe('ProjectCRUD', () => {
     it('should throw when project does not exist', async () => {
       mockProjectFindUnique.mockResolvedValue(null);
 
-      await expect(getProjectSummary('nonexistent')).rejects.toThrow(
+      await expect(getProjectSummary('nonexistent', verified('ent-1'))).rejects.toThrow(
         'Project not found: nonexistent'
       );
     });
@@ -497,7 +540,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(prismaProject);
       mockTaskFindMany.mockResolvedValue([]);
 
-      const result = await getProjectSummary('proj-1');
+      const result = await getProjectSummary('proj-1', verified('ent-1'));
 
       expect(result.completionPercent).toBe(0);
       expect(result.taskCounts.TODO).toBe(0);
@@ -515,7 +558,7 @@ describe('ProjectCRUD', () => {
       mockProjectFindUnique.mockResolvedValue(prismaProject);
       mockTaskFindMany.mockResolvedValue([]);
 
-      const result = await getProjectSummary('proj-1');
+      const result = await getProjectSummary('proj-1', verified('ent-1'));
 
       expect(result.nextMilestone).toBeDefined();
       expect(result.nextMilestone!.title).toBe('Coming Soon');

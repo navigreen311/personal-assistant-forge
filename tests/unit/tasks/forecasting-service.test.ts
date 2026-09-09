@@ -13,6 +13,23 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
 }));
 
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+/**
+ * TEST-ONLY, and the ONLY place in this file that manufactures the brand.
+ *
+ * A `VerifiedEntityId` can only be minted by `withEntityScope`, which needs a
+ * `NextRequest`. This suite calls services directly, with no request, so there
+ * is no supported way to obtain one -- see PARALLEL_BUILD_ESCALATION_P04.md,
+ * gap 2. Keeping the cast in one named helper means
+ * `grep -rn "as VerifiedEntityId" src/` stays at zero and every test-side
+ * manufacture is one grep away.
+ */
+function verified(id: string): VerifiedEntityId {
+  return id as VerifiedEntityId;
+}
+
+
 // Mock prisma
 const mockTaskCount = jest.fn();
 const mockTaskFindMany = jest.fn();
@@ -27,6 +44,8 @@ jest.mock('@/lib/db', () => ({
     },
     project: {
       findUnique: (...args: unknown[]) => mockProjectFindUnique(...args),
+      // Scoped read: findFirst({ id, entityId }). Same stub.
+      findFirst: (...args: unknown[]) => mockProjectFindUnique(...args),
     },
   },
 }));
@@ -53,7 +72,7 @@ describe('ForecastingService', () => {
       // Return 3 for each of the 8 weeks
       mockTaskCount.mockResolvedValue(3);
 
-      const velocity = await calculateVelocity('e1', undefined, 8);
+      const velocity = await calculateVelocity(verified('e1'), undefined, 8);
       expect(velocity.currentVelocity).toBe(3);
       expect(velocity.averageVelocity).toBe(3);
       expect(velocity.weeklyData.length).toBe(8);
@@ -67,7 +86,7 @@ describe('ForecastingService', () => {
         return Promise.resolve(callCount <= 4 ? 2 : 5);
       });
 
-      const velocity = await calculateVelocity('e1', undefined, 8);
+      const velocity = await calculateVelocity(verified('e1'), undefined, 8);
       expect(velocity.trend).toBe('INCREASING');
     });
 
@@ -78,7 +97,7 @@ describe('ForecastingService', () => {
         return Promise.resolve(callCount <= 4 ? 5 : 1);
       });
 
-      const velocity = await calculateVelocity('e1', undefined, 8);
+      const velocity = await calculateVelocity(verified('e1'), undefined, 8);
       expect(velocity.trend).toBe('DECREASING');
     });
   });
@@ -93,7 +112,7 @@ describe('ForecastingService', () => {
       ]);
       mockTaskCount.mockResolvedValue(2); // 2 tasks per week
 
-      const forecast = await forecastProjectCompletion('p1');
+      const forecast = await forecastProjectCompletion('p1', verified('e1'));
       expect(forecast.projectId).toBe('p1');
       expect(forecast.remainingTasks).toBe(4);
       expect(forecast.predictedCompletionDate).toBeDefined();
@@ -103,7 +122,7 @@ describe('ForecastingService', () => {
       mockTaskFindMany.mockResolvedValue([{ id: 't1', status: 'TODO' }]);
       mockTaskCount.mockResolvedValue(1);
 
-      const forecast = await forecastProjectCompletion('p1');
+      const forecast = await forecastProjectCompletion('p1', verified('e1'));
       expect(forecast.confidence).toBeGreaterThanOrEqual(0);
       expect(forecast.confidence).toBeLessThanOrEqual(1);
     });
@@ -120,7 +139,7 @@ describe('ForecastingService', () => {
         return Promise.resolve(callCount <= 4 ? 5 : 1);
       });
 
-      const forecast = await forecastProjectCompletion('p1');
+      const forecast = await forecastProjectCompletion('p1', verified('e1'));
       expect(forecast.risks.length).toBeGreaterThan(0);
     });
   });
@@ -139,7 +158,7 @@ describe('ForecastingService', () => {
         milestones: [{ dueDate: addWeeks(now, 8) }],
       });
 
-      const burndown = await getBurndownData('p1');
+      const burndown = await getBurndownData('p1', verified('e1'));
       expect(burndown.totalTasks).toBe(2);
       expect(burndown.completedTasks).toBe(1);
       expect(burndown.dataPoints.length).toBeGreaterThan(0);
@@ -156,7 +175,7 @@ describe('ForecastingService', () => {
         milestones: [],
       });
 
-      const burndown = await getBurndownData('p1');
+      const burndown = await getBurndownData('p1', verified('e1'));
       for (const dp of burndown.dataPoints) {
         expect(dp.actualRemaining).toBeDefined();
         expect(dp.idealRemaining).toBeDefined();
@@ -166,7 +185,7 @@ describe('ForecastingService', () => {
     it('should handle empty project', async () => {
       mockTaskFindMany.mockResolvedValue([]);
 
-      const burndown = await getBurndownData('p1');
+      const burndown = await getBurndownData('p1', verified('e1'));
       expect(burndown.totalTasks).toBe(0);
       expect(burndown.dataPoints.length).toBe(0);
     });
