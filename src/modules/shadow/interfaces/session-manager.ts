@@ -25,13 +25,37 @@ const IDLE_END_MINUTES = 120;
 
 // --- Helpers ---
 
+/**
+ * Read a `ShadowVoiceSession.channelHistory` Json column as typed entries.
+ * The column is untyped `Json`, so entries are validated rather than asserted;
+ * anything that is not a well-formed entry is dropped.
+ */
+function readChannelHistory(value: unknown): ChannelHistoryEntry[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((entry): ChannelHistoryEntry[] => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    if (typeof record.channel !== 'string' || typeof record.enteredAt !== 'string') {
+      return [];
+    }
+    return [
+      {
+        channel: record.channel as SessionChannel,
+        enteredAt: record.enteredAt,
+        ...(typeof record.exitedAt === 'string' ? { exitedAt: record.exitedAt } : {}),
+      },
+    ];
+  });
+}
+
 function mapDbSessionToVoiceSession(dbSession: Record<string, unknown>): VoiceSession {
   return {
     id: dbSession.id as string,
     userId: dbSession.userId as string,
     status: dbSession.status as VoiceSession['status'],
     currentChannel: dbSession.currentChannel as SessionChannel,
-    channelHistory: (dbSession.channelHistory ?? []) as ChannelHistoryEntry[],
+    channelHistory: readChannelHistory(dbSession.channelHistory),
     activeEntityId: (dbSession.activeEntityId as string | null) ?? null,
     currentPage: (dbSession.currentPage as string | null) ?? null,
     currentWorkflowId: (dbSession.currentWorkflowId as string | null) ?? null,
@@ -134,7 +158,7 @@ export class SessionManager {
     }
 
     const now = new Date();
-    const history = (session.channelHistory ?? []) as ChannelHistoryEntry[];
+    const history = readChannelHistory(session.channelHistory);
 
     // Close the current channel entry
     if (history.length > 0) {
@@ -183,7 +207,7 @@ export class SessionManager {
     }
 
     const now = new Date();
-    const history = (session.channelHistory ?? []) as ChannelHistoryEntry[];
+    const history = readChannelHistory(session.channelHistory);
 
     // Close the current channel entry
     if (history.length > 0) {
@@ -239,7 +263,7 @@ export class SessionManager {
     });
 
     const now = new Date();
-    const history = (session.channelHistory ?? []) as ChannelHistoryEntry[];
+    const history = readChannelHistory(session.channelHistory);
     const resumeChannel = (channel ?? session.currentChannel) as SessionChannel;
 
     // Add new channel entry for the resumed session
@@ -278,7 +302,7 @@ export class SessionManager {
     }
 
     const now = new Date();
-    const history = (session.channelHistory ?? []) as ChannelHistoryEntry[];
+    const history = readChannelHistory(session.channelHistory);
 
     // Close the current channel entry
     if (history.length > 0) {

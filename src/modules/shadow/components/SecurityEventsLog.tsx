@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import type { ReactElement } from 'react';
 
 type EventStatus = 'Success' | 'Verified' | 'PIN required' | 'Refused';
 
@@ -22,7 +23,7 @@ const STATUS_STYLES: Record<EventStatus, string> = {
   Refused: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
 };
 
-const STATUS_ICONS: Record<EventStatus, JSX.Element> = {
+const STATUS_ICONS: Record<EventStatus, ReactElement> = {
   Success: (
     <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
       <path d="M20 6L9 17l-5-5" />

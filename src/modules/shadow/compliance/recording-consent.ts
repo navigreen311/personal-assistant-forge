@@ -5,8 +5,44 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import { consentReceiptService } from '@/modules/shadow/safety/consent-receipt';
 
 // --- Types ---
+
+/**
+ * `actionType` written to `ShadowConsentReceipt` for a recording-consent
+ * decision. The granted/denied outcome is carried by the action type itself —
+ * `ShadowConsentReceipt` has no boolean consent column.
+ */
+const RECORDING_CONSENT_GRANTED = 'recording_consent_granted';
+const RECORDING_CONSENT_DENIED = 'recording_consent_denied';
+
+/** `triggerReferenceType` used to point a receipt at a Contact. */
+const CONTACT_REFERENCE_TYPE = 'contact';
+
+/**
+ * `VoiceforgeConsentConfig.consentType` is stored snake_case (`two_party`),
+ * while this module's API speaks hyphenated (`two-party`). Normalise on read.
+ */
+function normalizeConsentType(raw: string): 'one-party' | 'two-party' | 'all-party' {
+  switch (raw.toLowerCase().replace(/_/g, '-')) {
+    case 'all-party':
+      return 'all-party';
+    case 'two-party':
+      return 'two-party';
+    default:
+      return 'one-party';
+  }
+}
+
+/**
+ * `VoiceforgeConsentConfig` has no `requiresExplicitConsent` column — the
+ * requirement is a function of the consent type, which is how the
+ * jurisdiction fallback below already derives it.
+ */
+function requiresExplicitConsent(consentType: 'one-party' | 'two-party' | 'all-party'): boolean {
+  return consentType !== 'one-party';
+}
 
 export interface ConsentCheckParams {
   entityId: string;
@@ -82,10 +118,11 @@ export class RecordingConsentService {
       const existingConsent = await prisma.shadowConsentReceipt.findFirst({
         where: {
           entityId,
-          contactId,
-          consentGiven: true,
+          actionType: RECORDING_CONSENT_GRANTED,
+          triggerReferenceType: CONTACT_REFERENCE_TYPE,
+          triggerReferenceId: contactId,
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { executedAt: 'desc' },
       });
 
       if (existingConsent) {
@@ -98,16 +135,18 @@ export class RecordingConsentService {
     }
 
     // Check entity-level consent configuration
-    const entityConfig = await prisma.shadowConsentConfig.findFirst({
+    const entityConfig = await prisma.voiceforgeConsentConfig.findFirst({
       where: { entityId, jurisdiction: jurisdiction ?? 'DEFAULT' },
     });
 
     if (entityConfig) {
+      const consentType = normalizeConsentType(entityConfig.consentType);
+      const explicit = requiresExplicitConsent(consentType);
       return {
-        allowed: !entityConfig.requiresExplicitConsent,
-        consentType: entityConfig.consentType as string,
-        consentScript: entityConfig.consentScript as string | undefined,
-        requiresExplicitConsent: entityConfig.requiresExplicitConsent as boolean,
+        allowed: !explicit,
+        consentType,
+        consentScript: entityConfig.consentScript ?? CONSENT_SCRIPTS[consentType],
+        requiresExplicitConsent: explicit,
       };
     }
 
@@ -150,15 +189,16 @@ export class RecordingConsentService {
   async recordConsent(params: RecordConsentParams): Promise<void> {
     const { entityId, contactId, consentGiven, callId } = params;
 
-    await prisma.shadowConsentReceipt.create({
-      data: {
-        entityId,
-        contactId,
-        consentGiven,
-        sessionId: callId,
-        consentType: 'recording',
-        recordedAt: new Date(),
-      },
+    await consentReceiptService.createReceipt({
+      entityId,
+      sessionId: callId,
+      actionType: consentGiven ? RECORDING_CONSENT_GRANTED : RECORDING_CONSENT_DENIED,
+      actionDescription: consentGiven
+        ? 'Contact consented to this call being recorded'
+        : 'Contact declined to have this call recorded',
+      triggerSource: 'recording_consent_check',
+      triggerReferenceType: CONTACT_REFERENCE_TYPE,
+      triggerReferenceId: contactId,
     });
   }
 
@@ -175,7 +215,7 @@ export class RecordingConsentService {
       where.jurisdiction = jurisdiction;
     }
 
-    const configs = await prisma.shadowConsentConfig.findMany({ where });
+    const configs = await prisma.voiceforgeConsentConfig.findMany({ where });
 
     if (configs.length === 0 && jurisdiction) {
       // Return the default config for the jurisdiction
@@ -213,12 +253,15 @@ export class RecordingConsentService {
       ];
     }
 
-    return configs.map((c) => ({
-      jurisdiction: c.jurisdiction as string,
-      consentType: (c.consentType as string) as 'one-party' | 'two-party' | 'all-party',
-      consentScript: c.consentScript as string,
-      requiresExplicitConsent: c.requiresExplicitConsent as boolean,
-    }));
+    return configs.map((c) => {
+      const consentType = normalizeConsentType(c.consentType);
+      return {
+        jurisdiction: c.jurisdiction,
+        consentType,
+        consentScript: c.consentScript ?? CONSENT_SCRIPTS[consentType],
+        requiresExplicitConsent: requiresExplicitConsent(consentType),
+      };
+    });
   }
 }
 

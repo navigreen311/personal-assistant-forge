@@ -17,13 +17,39 @@ const DEFAULT_RETENTION_DAYS = {
   consentReceipts: 2555, // 7 years
 } as const;
 
+/**
+ * Public retention DTO. The field names here are the API vocabulary
+ * (see `/api/shadow/retention`); the `ShadowRetentionConfig` table spells the
+ * same four concepts `recordingRetentionDays` / `transcriptRetentionDays` /
+ * `messageRetentionDays` / `consentRetentionDays`. `toRetentionConfig` is the
+ * single place that translates between the two.
+ */
 export interface RetentionConfig {
   entityId: string;
   recordingsDays: number;
   transcriptsDays: number;
   messagesDays: number;
   consentReceiptsDays: number;
-  updatedAt: Date;
+}
+
+/** The columns of `ShadowRetentionConfig` this service reads. */
+type RetentionConfigRow = {
+  entityId: string;
+  recordingRetentionDays: number;
+  transcriptRetentionDays: number;
+  messageRetentionDays: number;
+  consentRetentionDays: number;
+};
+
+/** Translate a `ShadowRetentionConfig` row into the public DTO. */
+function toRetentionConfig(row: RetentionConfigRow): RetentionConfig {
+  return {
+    entityId: row.entityId,
+    recordingsDays: row.recordingRetentionDays ?? DEFAULT_RETENTION_DAYS.recordings,
+    transcriptsDays: row.transcriptRetentionDays ?? DEFAULT_RETENTION_DAYS.transcripts,
+    messagesDays: row.messageRetentionDays ?? DEFAULT_RETENTION_DAYS.messages,
+    consentReceiptsDays: row.consentRetentionDays ?? DEFAULT_RETENTION_DAYS.consentReceipts,
+  };
 }
 
 export interface RetentionCleanupResult {
@@ -65,15 +91,7 @@ export class RetentionService {
       const configMap = new Map<string, RetentionConfig>();
 
       for (const config of configs) {
-        configMap.set(config.entityId, {
-          entityId: config.entityId,
-          recordingsDays: (config.recordingsDays as number) ?? DEFAULT_RETENTION_DAYS.recordings,
-          transcriptsDays: (config.transcriptsDays as number) ?? DEFAULT_RETENTION_DAYS.transcripts,
-          messagesDays: (config.messagesDays as number) ?? DEFAULT_RETENTION_DAYS.messages,
-          consentReceiptsDays:
-            (config.consentReceiptsDays as number) ?? DEFAULT_RETENTION_DAYS.consentReceipts,
-          updatedAt: config.updatedAt,
-        });
+        configMap.set(config.entityId, toRetentionConfig(config));
       }
 
       // --- Delete expired messages ---
@@ -190,15 +208,7 @@ export class RetentionService {
     });
 
     if (config) {
-      return {
-        entityId: config.entityId,
-        recordingsDays: (config.recordingsDays as number) ?? DEFAULT_RETENTION_DAYS.recordings,
-        transcriptsDays: (config.transcriptsDays as number) ?? DEFAULT_RETENTION_DAYS.transcripts,
-        messagesDays: (config.messagesDays as number) ?? DEFAULT_RETENTION_DAYS.messages,
-        consentReceiptsDays:
-          (config.consentReceiptsDays as number) ?? DEFAULT_RETENTION_DAYS.consentReceipts,
-        updatedAt: config.updatedAt,
-      };
+      return toRetentionConfig(config);
     }
 
     // Return defaults
@@ -208,7 +218,6 @@ export class RetentionService {
       transcriptsDays: DEFAULT_RETENTION_DAYS.transcripts,
       messagesDays: DEFAULT_RETENTION_DAYS.messages,
       consentReceiptsDays: DEFAULT_RETENTION_DAYS.consentReceipts,
-      updatedAt: new Date(),
     };
   }
 
@@ -221,19 +230,19 @@ export class RetentionService {
     config: Record<string, unknown>,
   ): Promise<RetentionConfig> {
     const data = {
-      recordingsDays:
+      recordingRetentionDays:
         typeof config.recordingsDays === 'number'
           ? config.recordingsDays
           : DEFAULT_RETENTION_DAYS.recordings,
-      transcriptsDays:
+      transcriptRetentionDays:
         typeof config.transcriptsDays === 'number'
           ? config.transcriptsDays
           : DEFAULT_RETENTION_DAYS.transcripts,
-      messagesDays:
+      messageRetentionDays:
         typeof config.messagesDays === 'number'
           ? config.messagesDays
           : DEFAULT_RETENTION_DAYS.messages,
-      consentReceiptsDays:
+      consentRetentionDays:
         typeof config.consentReceiptsDays === 'number'
           ? config.consentReceiptsDays
           : DEFAULT_RETENTION_DAYS.consentReceipts,
@@ -248,14 +257,7 @@ export class RetentionService {
       update: data,
     });
 
-    return {
-      entityId: result.entityId,
-      recordingsDays: result.recordingsDays as number,
-      transcriptsDays: result.transcriptsDays as number,
-      messagesDays: result.messagesDays as number,
-      consentReceiptsDays: result.consentReceiptsDays as number,
-      updatedAt: result.updatedAt,
-    };
+    return toRetentionConfig(result);
   }
 }
 

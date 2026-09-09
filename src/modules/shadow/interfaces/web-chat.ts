@@ -13,8 +13,48 @@ import type {
   AgentResponse,
   SessionChannel,
 } from './types';
+import type { ShadowResponse } from '../types';
 
 // --- Helpers ---
+
+/**
+ * `ShadowResponse.contentType` is the agent core's card vocabulary; the web
+ * chat payload speaks the narrower client vocabulary. Card kinds the client
+ * has no dedicated renderer for arrive as `mixed` (text plus attachments).
+ */
+const AGENT_CONTENT_TYPE: Record<
+  ShadowResponse['contentType'],
+  AgentResponse['contentType']
+> = {
+  TEXT: 'text',
+  ACTION_CARD: 'action_card',
+  CONFIRMATION_CARD: 'action_card',
+  NAVIGATION_CARD: 'mixed',
+  LIST_CARD: 'mixed',
+  DECISION_CARD: 'mixed',
+  VOICE_CARD: 'mixed',
+};
+
+/**
+ * Translate the agent core's `ShadowResponse` into the web chat `AgentResponse`.
+ * The two types genuinely differ (cased content types, structured vs. string
+ * citations, different `ActionCard` shapes), so this converts rather than casts.
+ */
+function toAgentResponse(result: ShadowResponse): AgentResponse {
+  return {
+    text: result.text,
+    contentType: AGENT_CONTENT_TYPE[result.contentType] ?? 'text',
+    citations: result.citations?.map((citation) => citation.label),
+    actionCards: result.actionCards?.map((card) => ({
+      id: card.id,
+      type: 'action',
+      title: card.title,
+      description: card.description,
+      requiresConfirmation: card.options.length > 0,
+      metadata: { options: card.options },
+    })),
+  };
+}
 
 function buildResponse(
   sessionId: string,
@@ -305,7 +345,7 @@ export class WebChatHandler {
     sessionId: string,
     userId: string,
     message: string,
-    channel: string,
+    channel: SessionChannel,
     entityId?: string,
   ): Promise<AgentResponse> {
     try {
@@ -321,9 +361,11 @@ export class WebChatHandler {
           userId,
           message,
           channel,
-          entityId,
+          // The agent core names this `activeEntityId`; passing `entityId`
+          // silently dropped the entity context.
+          activeEntityId: entityId,
         });
-        return result as AgentResponse;
+        return toAgentResponse(result);
       }
     } catch {
       // Agent module not available yet — fall through to default

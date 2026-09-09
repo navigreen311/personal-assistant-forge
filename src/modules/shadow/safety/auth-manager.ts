@@ -455,7 +455,8 @@ export class ShadowAuthManager {
     }
 
     // Voice channel always requires PIN for CONFIRM_PHRASE+ actions
-    if (channel === 'voice' && classification.confirmationLevel !== 'NONE' && classification.confirmationLevel !== 'TAP') {
+    // `NONE` already returned early above, so `!== 'TAP'` is the whole test.
+    if (channel === 'voice' && classification.confirmationLevel !== 'TAP') {
       requiresPin = true;
       reasons.push('Voice channel requires PIN for confirm-phrase and higher actions');
     }
