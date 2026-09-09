@@ -20,10 +20,17 @@ const mockPrisma = {
   calendarEvent: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    // P-05: scoped reads are findFirst({ where: { id, entityId } }) and scoped
+    // writes are updateMany/deleteMany, because Prisma's update/delete take a
+    // unique WHERE and cannot carry the tenant.
+    findFirst: jest.fn(),
+    findFirstOrThrow: jest.fn(),
     findUniqueOrThrow: jest.fn(),
     findMany: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
     delete: jest.fn(),
+    deleteMany: jest.fn(),
   },
   contact: {
     findMany: jest.fn(),
@@ -53,6 +60,15 @@ jest.mock('uuid', () => ({
 
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { PrepPacketService } from '@/modules/calendar/prep.service';
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+/**
+ * P-05: the calendar services take a `VerifiedEntityId` wherever they take a
+ * tenant -- a branded string only `withEntityScope` can produce. These tests
+ * call the services directly, with no request, so they mint the brand through
+ * the one sanctioned helper.
+ */
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 // --- Test helpers ---
 
@@ -98,6 +114,13 @@ describe('Calendar Scheduling Integration Tests', () => {
     jest.clearAllMocks();
     schedulingService = new SchedulingService();
     prepService = new PrepPacketService();
+    // P-05 trap 2: an entity stub needs an owner. createEvent re-asserts
+    // entity.userId against the authenticated caller as defence in depth.
+    mockPrisma.entity.findUnique.mockResolvedValue({ id: 'entity-1', userId: 'user-1' });
+    // Scoped reads/writes: findFirst + updateMany replace findUnique + update.
+    mockPrisma.calendarEvent.findFirstOrThrow.mockImplementation(
+      mockPrisma.calendarEvent.findUniqueOrThrow
+    );
   });
 
   describe('Schedule from availability', () => {
@@ -115,7 +138,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       const slots = await schedulingService.findAvailableSlots(
         {
           title: 'Team Sync',
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           duration: 60,
           priority: 'MEDIUM',
           type: 'MEETING',
@@ -152,7 +175,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       const event = await schedulingService.createEvent(
         {
           title: 'Team Sync',
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           duration: 60,
           priority: 'MEDIUM',
           type: 'MEETING',
@@ -187,7 +210,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       });
 
       // Mock event lookup
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(eventRecord);
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(eventRecord);
 
       // Mock attendee profiles
       mockPrisma.contact.findMany.mockResolvedValue([
@@ -226,11 +249,11 @@ describe('Calendar Scheduling Integration Tests', () => {
       ]);
 
       // Mock save
-      mockPrisma.calendarEvent.update.mockResolvedValue(eventRecord);
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
 
       const prepPacket = await prepService.generatePrepPacket({
         eventId: 'event-prep',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
       });
 
@@ -254,8 +277,14 @@ describe('Calendar Scheduling Integration Tests', () => {
       expect(prepPacket.openItems[0]).toContain('Review contract terms');
 
       // Prep packet should be saved to event
-      expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
-        where: { id: 'event-prep' },
+      // CORRECTED BY P-05. This asserted `update({ where: { id } })` -- the
+      // prep packet, which aggregates the attendees' contact profiles, recent
+      // messages and open tasks, was written back to an event addressed with
+      // no tenant in the WHERE clause. `update` takes a unique WHERE and
+      // cannot carry one, so the scoped write is
+      // `updateMany({ where: { id, entityId } })`.
+      expect(mockPrisma.calendarEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'event-prep', entityId: ENTITY_1 },
         data: { prepPacket: expect.any(Object) },
       });
     });
@@ -278,7 +307,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([existingEvent]);
 
       const conflicts = await schedulingService.detectConflicts(
-        'entity-1',
+        ENTITY_1,
         {
           start: new Date('2026-02-18T10:30:00Z'),
           end: new Date('2026-02-18T11:30:00Z'),
@@ -310,7 +339,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       mockPrisma.calendarEvent.findMany.mockResolvedValue([existingEvent]);
 
       const conflicts = await schedulingService.detectConflicts(
-        'entity-1',
+        ENTITY_1,
         {
           start: new Date('2026-02-18T14:00:00Z'),
           end: new Date('2026-02-18T15:00:00Z'),
@@ -338,7 +367,7 @@ describe('Calendar Scheduling Integration Tests', () => {
       const event = await schedulingService.createEvent(
         {
           title: 'Planning Session',
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           duration: 60,
           priority: 'HIGH',
           type: 'MEETING',
@@ -360,20 +389,40 @@ describe('Calendar Scheduling Integration Tests', () => {
         endTime: new Date('2026-02-18T15:00:00Z'),
       });
 
-      mockPrisma.calendarEvent.update.mockResolvedValue(updatedRecord);
+      // -------------------------------------------------------------------
+      // CORRECTED BY P-05.
+      //
+      // This block used to call
+      //
+      //     schedulingService.updateEvent('event-update', {...}, 'user-1')
+      //
+      // -- where the third argument was named `userId` and ignored
+      // (`_userId`) -- and then assert
+      //
+      //     expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
+      //       where: { id: 'event-update' }, ...
+      //
+      // i.e. it asserted a write addressed by id with NO tenant in the WHERE
+      // clause. That is the defect recorded as the requirement: any
+      // authenticated caller who knew an event id could rewrite any tenant's
+      // meeting. The third argument is now the verified entity, and the write
+      // is `updateMany({ where: { id, entityId } })`.
+      // -------------------------------------------------------------------
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue(updatedRecord);
 
       const updated = await schedulingService.updateEvent(
         'event-update',
         { title: 'Planning Session - Updated' },
-        'user-1'
+        ENTITY_1
       );
 
       expect(updated.id).toBe('event-update');
       expect(updated.title).toBe('Planning Session - Updated');
 
-      // Verify update was called
-      expect(mockPrisma.calendarEvent.update).toHaveBeenCalledWith({
-        where: { id: 'event-update' },
+      // Verify the write carried the tenant.
+      expect(mockPrisma.calendarEvent.updateMany).toHaveBeenCalledWith({
+        where: { id: 'event-update', entityId: ENTITY_1 },
         data: expect.objectContaining({ title: 'Planning Session - Updated' }),
       });
     });
@@ -394,9 +443,10 @@ describe('Calendar Scheduling Integration Tests', () => {
         endTime: new Date('2026-02-18T15:00:00Z'),
       });
 
-      // Mock for findUniqueOrThrow (rescheduleEvent)
-      mockPrisma.calendarEvent.findUniqueOrThrow.mockResolvedValue(existingEvent);
-      mockPrisma.calendarEvent.update.mockResolvedValue({
+      // P-05: rescheduleEvent now writes with updateMany({ id, entityId })
+      // and re-reads with findFirst({ id, entityId }).
+      mockPrisma.calendarEvent.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.calendarEvent.findFirst.mockResolvedValue({
         ...existingEvent,
         startTime: new Date('2026-02-18T14:00:00Z'),
         endTime: new Date('2026-02-18T15:00:00Z'),
@@ -414,6 +464,7 @@ describe('Calendar Scheduling Integration Tests', () => {
           newStartTime: new Date('2026-02-18T14:00:00Z'),
           newEndTime: new Date('2026-02-18T15:00:00Z'),
         },
+        ENTITY_1,
         'user-1'
       );
 

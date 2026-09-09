@@ -14,11 +14,46 @@ import {
 } from 'date-fns';
 import { v4 as uuid } from 'uuid';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CalendarEvent } from '@/shared/types';
 import { EnergyService } from './energy.service';
 import { BufferService } from './buffer.service';
+/**
+ * Calendar scheduling -- tenancy per docs/parallel-build/tenancy-pattern.md.
+ *
+ * ============================================================================
+ * WHAT CHANGED AND WHY (P-05)
+ * ============================================================================
+ *
+ * Before P-05 this file took the tenant from whatever the caller supplied and
+ * never checked it:
+ *
+ *   - `getEvents(userId, range, entityId)` built its WHERE from
+ *     `entityId ? [entityId] : <the user's own entities>`. The ternary is the
+ *     bug: naming ANY entity id skipped the ownership list entirely, so
+ *     `GET /api/calendar?entityId=<someone else's>` returned their events.
+ *   - `createEvent` wrote `entityId: request.entityId` straight off the body.
+ *   - `updateEvent`, `deleteEvent` and `rescheduleEvent` addressed rows by
+ *     `where: { id }` alone -- no tenant in the WHERE at all -- so any
+ *     authenticated caller who knew an event id could move or delete another
+ *     tenant's meeting.
+ *
+ * Two changes close it:
+ *
+ *  1. Every entity-scoped entry point takes a `VerifiedEntityId`, a branded
+ *     string only `withEntityScope` can produce. A raw value off a request body
+ *     FAILS TO COMPILE, so the check cannot be forgotten in a route added later.
+ *
+ *  2. The verified id goes INTO the WHERE clause. `update`/`delete` take a
+ *     unique WHERE and cannot carry a tenant, so writes go through
+ *     `updateMany`/`deleteMany` with `{ id, entityId }` and `count === 0` is
+ *     treated as not-found -- deliberately indistinguishable from a row that
+ *     does not exist, so existence does not leak.
+ */
+
 import type {
   ScheduleRequest,
+  ScheduleDraft,
   TimeRange,
   ScheduleSuggestion,
   ConflictInfo,
@@ -116,11 +151,32 @@ export class SchedulingService {
     return suggestions.slice(0, 10);
   }
 
+  /**
+   * Create an event in an entity the caller has been proven to own.
+   *
+   * `request.entityId` is a `VerifiedEntityId`, so the only route into this
+   * function is through `withEntityScope`. `userId` is re-asserted against the
+   * entity's owner as defence in depth: if those two ever disagree the brand
+   * was manufactured rather than earned, and a loud failure beats a silent
+   * write into someone else's calendar.
+   */
   async createEvent(
     request: ScheduleRequest,
     selectedSlot: TimeRange,
-    _userId: string
+    userId: string
   ): Promise<CalendarEvent> {
+    const entity = await prisma.entity.findUnique({
+      where: { id: request.entityId },
+      select: { id: true, userId: true },
+    });
+    if (!entity) {
+      throw new Error(`Entity not found: ${request.entityId}`);
+    }
+    if (entity.userId !== userId) {
+      // Unreachable through withEntityScope.
+      throw new Error('Entity does not belong to the authenticated user');
+    }
+
     const buffers = this.bufferService.calculateBuffers(request);
 
     const event = await prisma.calendarEvent.create({
@@ -141,10 +197,18 @@ export class SchedulingService {
     return this.toCalendarEvent(event);
   }
 
+  /**
+   * Update an event, scoped.
+   *
+   * `prisma.update` takes a unique WHERE and therefore cannot carry the tenant,
+   * so this is `updateMany({ where: { id, entityId } })`. A foreign event
+   * matches nothing, `count` is 0, and the caller gets the same "not found" a
+   * non-existent id would produce.
+   */
   async updateEvent(
     eventId: string,
-    updates: Partial<ScheduleRequest>,
-    _userId: string
+    updates: Partial<ScheduleDraft>,
+    entityId: VerifiedEntityId
   ): Promise<CalendarEvent> {
     const data: Record<string, unknown> = {};
     if (updates.title !== undefined) data.title = updates.title;
@@ -154,36 +218,70 @@ export class SchedulingService {
     if (updates.bufferBefore !== undefined) data.bufferBefore = updates.bufferBefore;
     if (updates.bufferAfter !== undefined) data.bufferAfter = updates.bufferAfter;
 
-    const event = await prisma.calendarEvent.update({
-      where: { id: eventId },
+    const { count } = await prisma.calendarEvent.updateMany({
+      where: { id: eventId, entityId },
       data,
     });
+
+    if (count === 0) {
+      throw new Error(`Event not found: ${eventId}`);
+    }
+
+    const event = await prisma.calendarEvent.findFirst({
+      where: { id: eventId, entityId },
+    });
+    if (!event) {
+      throw new Error(`Event not found: ${eventId}`);
+    }
 
     return this.toCalendarEvent(event);
   }
 
-  async deleteEvent(eventId: string, _userId: string): Promise<void> {
-    await prisma.calendarEvent.delete({ where: { id: eventId } });
-  }
-
-  async rescheduleEvent(
-    update: DragDropUpdate,
-    userId: string
-  ): Promise<{ event: CalendarEvent; conflicts: ConflictInfo[] }> {
-    const existing = await prisma.calendarEvent.findUniqueOrThrow({
-      where: { id: update.eventId },
+  /** Delete an event, scoped. See updateEvent for why this is `deleteMany`. */
+  async deleteEvent(eventId: string, entityId: VerifiedEntityId): Promise<void> {
+    const { count } = await prisma.calendarEvent.deleteMany({
+      where: { id: eventId, entityId },
     });
 
-    const event = await prisma.calendarEvent.update({
-      where: { id: update.eventId },
+    if (count === 0) {
+      throw new Error(`Event not found: ${eventId}`);
+    }
+  }
+
+  /**
+   * Move an event, scoped.
+   *
+   * The old code read the row with `findUniqueOrThrow({ where: { id } })` and
+   * then wrote it with `update({ where: { id } })` -- no tenant in either --
+   * so a drag-and-drop request naming another tenant's event id moved their
+   * meeting. Both halves now carry `entityId`.
+   */
+  async rescheduleEvent(
+    update: DragDropUpdate,
+    entityId: VerifiedEntityId,
+    userId: string
+  ): Promise<{ event: CalendarEvent; conflicts: ConflictInfo[] }> {
+    const { count } = await prisma.calendarEvent.updateMany({
+      where: { id: update.eventId, entityId },
       data: {
         startTime: update.newStartTime,
         endTime: update.newEndTime,
       },
     });
 
+    if (count === 0) {
+      throw new Error(`Event not found: ${update.eventId}`);
+    }
+
+    const event = await prisma.calendarEvent.findFirst({
+      where: { id: update.eventId, entityId },
+    });
+    if (!event) {
+      throw new Error(`Event not found: ${update.eventId}`);
+    }
+
     const conflicts = await this.detectConflicts(
-      existing.entityId,
+      entityId,
       { start: update.newStartTime, end: update.newEndTime },
       userId,
       update.eventId
@@ -193,7 +291,7 @@ export class SchedulingService {
   }
 
   async detectConflicts(
-    entityId: string,
+    entityId: VerifiedEntityId,
     timeRange: TimeRange,
     userId: string,
     excludeEventId?: string
@@ -356,10 +454,20 @@ export class SchedulingService {
     }));
   }
 
+  /**
+   * Read this user's events, optionally narrowed to one of their entities.
+   *
+   * THE LEAK THIS CLOSES: `entityId` used to be a plain `string` and the
+   * ternary below replaced the ownership list with it wholesale, so naming any
+   * id at all read that tenant's calendar. It is now a `VerifiedEntityId`, so
+   * the only value that can reach the narrowing branch is one `withEntityScope`
+   * has already proven the caller owns. The unnarrowed branch was, and remains,
+   * the caller's own entities.
+   */
   async getEvents(
     userId: string,
     dateRange: TimeRange,
-    entityId?: string
+    entityId?: VerifiedEntityId
   ): Promise<CalendarEvent[]> {
     const userEntities = await prisma.entity.findMany({
       where: { userId },
@@ -387,7 +495,7 @@ export class SchedulingService {
     userId: string,
     viewMode: CalendarViewMode,
     date: Date,
-    entityId?: string
+    entityId?: VerifiedEntityId
   ): Promise<CalendarViewData> {
     const dateRange = this.getViewDateRange(viewMode, date);
     const events = await this.getEvents(userId, dateRange, entityId);

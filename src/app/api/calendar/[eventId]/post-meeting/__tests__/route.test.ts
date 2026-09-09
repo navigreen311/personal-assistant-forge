@@ -12,6 +12,10 @@ const mockCapturePostMeeting = jest.fn();
 const mockGetVafConfig = jest.fn();
 const mockProcessEvent = jest.fn();
 const mockCalendarEventFindUnique = jest.fn();
+// P-05: the route is now resource-scoped. `withEventScope` reads the event's
+// owning entity, then `withEntityScope` re-reads that entity and proves the
+// caller owns it -- so the mocked client needs an `entity` delegate too.
+const mockEntityFindUnique = jest.fn();
 
 jest.mock('next-auth/jwt', () => ({
   getToken: (...args: unknown[]) => mockGetToken(...args),
@@ -37,6 +41,9 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     calendarEvent: {
       findUnique: (...args: unknown[]) => mockCalendarEventFindUnique(...args),
+    },
+    entity: {
+      findUnique: (...args: unknown[]) => mockEntityFindUnique(...args),
     },
   },
 }));
@@ -67,6 +74,19 @@ function buildRequest(body: unknown): NextRequest {
 
 const PARAMS = { params: Promise.resolve({ eventId: 'evt-1' }) };
 
+/**
+ * P-05: `calendarEvent.findUnique` is now called TWICE per request -- first by
+ * `withEventScope`, to learn which entity owns the event before anything is
+ * read or written, and then by `maybeAutoProcess`, to read the recording URL.
+ * This sets the two answers separately: ownership always resolves, and the
+ * argument is what the auto-process lookup sees.
+ */
+function scopeThenAutoProcessLookup(autoProcessLookup: unknown): void {
+  mockCalendarEventFindUnique
+    .mockResolvedValueOnce({ entityId: 'entity-1' })
+    .mockResolvedValue(autoProcessLookup);
+}
+
 // `flushPromises` runs once after the route resolves so that the
 // fire-and-forget `void maybeAutoProcess(...)` callback has a chance to
 // execute its async work before assertions. Two ticks covers
@@ -87,8 +107,11 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
     mockGetVafConfig.mockReset();
     mockProcessEvent.mockReset();
     mockCalendarEventFindUnique.mockReset();
+    mockEntityFindUnique.mockReset();
 
-    mockGetToken.mockResolvedValue({ userId: 'user-1' });
+    // The session's own entity, owned by the session's own user.
+    mockGetToken.mockResolvedValue({ userId: 'user-1', activeEntityId: 'entity-1' });
+    mockEntityFindUnique.mockResolvedValue({ id: 'entity-1', userId: 'user-1' });
     mockCapturePostMeeting.mockResolvedValue({
       event: { id: 'evt-1' },
       tasksCreated: [],
@@ -98,9 +121,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('returns 201 and fires MeetingProcessor when autoProcessMeetings=true and recordingUrl is set', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: true });
-    mockCalendarEventFindUnique.mockResolvedValue({
-      recordingUrl: 'https://r.example/audio.mp3',
-    });
+    scopeThenAutoProcessLookup({ recordingUrl: 'https://r.example/audio.mp3' });
 
     const res = await POST(buildRequest(VALID_BODY), PARAMS);
     expect(res.status).toBe(201);
@@ -113,9 +134,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('does NOT fire MeetingProcessor when autoProcessMeetings=false', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: false });
-    mockCalendarEventFindUnique.mockResolvedValue({
-      recordingUrl: 'https://r.example/audio.mp3',
-    });
+    scopeThenAutoProcessLookup({ recordingUrl: 'https://r.example/audio.mp3' });
 
     const res = await POST(buildRequest(VALID_BODY), PARAMS);
     expect(res.status).toBe(201);
@@ -127,7 +146,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('does NOT fire MeetingProcessor when recordingUrl is null', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: true });
-    mockCalendarEventFindUnique.mockResolvedValue({ recordingUrl: null });
+    scopeThenAutoProcessLookup({ recordingUrl: null });
 
     const res = await POST(buildRequest(VALID_BODY), PARAMS);
     expect(res.status).toBe(201);
@@ -139,7 +158,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('does NOT fire MeetingProcessor when the event lookup returns null', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: true });
-    mockCalendarEventFindUnique.mockResolvedValue(null);
+    scopeThenAutoProcessLookup(null);
 
     const res = await POST(buildRequest(VALID_BODY), PARAMS);
     expect(res.status).toBe(201);
@@ -151,9 +170,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('still returns 201 when the auto-process trigger throws', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: true });
-    mockCalendarEventFindUnique.mockResolvedValue({
-      recordingUrl: 'https://r.example/audio.mp3',
-    });
+    scopeThenAutoProcessLookup({ recordingUrl: 'https://r.example/audio.mp3' });
     mockProcessEvent.mockRejectedValue(new Error('VAF down'));
 
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -168,9 +185,7 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
 
   it('returns 400 on validation error and does not fire MeetingProcessor', async () => {
     mockGetVafConfig.mockResolvedValue({ autoProcessMeetings: true });
-    mockCalendarEventFindUnique.mockResolvedValue({
-      recordingUrl: 'https://r.example/audio.mp3',
-    });
+    scopeThenAutoProcessLookup({ recordingUrl: 'https://r.example/audio.mp3' });
 
     // Missing required `notes` and others.
     const res = await POST(buildRequest({ entityId: 'entity-1' }), PARAMS);

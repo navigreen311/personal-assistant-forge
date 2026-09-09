@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { NLPSchedulingService } from '@/modules/calendar/nlp.service';
 import { naturalLanguageSchema } from '@/modules/calendar/calendar.validation';
 
 const nlpService = new NLPSchedulingService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = naturalLanguageSchema.safeParse(body);
@@ -18,9 +18,13 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // `entityId` is the verified one, not `parsed.data.entityId`. It is the
+      // WHERE clause of the contact search in `resolveParticipants` below, so
+      // the unverified value meant "resolve these names against any tenant's
+      // address book and hand back their contact ids".
       const input = {
         text: parsed.data.text,
-        entityId: parsed.data.entityId,
+        entityId,
         userId: session.userId,
       };
 
@@ -36,7 +40,7 @@ export async function POST(request: NextRequest) {
       // Resolve participant names to contacts
       const resolvedParticipants = await nlpService.resolveParticipants(
         intent.participantNames,
-        parsed.data.entityId
+        entityId
       );
 
       return success({

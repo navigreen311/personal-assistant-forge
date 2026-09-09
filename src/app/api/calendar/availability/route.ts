@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { z } from 'zod';
 
@@ -13,13 +13,16 @@ const availabilityQuerySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const { searchParams } = new URL(req.url);
+      // `entityId` is no longer read off the query string: it went straight
+      // into `getEvents`, which used it as the whole WHERE clause, so
+      // `?entityId=<someone else's>` returned their busy slots -- every
+      // meeting title and every attendee count, for any tenant.
       const parsed = availabilityQuerySchema.safeParse({
         startDate: searchParams.get('startDate'),
         endDate: searchParams.get('endDate'),
-        entityId: searchParams.get('entityId') || undefined,
       });
 
       if (!parsed.success) {
@@ -31,7 +34,7 @@ export async function GET(request: NextRequest) {
       const events = await schedulingService.getEvents(
         session.userId,
         { start: parsed.data.startDate, end: parsed.data.endDate },
-        parsed.data.entityId
+        entityId
       );
 
       // Build availability: find free slots between events during business hours (8am-6pm)

@@ -7,6 +7,7 @@ import {
   getHours,
 } from 'date-fns';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { CalendarEvent } from '@/shared/types';
 import { EnergyService } from './energy.service';
 import type {
@@ -21,10 +22,21 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 export class CalendarAnalyticsService {
   private energyService = new EnergyService();
 
+  /**
+   * Calendar analytics for one user, optionally narrowed to one of their
+   * entities.
+   *
+   * The `entityId ? [entityId] : userEntities` ternary below used to accept a
+   * plain `string` straight off `?entityId=`, so `GET /api/calendar/analytics`
+   * and `POST /api/calendar/optimize` would report another tenant's meeting
+   * load, busiest day and attendee mix. Narrowing now requires a
+   * `VerifiedEntityId`; the unnarrowed branch is still only this user's own
+   * entities. See docs/parallel-build/tenancy-pattern.md.
+   */
   async getAnalytics(
     userId: string,
     period: TimeRange,
-    entityId?: string
+    entityId?: VerifiedEntityId
   ): Promise<ScheduleAnalytics> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     const chronotype = (user?.chronotype as Chronotype) ?? 'FLEXIBLE';

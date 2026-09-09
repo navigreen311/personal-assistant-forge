@@ -1,13 +1,13 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { conflictCheckSchema } from '@/modules/calendar/calendar.validation';
 
 const schedulingService = new SchedulingService();
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = conflictCheckSchema.safeParse(body);
@@ -18,8 +18,13 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // The verified scope replaces `parsed.data.entityId`. `detectConflicts`
+      // partitions the caller's own events into "this entity" and
+      // "cross-entity", so an unverified value did not leak rows here -- but it
+      // did decide which of the caller's events counted as CROSS_ENTITY, and
+      // it is the only argument the service will now accept.
       const conflicts = await schedulingService.detectConflicts(
-        parsed.data.entityId,
+        entityId,
         { start: parsed.data.startTime, end: parsed.data.endTime },
         session.userId,
         parsed.data.excludeEventId

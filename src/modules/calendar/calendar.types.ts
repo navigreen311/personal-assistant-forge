@@ -1,12 +1,21 @@
 import {
   CalendarEvent, PrepPacket
 } from '@/shared/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Scheduling Types ---
 
 export interface ScheduleRequest {
   title: string;
-  entityId: string;
+  /**
+   * The tenant this event belongs to, PROVEN to belong to the caller.
+   *
+   * A plain `string` is not assignable to `VerifiedEntityId`, so a route that
+   * hands a wholesale-parsed request body straight to a service fails to
+   * compile. The only way to obtain one is `withEntityScope`. See
+   * docs/parallel-build/tenancy-pattern.md sections 2 and 3.
+   */
+  entityId: VerifiedEntityId;
   participantIds?: string[];
   duration: number;
   preferredTimeRanges?: TimeRange[];
@@ -73,11 +82,21 @@ export type ConflictType =
   | 'CROSS_ENTITY'
   | 'PARTICIPANT_UNAVAILABLE';
 
+/**
+ * A schedule request with the scope removed.
+ *
+ * This is what a zod-parsed request body should be narrowed to before the
+ * verified `entityId` is spread back on LAST -- so the caller's own value is
+ * overwritten rather than trusted.
+ */
+export type ScheduleDraft = Omit<ScheduleRequest, 'entityId'>;
+
 // --- Natural Language Scheduling ---
 
 export interface NaturalLanguageScheduleInput {
   text: string;
-  entityId: string;
+  /** Proven to belong to `userId`. See ScheduleRequest.entityId. */
+  entityId: VerifiedEntityId;
   userId: string;
 }
 
@@ -267,9 +286,13 @@ export interface ScheduleOptimization {
 
 export interface PrepPacketRequest {
   eventId: string;
-  entityId: string;
+  /** Proven to belong to the caller. See ScheduleRequest.entityId. */
+  entityId: VerifiedEntityId;
   depth: 'BRIEF' | 'STANDARD' | 'DETAILED';
 }
+
+/** A prep-packet request with the scope removed. See ScheduleDraft. */
+export type PrepPacketDraft = Omit<PrepPacketRequest, 'entityId'>;
 
 export interface GeneratedPrepPacket extends PrepPacket {
   eventId: string;
@@ -282,7 +305,8 @@ export interface GeneratedPrepPacket extends PrepPacket {
 
 export interface PostMeetingCapture {
   eventId: string;
-  entityId: string;
+  /** Proven to belong to the caller. See ScheduleRequest.entityId. */
+  entityId: VerifiedEntityId;
   notes: string;
   actionItems: ActionItemFromMeeting[];
   decisions: string[];
@@ -290,6 +314,9 @@ export interface PostMeetingCapture {
   sentiment: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE';
   keyTakeaways: string[];
 }
+
+/** A post-meeting capture with the scope removed. See ScheduleDraft. */
+export type PostMeetingDraft = Omit<PostMeetingCapture, 'entityId'>;
 
 export interface ActionItemFromMeeting {
   title: string;

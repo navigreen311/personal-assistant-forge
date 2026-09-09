@@ -99,11 +99,42 @@ describe('naturalLanguageSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject missing entityId', () => {
+  // -------------------------------------------------------------------------
+  // CORRECTED BY P-05.
+  //
+  // This used to read:
+  //
+  //     it('should reject missing entityId', () => {
+  //       const result = naturalLanguageSchema.safeParse({ text: '...' });
+  //       expect(result.success).toBe(false);
+  //     });
+  //
+  // i.e. it required the CLIENT to name its own tenant on every request. That
+  // is the habit that produced the bug this package closes: 149 routes read
+  // the tenant off the wire and trusted it. The route now runs inside
+  // `withEntityScope`, which resolves the entity (query string, body, or the
+  // session's active entity), PROVES the caller owns it, and overwrites
+  // whatever the body said -- so an omitted `entityId` is not a client error,
+  // it is the normal case. A body that names someone else's entity is refused
+  // by the middleware with a 403 before the handler runs, which is where that
+  // check belongs; a zod schema cannot make it.
+  //
+  // Same finding as P-04's dashboard-flow assertion. See
+  // docs/parallel-build/tenancy-pattern.md section 1.
+  // -------------------------------------------------------------------------
+  it('accepts a request that omits entityId, because the session supplies it', () => {
     const result = naturalLanguageSchema.safeParse({
       text: 'Schedule a meeting',
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+  });
+
+  it('still accepts an explicit entityId, which withEntityScope then verifies', () => {
+    const result = naturalLanguageSchema.safeParse({
+      text: 'Schedule a meeting',
+      entityId: 'e1',
+    });
+    expect(result.success).toBe(true);
   });
 });
 

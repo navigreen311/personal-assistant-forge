@@ -1,4 +1,12 @@
 import { NLPSchedulingService } from '../../../src/modules/calendar/nlp.service';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * P-05: `entityId` is the WHERE clause of the contact search in
+ * `resolveParticipants`, so it is now a `VerifiedEntityId`. A unit test has no
+ * request to mint one from; this is the single sanctioned helper.
+ */
+const ENTITY_E1 = verifiedEntityIdForTest('e1');
 
 // Mock prisma to avoid DB calls in tests
 jest.mock('../../../src/lib/db', () => ({
@@ -49,7 +57,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Set up a call with Dr. Martinez next week',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -76,7 +84,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Schedule a meeting with Bobby and Jennifer tomorrow at 2pm in Conference Room A',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -92,7 +100,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Quick call with Jennifer this afternoon',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -116,7 +124,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Quick call with Jennifer this afternoon',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -140,7 +148,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Set up a recurring weekly sync',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -163,7 +171,7 @@ describe('NLPSchedulingService', () => {
 
       const result = await service.parseScheduleRequest({
         text: 'Schedule a 90 minute project kickoff with Dr. Martinez, Bobby, and Carlos next Wednesday at 9am in the Board Room',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         userId: 'u1',
       });
 
@@ -313,20 +321,20 @@ describe('NLPSchedulingService', () => {
 
   describe('resolveParticipants', () => {
     it('should resolve known contacts', async () => {
-      const result = await service.resolveParticipants(['Dr. Martinez'], 'e1');
+      const result = await service.resolveParticipants(['Dr. Martinez'], ENTITY_E1);
       expect(result).toHaveLength(1);
       expect(result[0].resolved).toBe(true);
       expect(result[0].contactId).toBe('c1');
     });
 
     it('should mark unknown contacts as unresolved', async () => {
-      const result = await service.resolveParticipants(['Unknown Person'], 'e1');
+      const result = await service.resolveParticipants(['Unknown Person'], ENTITY_E1);
       expect(result).toHaveLength(1);
       expect(result[0].resolved).toBe(false);
     });
 
     it('should return empty array for no names', async () => {
-      const result = await service.resolveParticipants([], 'e1');
+      const result = await service.resolveParticipants([], ENTITY_E1);
       expect(result).toHaveLength(0);
     });
   });
