@@ -29,17 +29,17 @@
     "date-fns": "^4.1.0",
     "effect": "^3.19.18",
     "eventsource-parser": "^3.0.6",
+    "html2canvas": "^1.4.1",
     "ioredis": "^5.9.3",
-    "next": "16.1.6",
+    "next": "16.3.4",
     "next-auth": "^4.24.13",
     "prisma": "^6.19.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
     "stripe": "^20.3.1",
-    "html2canvas": "^1.4.1",
     "twilio": "^5.12.1",
-    "uuid": "^13.0.0",
+    "uuid": "^13.0.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -52,7 +52,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "16.3.4",
     "jest": "^30.2.0",
     "jest-environment-jsdom": "^30.2.0",
     "tailwindcss": "^4",
@@ -60,5 +60,8 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.23.13",
     "typescript": "^5"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.2"
   }
 }
