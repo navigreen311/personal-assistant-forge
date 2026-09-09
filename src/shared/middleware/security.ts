@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { DataClassification, RateLimitConfig, RateLimitResult } from '@/modules/security/types';
 import { auditService } from '@/modules/security/services/audit-service';
+import { resolveActor, resolveVerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Types for Next.js App Router handlers ---
 
@@ -52,16 +53,23 @@ interface RateLimitEntry {
 
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
-function getRateLimitKey(req: NextRequest, keyGenerator: RateLimitConfig['keyGenerator']): string {
+async function getRateLimitKey(
+  req: NextRequest,
+  keyGenerator: RateLimitConfig['keyGenerator']
+): Promise<string> {
   switch (keyGenerator) {
     case 'IP':
       return req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown-ip';
-    case 'USER':
-      return req.headers.get('x-user-id') || 'anonymous';
+    case 'USER': {
+      // P-00/T-003: was req.headers.get('x-user-id'), which let a caller
+      // pick its own rate-limit bucket. Read the verified JWT instead.
+      const who = await resolveActor(req);
+      return who?.actorId ?? 'anonymous';
+    }
     case 'API_KEY':
       return req.headers.get('x-api-key') || 'no-key';
     case 'ENTITY':
-      return req.headers.get('x-entity-id') || 'no-entity';
+      return (await resolveVerifiedEntityId(req)) ?? 'no-entity';
     default:
       return 'unknown';
   }
@@ -205,14 +213,17 @@ export function withAuditLog(
     const response = await handler(req, context);
     const duration = Date.now() - startTime;
 
-    const actor = req.headers.get('x-user-id') || 'anonymous';
-    const entityId = req.headers.get('x-entity-id') || 'unknown';
+    // P-00/T-003: the audit actor is read from the verified session, never
+    // from a client-settable header.
+    const who = await resolveActor(req);
+    const actor = who?.actor ?? 'anonymous';
+    const entityId = (await resolveVerifiedEntityId(req)) ?? 'unknown';
     const url = new URL(req.url);
 
     try {
       await auditService.logAuditEntry({
         actor,
-        actorId: req.headers.get('x-user-id') || undefined,
+        actorId: who?.actorId,
         action: `${req.method} ${url.pathname}`,
         resource: url.pathname,
         resourceId: url.searchParams.get('id') || 'N/A',
@@ -322,7 +333,7 @@ export function withRateLimit(
   config: RateLimitConfig
 ): NextApiHandler {
   return async (req: NextRequest, context?: Record<string, unknown>) => {
-    const key = getRateLimitKey(req, config.keyGenerator);
+    const key = await getRateLimitKey(req, config.keyGenerator);
     const result = checkRateLimit(key, config);
 
     if (!result.allowed) {

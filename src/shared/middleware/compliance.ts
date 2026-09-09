@@ -11,6 +11,7 @@ import { consentService } from '@/modules/security/services/consent-service';
 import { classificationService } from '@/modules/security/services/classification-service';
 import { redactionService } from '@/modules/security/services/redaction-service';
 import { auditService } from '@/modules/security/services/audit-service';
+import { resolveActor, resolveVerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Types for Next.js App Router handlers ---
 
@@ -67,7 +68,8 @@ export function withClassificationEnforcement(
       let allowedClassification: DataClassification = options.requiredClassification || 'INTERNAL';
 
       if (options.entityAware) {
-        const entityId = req.headers.get('x-entity-id');
+        // P-00/T-003: verified, not header-supplied.
+        const entityId = await resolveVerifiedEntityId(req);
         if (entityId) {
           const profile = await complianceService.getComplianceProfile(entityId);
           if (profile.includes('HIPAA') || profile.includes('SOX') || profile.includes('SEC')) {
@@ -88,7 +90,7 @@ export function withClassificationEnforcement(
           action: 'CLASSIFICATION_ENFORCEMENT',
           resource: new URL(req.url).pathname,
           resourceId: 'response',
-          entityId: req.headers.get('x-entity-id') || 'unknown',
+          entityId: (await resolveVerifiedEntityId(req)) ?? 'unknown',
           requestMethod: req.method,
           requestPath: new URL(req.url).pathname,
           statusCode: response.status,
@@ -141,7 +143,7 @@ export function withConsentCheck(
   }
 ): NextApiHandler {
   return async (req: NextRequest, context?: Record<string, unknown>) => {
-    const entityId = req.headers.get('x-entity-id');
+    const entityId = await resolveVerifiedEntityId(req);
     if (!entityId) {
       return NextResponse.json(
         {
@@ -238,11 +240,26 @@ export function withConsentCheck(
  */
 export function withHIPAAGuard(handler: NextApiHandler): NextApiHandler {
   return async (req: NextRequest, context?: Record<string, unknown>) => {
-    const entityId = req.headers.get('x-entity-id');
+    // P-00/T-003: was req.headers.get('x-entity-id'), and the branch below
+    // passed through when the header was absent -- so a caller disabled PHI
+    // protection by sending nothing. Now resolved from the verified session,
+    // and an unresolvable entity FAILS CLOSED. A guard over regulated data
+    // that cannot identify the tenant must refuse, not wave the request on.
+    const entityId = await resolveVerifiedEntityId(req);
 
-    // If no entity ID, pass through
     if (!entityId) {
-      return handler(req, context);
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'ENTITY_UNVERIFIED',
+            message:
+              'Cannot determine the entity in scope, so PHI protection cannot be applied.',
+          },
+          meta: { timestamp: new Date().toISOString() },
+        },
+        { status: 403 }
+      );
     }
 
     // Check if entity is HIPAA-regulated
@@ -256,10 +273,13 @@ export function withHIPAAGuard(handler: NextApiHandler): NextApiHandler {
     const response = await handler(req, context);
 
     // Ensure audit logging for HIPAA access
+    const hipaaActor = await resolveActor(req);
     const url = new URL(req.url);
     auditService.logAuditEntry({
-      actor: req.headers.get('x-user-id') || 'anonymous',
-      actorId: req.headers.get('x-user-id') || undefined,
+      // P-00/T-003: verified session, not a client-settable header. This is a
+      // HIPAA access record; its actor must not be chosen by the caller.
+      actor: hipaaActor?.actor ?? 'anonymous',
+      actorId: hipaaActor?.actorId,
       action: `HIPAA_ACCESS: ${req.method} ${url.pathname}`,
       resource: url.pathname,
       resourceId: url.searchParams.get('id') || 'N/A',
