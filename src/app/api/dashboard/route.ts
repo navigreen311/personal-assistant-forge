@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth/helpers';
+import { withAuth } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import type {
   DashboardData,
@@ -78,14 +78,28 @@ function buildDefaultDashboard(userName: string): DashboardData {
   };
 }
 
-export async function GET(_request: NextRequest): Promise<NextResponse> {
+/**
+ * P-13: this was the ONE route in the package that authenticated through
+ * `getCurrentUser()` (`getServerSession`) instead of `withAuth` (`getToken`).
+ *
+ * Two problems, and they compound:
+ *
+ *   - the outer `catch` returns `{ success: true, ... }` with a 200 "so the page
+ *     never crashes", and `getServerSession` throwing is caught by it. So a
+ *     request with NO SESSION AT ALL got a 200 rather than a 401, and the only
+ *     signal that authentication had failed was that the payload happened to be
+ *     empty;
+ *   - because it did not use `withAuth`, `tests/db/` could not authenticate
+ *     against it at all: a tenancy test would have "passed" against the empty
+ *     default payload without ever reaching a query.
+ *
+ * It now goes through `withAuth` like the other 43 routes here, so a missing or
+ * invalid token is a real 401 and the tenancy assertions in
+ * `tests/db/analytics-tenancy.test.ts` exercise the actual queries.
+ */
+export async function GET(request: NextRequest): Promise<Response> {
+  return withAuth(request, async (_req, user) => {
   try {
-    const user = await getCurrentUser();
-
-    if (!user) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-    }
-
     const activeEntityId = user.activeEntityId;
     const userName = user.name ?? user.email;
 
@@ -382,10 +396,14 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
 
     return NextResponse.json({ success: true, data: dashboardData });
   } catch {
-    // Outer catch: return empty dashboard so the page never crashes
+    // Outer catch: return an empty dashboard so the page never crashes on a
+    // query failure. Authentication no longer reaches here -- `withAuth` has
+    // already returned 401 for an unauthenticated caller -- so this can no
+    // longer disguise a failed sign-in as a successful empty response.
     return NextResponse.json({
       success: true,
-      data: buildDefaultDashboard('User'),
+      data: buildDefaultDashboard(user.name ?? user.email ?? 'User'),
     });
   }
+  });
 }
