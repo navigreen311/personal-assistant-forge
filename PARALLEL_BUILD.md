@@ -332,6 +332,62 @@ across `bullmq` and `next-auth` is a real major upgrade with real blast radius,
 and it touches `package.json` / `package-lock.json`, which no in-flight package
 may hold. It must run alone.
 
+## WAVE 2 BATCH 1 — 5 PACKAGES MERGED (2026-09-09)
+
+**Master at `12df9a7`: tsc 0 · unit 320/320, 5283/5283 · test:db 366/366 ·
+`npm audit` 0 vulnerabilities.** P-09's PR was the first in this repository's
+history with **all five CI jobs green**.
+
+### Tenancy, measured
+
+| | routes on the bad pattern |
+|---|---|
+| audit | ~145 |
+| after P-04 | 129 |
+| **now** | **77** |
+
+88 routes now use `withEntityScope`. Just over half the affected surface is done.
+
+### What the followers found that the audit did not
+
+Every one of these was invisible to a 5,269-test suite and to the audit:
+
+- ** queried  five times, and
+  no such model has ever existed.** Confirmed by the coordinator:
+  `grep '^model ActionQueue' prisma/schema.prisma` returns **0**. The `as any`
+  defeated the check that would have caught it and every throw was swallowed, so
+  the endpoint returned a confident row of zeroes from the day it was written.
+  Identical in shape to `shadow/compliance` calling four models that were not
+  there — **the second instance of this exact failure mode in one codebase.**
+- ** compared an entity id against a target string**,
+  so its tenant filter matched nothing and every request returned the whole
+  platform's audit trail. `getDailyCostSummary` had the same shape with a literal
+  `|| true`.
+- ** let any signed-in user cast a valid approval as
+  anyone** — the request chose the name written to the audit trail.
+- **`markFulfilled` scanned every contact in the database** and wrote to whichever
+  tenant held the id; **`validateRecipients`** would have let `sendBroadcast` email
+  and text another tenant's contacts.
+- **Three routes under `/api/contacts/[id]/` never imported `withAuth`.** Scoped
+  honestly: `src/middleware.ts` 401s every `/api/*` path except `/api/auth` and
+  `/api/health`, so these were **not** anonymously reachable in production. The
+  finding is the absence of defence in depth behind one global check whose
+  public-path rule (`pathname.includes('.')`) the audit already flagged as fragile.
+- **`'default-user'` writes were failing at insert.** `FollowUpReminder.userId` and
+  `CannedResponse.userId` are foreign keys to `User`, so unless such a row exists
+  every follow-up and canned response created through the API violated the
+  constraint. The feature was **broken, not merely insecure** — and if the row did
+  exist, it inverts into one shared account readable by anyone holding it.
+  **Run `SELECT count(*) FROM "FollowUpReminder" WHERE "userId" = 'default-user'`
+  before any deploy.** There is no safe automatic remap.
+
+### A process lesson worth keeping
+
+P-09 ran `git checkout -- src/` to revert a mutation experiment and **wiped its
+entire uncommitted package**. It was recoverable only because the dropped stash
+commit was still in the object store. It took a patch backup immediately
+afterwards and before every subsequent risky step. **Commit before you mutate.**
+
 ## MID-RUN RE-SCORE — 37% → 48% (measured 2026-09-09, after 7 packages)
 
 Re-derived against master, not asserted. The audit's original weighting, the same
@@ -523,6 +579,11 @@ One row per merge. Appended by the coordinator at merge time.
 | — | P-00b interface amendment (coordinator) | — | `6291c36`, `f6cb268` | 0 | 319/320 | 5268/5269 | 131/131 | **none** |
 | 6 | P-22 green-board test repair | [#62](https://github.com/navigreen311/personal-assistant-forge/pull/62) | `9c26e85` | 0 | **320/320** | **5269/5269** | 131/131 | **none** |
 | 7 | P-11 queue workers | [#63](https://github.com/navigreen311/personal-assistant-forge/pull/63) | `06dadfa` | 0 | **320/320** | **5269/5269** | **138/138** | **none** |
+| 8 | P-07 finance tenancy | [#64](https://github.com/navigreen311/personal-assistant-forge/pull/64) | `836a9ec` | 0 | 320/320 | 5269/5269 | 190/190 | **none** |
+| 9 | P-05 calendar tenancy | [#65](https://github.com/navigreen311/personal-assistant-forge/pull/65) | `c3afb61` | 0 | 320/320 | 5271/5271 | 240/240 | **none** |
+| 10 | P-24 dependency remediation | [#66](https://github.com/navigreen311/personal-assistant-forge/pull/66) | `a3733e0` | 0 | 320/320 | 5271/5271 | 240/240 | **none** — audit 30 -> 0 |
+| 11 | P-06 inbox tenancy | [#67](https://github.com/navigreen311/personal-assistant-forge/pull/67) | `225168c` | 0 | 320/320 | 5269/5269 | 309/309 | **none** |
+| 12 | P-09 execution control plane | [#68](https://github.com/navigreen311/personal-assistant-forge/pull/68) | `12df9a7` | 0 | 320/320 | 5283/5283 | 366/366 | **none — ALL 5 CI JOBS GREEN** |
 
 ---
 
