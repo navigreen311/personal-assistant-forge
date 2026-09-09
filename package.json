@@ -29,6 +29,7 @@
     "date-fns": "^4.1.0",
     "effect": "^3.19.18",
     "eventsource-parser": "^3.0.6",
+    "html2canvas": "^1.4.1",
     "ioredis": "^5.9.3",
     "next": "16.1.6",
     "next-auth": "^4.24.13",
@@ -37,9 +38,8 @@
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
     "stripe": "^20.3.1",
-    "html2canvas": "^1.4.1",
     "twilio": "^5.12.1",
-    "uuid": "^13.0.0",
+    "uuid": "^13.0.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
