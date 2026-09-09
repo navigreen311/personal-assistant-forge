@@ -19,6 +19,9 @@ jest.mock('@/lib/db', () => ({
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      // Trap 1: the services now write through updateMany so the entity can sit
+      // in the WHERE clause. Its own mock, not an alias -- the args differ.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     call: {
       findMany: jest.fn(),
@@ -27,7 +30,11 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 function makeCampaign(overrides: Partial<Campaign> = {}): Campaign {
   return {
@@ -171,7 +178,7 @@ describe('Campaign Service', () => {
         escalated: false,
       };
 
-      const stats = await updateStats('campaign-1', callResult);
+      const stats = await updateStats('campaign-1', ENTITY, callResult);
       expect(stats.totalCalled).toBe(1);
       expect(stats.totalConnected).toBe(1);
     });
@@ -202,7 +209,7 @@ describe('Campaign Service', () => {
         escalated: false,
       };
 
-      const stats = await updateStats('campaign-1', callResult);
+      const stats = await updateStats('campaign-1', ENTITY, callResult);
       expect(stats.totalVoicemail).toBe(1);
       expect(stats.totalCalled).toBe(1);
     });
@@ -233,7 +240,7 @@ describe('Campaign Service', () => {
         escalated: false,
       };
 
-      const stats = await updateStats('campaign-1', callResult);
+      const stats = await updateStats('campaign-1', ENTITY, callResult);
       expect(stats.totalInterested).toBe(1);
       expect(stats.totalConnected).toBe(1);
       expect(stats.conversionRate).toBeGreaterThan(0);
@@ -258,7 +265,7 @@ describe('Campaign Service', () => {
         { contactId: 'c2' },
       ]);
 
-      const result = await getNextContacts('campaign-1', 10);
+      const result = await getNextContacts('campaign-1', ENTITY, 10);
       expect(result).toEqual(['c3', 'c4', 'c5']);
     });
 
@@ -276,13 +283,13 @@ describe('Campaign Service', () => {
       });
       (mockPrisma.call.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getNextContacts('campaign-1', 2);
+      const result = await getNextContacts('campaign-1', ENTITY, 2);
       expect(result).toHaveLength(2);
     });
 
     it('should return empty for non-existent campaign', async () => {
       (mockPrisma.document.findFirst as jest.Mock).mockResolvedValue(null);
-      const result = await getNextContacts('nonexistent', 10);
+      const result = await getNextContacts('nonexistent', ENTITY, 10);
       expect(result).toEqual([]);
     });
   });

@@ -13,8 +13,12 @@ jest.mock('@/lib/db', () => ({
 
 import { VoiceForgeHandoffService } from '@/modules/voice/services/voiceforge-handoff';
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 describe('VoiceForgeHandoff', () => {
   let service: VoiceForgeHandoffService;
@@ -29,7 +33,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Calling about the Q4 review',
       });
@@ -45,7 +49,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context,
         scriptHints: ['Be polite', 'Ask about availability'],
@@ -59,7 +63,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15559876543',
         context: 'Follow up call',
       });
@@ -71,7 +75,7 @@ describe('VoiceForgeHandoff', () => {
       await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Test handoff',
       });
@@ -93,7 +97,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Test handoff',
       });
@@ -108,7 +112,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Test call',
       });
@@ -130,7 +134,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Test call',
       });
@@ -145,7 +149,7 @@ describe('VoiceForgeHandoff', () => {
       const handoff = await service.initiateHandoff({
         voiceSessionId: 'session-1',
         contactId: 'contact-1',
-        entityId: 'entity-1',
+        entityId: ENTITY,
         phoneNumber: '+15551234567',
         context: 'Test call',
       });

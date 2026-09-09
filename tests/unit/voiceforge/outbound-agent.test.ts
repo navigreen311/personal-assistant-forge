@@ -17,6 +17,10 @@ import {
   initiateOutboundCall,
 } from '@/modules/voiceforge/services/outbound-agent';
 import type { CallGuardrails } from '@/modules/voiceforge/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/** The scope, minted once. Unit tests cannot obtain the brand any other way. */
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 // Mock Prisma
 jest.mock('@/lib/db', () => ({
@@ -29,6 +33,9 @@ jest.mock('@/lib/db', () => ({
         direction: 'OUTBOUND',
       }),
       update: jest.fn().mockResolvedValue({}),
+      // Trap 1: the service now writes through updateMany so the entity can sit
+      // in the WHERE clause. Its own mock -- the args differ from update's.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     consentReceipt: {
       findFirst: jest.fn().mockResolvedValue(null),
@@ -218,9 +225,9 @@ describe('dropVoicemail', () => {
       mockGetPersona.mockResolvedValue(mockPersona);
       mockGenerateText.mockResolvedValue('Hi, this is Sales Agent. We wanted to follow up.');
 
-      await dropVoicemail('CA-123', 'persona-1', 'Follow-up call');
+      await dropVoicemail('CA-123', 'persona-1', 'Follow-up call', ENTITY);
 
-      expect(mockGetPersona).toHaveBeenCalledWith('persona-1');
+      expect(mockGetPersona).toHaveBeenCalledWith('persona-1', ENTITY);
       expect(mockGenerateText).toHaveBeenCalledTimes(1);
       const prompt = mockGenerateText.mock.calls[0][0];
       expect(prompt).toContain('Sales Agent');
@@ -232,32 +239,32 @@ describe('dropVoicemail', () => {
       mockGetPersona.mockResolvedValue(mockPersona);
       mockGenerateText.mockRejectedValue(new Error('AI unavailable'));
 
-      await dropVoicemail('CA-123', 'persona-1', 'Follow-up call');
+      await dropVoicemail('CA-123', 'persona-1', 'Follow-up call', ENTITY);
 
-      expect(mockGetPersona).toHaveBeenCalledWith('persona-1');
+      expect(mockGetPersona).toHaveBeenCalledWith('persona-1', ENTITY);
       expect(mockGenerateText).toHaveBeenCalledTimes(1);
     });
 
     it('should use generic message when persona is not found', async () => {
       mockGetPersona.mockResolvedValue(null);
 
-      await dropVoicemail('CA-123', 'persona-unknown', 'Follow-up call');
+      await dropVoicemail('CA-123', 'persona-unknown', 'Follow-up call', ENTITY);
 
-      expect(mockGetPersona).toHaveBeenCalledWith('persona-unknown');
+      expect(mockGetPersona).toHaveBeenCalledWith('persona-unknown', ENTITY);
       expect(mockGenerateText).not.toHaveBeenCalled();
     });
 
     it('should not throw when getPersona fails', async () => {
       mockGetPersona.mockRejectedValue(new Error('DB error'));
 
-      await expect(dropVoicemail('CA-123', 'persona-1', 'test')).resolves.toBeUndefined();
+      await expect(dropVoicemail('CA-123', 'persona-1', 'test', ENTITY)).resolves.toBeUndefined();
     });
   });
 
 describe('initiateOutboundCall', () => {
     it('should create a call record and return result', async () => {
       const result = await initiateOutboundCall({
-        entityId: 'entity-1',
+        entityId: ENTITY,
         contactId: 'contact-1',
         personaId: 'persona-1',
         purpose: 'Follow-up',
@@ -280,7 +287,7 @@ describe('initiateOutboundCall', () => {
 
     it('should return valid outcome values', async () => {
       const result = await initiateOutboundCall({
-        entityId: 'entity-1',
+        entityId: ENTITY,
         contactId: 'contact-1',
         personaId: 'persona-1',
         purpose: 'Test call',
@@ -305,7 +312,7 @@ describe('initiateOutboundCall', () => {
       mockGetPersona.mockResolvedValue(null);
 
       const result = await initiateOutboundCall({
-        entityId: 'entity-1',
+        entityId: ENTITY,
         contactId: 'contact-1',
         personaId: 'persona-1',
         purpose: 'Voicemail test',
@@ -328,7 +335,7 @@ describe('initiateOutboundCall', () => {
       mockGetCallStatus.mockResolvedValue('COMPLETED');
 
       const result = await initiateOutboundCall({
-        entityId: 'entity-1',
+        entityId: ENTITY,
         contactId: 'contact-1',
         personaId: 'persona-1',
         purpose: 'Duration test',
@@ -346,7 +353,7 @@ describe('initiateOutboundCall', () => {
 
     it('should not be escalated by default', async () => {
       const result = await initiateOutboundCall({
-        entityId: 'entity-1',
+        entityId: ENTITY,
         contactId: 'contact-1',
         personaId: 'persona-1',
         purpose: 'Escalation test',
