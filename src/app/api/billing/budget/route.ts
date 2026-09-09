@@ -1,26 +1,19 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { getBudget, setBudget } from '@/engines/cost/budget-service';
 
 const SetBudgetSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   monthlyCapUsd: z.number().positive(),
   alertThresholds: z.array(z.number().min(0).max(1)).optional(),
   overageBehavior: z.enum(['BLOCK', 'WARN', 'ALLOW_WITH_APPROVAL']).optional(),
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const { searchParams } = new URL(req.url);
-      const entityId = searchParams.get('entityId');
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query param required', 400);
-      }
-
       const budget = await getBudget(entityId);
       if (!budget) {
         return error('NOT_FOUND', `No budget found for entity ${entityId}`, 404);
@@ -34,7 +27,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = SetBudgetSchema.safeParse(body);
@@ -45,8 +38,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // The verified id, never the one off the wire.
       const budget = await setBudget(
-        parsed.data.entityId,
+        entityId,
         parsed.data.monthlyCapUsd,
         parsed.data.alertThresholds,
         parsed.data.overageBehavior

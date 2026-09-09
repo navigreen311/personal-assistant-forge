@@ -1,4 +1,17 @@
+/**
+ * Dashboard service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * `getUnifiedDashboard` is the one function here with no entity in its
+ * signature: it is a cross-entity rollup for one user. It selects that user's
+ * entities and then re-proves each one through `verifyEntityForUser`, the
+ * P-00b amendment's path to a `VerifiedEntityId` outside a request. That is
+ * deliberately not a cast: if an entity ever came back that the user does not
+ * own, it is dropped rather than summed into their totals.
+ */
+
 import { prisma } from '@/lib/db';
+import { verifyEntityForUser } from '@/shared/middleware/auth';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { UnifiedDashboard, FinancialSummary, FinancialAlert } from '@/modules/finance/types';
 
 function round2(n: number): number {
@@ -6,7 +19,7 @@ function round2(n: number): number {
 }
 
 export async function getEntitySummary(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: { start: Date; end: Date }
 ): Promise<FinancialSummary> {
   const entity = await prisma.entity.findUniqueOrThrow({
@@ -53,7 +66,7 @@ export async function getEntitySummary(
   };
 }
 
-export async function generateAlerts(entityId: string): Promise<FinancialAlert[]> {
+export async function generateAlerts(entityId: VerifiedEntityId): Promise<FinancialAlert[]> {
   const alerts: FinancialAlert[] = [];
   const now = new Date();
 
@@ -171,7 +184,7 @@ export async function generateAlerts(entityId: string): Promise<FinancialAlert[]
 
 // --- Phase 3: Dashboard Aggregation ---
 
-export async function getDashboardData(entityId: string) {
+export async function getDashboardData(entityId: VerifiedEntityId) {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -237,7 +250,7 @@ export async function getDashboardData(entityId: string) {
   };
 }
 
-export async function getQuickStats(entityId: string) {
+export async function getQuickStats(entityId: VerifiedEntityId) {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -260,31 +273,44 @@ export async function getQuickStats(entityId: string) {
   };
 }
 
-export async function getAlerts(entityId: string) {
+export async function getAlerts(entityId: VerifiedEntityId) {
   return generateAlerts(entityId);
 }
 
 export async function getUnifiedDashboard(
   userId: string,
-  period: { start: Date; end: Date }
+  period: { start: Date; end: Date },
+  entityId?: VerifiedEntityId
 ): Promise<UnifiedDashboard> {
+  // `userId` is the scope. `entityId`, when supplied, narrows the rollup to one
+  // already-verified entity; it never widens it, because the userId clause is
+  // still there.
   const entities = await prisma.entity.findMany({
-    where: { userId },
+    where: entityId ? { userId, id: entityId } : { userId },
     select: { id: true },
   });
 
   const summariesAndAlerts = await Promise.all(
     entities.map(async (entity) => {
+      // entity.id came off a database row, so it is a plain string. Re-prove it
+      // rather than cast it, so the brand is still minted only inside
+      // shared/middleware/auth.ts -- tenancy-pattern.md §5.
+      const verified = await verifyEntityForUser(entity.id, userId);
+      if (!verified) return null;
+
       const [summary, entityAlerts] = await Promise.all([
-        getEntitySummary(entity.id, period),
-        generateAlerts(entity.id),
+        getEntitySummary(verified, period),
+        generateAlerts(verified),
       ]);
       return { summary, alerts: entityAlerts };
     })
   );
 
-  const summaries = summariesAndAlerts.map((s) => s.summary);
-  const alerts = summariesAndAlerts.flatMap((s) => s.alerts);
+  const owned = summariesAndAlerts.filter(
+    (s): s is { summary: FinancialSummary; alerts: FinancialAlert[] } => s !== null
+  );
+  const summaries = owned.map((s) => s.summary);
+  const alerts = owned.flatMap((s) => s.alerts);
 
   const aggregated = {
     totalIncome: round2(summaries.reduce((s, sum) => s + sum.totalIncome, 0)),

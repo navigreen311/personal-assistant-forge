@@ -2,8 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { getUnifiedDashboard } from '@/modules/finance/services/dashboard-service';
-import { withAuth } from '@/shared/middleware/auth';
-import { prisma } from '@/lib/db';
+import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
 
 const querySchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -40,6 +39,17 @@ function getDateRange(period: string): { start: Date; end: Date } {
   }
 }
 
+/**
+ * A cross-entity AGGREGATE, and the one route here that does not use
+ * `withEntityScope`: with no `entityId` it deliberately rolls up every entity
+ * the caller owns, which `withEntityScope` would narrow to the session's active
+ * entity. The scope is therefore `session.userId`, applied inside the service.
+ *
+ * When an `entityId` IS supplied it is proven with `verifyEntityForUser` --
+ * the ownership check in a WHERE clause rather than a read followed by an `if`
+ * -- and then actually used to narrow the rollup. Before this package it was
+ * verified and then discarded, so asking for one entity returned all of them.
+ */
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {
@@ -51,26 +61,20 @@ export async function GET(request: NextRequest) {
 
       const { entityId, period } = parsed.data;
 
-      // Verify entity ownership if entityId is provided
+      let scoped;
       if (entityId) {
-        const entity = await prisma.entity.findUnique({
-          where: { id: entityId },
-        });
-
-        if (!entity) {
-          return error('NOT_FOUND', 'Entity not found', 404);
-        }
-
-        if (entity.userId !== session.userId) {
+        scoped = await verifyEntityForUser(entityId, session.userId);
+        if (!scoped) {
           return error('FORBIDDEN', 'You do not have access to this entity', 403);
         }
       }
 
       const { start, end } = getDateRange(period);
-      const dashboard = await getUnifiedDashboard(session.userId, {
-        start,
-        end,
-      });
+      // The narrowing argument is supplied only when the caller actually named
+      // an entity; with none, this is the full rollup it has always been.
+      const dashboard = scoped
+        ? await getUnifiedDashboard(session.userId, { start, end }, scoped)
+        : await getUnifiedDashboard(session.userId, { start, end });
 
       return success(dashboard);
     } catch (err) {

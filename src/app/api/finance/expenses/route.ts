@@ -2,10 +2,10 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createExpense, listExpenses } from '@/modules/finance/services/expense-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const listQuerySchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   category: z.string().optional(),
   vendor: z.string().optional(),
   startDate: z.string().datetime().optional(),
@@ -15,7 +15,7 @@ const listQuerySchema = z.object({
 });
 
 const createSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   amount: z.number().positive(),
   currency: z.string().min(1).default('USD'),
   category: z.string().default(''),
@@ -38,7 +38,7 @@ const createSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = listQuerySchema.safeParse(params);
@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId, category, vendor, startDate, endDate, page, pageSize } = parsed.data;
+      const { category, vendor, startDate, endDate, page, pageSize } = parsed.data;
       const dateRange =
         startDate && endDate
           ? { start: new Date(startDate), end: new Date(endDate) }
@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createSchema.safeParse(body);
@@ -69,11 +69,12 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const data = parsed.data;
-      const expense = await createExpense({
-        ...data,
-        date: new Date(data.date),
-      });
+      // `entityId` LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...data } = parsed.data;
+      const expense = await createExpense(
+        { ...data, date: new Date(data.date), entityId },
+        session.userId
+      );
 
       return success(expense, 201);
     } catch (err) {

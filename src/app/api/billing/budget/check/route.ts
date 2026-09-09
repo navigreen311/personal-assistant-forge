@@ -1,16 +1,16 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { checkBudget } from '@/engines/cost/budget-service';
 
 const CheckBudgetSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   additionalCost: z.number().min(0),
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CheckBudgetSchema.safeParse(body);
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const result = await checkBudget(parsed.data.entityId, parsed.data.additionalCost);
+      const result = await checkBudget(entityId, parsed.data.additionalCost);
       return success(result);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to check budget', 500);

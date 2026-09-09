@@ -1,4 +1,12 @@
+/**
+ * P&L service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * These are aggregates: an unscoped `generatePnL` returns another tenant's
+ * revenue and expense totals with no foreign row ever crossing the boundary.
+ */
+
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ProfitAndLoss, PnLLineItem, PnLTrend } from '@/modules/finance/types';
 
 function round2(n: number): number {
@@ -11,7 +19,7 @@ function changePercent(current: number, previous: number): number {
 }
 
 export async function generatePnL(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: { start: Date; end: Date }
 ): Promise<ProfitAndLoss> {
   const entity = await prisma.entity.findUniqueOrThrow({
@@ -99,7 +107,7 @@ export async function generatePnL(
 }
 
 export async function comparePeriods(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period1: { start: Date; end: Date },
   period2: { start: Date; end: Date }
 ): Promise<{ period1: ProfitAndLoss; period2: ProfitAndLoss; changes: PnLLineItem[] }> {
@@ -134,7 +142,7 @@ export async function comparePeriods(
 }
 
 export async function getTrends(
-  entityId: string,
+  entityId: VerifiedEntityId,
   months: number
 ): Promise<PnLTrend[]> {
   const now = new Date();
@@ -179,7 +187,7 @@ export async function getTrends(
 // --- Phase 3: Additional P&L Operations ---
 
 export async function getMargins(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ) {
   const now = new Date();
@@ -203,14 +211,14 @@ export async function getMargins(
 }
 
 export async function getPnLTrend(
-  entityId: string,
+  entityId: VerifiedEntityId,
   periods: number
 ) {
   return getTrends(entityId, periods);
 }
 
 export async function comparePnL(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period1: { start: Date; end: Date },
   period2: { start: Date; end: Date }
 ) {

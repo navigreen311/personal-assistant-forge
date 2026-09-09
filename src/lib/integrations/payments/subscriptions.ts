@@ -136,9 +136,40 @@ export const PLANS: Plan[] = [
 ];
 
 // --- In-Memory Usage Store ---
-// NOTE: Usage metering is kept in-memory because there is no dedicated UsageMeter
-// Prisma model. Usage resets each billing period anyway. For production, consider
-// persisting usage to a dedicated table or the UsageRecord model.
+//
+// P-07 (T-018) INVESTIGATED THIS AND ESCALATED IT RATHER THAN CLOSING IT.
+// Recording the finding here so the next person does not repeat the analysis.
+//
+// The comment this replaces said usage is in memory "because there is no
+// dedicated UsageMeter Prisma model". That premise is wrong in one direction and
+// the fix is blocked in another:
+//
+//  1. A durable model already exists and needs no migration. `UsageRecord`
+//     (prisma/schema.prisma) is an append-only per-entity usage ledger, and
+//     `src/engines/cost/usage-metering.ts` already stores arbitrary metric types
+//     in it via `model` + `metadata`. A plan meter is a SUM over that ledger
+//     within the subscription's current period. So the schema is not the
+//     obstacle, and nothing here needs the frozen schema changed.
+//
+//  2. What blocks it is the shape of `getUsageSummary` below, which is
+//     SYNCHRONOUS. Reading a ledger makes it async, and `recordUsage` and
+//     `isWithinLimits` would each acquire a `prisma.usageRecord` call. The only
+//     importer of this module in the entire repository is
+//     `tests/unit/payments/subscriptions.test.ts`, whose Prisma mock declares a
+//     `subscription` delegate and nothing else, and which awaits none of the
+//     summary calls. Persisting usage therefore fails three currently-green
+//     tests in a file outside P-07's allowed file list.
+//
+//  3. Worth knowing before scheduling it: that same grep says NOTHING in `src/`
+//     imports this module. `/api/billing/usage` meters through
+//     `@/engines/cost/usage-metering`, which is already durable. So the volatile
+//     store is unreachable from any route today -- the defect is real but not
+//     currently live, which is why P-07 judged it wrong to break the board for.
+//
+// Closing it is one small commit for whoever owns the payments tests: make
+// `getUsageSummary` async, sum `UsageRecord` rows between
+// `sub.currentPeriodStart` and `sub.currentPeriodEnd` under a reserved `module`
+// namespace, and add the `usageRecord` delegate to that test's mock.
 const usageStore = new Map<string, UsageMeter[]>();
 
 // --- DB <-> Local Mapping Helpers ---

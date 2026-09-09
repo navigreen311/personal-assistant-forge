@@ -1,23 +1,17 @@
 import { NextRequest } from 'next/server';
-import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { getAgingReport } from '@/modules/finance/services/invoice-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
-const querySchema = z.object({
-  entityId: z.string().min(1),
-});
-
+/**
+ * An AGGREGATE: outstanding receivables bucketed by age. It returns no invoice
+ * rows at all, so an unscoped version leaks a tenant's total exposure without
+ * ever failing a single-record 403 test.
+ */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const params = Object.fromEntries(req.nextUrl.searchParams);
-      const parsed = querySchema.safeParse(params);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
-
-      const report = await getAgingReport(parsed.data.entityId);
+      const report = await getAgingReport(entityId);
       return success(report);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
