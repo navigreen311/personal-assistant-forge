@@ -1,10 +1,45 @@
 // ============================================================================
 // Audit Service — Tamper-Proof Audit Logging with Hash Chain Verification
 // Worker 15: Security, Privacy & Compliance
+//
+// P-10 / T-002 — PERSISTED. Previously `private readonly entries: AuditLogEntry[]`.
+//
+// The audit brief said "persist the hash-chained audit log". P-00 correction C3
+// established the harder truth: `logAuditEntry` had four callers, all inside
+// `src/shared/middleware/{security,compliance}.ts`, and those middlewares had
+// zero consumers. There were no audit records under ANY code path — the array
+// was not a stale store, it was an empty one. Persisting alone would have
+// shipped a table that stayed empty forever, which is strictly worse than no
+// audit log at all: an empty table reads as "nothing happened".
+//
+// So this file is only half of T-002. The other half is
+// `src/modules/security/audit-wiring.ts`, which puts `logAuditEntry` on the
+// request path of real routes.
+//
+// TWO CORRECTNESS CHANGES CAME OUT OF PERSISTING IT
+//
+// 1. THE CHAIN IS NOW PER-ENTITY, not global.
+//    `verifyAuditChain(entityId, range)` filters to one entity and then asserts
+//    `entry.previousHash === previous.hash`. Against a single global chain that
+//    assertion is FALSE whenever two entities interleave — which is every real
+//    deployment. The in-memory version was never exercised with interleaved
+//    entities, so nothing caught it. Chaining per entity makes the verifier
+//    correct by construction, and it means one tenant's rows are never needed
+//    to reason about another's.
+//
+// 2. THE TAIL READ AND THE INSERT ARE SERIALISED.
+//    Two concurrent requests for the same entity would otherwise both read the
+//    same tail and both write `previousHash = X`, forking the chain — and a
+//    forked chain verifies as BROKEN, i.e. ordinary concurrency would be
+//    indistinguishable from tampering. `pg_advisory_xact_lock` keyed on the
+//    entityId makes the read-modify-write atomic. The lock serialises entry to
+//    the section; it is the surrounding ReadCommitted transaction (Prisma's
+//    default on Postgres) that lets each waiter see the previous writer's row.
 // ============================================================================
 
 import crypto from 'node:crypto';
-import { v4 as uuidv4 } from 'uuid';
+import type { Prisma } from '@prisma/client';
+import { prisma } from '@/lib/db';
 import type {
   AuditLogEntry,
   DataClassification,
@@ -17,6 +52,55 @@ import { generateJSON } from '@/lib/ai';
 
 const DEFAULT_PAGE_SIZE = 50;
 const GENESIS_HASH = '0';
+
+/** A row as Prisma returns it, before it is mapped onto the domain type. */
+type AuditRow = {
+  id: string;
+  timestamp: Date;
+  actor: string;
+  actorId: string | null;
+  action: string;
+  resource: string;
+  resourceId: string;
+  entityId: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  requestMethod: string;
+  requestPath: string;
+  statusCode: number;
+  sensitivityLevel: string;
+  details: Prisma.JsonValue;
+  hash: string | null;
+  previousHash: string | null;
+};
+
+/**
+ * Map a database row onto the domain type.
+ *
+ * Nullable columns become optional properties: the rest of the module (and the
+ * CSV export) was written against `actorId?: string`, not `string | null`.
+ */
+function toEntry(row: AuditRow): AuditLogEntry {
+  return {
+    id: row.id,
+    timestamp: row.timestamp,
+    actor: row.actor,
+    actorId: row.actorId ?? undefined,
+    action: row.action,
+    resource: row.resource,
+    resourceId: row.resourceId,
+    entityId: row.entityId,
+    ipAddress: row.ipAddress ?? undefined,
+    userAgent: row.userAgent ?? undefined,
+    requestMethod: row.requestMethod,
+    requestPath: row.requestPath,
+    statusCode: row.statusCode,
+    sensitivityLevel: row.sensitivityLevel as DataClassification,
+    details: (row.details ?? {}) as Record<string, unknown>,
+    hash: row.hash ?? undefined,
+    previousHash: row.previousHash ?? undefined,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // CSV Helpers
@@ -37,52 +121,77 @@ function escapeCsvValue(value: string): string {
 // ---------------------------------------------------------------------------
 
 export class AuditService {
-  private readonly entries: AuditLogEntry[] = [];
-
   // -------------------------------------------------------------------------
   // Public API
   // -------------------------------------------------------------------------
 
   /**
    * Create a tamper-proof audit log entry.
-   * Calculates a SHA-256 hash and chains it to the previous entry for
-   * tamper detection.
+   *
+   * Calculates a SHA-256 hash over the canonical fields and chains it to the
+   * previous entry FOR THE SAME ENTITY, then writes the row.
+   *
+   * The tail read and the insert happen inside one transaction holding an
+   * advisory lock keyed on the entityId, so two concurrent writers for one
+   * entity cannot both chain onto the same predecessor.
    */
   async logAuditEntry(
     params: Omit<AuditLogEntry, 'id' | 'timestamp' | 'hash' | 'previousHash'>,
   ): Promise<AuditLogEntry> {
-    const id = uuidv4();
     const timestamp = new Date();
 
-    const previousHash =
-      this.entries.length > 0
-        ? this.entries[this.entries.length - 1].hash ?? GENESIS_HASH
-        : GENESIS_HASH;
+    const row = await prisma.$transaction(async (tx) => {
+      // Serialise writers for this entity. Released when the transaction ends.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.entityId})::bigint)`;
 
-    const hash = this.calculateHash({
-      timestamp,
-      actor: params.actor,
-      action: params.action,
-      resource: params.resource,
-      details: params.details,
-      previousHash,
+      const tail = await tx.auditLogEntry.findFirst({
+        where: { entityId: params.entityId },
+        orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+        select: { hash: true },
+      });
+
+      const previousHash = tail?.hash ?? GENESIS_HASH;
+
+      const hash = this.calculateHash({
+        timestamp,
+        actor: params.actor,
+        action: params.action,
+        resource: params.resource,
+        details: params.details,
+        previousHash,
+      });
+
+      return tx.auditLogEntry.create({
+        data: {
+          timestamp,
+          actor: params.actor,
+          actorId: params.actorId ?? null,
+          action: params.action,
+          resource: params.resource,
+          resourceId: params.resourceId,
+          entityId: params.entityId,
+          ipAddress: params.ipAddress ?? null,
+          userAgent: params.userAgent ?? null,
+          requestMethod: params.requestMethod,
+          requestPath: params.requestPath,
+          statusCode: params.statusCode,
+          sensitivityLevel: params.sensitivityLevel,
+          details: (params.details ?? {}) as Prisma.InputJsonValue,
+          hash,
+          previousHash,
+        },
+      });
     });
 
-    const entry: AuditLogEntry = {
-      ...params,
-      id,
-      timestamp,
-      hash,
-      previousHash,
-    };
-
-    this.entries.push(entry);
-
-    return entry;
+    return toEntry(row as AuditRow);
   }
 
   /**
    * Retrieve paginated audit log entries with optional filters.
+   *
+   * `entityId` is applied like any other filter here because this method is
+   * internal to the service; the ROUTE is what proves the caller owns the
+   * entity, and it passes a VerifiedEntityId. See `audit-wiring.ts`.
    */
   async getAuditLog(
     filters: {
@@ -95,32 +204,35 @@ export class AuditService {
     page: number = 1,
     pageSize: number = DEFAULT_PAGE_SIZE,
   ): Promise<{ data: AuditLogEntry[]; total: number }> {
-    const filtered = this.applyFilters(this.entries, filters);
+    const where = this.buildWhere(filters);
 
-    const total = filtered.length;
-    const start = (page - 1) * pageSize;
-    const data = filtered.slice(start, start + pageSize);
+    const total = await prisma.auditLogEntry.count({ where });
+    const rows = (await prisma.auditLogEntry.findMany({
+      where,
+      orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    })) as AuditRow[];
 
-    return { data, total };
+    return { data: rows.map(toEntry), total };
   }
 
   /**
    * Verify the integrity of the hash chain for a given entity and date range.
    * Walks entries chronologically, recalculates each hash, and verifies that
    * chain links are intact.
+   *
+   * Recalculation now reads the STORED row. Before persistence the only way to
+   * simulate tampering in a test was to mutate the object the service had
+   * handed back — which "worked" solely because it was the same array element.
+   * A row in Postgres has to actually be edited, which is the real threat.
    */
   async verifyAuditChain(
     entityId: string,
     dateRange: { from: Date; to: Date },
   ): Promise<{ valid: boolean; brokenAt?: string; checkedEntries: number }> {
-    const filtered = this.entries.filter(
-      (entry) =>
-        entry.entityId === entityId &&
-        entry.timestamp >= dateRange.from &&
-        entry.timestamp <= dateRange.to,
-    );
+    const filtered = await this.entriesInWindow(entityId, dateRange);
 
-    // Entries are already ordered by timestamp (insertion order)
     for (let i = 0; i < filtered.length; i++) {
       const entry = filtered[i];
 
@@ -168,12 +280,7 @@ export class AuditService {
     dateRange: { from: Date; to: Date },
     format: 'JSON' | 'CSV',
   ): Promise<string> {
-    const filtered = this.entries.filter(
-      (entry) =>
-        entry.entityId === entityId &&
-        entry.timestamp >= dateRange.from &&
-        entry.timestamp <= dateRange.to,
-    );
+    const filtered = await this.entriesInWindow(entityId, dateRange);
 
     if (format === 'JSON') {
       return JSON.stringify(filtered);
@@ -239,12 +346,7 @@ export class AuditService {
     summary: string;
     riskScore: number;
   }> {
-    const filtered = this.entries.filter(
-      (entry) =>
-        entry.entityId === entityId &&
-        entry.timestamp >= timeWindow.from &&
-        entry.timestamp <= timeWindow.to,
-    );
+    const filtered = await this.entriesInWindow(entityId, timeWindow);
 
     if (filtered.length === 0) {
       return { anomalies: [], summary: 'No audit entries in the specified time window.', riskScore: 0 };
@@ -303,6 +405,19 @@ Return JSON with:
   // Private helpers
   // -------------------------------------------------------------------------
 
+  /** Every entry for one entity inside a window, oldest first. */
+  private async entriesInWindow(
+    entityId: string,
+    dateRange: { from: Date; to: Date },
+  ): Promise<AuditLogEntry[]> {
+    const rows = (await prisma.auditLogEntry.findMany({
+      where: { entityId, timestamp: { gte: dateRange.from, lte: dateRange.to } },
+      orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
+    })) as AuditRow[];
+
+    return rows.map(toEntry);
+  }
+
   /**
    * Calculate a SHA-256 hash over the canonical set of entry fields.
    */
@@ -327,44 +442,30 @@ Return JSON with:
   }
 
   /**
-   * Apply the provided filters to a list of audit entries.
+   * Translate the filter bag into a Prisma WHERE.
+   *
+   * Previously an in-memory `Array.filter`. Same semantics, applied in the
+   * database so pagination counts the whole table rather than one process's
+   * slice of it.
    */
-  private applyFilters(
-    entries: AuditLogEntry[],
-    filters: {
-      entityId?: string;
-      actor?: string;
-      resource?: string;
-      dateRange?: { from: Date; to: Date };
-      sensitivityLevel?: DataClassification;
-    },
-  ): AuditLogEntry[] {
-    return entries.filter((entry) => {
-      if (filters.entityId && entry.entityId !== filters.entityId) {
-        return false;
-      }
-      if (filters.actor && entry.actor !== filters.actor) {
-        return false;
-      }
-      if (filters.resource && entry.resource !== filters.resource) {
-        return false;
-      }
-      if (filters.dateRange) {
-        if (
-          entry.timestamp < filters.dateRange.from ||
-          entry.timestamp > filters.dateRange.to
-        ) {
-          return false;
-        }
-      }
-      if (
-        filters.sensitivityLevel &&
-        entry.sensitivityLevel !== filters.sensitivityLevel
-      ) {
-        return false;
-      }
-      return true;
-    });
+  private buildWhere(filters: {
+    entityId?: string;
+    actor?: string;
+    resource?: string;
+    dateRange?: { from: Date; to: Date };
+    sensitivityLevel?: DataClassification;
+  }): Prisma.AuditLogEntryWhereInput {
+    const where: Prisma.AuditLogEntryWhereInput = {};
+
+    if (filters.entityId) where.entityId = filters.entityId;
+    if (filters.actor) where.actor = filters.actor;
+    if (filters.resource) where.resource = filters.resource;
+    if (filters.sensitivityLevel) where.sensitivityLevel = filters.sensitivityLevel;
+    if (filters.dateRange) {
+      where.timestamp = { gte: filters.dateRange.from, lte: filters.dateRange.to };
+    }
+
+    return where;
   }
 }
 
