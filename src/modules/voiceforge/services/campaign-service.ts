@@ -10,8 +10,15 @@ import type {
   OutboundCallResult,
 } from '@/modules/voiceforge/types';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'VOICE_CAMPAIGN';
+
+/** A campaign draft whose scope has already been proven. See section 2. */
+export type CampaignDraft = Omit<
+  Campaign,
+  'id' | 'entityId' | 'stats' | 'createdAt' | 'updatedAt'
+> & { entityId: VerifiedEntityId };
 
 function emptyStats(totalTargeted: number): CampaignStats {
   return {
@@ -61,9 +68,7 @@ function serializeCampaign(data: Omit<Campaign, 'id' | 'createdAt' | 'updatedAt'
   });
 }
 
-export async function createCampaign(
-  data: Omit<Campaign, 'id' | 'stats' | 'createdAt' | 'updatedAt'>
-): Promise<Campaign> {
+export async function createCampaign(data: CampaignDraft): Promise<Campaign> {
   const campaignData = {
     ...data,
     stats: emptyStats(data.targetContactIds.length),
@@ -82,15 +87,18 @@ export async function createCampaign(
   return deserializeCampaign(doc);
 }
 
-export async function getCampaign(id: string): Promise<Campaign | null> {
+export async function getCampaign(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Campaign | null> {
   const doc = await prisma.document.findFirst({
-    where: { id, type: DOC_TYPE },
+    where: { id, type: DOC_TYPE, entityId },
   });
   if (!doc) return null;
   return deserializeCampaign(doc);
 }
 
-export async function listCampaigns(entityId: string): Promise<Campaign[]> {
+export async function listCampaigns(entityId: VerifiedEntityId): Promise<Campaign[]> {
   const docs = await prisma.document.findMany({
     where: { entityId, type: DOC_TYPE },
     orderBy: { createdAt: 'desc' },
@@ -98,41 +106,53 @@ export async function listCampaigns(entityId: string): Promise<Campaign[]> {
   return docs.map(deserializeCampaign);
 }
 
-export async function startCampaign(id: string): Promise<Campaign> {
-  return updateCampaignStatus(id, 'ACTIVE');
+export async function startCampaign(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Campaign> {
+  return updateCampaignStatus(id, entityId, 'ACTIVE');
 }
 
-export async function pauseCampaign(id: string): Promise<Campaign> {
-  return updateCampaignStatus(id, 'PAUSED');
+export async function pauseCampaign(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Campaign> {
+  return updateCampaignStatus(id, entityId, 'PAUSED');
 }
 
-export async function stopCampaign(id: string): Promise<Campaign> {
-  return updateCampaignStatus(id, 'STOPPED');
+export async function stopCampaign(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Campaign> {
+  return updateCampaignStatus(id, entityId, 'STOPPED');
 }
 
 async function updateCampaignStatus(
   id: string,
+  entityId: VerifiedEntityId,
   status: Campaign['status']
 ): Promise<Campaign> {
-  const campaign = await getCampaign(id);
+  const campaign = await getCampaign(id, entityId);
   if (!campaign) throw new Error(`Campaign ${id} not found`);
 
   campaign.status = status;
-  await prisma.document.update({
-    where: { id },
+  const res = await prisma.document.updateMany({
+    where: { id, type: DOC_TYPE, entityId },
     data: {
       content: serializeCampaign(campaign),
     },
   });
+  if (res.count === 0) throw new Error(`Campaign ${id} not found`);
 
   return campaign;
 }
 
 export async function updateStats(
   id: string,
+  entityId: VerifiedEntityId,
   callResult: OutboundCallResult
 ): Promise<CampaignStats> {
-  const campaign = await getCampaign(id);
+  const campaign = await getCampaign(id, entityId);
   if (!campaign) throw new Error(`Campaign ${id} not found`);
 
   const stats = { ...campaign.stats };
@@ -176,10 +196,11 @@ export async function updateStats(
     stats.totalCalled > 0 ? stats.totalInterested / stats.totalCalled : 0;
 
   campaign.stats = stats;
-  await prisma.document.update({
-    where: { id },
+  const res = await prisma.document.updateMany({
+    where: { id, type: DOC_TYPE, entityId },
     data: { content: serializeCampaign(campaign) },
   });
+  if (res.count === 0) throw new Error(`Campaign ${id} not found`);
 
   return stats;
 }
@@ -231,15 +252,16 @@ export function checkStopConditions(
 
 export async function getNextContacts(
   campaignId: string,
+  entityId: VerifiedEntityId,
   limit: number
 ): Promise<string[]> {
-  const campaign = await getCampaign(campaignId);
+  const campaign = await getCampaign(campaignId, entityId);
   if (!campaign) return [];
 
   // Get all calls for this campaign's contacts
   const calls = await prisma.call.findMany({
     where: {
-      entityId: campaign.entityId,
+      entityId,
       contactId: { in: campaign.targetContactIds },
       direction: 'OUTBOUND',
     },
@@ -256,12 +278,13 @@ export async function getNextContacts(
 
 export async function analyzeCampaignPerformance(
   campaignId: string,
+  entityId: VerifiedEntityId,
 ): Promise<{
   insights: string[];
   recommendations: string[];
   predictedOutcome: string;
 }> {
-  const campaign = await getCampaign(campaignId);
+  const campaign = await getCampaign(campaignId, entityId);
   if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
 
   try {

@@ -6,6 +6,7 @@
 import { prisma } from '@/lib/db';
 import { MockVoiceProvider } from '@/lib/voice/mock-provider';
 import type { ManagedNumber } from '@/modules/voiceforge/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'MANAGED_NUMBER';
 const provider = new MockVoiceProvider({ delay: 0 });
@@ -42,7 +43,7 @@ function serializeNumber(data: Omit<ManagedNumber, 'id'>): string {
 }
 
 export async function provisionNumber(
-  entityId: string,
+  entityId: VerifiedEntityId,
   areaCode: string,
   label: string
 ): Promise<ManagedNumber> {
@@ -72,31 +73,38 @@ export async function provisionNumber(
   return deserializeNumber(doc);
 }
 
-export async function releaseNumber(numberId: string): Promise<void> {
-  const num = await getNumber(numberId);
+export async function releaseNumber(
+  numberId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const num = await getNumber(numberId, entityId);
   if (!num) throw new Error(`Number ${numberId} not found`);
 
   await provider.releaseNumber(num.phoneNumber);
 
   const updated: Omit<ManagedNumber, 'id'> = { ...num, status: 'RELEASED' };
-  await prisma.document.update({
-    where: { id: numberId },
+  const res = await prisma.document.updateMany({
+    where: { id: numberId, type: DOC_TYPE, entityId },
     data: {
       content: serializeNumber(updated),
       status: 'ARCHIVED',
     },
   });
+  if (res.count === 0) throw new Error(`Number ${numberId} not found`);
 }
 
-export async function getNumber(numberId: string): Promise<ManagedNumber | null> {
+export async function getNumber(
+  numberId: string,
+  entityId: VerifiedEntityId
+): Promise<ManagedNumber | null> {
   const doc = await prisma.document.findFirst({
-    where: { id: numberId, type: DOC_TYPE },
+    where: { id: numberId, type: DOC_TYPE, entityId },
   });
   if (!doc) return null;
   return deserializeNumber(doc);
 }
 
-export async function listNumbers(entityId: string): Promise<ManagedNumber[]> {
+export async function listNumbers(entityId: VerifiedEntityId): Promise<ManagedNumber[]> {
   const docs = await prisma.document.findMany({
     where: { entityId, type: DOC_TYPE },
     orderBy: { createdAt: 'desc' },
@@ -106,32 +114,36 @@ export async function listNumbers(entityId: string): Promise<ManagedNumber[]> {
 
 export async function assignPersona(
   numberId: string,
+  entityId: VerifiedEntityId,
   personaId: string
 ): Promise<ManagedNumber> {
-  const num = await getNumber(numberId);
+  const num = await getNumber(numberId, entityId);
   if (!num) throw new Error(`Number ${numberId} not found`);
 
   const updated: Omit<ManagedNumber, 'id'> = { ...num, assignedPersonaId: personaId };
-  await prisma.document.update({
-    where: { id: numberId },
+  const res = await prisma.document.updateMany({
+    where: { id: numberId, type: DOC_TYPE, entityId },
     data: { content: serializeNumber(updated) },
   });
+  if (res.count === 0) throw new Error(`Number ${numberId} not found`);
 
   return { ...num, assignedPersonaId: personaId };
 }
 
 export async function assignInboundConfig(
   numberId: string,
+  entityId: VerifiedEntityId,
   configId: string
 ): Promise<ManagedNumber> {
-  const num = await getNumber(numberId);
+  const num = await getNumber(numberId, entityId);
   if (!num) throw new Error(`Number ${numberId} not found`);
 
   const updated: Omit<ManagedNumber, 'id'> = { ...num, inboundConfigId: configId };
-  await prisma.document.update({
-    where: { id: numberId },
+  const res = await prisma.document.updateMany({
+    where: { id: numberId, type: DOC_TYPE, entityId },
     data: { content: serializeNumber(updated) },
   });
+  if (res.count === 0) throw new Error(`Number ${numberId} not found`);
 
   return { ...num, inboundConfigId: configId };
 }

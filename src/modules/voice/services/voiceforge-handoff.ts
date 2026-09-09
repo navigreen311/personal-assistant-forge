@@ -8,11 +8,13 @@
 import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import type { VoiceForgeHandoff } from '@/modules/voice/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 interface InitiateHandoffParams {
   voiceSessionId: string;
   contactId: string;
-  entityId: string;
+  /** Proven scope: this writes a Call row, so a raw request value must not compile. */
+  entityId: VerifiedEntityId;
   phoneNumber: string;
   context: string;
   scriptHints?: string[];

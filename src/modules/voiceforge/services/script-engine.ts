@@ -11,8 +11,15 @@ import type {
   ScriptExecution,
 } from '@/modules/voiceforge/types';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'CALL_SCRIPT';
+
+/** A script draft whose scope has already been proven. See section 2. */
+export type ScriptDraft = Omit<
+  CallScript,
+  'id' | 'entityId' | 'version' | 'createdAt' | 'updatedAt'
+> & { entityId: VerifiedEntityId };
 
 function deserializeScript(doc: { id: string; entityId: string; version: number; content: string | null; status: string; createdAt: Date; updatedAt: Date }): CallScript {
   const data = JSON.parse(doc.content ?? '{}');
@@ -40,9 +47,7 @@ function serializeScript(data: Omit<CallScript, 'id' | 'version' | 'createdAt' |
   });
 }
 
-export async function createScript(
-  data: Omit<CallScript, 'id' | 'version' | 'createdAt' | 'updatedAt'>
-): Promise<CallScript> {
+export async function createScript(data: ScriptDraft): Promise<CallScript> {
   const doc = await prisma.document.create({
     data: {
       title: data.name,
@@ -55,15 +60,18 @@ export async function createScript(
   return deserializeScript(doc);
 }
 
-export async function getScript(id: string): Promise<CallScript | null> {
+export async function getScript(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<CallScript | null> {
   const doc = await prisma.document.findFirst({
-    where: { id, type: DOC_TYPE },
+    where: { id, type: DOC_TYPE, entityId },
   });
   if (!doc) return null;
   return deserializeScript(doc);
 }
 
-export async function listScripts(entityId: string): Promise<CallScript[]> {
+export async function listScripts(entityId: VerifiedEntityId): Promise<CallScript[]> {
   const docs = await prisma.document.findMany({
     where: { entityId, type: DOC_TYPE },
     orderBy: { createdAt: 'desc' },
@@ -73,21 +81,26 @@ export async function listScripts(entityId: string): Promise<CallScript[]> {
 
 export async function updateScript(
   id: string,
+  entityId: VerifiedEntityId,
   data: Partial<CallScript>
 ): Promise<CallScript> {
-  const existing = await getScript(id);
+  const existing = await getScript(id, entityId);
   if (!existing) throw new Error(`Script ${id} not found`);
 
-  const merged = { ...existing, ...data };
-  const doc = await prisma.document.update({
-    where: { id },
+  const merged = { ...existing, ...data, entityId: existing.entityId };
+  const res = await prisma.document.updateMany({
+    where: { id, type: DOC_TYPE, entityId },
     data: {
       title: merged.name,
       content: serializeScript(merged),
       status: merged.status,
     },
   });
-  return deserializeScript(doc);
+  if (res.count === 0) throw new Error(`Script ${id} not found`);
+
+  const updated = await getScript(id, entityId);
+  if (!updated) throw new Error(`Script ${id} not found`);
+  return updated;
 }
 
 export function startExecution(
@@ -254,7 +267,7 @@ export function validateScript(
 }
 
 export async function generateScriptWithAI(
-  entityId: string,
+  entityId: VerifiedEntityId,
   params: {
     purpose: string;
     targetAudience: string;
@@ -263,7 +276,7 @@ export async function generateScriptWithAI(
     keyPoints: string[];
     complianceRequirements?: string[];
   }
-): Promise<Omit<CallScript, 'id' | 'version' | 'createdAt' | 'updatedAt'>> {
+): Promise<ScriptDraft> {
   const result = await generateJSON<{
     name: string;
     description: string;
@@ -316,6 +329,7 @@ Generate a branching call script with:
 
 export async function optimizeScript(
   scriptId: string,
+  entityId: VerifiedEntityId,
   performanceData: {
     completionRate: number;
     avgDuration: number;
@@ -323,7 +337,7 @@ export async function optimizeScript(
     commonDropoffPoints: string[];
   }
 ): Promise<string[]> {
-  const script = await getScript(scriptId);
+  const script = await getScript(scriptId, entityId);
   if (!script) throw new Error(`Script ${scriptId} not found`);
 
   try {

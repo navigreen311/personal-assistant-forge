@@ -20,8 +20,20 @@ import type {
   GuardrailCheckResult,
   CallStatus,
 } from '@/modules/voiceforge/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const provider = new MockVoiceProvider({ delay: 0 });
+
+/**
+ * An outbound call request whose scope has already been proven.
+ *
+ * OutboundCallRequest.entityId is a plain string because the type is shared
+ * with client components. This narrows it for the service boundary, so a route
+ * cannot pass a body value straight through. See section 2.
+ */
+export type VerifiedOutboundCallRequest = Omit<OutboundCallRequest, 'entityId'> & {
+  entityId: VerifiedEntityId;
+};
 
 /** Internal logger for call lifecycle events */
 function logCallEvent(callId: string, event: string, details?: Record<string, unknown>): void {
@@ -31,7 +43,7 @@ function logCallEvent(callId: string, event: string, details?: Record<string, un
 }
 
 export async function initiateOutboundCall(
-  request: OutboundCallRequest
+  request: VerifiedOutboundCallRequest
 ): Promise<OutboundCallResult> {
   // Create call record first
   const call = await prisma.call.create({
@@ -94,8 +106,8 @@ export async function initiateOutboundCall(
   if (isVoicemail) {
     await dropVoicemail(session.callSid, request.personaId, request.purpose);
 
-    await prisma.call.update({
-      where: { id: call.id },
+    await prisma.call.updateMany({
+      where: { id: call.id, entityId: request.entityId },
       data: {
         outcome: 'VOICEMAIL',
         duration: 0,
@@ -147,9 +159,10 @@ export async function initiateOutboundCall(
     }
   }
 
-  // Update call record with final results
-  await prisma.call.update({
-    where: { id: call.id },
+  // Update call record with final results. updateMany + entityId so the scope
+  // is in the WHERE clause even on a row we just created. Section 3.
+  await prisma.call.updateMany({
+    where: { id: call.id, entityId: request.entityId },
     data: {
       outcome,
       duration,
@@ -382,13 +395,13 @@ export function checkGuardrails(
  * Initiate an outbound call as part of a campaign and update campaign stats.
  */
 export async function initiateOutboundCallForCampaign(
-  request: OutboundCallRequest & { campaignId: string }
+  request: VerifiedOutboundCallRequest & { campaignId: string }
 ): Promise<OutboundCallResult> {
   const result = await initiateOutboundCall(request);
 
   // Update campaign stats
   try {
-    await updateStats(request.campaignId, result);
+    await updateStats(request.campaignId, request.entityId, result);
   } catch {
     // Stats update failed -- call still succeeded
   }
