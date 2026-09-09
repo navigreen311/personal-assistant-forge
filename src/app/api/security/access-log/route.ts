@@ -1,28 +1,79 @@
 import { NextRequest } from 'next/server';
-import { success } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { success, error } from '@/shared/utils/api-response';
+import { withAuditedEntityScope } from '@/modules/security/audit-wiring';
+import { auditService } from '@/modules/security/services/audit-service';
+
+/**
+ * P-10 / T-002 + T-026 — THE READ SIDE OF THE AUDIT LOG.
+ *
+ * This route used to return ten hardcoded rows: invented user emails
+ * (`alex@johnson.com`), invented attacker IPs, invented cities, and three
+ * "blocked" login attempts from Sao Paulo and Moscow that never happened. An
+ * operator opening the access log during an incident was reading fiction with
+ * the confident presentation of fact, which is worse than an empty page —
+ * an empty page prompts a question, a plausible one ends the investigation.
+ *
+ * It now serves the real `AuditLogEntry` rows for the caller's verified entity.
+ * Together with `audit-wiring.ts` on the write side, this is the loop closing:
+ * a request to any route in this package writes a hash-chained row, and this is
+ * where that row can be read back.
+ *
+ * Empty is a legitimate answer and is reported as such. It means nothing has
+ * been recorded for this tenant yet, not that nothing happened elsewhere.
+ */
+
+const MAX_PAGE_SIZE = 200;
+
+/** How the UI presents an outcome; derived from the status, never stored twice. */
+function statusOf(statusCode: number): 'success' | 'failed' | 'blocked' {
+  if (statusCode < 400) return 'success';
+  if (statusCode === 401 || statusCode === 403) return 'blocked';
+  return 'failed';
+}
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async () => {
-    const entries = [
-      { id: 'al-001', time: new Date().toISOString(), user: 'alex@johnson.com', action: 'Login', ipAddress: '72.134.22.91', location: 'San Francisco, US', status: 'success' },
-      { id: 'al-002', time: new Date(Date.now() - 300000).toISOString(), user: 'maria@johnson.com', action: 'Login', ipAddress: '98.45.12.78', location: 'Austin, US', status: 'success' },
-      { id: 'al-003', time: new Date(Date.now() - 1800000).toISOString(), user: 'unknown@attacker.com', action: 'Login attempt', ipAddress: '45.227.11.3', location: 'Sao Paulo, BR', status: 'blocked' },
-      { id: 'al-004', time: new Date(Date.now() - 3600000).toISOString(), user: 'david@johnson.com', action: 'Export data', ipAddress: '72.134.22.95', location: 'San Francisco, US', status: 'success' },
-      { id: 'al-005', time: new Date(Date.now() - 7200000).toISOString(), user: 'unknown@attacker.com', action: 'Login attempt', ipAddress: '45.227.11.3', location: 'Sao Paulo, BR', status: 'failed' },
-      { id: 'al-006', time: new Date(Date.now() - 10800000).toISOString(), user: 'sarah@johnson.com', action: 'Password change', ipAddress: '10.0.0.42', location: 'New York, US', status: 'success' },
-      { id: 'al-007', time: new Date(Date.now() - 14400000).toISOString(), user: 'alex@johnson.com', action: 'API key rotation', ipAddress: '72.134.22.91', location: 'San Francisco, US', status: 'success' },
-      { id: 'al-008', time: new Date(Date.now() - 86400000).toISOString(), user: 'unknown', action: 'Login attempt', ipAddress: '203.0.113.42', location: 'Beijing, CN', status: 'blocked' },
-      { id: 'al-009', time: new Date(Date.now() - 90000000).toISOString(), user: 'emily@davis.com', action: 'Login', ipAddress: '192.168.1.105', location: 'Chicago, US', status: 'success' },
-      { id: 'al-010', time: new Date(Date.now() - 172800000).toISOString(), user: 'unknown', action: 'Login attempt', ipAddress: '185.220.101.1', location: 'Moscow, RU', status: 'blocked' },
-    ];
+  return withAuditedEntityScope(
+    request,
+    { resource: 'security.access-log', sensitivityLevel: 'CONFIDENTIAL' },
+    async (req, session, entityId) => {
+      try {
+        const params = req.nextUrl.searchParams;
+        const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
+        const pageSize = Math.min(
+          MAX_PAGE_SIZE,
+          Math.max(1, Number(params.get('pageSize') ?? '50') || 50),
+        );
 
-    const autoBlockRules = [
-      { id: 'rule-1', label: 'Block IP after 5 failed login attempts', enabled: true },
-      { id: 'rule-2', label: 'Alert on login from new country', enabled: true },
-      { id: 'rule-3', label: 'Alert on login outside business hours', enabled: false },
-    ];
+        // entityId LAST and unconditionally, so no filter combination widens it.
+        const { data, total } = await auditService.getAuditLog(
+          {
+            actor: params.get('actor') ?? undefined,
+            resource: params.get('resource') ?? undefined,
+            entityId,
+          },
+          page,
+          pageSize,
+        );
 
-    return success({ entries, autoBlockRules });
-  });
+        const entries = data.map((entry) => ({
+          id: entry.id,
+          time: entry.timestamp.toISOString(),
+          user: entry.actor,
+          action: entry.action,
+          resource: entry.resource,
+          ipAddress: entry.ipAddress ?? null,
+          userAgent: entry.userAgent ?? null,
+          statusCode: entry.statusCode,
+          status: statusOf(entry.statusCode),
+          sensitivityLevel: entry.sensitivityLevel,
+          hash: entry.hash ?? null,
+          previousHash: entry.previousHash ?? null,
+        }));
+
+        return success({ entries, total, page, pageSize });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    },
+  );
 }

@@ -14,6 +14,7 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   createDLPRule,
   getDLPRules,
@@ -50,7 +51,7 @@ describe('DLP Service', () => {
       (mockRule.create as jest.Mock).mockResolvedValue(mockCreated);
 
       const result = await createDLPRule({
-        entityId: 'entity-1',
+        entityId: verifiedEntityIdForTest('entity-1'),
         name: 'SSN Detector',
         pattern: '\\b\\d{3}-\\d{2}-\\d{4}\\b',
         action: 'BLOCK',
@@ -105,7 +106,7 @@ describe('DLP Service', () => {
     it('should detect SSN patterns', async () => {
       (mockRule.findMany as jest.Mock).mockResolvedValue([ssnRule]);
 
-      const result = await scanContent('entity-1', 'My SSN is 123-45-6789.');
+      const result = await scanContent(verifiedEntityIdForTest('entity-1'), 'My SSN is 123-45-6789.');
       expect(result.passed).toBe(false);
       expect(result.violations.length).toBeGreaterThan(0);
       expect(result.violations[0].matchedText).toBe('123-45-6789');
@@ -114,7 +115,7 @@ describe('DLP Service', () => {
     it('should detect credit card patterns', async () => {
       (mockRule.findMany as jest.Mock).mockResolvedValue([ccRule]);
 
-      const result = await scanContent('entity-1', 'Card: 4111-1111-1111-1111');
+      const result = await scanContent(verifiedEntityIdForTest('entity-1'), 'Card: 4111-1111-1111-1111');
       expect(result.passed).toBe(false);
       expect(result.violations.length).toBeGreaterThan(0);
     });
@@ -122,7 +123,7 @@ describe('DLP Service', () => {
     it('should return clean when no violations', async () => {
       (mockRule.findMany as jest.Mock).mockResolvedValue([ssnRule, ccRule]);
 
-      const result = await scanContent('entity-1', 'This is a perfectly clean message.');
+      const result = await scanContent(verifiedEntityIdForTest('entity-1'), 'This is a perfectly clean message.');
       expect(result.passed).toBe(true);
       expect(result.violations).toHaveLength(0);
     });
@@ -131,7 +132,7 @@ describe('DLP Service', () => {
       (mockRule.findMany as jest.Mock).mockResolvedValue([ssnRule, ccRule]);
 
       const result = await scanContent(
-        'entity-1',
+        verifiedEntityIdForTest('entity-1'),
         'SSN: 123-45-6789, Card: 4111-1111-1111-1111'
       );
       expect(result.passed).toBe(false);

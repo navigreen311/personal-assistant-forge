@@ -4,6 +4,7 @@ import {
   getWarRoomState,
   addWarRoomDocument,
 } from '@/modules/crisis/services/war-room-service';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   createCrisisEvent,
   getCrisisById,
@@ -52,7 +53,7 @@ describe('WarRoomService', () => {
   describe('activateWarRoom', () => {
     it('should activate war room with cleared events, documents, and drafted comms', async () => {
       const crisis = await createCrisisEvent(
-        'user-wr-1', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Server Breach', 'Unauthorized access detected'
+        'user-wr-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Server Breach', 'Unauthorized access detected'
       );
 
       const warRoom = await activateWarRoom(crisis.id);
@@ -66,7 +67,7 @@ describe('WarRoomService', () => {
 
     it('should use AI to generate stakeholder communications', async () => {
       const crisis = await createCrisisEvent(
-        'user-wr-2', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'AI Comms Test', 'desc'
+        'user-wr-2', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'AI Comms Test', 'desc'
       );
 
       await activateWarRoom(crisis.id);
@@ -78,7 +79,7 @@ describe('WarRoomService', () => {
       generateText.mockRejectedValueOnce(new Error('AI unavailable'));
 
       const crisis = await createCrisisEvent(
-        'user-wr-3', 'entity-1', 'DATA_BREACH', 'HIGH', 'Fallback test', 'desc'
+        'user-wr-3', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'HIGH', 'Fallback test', 'desc'
       );
 
       const warRoom = await activateWarRoom(crisis.id);
@@ -95,7 +96,7 @@ describe('WarRoomService', () => {
 
     it('should persist war room state on the crisis object', async () => {
       const crisis = await createCrisisEvent(
-        'user-wr-4', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Persist test', 'desc'
+        'user-wr-4', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Persist test', 'desc'
       );
 
       await activateWarRoom(crisis.id);
@@ -108,7 +109,7 @@ describe('WarRoomService', () => {
   describe('deactivateWarRoom', () => {
     it('should set war room isActive to false', async () => {
       const crisis = await createCrisisEvent(
-        'user-deact-1', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Deact test', 'desc'
+        'user-deact-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Deact test', 'desc'
       );
       await activateWarRoom(crisis.id);
 
@@ -128,7 +129,7 @@ describe('WarRoomService', () => {
   describe('getWarRoomState', () => {
     it('should return the current war room state', async () => {
       const crisis = await createCrisisEvent(
-        'user-state-1', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'State test', 'desc'
+        'user-state-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'State test', 'desc'
       );
 
       const state = await getWarRoomState(crisis.id);
@@ -150,7 +151,7 @@ describe('WarRoomService', () => {
   describe('addWarRoomDocument', () => {
     it('should add a document to the surfaced documents list', async () => {
       const crisis = await createCrisisEvent(
-        'user-doc-1', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Doc test', 'desc'
+        'user-doc-1', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Doc test', 'desc'
       );
       await activateWarRoom(crisis.id);
 
@@ -161,7 +162,7 @@ describe('WarRoomService', () => {
 
     it('should not duplicate an existing document ID', async () => {
       const crisis = await createCrisisEvent(
-        'user-doc-2', 'entity-1', 'DATA_BREACH', 'CRITICAL', 'Dup test', 'desc'
+        'user-doc-2', verifiedEntityIdForTest('entity-1'), 'DATA_BREACH', 'CRITICAL', 'Dup test', 'desc'
       );
       await activateWarRoom(crisis.id);
 

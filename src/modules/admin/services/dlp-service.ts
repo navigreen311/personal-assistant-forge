@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import type { Prisma } from '@prisma/client';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { DLPRule } from '../types';
 
 export const dlpStore = new Map<string, DLPRule>();
@@ -32,7 +33,11 @@ function ruleToDLP(rule: {
   };
 }
 
-export async function createDLPRule(rule: Omit<DLPRule, 'id'>): Promise<DLPRule> {
+// P-10/T-001: the entity is a VerifiedEntityId, so a raw value off a request
+// body no longer compiles at the call site. The route proves ownership first.
+export async function createDLPRule(
+  rule: Omit<DLPRule, 'id' | 'entityId'> & { entityId: VerifiedEntityId },
+): Promise<DLPRule> {
   const created = await prisma.rule.create({
     data: {
       name: rule.name,
@@ -57,7 +62,7 @@ export async function createDLPRule(rule: Omit<DLPRule, 'id'>): Promise<DLPRule>
   return result;
 }
 
-export async function getDLPRules(entityId: string): Promise<DLPRule[]> {
+export async function getDLPRules(entityId: VerifiedEntityId): Promise<DLPRule[]> {
   const rules = await prisma.rule.findMany({
     where: {
       scope: 'DLP',
@@ -68,7 +73,7 @@ export async function getDLPRules(entityId: string): Promise<DLPRule[]> {
   return rules.map(ruleToDLP);
 }
 
-export async function listRules(entityId: string): Promise<DLPRule[]> {
+export async function listRules(entityId: VerifiedEntityId): Promise<DLPRule[]> {
   return getDLPRules(entityId);
 }
 
@@ -112,7 +117,7 @@ export async function deleteDLPRule(ruleId: string): Promise<void> {
 }
 
 export async function checkContent(
-  entityId: string,
+  entityId: VerifiedEntityId,
   content: string,
   scope: string
 ): Promise<{ passed: boolean; violations: { rule: DLPRule; matchedText: string }[] }> {
@@ -120,7 +125,7 @@ export async function checkContent(
 }
 
 export async function scanContent(
-  entityId: string,
+  entityId: VerifiedEntityId,
   content: string,
   scope?: string
 ): Promise<{ passed: boolean; violations: { rule: DLPRule; matchedText: string }[] }> {

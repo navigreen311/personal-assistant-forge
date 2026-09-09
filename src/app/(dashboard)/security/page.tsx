@@ -26,9 +26,9 @@ interface Tab {
 
 interface StatsData {
   totalAuditEvents: number;
-  activeConsents: number;
-  threatScore: number;
-  complianceScore: number;
+  activeConsents: number | null;
+  threatScore: number | null;
+  complianceScore: number | null;
 }
 
 interface RolePermissionMap {
@@ -260,10 +260,6 @@ const DEMO_ENTITY_ID = 'demo-entity';
 // ============================================================================
 // Mock data generators
 // ============================================================================
-
-function generateMockStats(): StatsData {
-  return { totalAuditEvents: 12847, activeConsents: 342, threatScore: 18, complianceScore: 87 };
-}
 
 function generateMockRoles(): RolePermissionMap[] {
   return [
@@ -500,11 +496,15 @@ function vaultCatColor(cat: string): string {
 // ============================================================================
 
 function StatsCards({ stats, loading }: { stats: StatsData | null; loading: boolean }) {
+  // P-10/T-026. `value` may be null, meaning "not measurable", and that renders
+  // as an em dash. It used to fall back to `?? 0`, which is a MEASUREMENT: a
+  // threat score of 0 reads as "no threats" and is indistinguishable from "the
+  // API did not answer". Zero and unknown are different facts.
   const cards = [
-    { label: 'Total Audit Events', value: stats?.totalAuditEvents ?? 0, bgColor: 'bg-blue-50', textColor: 'text-blue-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg> },
-    { label: 'Active Consents', value: stats?.activeConsents ?? 0, bgColor: 'bg-green-50', textColor: 'text-green-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg> },
-    { label: 'Threat Score', value: stats?.threatScore ?? 0, suffix: '/100', bgColor: stats && stats.threatScore > 50 ? 'bg-red-50' : stats && stats.threatScore > 25 ? 'bg-yellow-50' : 'bg-green-50', textColor: stats && stats.threatScore > 50 ? 'text-red-600' : stats && stats.threatScore > 25 ? 'text-yellow-600' : 'text-green-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg> },
-    { label: 'Compliance Score', value: stats?.complianceScore ?? 0, suffix: '/100', bgColor: stats && stats.complianceScore >= 80 ? 'bg-green-50' : stats && stats.complianceScore >= 50 ? 'bg-yellow-50' : 'bg-red-50', textColor: stats && stats.complianceScore >= 80 ? 'text-green-600' : stats && stats.complianceScore >= 50 ? 'text-yellow-600' : 'text-red-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg> },
+    { label: 'Total Audit Events', value: stats?.totalAuditEvents ?? null, bgColor: 'bg-blue-50', textColor: 'text-blue-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg> },
+    { label: 'Active Consents', value: stats?.activeConsents ?? null, bgColor: 'bg-green-50', textColor: 'text-green-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg> },
+    { label: 'Threat Score', value: stats?.threatScore ?? null, suffix: '/100', bgColor: stats?.threatScore == null ? 'bg-gray-50' : stats.threatScore > 50 ? 'bg-red-50' : stats.threatScore > 25 ? 'bg-yellow-50' : 'bg-green-50', textColor: stats?.threatScore == null ? 'text-gray-400' : stats.threatScore > 50 ? 'text-red-600' : stats.threatScore > 25 ? 'text-yellow-600' : 'text-green-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg> },
+    { label: 'Compliance Score', value: stats?.complianceScore ?? null, suffix: '/100', bgColor: stats?.complianceScore == null ? 'bg-gray-50' : stats.complianceScore >= 80 ? 'bg-green-50' : stats.complianceScore >= 50 ? 'bg-yellow-50' : 'bg-red-50', textColor: stats?.complianceScore == null ? 'text-gray-400' : stats.complianceScore >= 80 ? 'text-green-600' : stats.complianceScore >= 50 ? 'text-yellow-600' : 'text-red-600', icon: <svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg> },
   ];
 
   return (
@@ -516,8 +516,14 @@ function StatsCards({ stats, loading }: { stats: StatsData | null; loading: bool
             <div className="h-8 w-20 animate-pulse rounded bg-gray-200" />
           ) : (
             <p className={`text-3xl font-bold ${card.textColor}`}>
-              {card.value.toLocaleString()}
-              {card.suffix && <span className="text-lg font-normal opacity-60">{card.suffix}</span>}
+              {card.value === null ? (
+                <span className="text-gray-400" title="Not measurable — no data source">&mdash;</span>
+              ) : (
+                <>
+                  {card.value.toLocaleString()}
+                  {card.suffix && <span className="text-lg font-normal opacity-60">{card.suffix}</span>}
+                </>
+              )}
             </p>
           )}
           <p className="mt-1 text-sm font-medium text-gray-600">{card.label}</p>
@@ -1439,6 +1445,24 @@ export default function SecurityDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // ==========================================================================
+  // P-10 / T-026 — WHY THIS LOOP LOOKS DIFFERENT
+  //
+  // It used to call `generateMockStats()` -- a function returning the literals
+  // `{ totalAuditEvents: 12847, activeConsents: 342, threatScore: 18,
+  // complianceScore: 87 }` -- and then overwrite `threatScore` ONLY if the
+  // reputation API happened to answer. Every other number was fabricated on
+  // every render, and on a total fetch failure the `catch` set the fabricated
+  // stats again and cleared nothing. So during an outage the security dashboard
+  // showed a threat score of 18 out of 100 and a compliance score of 87: a
+  // reassuring, entirely invented, green board. An operator checking whether
+  // they were under attack was actively misinformed at the worst moment.
+  //
+  // Now: the numbers come from the audit log via /api/security/dashboard, a
+  // failure is an ERROR STATE, and anything with no data source is null and
+  // renders as an em dash. "We cannot tell you" is a legitimate answer here and
+  // a zero is not -- a threat score of 0 claims safety.
+  // ==========================================================================
   useEffect(() => {
     let cancelled = false;
 
@@ -1446,27 +1470,42 @@ export default function SecurityDashboardPage() {
       setLoading(true);
       setError(null);
       try {
-        const results = await Promise.allSettled([
-          fetch('/api/safety/reputation?entityId=' + DEMO_ENTITY_ID),
-          fetch('/api/admin/policies?entityId=' + DEMO_ENTITY_ID),
-        ]);
+        const res = await fetch('/api/security/dashboard');
+        if (!res.ok) {
+          throw new Error(
+            res.status === 401
+              ? 'Not signed in.'
+              : `Security dashboard unavailable (HTTP ${res.status}).`
+          );
+        }
 
-        const mockStats = generateMockStats();
+        const body = await res.json();
+        if (!body?.success) {
+          throw new Error(body?.error?.message ?? 'Security dashboard returned an error.');
+        }
 
         if (!cancelled) {
-          const repResult = results[0];
-          if (repResult.status === 'fulfilled' && repResult.value.ok) {
-            try {
-              const data = await repResult.value.json();
-              if (data?.data?.riskScore !== undefined) {
-                mockStats.threatScore = Math.round(data.data.riskScore);
-              }
-            } catch { /* use mock */ }
-          }
-          setStats(mockStats);
+          setStats({
+            totalAuditEvents: body.data.auditEntries30d ?? 0,
+            // No consent or compliance figure is derivable from the audit log,
+            // and inventing one is the defect this task removes.
+            activeConsents: null,
+            threatScore: null,
+            complianceScore: body.data.securityScore ?? null,
+          });
         }
-      } catch {
-        if (!cancelled) setStats(generateMockStats());
+      } catch (err) {
+        if (!cancelled) {
+          // Deliberately BOTH: an error banner AND no numbers. Showing stale or
+          // invented figures beside an error message is how a reader ends up
+          // trusting the figures and ignoring the banner.
+          setStats(null);
+          setError(
+            err instanceof Error
+              ? `${err.message} Security figures are unavailable — this page is not reporting a safe state, it is reporting no state.`
+              : 'Security figures are unavailable.'
+          );
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }

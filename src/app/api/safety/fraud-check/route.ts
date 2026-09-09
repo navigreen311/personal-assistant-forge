@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withRole } from '@/shared/middleware/auth';
+import { withAuditedRole } from '@/modules/security/audit-wiring';
 import { checkForFraud } from '@/engines/trust-safety/fraud-detector';
 import type { ActionLog } from '@/shared/types';
 
@@ -26,7 +26,14 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, _session) => {
+// P-10/T-002: audited. Stateless analyser with no entity in the model, so
+// `withAuditedRole` (no entity scope) is the right helper — see
+// src/modules/security/audit-wiring.ts for why that is a named choice.
+  return withAuditedRole(
+    request,
+    ['admin'],
+    { resource: 'safety.fraud-check', sensitivityLevel: 'CONFIDENTIAL' },
+    async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RequestSchema.safeParse(body);
@@ -45,5 +52,6 @@ export async function POST(request: NextRequest) {
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to check for fraud', 500);
     }
-  });
+    },
+  );
 }

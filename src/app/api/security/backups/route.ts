@@ -1,42 +1,50 @@
 import { NextRequest } from 'next/server';
-import { success } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { error } from '@/shared/utils/api-response';
+import { withAuditedEntityScope } from '@/modules/security/audit-wiring';
+
+/**
+ * P-10 / T-026 — backups: an honest 501 in place of a reassuring fiction.
+ *
+ * GET returned a hardcoded schedule ("daily", "AWS S3", "encryptionEnabled:
+ * true"), five invented backup runs with sizes and durations, and a disaster
+ * recovery block claiming `rto: '~15 minutes'` and a recovery test that
+ * "passed" thirty days ago. POST returned `status: 'in_progress'` and
+ * "Backup initiated successfully" without initiating anything.
+ *
+ * There is no backup subsystem in this build. The difference between this route
+ * and the threat feed is that a threat feed has a real substitute in the audit
+ * log; a backup does not — there is nothing truthful to return. So it reports
+ * NOT_IMPLEMENTED rather than a comforting shape.
+ *
+ * This is the one place in T-026 where the honest answer is an error status. It
+ * is deliberate: a UI panel that renders "not implemented" sends someone to
+ * arrange backups. A panel that renders five green completed runs does not, and
+ * that is the failure this task exists to prevent — the fiction was doing active
+ * harm precisely because it was reassuring.
+ */
+
+const MESSAGE =
+  'No backup subsystem is configured in this deployment. This endpoint previously ' +
+  'returned fabricated schedule, history and disaster-recovery figures.';
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async () => {
-    const schedule = {
-      frequency: 'daily',
-      retention: '30 days',
-      destination: 'AWS S3',
-      encryptionEnabled: true,
-    };
-
-    const recentBackups = [
-      { id: 'bk-001', date: new Date(Date.now() - 7200000).toISOString(), size: '2.4 GB', duration: '12 min', status: 'completed' },
-      { id: 'bk-002', date: new Date(Date.now() - 86400000).toISOString(), size: '2.3 GB', duration: '11 min', status: 'completed' },
-      { id: 'bk-003', date: new Date(Date.now() - 172800000).toISOString(), size: '2.3 GB', duration: '13 min', status: 'completed' },
-      { id: 'bk-004', date: new Date(Date.now() - 259200000).toISOString(), size: '2.2 GB', duration: '10 min', status: 'completed' },
-      { id: 'bk-005', date: new Date(Date.now() - 345600000).toISOString(), size: '2.2 GB', duration: '14 min', status: 'failed' },
-    ];
-
-    const disasterRecovery = {
-      rpo: '24 hours',
-      rto: '~15 minutes',
-      lastRecoveryTest: new Date(Date.now() - 30 * 86400000).toISOString(),
-      lastRecoveryTestResult: 'passed',
-    };
-
-    return success({ schedule, recentBackups, disasterRecovery });
-  });
+  return withAuditedEntityScope(
+    request,
+    { resource: 'security.backups', sensitivityLevel: 'CONFIDENTIAL' },
+    async () => error('NOT_IMPLEMENTED', MESSAGE, 501),
+  );
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async () => {
-    return success({
-      id: `bk-${Date.now()}`,
-      date: new Date().toISOString(),
-      status: 'in_progress',
-      message: 'Backup initiated successfully',
-    }, 201);
-  });
+  return withAuditedEntityScope(
+    request,
+    { resource: 'security.backups', sensitivityLevel: 'CONFIDENTIAL' },
+    async () =>
+      error(
+        'NOT_IMPLEMENTED',
+        'Cannot start a backup: no backup subsystem is configured. This endpoint ' +
+          'previously reported "Backup initiated successfully" without doing anything.',
+        501,
+      ),
+  );
 }

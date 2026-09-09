@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
 import { success, error } from '@/shared/utils/api-response';
 import { delegateTask, getDelegatedTasks } from '@/modules/delegation/services/delegation-service';
 import { buildContextPack } from '@/modules/delegation/services/delegation-service';
@@ -19,8 +19,12 @@ const createDelegationSchema = z.object({
   }).optional(),
 });
 
+// P-10/T-002: audited. Already correctly scoped to `session.userId`;
+// delegations carry no entityId in the model (tenancy-pattern.md §5b).
+const AUDIT = { resource: 'delegation', sensitivityLevel: 'CONFIDENTIAL' as const };
+
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuditedAuth(request, AUDIT, async (req, session) => {
     try {
       const { searchParams } = req.nextUrl;
       const direction = searchParams.get('direction') as 'delegated_by' | 'delegated_to';
@@ -38,7 +42,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuditedAuth(request, AUDIT, async (req, session) => {
     try {
       const body = await req.json();
       const parsed = createDelegationSchema.safeParse(body);

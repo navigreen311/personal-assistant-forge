@@ -8,6 +8,7 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   configureSSOProvider,
   getSSOConfig,
@@ -34,7 +35,7 @@ describe('SSO Service', () => {
         complianceProfile: ['sso:{"entityId":"entity-1","provider":"SAML"}'],
       });
 
-      const result = await configureSSOProvider('entity-1', {
+      const result = await configureSSOProvider(verifiedEntityIdForTest('entity-1'), {
         provider: 'SAML',
         issuerUrl: 'https://idp.example.com',
         certificateFingerprint: 'abc123',
@@ -48,7 +49,7 @@ describe('SSO Service', () => {
     it('should throw if entity not found', async () => {
       (mockEntity.findUnique as jest.Mock).mockResolvedValue(null);
       await expect(
-        configureSSOProvider('nonexistent', { provider: 'SAML' })
+        configureSSOProvider(verifiedEntityIdForTest('nonexistent'), { provider: 'SAML' })
       ).rejects.toThrow('not found');
     });
   });
@@ -115,7 +116,7 @@ describe('SSO Service', () => {
         ],
       });
 
-      const result = await testConnection('entity-1');
+      const result = await testConnection(verifiedEntityIdForTest('entity-1'));
       expect(result.success).toBe(true);
       expect(result.responseTime).toBeDefined();
     });
@@ -134,7 +135,7 @@ describe('SSO Service', () => {
         ],
       });
 
-      const result = await testConnection('entity-1');
+      const result = await testConnection(verifiedEntityIdForTest('entity-1'));
       expect(result.success).toBe(true);
     });
 
@@ -144,7 +145,7 @@ describe('SSO Service', () => {
         complianceProfile: [],
       });
 
-      const result = await testConnection('entity-1');
+      const result = await testConnection(verifiedEntityIdForTest('entity-1'));
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
     });
@@ -157,7 +158,7 @@ describe('SSO Service', () => {
         complianceProfile: [],
       });
 
-      const result = await getSSOConfig('entity-1');
+      const result = await getSSOConfig(verifiedEntityIdForTest('entity-1'));
       expect(result.provider).toBe('NONE');
       expect(result.isEnabled).toBe(false);
     });
@@ -171,7 +172,7 @@ describe('SSO Service', () => {
       });
       (mockEntity.update as jest.Mock).mockResolvedValue({});
 
-      await deleteSSOConfig('entity-1');
+      await deleteSSOConfig(verifiedEntityIdForTest('entity-1'));
       expect(mockEntity.update).toHaveBeenCalledWith(
         expect.objectContaining({
           data: { complianceProfile: ['other-compliance'] },

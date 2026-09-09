@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import type { Prisma } from '@prisma/client';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { OrgPolicy } from '../types';
 
 export const policyStore = new Map<string, OrgPolicy>();
@@ -27,8 +28,11 @@ function ruleToPolicyObj(rule: {
   };
 }
 
+// P-10/T-001: see the note in dlp-service.ts.
 export async function createPolicy(
-  policy: Omit<OrgPolicy, 'id' | 'createdAt' | 'updatedAt'>
+  policy: Omit<OrgPolicy, 'id' | 'createdAt' | 'updatedAt' | 'entityId'> & {
+    entityId: VerifiedEntityId;
+  }
 ): Promise<OrgPolicy> {
   const rule = await prisma.rule.create({
     data: {
@@ -46,7 +50,10 @@ export async function createPolicy(
   return result;
 }
 
-export async function getPolicies(entityId: string, type?: string): Promise<OrgPolicy[]> {
+export async function getPolicies(
+  entityId: VerifiedEntityId,
+  type?: string,
+): Promise<OrgPolicy[]> {
   const rules = await prisma.rule.findMany({
     where: { scope: 'ORG_POLICY', entityId },
   });
@@ -58,7 +65,7 @@ export async function getPolicies(entityId: string, type?: string): Promise<OrgP
   return policies;
 }
 
-export async function listPolicies(entityId: string): Promise<OrgPolicy[]> {
+export async function listPolicies(entityId: VerifiedEntityId): Promise<OrgPolicy[]> {
   return getPolicies(entityId);
 }
 
@@ -98,7 +105,7 @@ export async function deletePolicy(policyId: string): Promise<void> {
 }
 
 export async function enforcePolicy(
-  entityId: string,
+  entityId: VerifiedEntityId,
   action: string,
   context: Record<string, unknown>
 ): Promise<{
@@ -159,7 +166,7 @@ export async function enforcePolicy(
 }
 
 export async function enforceRetentionPolicy(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<{ deletedRecords: number; retainedRecords: number }> {
   const policies = await getPolicies(entityId, 'RETENTION');
   const activeRetention = policies.filter((p) => p.isActive);
@@ -169,7 +176,7 @@ export async function enforceRetentionPolicy(
   };
 }
 
-export async function getComplianceReport(entityId: string): Promise<{
+export async function getComplianceReport(entityId: VerifiedEntityId): Promise<{
   compliancePercentage: number;
   totalPolicies: number;
   activePolicies: number;

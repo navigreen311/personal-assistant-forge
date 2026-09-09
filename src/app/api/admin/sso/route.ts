@@ -1,11 +1,15 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
+import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
 import { getSSOConfig, configureSAML, enableSSO, disableSSO } from '@/modules/admin/services/sso-service';
 
+// P-10/T-001. The worst of the six: SSO configuration decides which identity
+// provider is trusted to assert who a tenant's users are. A global-admin session
+// plus `?entityId=<theirs>` was enough to point another tenant's sign-in at an
+// issuer of the caller's choosing. That is account takeover, not a data leak.
 const configureSSOSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   provider: z.enum(['SAML', 'OIDC']),
   issuerUrl: z.string().url().optional(),
   clientId: z.string().optional(),
@@ -13,12 +17,11 @@ const configureSSOSchema = z.object({
   action: z.enum(['configure', 'enable', 'disable']).default('configure'),
 });
 
-export async function GET(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, _session) => {
-    try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) return error('VALIDATION_ERROR', 'entityId is required', 400);
+const AUDIT = { resource: 'admin.sso', sensitivityLevel: 'RESTRICTED' as const };
 
+export async function GET(request: NextRequest) {
+  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+    try {
       const config = await getSSOConfig(entityId);
       return success(config);
     } catch (err) {
@@ -28,13 +31,13 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withRole(request, ['admin'], async (req, _session) => {
+  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = configureSSOSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const { entityId, action, ...config } = parsed.data;
+      const { entityId: _requested, action, ...config } = parsed.data;
 
       let result;
       switch (action) {

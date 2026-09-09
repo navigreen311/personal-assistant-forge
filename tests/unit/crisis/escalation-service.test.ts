@@ -10,6 +10,7 @@ import {
   getCrisisById,
 } from '@/modules/crisis/services/detection-service';
 import type { EscalationChainConfig } from '@/modules/crisis/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 // Mock AI client (used by executeEscalation for AI-generated messages)
 jest.mock('@/lib/ai', () => ({
@@ -85,7 +86,7 @@ describe('EscalationService', () => {
   describe('executeEscalation', () => {
     it('should notify the first pending step in the escalation chain', async () => {
       const crisis = await createCrisisEvent(
-        'user-1', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Test Crisis', 'Test description'
+        'user-1', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Test Crisis', 'Test description'
       );
 
       const steps = await executeEscalation(crisis.id);
@@ -104,7 +105,7 @@ describe('EscalationService', () => {
 
     it('should attempt AI-generated notification message', async () => {
       const crisis = await createCrisisEvent(
-        'user-esc', 'entity-1', 'PR_ISSUE', 'HIGH', 'PR Crisis', 'Bad press'
+        'user-esc', verifiedEntityIdForTest('entity-1'), 'PR_ISSUE', 'HIGH', 'PR Crisis', 'Bad press'
       );
 
       await executeEscalation(crisis.id);
@@ -116,7 +117,7 @@ describe('EscalationService', () => {
       generateText.mockRejectedValueOnce(new Error('AI unavailable'));
 
       const crisis = await createCrisisEvent(
-        'user-noai', 'entity-1', 'CLIENT_COMPLAINT', 'MEDIUM', 'Complaint', 'desc'
+        'user-noai', verifiedEntityIdForTest('entity-1'), 'CLIENT_COMPLAINT', 'MEDIUM', 'Complaint', 'desc'
       );
 
       const steps = await executeEscalation(crisis.id);
@@ -128,7 +129,7 @@ describe('EscalationService', () => {
   describe('acknowledgeEscalation', () => {
     it('should mark the step as ACKNOWLEDGED and skip remaining steps', async () => {
       const crisis = await createCrisisEvent(
-        'user-ack', 'entity-1', 'LEGAL_THREAT', 'HIGH', 'Ack Test', 'desc'
+        'user-ack', verifiedEntityIdForTest('entity-1'), 'LEGAL_THREAT', 'HIGH', 'Ack Test', 'desc'
       );
       await executeEscalation(crisis.id);
 
@@ -154,7 +155,7 @@ describe('EscalationService', () => {
   describe('getEscalationStatus', () => {
     it('should return the escalation chain steps for a crisis', async () => {
       const crisis = await createCrisisEvent(
-        'user-status', 'entity-1', 'FINANCIAL_ANOMALY', 'HIGH', 'Finance', 'desc'
+        'user-status', verifiedEntityIdForTest('entity-1'), 'FINANCIAL_ANOMALY', 'HIGH', 'Finance', 'desc'
       );
 
       const steps = await getEscalationStatus(crisis.id);

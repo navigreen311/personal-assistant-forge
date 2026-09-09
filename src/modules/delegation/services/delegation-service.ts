@@ -49,6 +49,32 @@ export async function getDelegatedTasks(
   return results;
 }
 
+/**
+ * P-10/T-001 — the scoped lookup for the `[id]` delegation routes.
+ *
+ * `advanceApproval` took a bare id and every route handed it one straight off
+ * the URL with the session discarded as `_session`. Any authenticated user who
+ * knew a delegation id could approve or reject someone else's work item.
+ *
+ * A caller is party to a delegation if they raised it, received it, or are
+ * named in its approval chain. Anyone else gets `undefined`, so a foreign
+ * record is NOT FOUND at the route and there is no separate check to forget.
+ */
+export function getDelegationForParty(
+  delegationId: string,
+  userId: string
+): DelegationTask | undefined {
+  const delegation = delegationStore.get(delegationId);
+  if (!delegation) return undefined;
+
+  const isParty =
+    delegation.delegatedBy === userId ||
+    delegation.delegatedTo === userId ||
+    delegation.approvalChain.some((step) => step.approverId === userId);
+
+  return isParty ? delegation : undefined;
+}
+
 export async function advanceApproval(
   delegationId: string,
   stepOrder: number,

@@ -1,17 +1,20 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { SSOConfig } from '../types';
 
 export const ssoStore = new Map<string, SSOConfig>();
 
+// P-10/T-001. SSO configuration decides who can sign in as this tenant, so an
+// unverified entityId here was a login-takeover primitive, not a data leak.
 export async function configureSAML(
-  entityId: string,
+  entityId: VerifiedEntityId,
   config: Omit<SSOConfig, 'entityId' | 'isEnabled'>
 ): Promise<SSOConfig> {
   return configureSSOProvider(entityId, { ...config, isEnabled: false });
 }
 
 export async function configureSSOProvider(
-  entityId: string,
+  entityId: VerifiedEntityId,
   config: Partial<SSOConfig>
 ): Promise<SSOConfig> {
   const entity = await prisma.entity.findUnique({ where: { id: entityId } });
@@ -40,7 +43,7 @@ export async function configureSSOProvider(
   return ssoConfig;
 }
 
-export async function getSSOConfig(entityId: string): Promise<SSOConfig> {
+export async function getSSOConfig(entityId: VerifiedEntityId): Promise<SSOConfig> {
   const entity = await prisma.entity.findUnique({ where: { id: entityId } });
   if (!entity) return { entityId, provider: 'NONE', isEnabled: false };
 
@@ -55,13 +58,13 @@ export async function getSSOConfig(entityId: string): Promise<SSOConfig> {
   return { entityId, provider: 'NONE', isEnabled: false };
 }
 
-export async function updateSSOConfig(entityId: string, updates: Partial<SSOConfig>): Promise<SSOConfig> {
+export async function updateSSOConfig(entityId: VerifiedEntityId, updates: Partial<SSOConfig>): Promise<SSOConfig> {
   const current = await getSSOConfig(entityId);
   if (current.provider === 'NONE') throw new Error('SSO not configured');
   return configureSSOProvider(entityId, { ...current, ...updates, entityId });
 }
 
-export async function deleteSSOConfig(entityId: string): Promise<void> {
+export async function deleteSSOConfig(entityId: VerifiedEntityId): Promise<void> {
   const entity = await prisma.entity.findUnique({ where: { id: entityId } });
   if (!entity) throw new Error(`Entity ${entityId} not found`);
 
@@ -104,7 +107,7 @@ export function validateSSOConfig(config: Partial<SSOConfig>): { valid: boolean;
 }
 
 export async function testSSOConnection(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<{ success: boolean; message: string; responseTime?: number }> {
   const config = await getSSOConfig(entityId);
   if (config.provider === 'NONE') {
@@ -119,7 +122,7 @@ export async function testSSOConnection(
   return { success: true, message: 'SSO connection verified successfully', responseTime: 50 };
 }
 
-export async function testConnection(entityId: string): Promise<{
+export async function testConnection(entityId: VerifiedEntityId): Promise<{
   success: boolean;
   responseTime?: number;
   error?: string;
@@ -132,13 +135,13 @@ export async function testConnection(entityId: string): Promise<{
   };
 }
 
-export async function enableSSO(entityId: string): Promise<SSOConfig> {
+export async function enableSSO(entityId: VerifiedEntityId): Promise<SSOConfig> {
   const config = await getSSOConfig(entityId);
   if (config.provider === 'NONE') throw new Error('SSO not configured');
   return updateSSOConfig(entityId, { isEnabled: true });
 }
 
-export async function disableSSO(entityId: string): Promise<SSOConfig> {
+export async function disableSSO(entityId: VerifiedEntityId): Promise<SSOConfig> {
   const config = await getSSOConfig(entityId);
   if (config.provider === 'NONE') throw new Error('SSO not configured');
   return updateSSOConfig(entityId, { isEnabled: false });
