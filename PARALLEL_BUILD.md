@@ -195,6 +195,53 @@ actually asserts before assuming your change is wrong.
 
 ---
 
+## PLAN CHANGE — COVERAGE GAP FOUND BEFORE THE FAN-OUT (2026-09-09)
+
+**My package design covered 301 of 335 route files. 34 had no owner at all.**
+
+I checked this by mapping every declared package boundary onto the actual file
+tree rather than re-reading the plan, which is the only way this kind of error
+shows up. Had the nine Wave 2 packages been dispatched as written, those 34
+routes would have been skipped in silence, and **P-20's cross-tenant fuzz would
+have discovered them at the very end of the run** — the most expensive moment
+available, since by then every module package has merged and the pattern is
+frozen in nine places.
+
+No file was claimed twice, so the boundaries were disjoint. They just were not
+exhaustive. Disjoint is the property I designed for and tested by eye; exhaustive
+is the one I assumed.
+
+**Unowned before this correction:**
+
+| segment | routes | now owned by |
+|---|---|---|
+| `decisions` (+ the whole `src/modules/decisions` module) | 10 | **P-08** |
+| `engines` | 5 | **P-13** |
+| `auth` | 4 | **P-23** |
+| `settings` | 3 | **P-23** |
+| `onboarding` | 2 | **P-13** |
+| `ai-quality`, `dashboard` (+ `src/modules/dashboard`) | 2 | **P-13** |
+| `events`, `notifications`, `permissions`, `search`, `trust`, `trust-scores`, `uploads`, `webhooks` | 8 | **P-23** |
+
+`decisions` is the serious one: ten routes and a complete module dropped between
+Part 1 of the plan, which inventoried it, and Part 3, which grouped the modules
+into packages and lost it.
+
+### P-23 — Platform surface (new)
+
+Owns the 15 cross-cutting routes no feature module claims: `auth`, `settings`,
+`trust`, `trust-scores`, `permissions`, `notifications`, `events`, `search`,
+`uploads`, `webhooks`.
+
+Checked while scoping: `POST /api/auth/switch-entity` **does** verify ownership
+(`prisma.entity.findFirst({ where: { id, userId: session.userId } })`) before
+returning an `activeEntityId`, so the tenancy root is sound. P-23 is coverage,
+not a known defect — but `activeEntityId` is what `withEntityScope` falls back to
+when no entity is supplied, so this route is load-bearing for the whole pattern
+and needs an owner rather than an assumption.
+
+**Revised package count: 24** (P-00…P-23). Route coverage: **335/335.**
+
 ## PLAN CHANGE — P-13 SPLIT, P-22 CREATED (2026-09-09)
 
 Three of the four green-board blockers sat in **P-13**, which is late in the plan.
