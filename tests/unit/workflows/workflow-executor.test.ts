@@ -9,6 +9,7 @@ import {
   setExecution,
   clearExecutionStore,
 } from '@/modules/workflows/services/workflow-executor';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import type {
   WorkflowGraph,
   WorkflowNode,
@@ -24,14 +25,122 @@ import type {
 
 // --- Mocks ---
 
+
+// ---------------------------------------------------------------------------
+// P-09: WorkflowExecutionRecord is a TABLE now, not a module-level Map.
+//
+// This suite runs offline, so the table gets a small in-memory double that
+// answers the same delegate calls the executor makes. It is deliberately a
+// real object rather than a bag of `any`: a delegate or field name that does
+// not exist still fails here, which is the failure mode the persistence
+// pattern exists to stop (`shadow/compliance` called four Prisma delegates
+// that were never in the schema, with the whole suite green).
+// ---------------------------------------------------------------------------
+
+type MockRow = Record<string, unknown>;
+
+function mockMakeExecutionRecords() {
+  const rows = new Map<string, MockRow>();
+  let seq = 0;
+
+  const matches = (row: MockRow, where: MockRow): boolean =>
+    Object.entries(where).every(([key, value]) => row[key] === value);
+
+  return {
+    rows,
+    clear: () => rows.clear(),
+    delegate: {
+      create: async (args: { data: MockRow }) => {
+        const id = (args.data.id as string) ?? `rec-${++seq}`;
+        const row: MockRow = {
+          completedAt: null,
+          currentNodeId: null,
+          error: null,
+          startedAt: new Date(),
+          variables: {},
+          stepResults: [],
+          ...args.data,
+          id,
+        };
+        rows.set(id, row);
+        return { ...row };
+      },
+      findUnique: async (args: { where: { id: string } }) => {
+        const row = rows.get(args.where.id);
+        return row ? { ...row } : null;
+      },
+      findMany: async (args?: { where?: MockRow }) =>
+        Array.from(rows.values())
+          .filter((r) => matches(r, args?.where ?? {}))
+          .map((r) => ({ ...r })),
+      count: async (args?: { where?: MockRow }) =>
+        Array.from(rows.values()).filter((r) => matches(r, args?.where ?? {})).length,
+      updateMany: async (args: { where: MockRow; data: MockRow }) => {
+        let count = 0;
+        for (const [id, row] of rows) {
+          if (matches(row, args.where)) {
+            rows.set(id, { ...row, ...args.data });
+            count += 1;
+          }
+        }
+        return { count };
+      },
+      upsert: async (args: { where: { id: string }; create: MockRow; update: MockRow }) => {
+        const existing = rows.get(args.where.id);
+        const row = existing ? { ...existing, ...args.update } : { ...args.create };
+        rows.set(args.where.id, row);
+        return { ...row };
+      },
+      deleteMany: async () => {
+        const count = rows.size;
+        rows.clear();
+        return { count };
+      },
+    },
+  };
+}
+
+// Lazily built and reached through a hoisted FUNCTION, not a const: jest.mock
+// factories are hoisted above every declaration in the file, so a const here is
+// still in its temporal dead zone when the mocked module is first required.
+function mockExecutionRecords(): ReturnType<typeof mockMakeExecutionRecords> {
+  // Held on globalThis rather than in a module-level `let`: a `let` is still in
+  // its temporal dead zone when the hoisted jest.mock factory first runs.
+  const store = globalThis as {
+    __p09MockRecords?: ReturnType<typeof mockMakeExecutionRecords>;
+  };
+  if (!store.__p09MockRecords) store.__p09MockRecords = mockMakeExecutionRecords();
+  return store.__p09MockRecords;
+}
+
+function mockExecutionRecordDelegate() {
+  return mockExecutionRecords().delegate;
+}
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     workflow: {
       findUnique: jest.fn(),
+      // P-09 trap 1: reads moved to findFirst so the entity rides in the
+      // WHERE clause; writes moved to updateMany for the same reason.
+      findFirst: (...args: unknown[]) =>
+        (jest.requireMock('@/lib/db').prisma.workflow.findUnique as jest.Mock)(...args),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    // A GETTER, not a value: jest.mock factories are hoisted above every
+    // declaration in this file, so anything evaluated eagerly here is still in
+    // its temporal dead zone. The getter runs when the executor first reaches
+    // for the delegate, which is well after module init.
+    get workflowExecutionRecord() {
+      return mockExecutionRecordDelegate();
     },
     actionLog: {
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
+    },
+    // P-09: approvals are a table too, so a HUMAN_APPROVAL node writes a row.
+    workflowApproval: {
+      create: jest.fn().mockResolvedValue({ id: 'approval-1' }),
     },
     task: {
       create: jest.fn().mockResolvedValue({ id: 'task-1', title: 'Test Task' }),
@@ -47,6 +156,8 @@ jest.mock('@/lib/queue/workflow-queue', () => ({
 }));
 
 const { prisma } = jest.requireMock('@/lib/db');
+
+const ENTITY = verifiedEntityIdForTest('entity-1');
 
 // --- Helpers ---
 
@@ -117,9 +228,13 @@ function createSimpleGraph(): WorkflowGraph {
 // --- Tests ---
 
 describe('WorkflowExecutor', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
-    clearExecutionStore();
+    mockExecutionRecords().clear();
+    await clearExecutionStore();
+    // Runs resolve their tenant through the parent workflow, so the parent has
+    // to exist. Individual tests override this with their own graph.
+    prisma.workflow.findUnique.mockResolvedValue({ id: 'wf-1', entityId: ENTITY });
   });
 
   describe('executeWorkflow', () => {
@@ -141,7 +256,7 @@ describe('WorkflowExecutor', () => {
 
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-1', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-1', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.status).toBe('COMPLETED');
       expect(execution.workflowId).toBe('wf-1');
@@ -179,7 +294,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-2', 'user-1', 'MANUAL', { amount: 200 });
+      const execution = await executeWorkflow('wf-2', 'user-1', 'MANUAL', ENTITY, { amount: 200 });
 
       expect(execution.status).toBe('COMPLETED');
       // Should have executed trigger, condition, and true branch
@@ -218,7 +333,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-3', 'user-1', 'MANUAL', { amount: 50 });
+      const execution = await executeWorkflow('wf-3', 'user-1', 'MANUAL', ENTITY, { amount: 50 });
 
       expect(execution.status).toBe('COMPLETED');
       const nodeIds = execution.stepResults.map((s) => s.nodeId);
@@ -263,7 +378,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-4', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-4', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.status).toBe('PAUSED');
     });
@@ -303,7 +418,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-5', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-5', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.status).toBe('COMPLETED');
       const delayResult = execution.stepResults.find((s) => s.nodeId === 'delay-1');
@@ -348,7 +463,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-6', 'user-1', 'MANUAL', {
+      const execution = await executeWorkflow('wf-6', 'user-1', 'MANUAL', ENTITY, {
         items: ['a', 'b', 'c'],
       });
 
@@ -391,7 +506,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-7', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-7', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.status).toBe('COMPLETED');
     });
@@ -411,7 +526,7 @@ describe('WorkflowExecutor', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeWorkflow('wf-8', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-8', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.completedAt).toBeDefined();
       expect(execution.stepResults.every((s) => s.completedAt)).toBe(true);
@@ -472,12 +587,12 @@ describe('WorkflowExecutor', () => {
         stepResults: [],
       };
 
-      setExecution(execution);
+      await setExecution(execution);
 
-      await cancelExecution('exec-cancel-1');
+      await cancelExecution('exec-cancel-1', ENTITY);
 
       const cancelled = (await import('@/modules/workflows/services/workflow-executor')).getExecution;
-      const result = await cancelled('exec-cancel-1');
+      const result = await cancelled('exec-cancel-1', ENTITY);
       expect(result?.status).toBe('CANCELLED');
     });
 
@@ -493,11 +608,11 @@ describe('WorkflowExecutor', () => {
         stepResults: [],
       };
 
-      setExecution(execution);
+      await setExecution(execution);
 
-      await cancelExecution('exec-cancel-2');
+      await cancelExecution('exec-cancel-2', ENTITY);
 
-      const result = await (await import('@/modules/workflows/services/workflow-executor')).getExecution('exec-cancel-2');
+      const result = await (await import('@/modules/workflows/services/workflow-executor')).getExecution('exec-cancel-2', ENTITY);
       expect(result?.status).toBe('CANCELLED');
       expect(result?.completedAt).toBeDefined();
     });

@@ -4,6 +4,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   WorkflowGraph,
   WorkflowNode,
@@ -45,12 +46,20 @@ const COST_ESTIMATES: Record<string, number> = {
   SUB_WORKFLOW: 0.1,
 };
 
+/**
+ * Dry-run a workflow this caller has been proved to own.
+ *
+ * P-09 (T-001): the entity is in the WHERE clause, so simulating another
+ * tenant's workflow reports "not found" rather than handing back its graph,
+ * step labels and cost profile.
+ */
 export async function simulateWorkflow(
   workflowId: string,
+  entityId: VerifiedEntityId,
   variables?: Record<string, unknown>
 ): Promise<WorkflowSimulationResult> {
-  const workflow = await prisma.workflow.findUnique({
-    where: { id: workflowId },
+  const workflow = await prisma.workflow.findFirst({
+    where: { id: workflowId, entityId },
   });
 
   if (!workflow) {

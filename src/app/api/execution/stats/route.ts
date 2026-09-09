@@ -1,6 +1,26 @@
 // ============================================================================
 // GET /api/execution/stats - Aggregated execution stats for the Execution Layer
 // ============================================================================
+//
+// P-09 (T-007). This route was already the best-behaved in the package on
+// tenancy -- it verified the entity against the session -- and the only one
+// that was entirely fictional underneath.
+//
+// Every query went through `(prisma as any).actionQueue`. There has never been
+// an `actionQueue` delegate in the schema; the real model is `QueuedAction`, so
+// every call threw, and `safeCount` / `safeAggregate` swallowed the throw and
+// returned zero. The Execution Layer dashboard has been reporting a confident
+// row of zeroes since it was written. That is exactly the failure the
+// persistence pattern warns about: a mocked or `any`-typed Prisma client will
+// accept a delegate that does not exist, and nothing ever says so.
+//
+// The eight `as any` casts are gone with it, so the delegate and the field
+// names are now checked by `tsc`.
+//
+// Two of the eight numbers have no column to come from: `QueuedAction` records
+// neither a confidence score nor a simulation flag, and the schema is frozen.
+// They are returned as zero and SAID SO here, rather than being quietly
+// computed from something that means something else.
 
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
@@ -31,29 +51,6 @@ const DEFAULT_STATS = {
   simulatedToday: 0,
 };
 
-// --- Safe count wrapper ---
-
-async function safeCount(
-  queryFn: () => Promise<number>
-): Promise<number> {
-  try {
-    return await queryFn();
-  } catch {
-    return 0;
-  }
-}
-
-async function safeAggregate<T>(
-  queryFn: () => Promise<T>,
-  fallback: T
-): Promise<T> {
-  try {
-    return await queryFn();
-  } catch {
-    return fallback;
-  }
-}
-
 // --- Handler ---
 
 export async function GET(request: NextRequest) {
@@ -66,7 +63,7 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId, simulationMode } = parsed.data;
+      const { entityId } = parsed.data;
 
       // Verify entity ownership if entityId is provided
       if (entityId) {
@@ -88,15 +85,11 @@ export async function GET(request: NextRequest) {
       if (entityId) {
         entityIds = [entityId];
       } else {
-        try {
-          const entities = await prisma.entity.findMany({
-            where: { userId: session.userId },
-            select: { id: true },
-          });
-          entityIds = entities.map((e) => e.id);
-        } catch {
-          return success(DEFAULT_STATS);
-        }
+        const entities = await prisma.entity.findMany({
+          where: { userId: session.userId },
+          select: { id: true },
+        });
+        entityIds = entities.map((e) => e.id);
       }
 
       if (entityIds.length === 0) {
@@ -106,13 +99,7 @@ export async function GET(request: NextRequest) {
       const now = new Date();
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-      const entityFilter = entityIds.length === 1
-        ? { entityId: entityIds[0] }
-        : { entityId: { in: entityIds } };
-
-      const simulationFilter = simulationMode !== undefined
-        ? { simulationMode }
-        : {};
+      const entityFilter = { entityId: { in: entityIds } };
 
       // Run all queries in parallel
       const [
@@ -120,130 +107,68 @@ export async function GET(request: NextRequest) {
         executedToday,
         rolledBack,
         costResult,
-        simulatedToday,
-        approvalData,
-        confidenceResult,
+        approved,
+        decided,
         highRiskCount,
       ] = await Promise.all([
-        // Pending actions
-        safeCount(() =>
-          (prisma as any).actionQueue.count({
-            where: {
-              ...entityFilter,
-              ...simulationFilter,
-              status: 'PENDING_APPROVAL',
-            },
-          })
-        ),
+        // Pending actions: QUEUED is the status this codebase actually writes.
+        prisma.queuedAction.count({
+          where: { ...entityFilter, status: 'QUEUED' },
+        }),
 
         // Executed today
-        safeCount(() =>
-          (prisma as any).actionQueue.count({
-            where: {
-              ...entityFilter,
-              ...simulationFilter,
-              status: 'EXECUTED',
-              createdAt: { gte: startOfToday },
-            },
-          })
-        ),
+        prisma.queuedAction.count({
+          where: {
+            ...entityFilter,
+            status: 'EXECUTED',
+            createdAt: { gte: startOfToday },
+          },
+        }),
 
         // Rolled back today
-        safeCount(() =>
-          (prisma as any).actionQueue.count({
-            where: {
-              ...entityFilter,
-              ...simulationFilter,
-              status: 'ROLLED_BACK',
-              createdAt: { gte: startOfToday },
-            },
-          })
-        ),
+        prisma.queuedAction.count({
+          where: {
+            ...entityFilter,
+            status: 'ROLLED_BACK',
+            createdAt: { gte: startOfToday },
+          },
+        }),
 
         // Cost today (aggregate sum)
-        safeAggregate(
-          () =>
-            (prisma as any).actionQueue.aggregate({
-              where: {
-                ...entityFilter,
-                ...simulationFilter,
-                createdAt: { gte: startOfToday },
-              },
-              _sum: { estimatedCost: true },
-            }),
-          { _sum: { estimatedCost: null } }
-        ),
-
-        // Simulated today
-        safeCount(() =>
-          (prisma as any).actionQueue.count({
-            where: {
-              ...entityFilter,
-              simulationMode: true,
-              createdAt: { gte: startOfToday },
-            },
-          })
-        ),
+        prisma.queuedAction.aggregate({
+          where: { ...entityFilter, createdAt: { gte: startOfToday } },
+          _sum: { estimatedCost: true },
+        }),
 
         // Approval rate: approved vs total decided today
-        safeAggregate(
-          async () => {
-            const [approved, total] = await Promise.all([
-              (prisma as any).actionQueue.count({
-                where: {
-                  ...entityFilter,
-                  ...simulationFilter,
-                  status: { in: ['APPROVED', 'EXECUTED'] },
-                  createdAt: { gte: startOfToday },
-                },
-              }),
-              (prisma as any).actionQueue.count({
-                where: {
-                  ...entityFilter,
-                  ...simulationFilter,
-                  status: { in: ['APPROVED', 'EXECUTED', 'REJECTED', 'ROLLED_BACK'] },
-                  createdAt: { gte: startOfToday },
-                },
-              }),
-            ]);
-            return { approved, total };
+        prisma.queuedAction.count({
+          where: {
+            ...entityFilter,
+            status: { in: ['APPROVED', 'EXECUTED'] },
+            createdAt: { gte: startOfToday },
           },
-          { approved: 0, total: 0 }
-        ),
-
-        // Average confidence
-        safeAggregate(
-          () =>
-            (prisma as any).actionQueue.aggregate({
-              where: {
-                ...entityFilter,
-                ...simulationFilter,
-                createdAt: { gte: startOfToday },
-              },
-              _avg: { confidence: true },
-            }),
-          { _avg: { confidence: null } }
-        ),
+        }),
+        prisma.queuedAction.count({
+          where: {
+            ...entityFilter,
+            status: { in: ['APPROVED', 'EXECUTED', 'REJECTED', 'ROLLED_BACK'] },
+            createdAt: { gte: startOfToday },
+          },
+        }),
 
         // High risk count
-        safeCount(() =>
-          (prisma as any).actionQueue.count({
-            where: {
-              ...entityFilter,
-              ...simulationFilter,
-              blastRadius: { in: ['HIGH', 'CRITICAL'] },
-              status: 'PENDING_APPROVAL',
-            },
-          })
-        ),
+        prisma.queuedAction.count({
+          where: {
+            ...entityFilter,
+            blastRadius: { in: ['HIGH', 'CRITICAL'] },
+            status: 'QUEUED',
+          },
+        }),
       ]);
 
-      const costToday = costResult._sum?.estimatedCost ?? 0;
+      const costToday = costResult._sum.estimatedCost ?? 0;
       const approvalRate =
-        approvalData.total > 0
-          ? Math.round((approvalData.approved / approvalData.total) * 100)
-          : 0;
-      const avgConfidence = confidenceResult._avg?.confidence ?? 0;
+        decided > 0 ? Math.round((approved / decided) * 100) : 0;
 
       return success({
         pending,
@@ -251,9 +176,11 @@ export async function GET(request: NextRequest) {
         rolledBack,
         costToday,
         approvalRate,
-        avgConfidence,
+        // No column on QueuedAction, and the schema is frozen. Reported as 0
+        // rather than derived from something that does not mean this.
+        avgConfidence: 0,
         highRiskCount,
-        simulatedToday,
+        simulatedToday: 0,
       });
     } catch (err) {
       return error(

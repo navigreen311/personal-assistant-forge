@@ -16,17 +16,29 @@ import type {
   ConditionNodeConfig,
 } from '@/modules/workflows/types';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
 // --- Mocks ---
 
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    workflow: {
-      findUnique: jest.fn(),
+// P-09 trap 1 from the tenancy pattern: the lookup moved from `findUnique` to
+// `findFirst` so the entity can ride in the WHERE clause. A mock without
+// `findFirst` returns undefined and the suite goes quietly wrong, so the two
+// are aliased to the same spy here.
+jest.mock('@/lib/db', () => {
+  const findUnique = jest.fn();
+  return {
+    prisma: {
+      workflow: {
+        findUnique,
+        findFirst: (...args: unknown[]) => findUnique(...args),
+      },
     },
-  },
-}));
+  };
+});
 
 const { prisma } = jest.requireMock('@/lib/db');
+
+const ENTITY = verifiedEntityIdForTest('ent-1');
 
 // --- Helpers ---
 
@@ -84,7 +96,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      const result = await simulateWorkflow('wf-sim-1');
+      const result = await simulateWorkflow('wf-sim-1', ENTITY);
 
       expect(result.steps).toHaveLength(3);
       expect(result.steps[0].nodeId).toBe('t1');
@@ -101,7 +113,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      const result = await simulateWorkflow('wf-sim-2');
+      const result = await simulateWorkflow('wf-sim-2', ENTITY);
 
       const actionStep = result.steps.find((s) => s.nodeId === 'a1');
       expect(actionStep?.wouldDo).toContain('CREATE_TASK');
@@ -118,7 +130,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      const result = await simulateWorkflow('wf-sim-3');
+      const result = await simulateWorkflow('wf-sim-3', ENTITY);
 
       expect(result.estimatedDuration).toBeGreaterThan(0);
     });
@@ -149,7 +161,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      const result = await simulateWorkflow('wf-sim-4');
+      const result = await simulateWorkflow('wf-sim-4', ENTITY);
 
       const sendStep = result.steps.find((s) => s.nodeId === 'a1');
       expect(sendStep?.reversible).toBe(false);
@@ -166,7 +178,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      await simulateWorkflow('wf-sim-5');
+      await simulateWorkflow('wf-sim-5', ENTITY);
 
       // Only findUnique should be called (to load the workflow), no create/update
       expect(prisma.workflow.findUnique).toHaveBeenCalledTimes(1);
@@ -238,7 +250,7 @@ describe('SimulationService', () => {
         steps: graph,
       });
 
-      const result = await simulateWorkflow('wf-unreach');
+      const result = await simulateWorkflow('wf-unreach', ENTITY);
 
       expect(result.warnings.some((w) => w.includes('unreachable'))).toBe(true);
     });

@@ -22,18 +22,200 @@ import {
 } from '../../../src/modules/execution/services/runbook-service';
 import { _clearActionStore } from '../../../src/modules/execution/services/action-queue';
 import { _clearGateStore } from '../../../src/modules/execution/services/execution-gate';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
-// Mock Prisma client
-jest.mock('../../../src/lib/db', () => ({
+const ENTITY = verifiedEntityIdForTest('entity-1');
+const OTHER_ENTITY = verifiedEntityIdForTest('entity-2');
+
+// ---------------------------------------------------------------------------
+// P-09: the stores this suite used to exercise are TABLES now.
+//
+// The suite stays offline, so each table gets a small in-memory double with the
+// delegate surface the service actually calls. It is a real typed object, not a
+// bag of `any`: a delegate or column name that does not exist still fails here.
+// That is the failure the persistence pattern exists to stop -- a mocked Prisma
+// client will happily accept `prisma.tableThatDoesNotExist.create()`, which is
+// exactly how four delegates that were never in the schema shipped green.
+//
+// The real cross-process assertions -- that the state is in Postgres and that
+// the gate cannot be bypassed by a restart -- live in tests/db/, where they can
+// actually be true.
+// ---------------------------------------------------------------------------
+
+type MockRow = Record<string, unknown>;
+type MockWhere = Record<string, unknown>;
+
+function mockMatches(row: MockRow, where: MockWhere): boolean {
+  return Object.entries(where).every(([key, cond]) => {
+    if (cond === undefined) return true;
+    if (key === 'OR' && Array.isArray(cond)) {
+      return (cond as MockWhere[]).some((c) => mockMatches(row, c));
+    }
+    const value = row[key];
+    if (cond !== null && typeof cond === 'object' && !(cond instanceof Date)) {
+      const c = cond as MockWhere;
+      if ('in' in c) return (c.in as unknown[]).includes(value);
+      if ('gte' in c && Number(value) < Number(c.gte)) return false;
+      if ('lte' in c && Number(value) > Number(c.lte)) return false;
+      return true;
+    }
+    return value === cond;
+  });
+}
+
+function mockApply(row: MockRow, data: MockRow): MockRow {
+  const next: MockRow = { ...row };
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== null && typeof value === 'object' && 'increment' in (value as MockRow)) {
+      next[key] = Number(next[key] ?? 0) + Number((value as MockRow).increment);
+    } else {
+      next[key] = value;
+    }
+  }
+  return next;
+}
+
+function mockMakeTable(prefix: string) {
+  const rows = new Map<string, MockRow>();
+  let seq = 0;
+
+  const list = (args?: {
+    where?: MockWhere;
+    orderBy?: MockRow;
+    skip?: number;
+    take?: number;
+  }): MockRow[] => {
+    let out = Array.from(rows.values()).filter((r) => mockMatches(r, args?.where ?? {}));
+    const orderBy = args?.orderBy;
+    if (orderBy) {
+      const [key, dir] = Object.entries(orderBy)[0];
+      out = out.slice().sort((a, b) => {
+        const av = Number(a[key] instanceof Date ? (a[key] as Date).getTime() : a[key]);
+        const bv = Number(b[key] instanceof Date ? (b[key] as Date).getTime() : b[key]);
+        return dir === 'desc' ? bv - av : av - bv;
+      });
+    }
+    const skip = args?.skip ?? 0;
+    const take = args?.take ?? out.length;
+    return out.slice(skip, skip + take).map((r) => ({ ...r }));
+  };
+
+  return {
+    rows,
+    clear: () => rows.clear(),
+    seed: (row: MockRow) => {
+      rows.set(row.id as string, row);
+    },
+    create: async (args: { data: MockRow }) => {
+      const id = (args.data.id as string) ?? `${prefix}-${(seq += 1)}`;
+      // `createdAt` / `updatedAt` / `startedAt` stand in for the schema's
+      // `@default(now())` and `@updatedAt`, which the real client fills in.
+      const row: MockRow = {
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        startedAt: new Date(),
+        ...args.data,
+        id,
+      };
+      rows.set(id, row);
+      return { ...row };
+    },
+    findUnique: async (args: { where: MockWhere }) => {
+      const row = Array.from(rows.values()).find((r) => mockMatches(r, args.where));
+      return row ? { ...row } : null;
+    },
+    findFirst: async (args?: { where?: MockWhere; orderBy?: MockRow }) => {
+      const found = list(args)[0];
+      return found ?? null;
+    },
+    findMany: async (args?: {
+      where?: MockWhere;
+      orderBy?: MockRow;
+      skip?: number;
+      take?: number;
+    }) => list(args),
+    count: async (args?: { where?: MockWhere }) =>
+      Array.from(rows.values()).filter((r) => mockMatches(r, args?.where ?? {})).length,
+    update: async (args: { where: MockWhere; data: MockRow }) => {
+      const entry = Array.from(rows.entries()).find(([, r]) => mockMatches(r, args.where));
+      if (!entry) throw new Error(`${prefix}: no row matches update`);
+      const next = mockApply(entry[1], { updatedAt: new Date(), ...args.data });
+      rows.set(entry[0], next);
+      return { ...next };
+    },
+    updateMany: async (args: { where: MockWhere; data: MockRow }) => {
+      let count = 0;
+      for (const [id, row] of rows) {
+        if (mockMatches(row, args.where)) {
+          rows.set(id, mockApply(row, { updatedAt: new Date(), ...args.data }));
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    upsert: async (args: { where: MockWhere; create: MockRow; update: MockRow }) => {
+      const entry = Array.from(rows.entries()).find(([, r]) => mockMatches(r, args.where));
+      if (entry) {
+        const next = mockApply(entry[1], args.update);
+        rows.set(entry[0], next);
+        return { ...next };
+      }
+      const id = `${prefix}-${(seq += 1)}`;
+      const row: MockRow = { createdAt: new Date(), ...args.create, id };
+      rows.set(id, row);
+      return { ...row };
+    },
+    deleteMany: async (args?: { where?: MockWhere }) => {
+      let count = 0;
+      for (const [id, row] of Array.from(rows.entries())) {
+        if (mockMatches(row, args?.where ?? {})) {
+          rows.delete(id);
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    aggregate: async (args: { where?: MockWhere; _sum?: MockRow }) => {
+      const matched = Array.from(rows.values()).filter((r) =>
+        mockMatches(r, args.where ?? {})
+      );
+      const sums: MockRow = {};
+      for (const key of Object.keys(args._sum ?? {})) {
+        sums[key] = matched.reduce((total, r) => total + Number(r[key] ?? 0), 0);
+      }
+      return { _sum: sums };
+    },
+  };
+}
+
+function mockMakeDb() {
+  return {
+    runbook: mockMakeTable('rb'),
+    runbookExecution: mockMakeTable('rbx'),
+    queuedAction: mockMakeTable('qa'),
+    executionGateRule: mockMakeTable('gate'),
+    actionLog: mockMakeTable('log'),
+    consentReceipt: mockMakeTable('receipt'),
+  };
+}
+
+function mockDb(): ReturnType<typeof mockMakeDb> {
+  // Held on globalThis rather than in a module-level `let`: jest.mock factories
+  // are hoisted above every declaration in the file, and the shared test
+  // helpers read `prisma` at import time, so a `let` here is still in its
+  // temporal dead zone the first time this is called.
+  const store = globalThis as { __p09MockDb?: ReturnType<typeof mockMakeDb> };
+  if (!store.__p09MockDb) store.__p09MockDb = mockMakeDb();
+  return store.__p09MockDb;
+}
+
+jest.mock('@/lib/db', () => ({
   __esModule: true,
-  default: {
-    actionLog: {
-      create: jest.fn().mockResolvedValue({ id: 'action-log-mock-id' }),
-      update: jest.fn().mockResolvedValue({}),
-    },
-    consentReceipt: {
-      create: jest.fn().mockResolvedValue({ id: 'consent-receipt-mock-id' }),
-    },
+  get prisma() {
+    return mockDb();
+  },
+  get default() {
+    return mockDb();
   },
 }));
 
@@ -44,16 +226,17 @@ jest.mock('@/lib/ai', () => ({
 }));
 
 describe('RunbookService', () => {
-  beforeEach(() => {
-    _clearRunbookStores();
-    _clearActionStore();
-    _clearGateStore();
+  beforeEach(async () => {
+    await _clearRunbookStores();
+    await _clearActionStore();
+    await _clearGateStore();
+    mockDb().actionLog.clear();
+    mockDb().consentReceipt.clear();
   });
 
   const defaultRunbookParams = {
     name: 'Test Runbook',
     description: 'A test runbook',
-    entityId: 'entity-1',
     steps: [
       {
         order: 1,
@@ -83,7 +266,7 @@ describe('RunbookService', () => {
 
   describe('createRunbook', () => {
     it('should create a runbook with generated ID and timestamps', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
 
       expect(runbook.id).toBeDefined();
       expect(runbook.name).toBe('Test Runbook');
@@ -97,8 +280,8 @@ describe('RunbookService', () => {
     });
 
     it('should store the runbook for retrieval', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      const retrieved = await getRunbook(runbook.id);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      const retrieved = await getRunbook(runbook.id, ENTITY);
 
       expect(retrieved).toBeDefined();
       expect(retrieved!.id).toBe(runbook.id);
@@ -108,18 +291,18 @@ describe('RunbookService', () => {
 
   describe('getRunbook', () => {
     it('should return null for non-existent runbook', async () => {
-      const result = await getRunbook('nonexistent');
+      const result = await getRunbook('nonexistent', ENTITY);
       expect(result).toBeNull();
     });
   });
 
   describe('updateRunbook', () => {
     it('should update runbook fields while preserving ID and createdAt', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
       const updated = await updateRunbook(runbook.id, {
         name: 'Updated Runbook',
         description: 'Updated description',
-      });
+      }, ENTITY);
 
       expect(updated.id).toBe(runbook.id);
       expect(updated.name).toBe('Updated Runbook');
@@ -132,46 +315,78 @@ describe('RunbookService', () => {
 
     it('should throw for non-existent runbook', async () => {
       await expect(
-        updateRunbook('nonexistent', { name: 'X' })
+        updateRunbook('nonexistent', { name: 'X' }, ENTITY)
       ).rejects.toThrow('Runbook nonexistent not found');
     });
   });
 
   describe('deleteRunbook', () => {
     it('should delete an existing runbook', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      await deleteRunbook(runbook.id);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      await deleteRunbook(runbook.id, ENTITY);
 
-      const result = await getRunbook(runbook.id);
+      const result = await getRunbook(runbook.id, ENTITY);
       expect(result).toBeNull();
     });
 
     it('should throw for non-existent runbook', async () => {
-      await expect(deleteRunbook('nonexistent')).rejects.toThrow(
+      await expect(deleteRunbook('nonexistent', ENTITY)).rejects.toThrow(
         'Runbook nonexistent not found'
       );
     });
   });
 
   describe('listRunbooks', () => {
-    it('should list runbooks by entityId', async () => {
-      await createRunbook({ ...defaultRunbookParams, entityId: 'entity-1' });
-      await createRunbook({ ...defaultRunbookParams, entityId: 'entity-2' });
+    it('lists only the verified entity\'s runbooks', async () => {
+      // The entity is a branded argument now, not a field on the draft, so a
+      // caller cannot write into -- or read out of -- another tenant.
+      await createRunbook(defaultRunbookParams, ENTITY);
+      await createRunbook(defaultRunbookParams, OTHER_ENTITY);
 
-      const result = await listRunbooks('entity-1');
+      const result = await listRunbooks(ENTITY);
       expect(result).toHaveLength(1);
-      expect(result[0].entityId).toBe('entity-1');
+      expect(result[0].entityId).toBe(ENTITY);
+
+      // Symmetry: a fix that denies everyone passes every other assertion here.
+      const theirs = await listRunbooks(OTHER_ENTITY);
+      expect(theirs).toHaveLength(1);
+      expect(theirs[0].entityId).toBe(OTHER_ENTITY);
+    });
+
+    it("refuses to read, rewrite or delete another tenant's runbook", async () => {
+      // Rewriting is the worst of the three: it changes what the automation
+      // will do to their records the next time it runs.
+      const theirs = await createRunbook(defaultRunbookParams, OTHER_ENTITY);
+
+      expect(await getRunbook(theirs.id, ENTITY)).toBeNull();
+      await expect(
+        updateRunbook(theirs.id, { name: 'Hijacked' }, ENTITY)
+      ).rejects.toThrow('not found');
+      await expect(deleteRunbook(theirs.id, ENTITY)).rejects.toThrow('not found');
+
+      const after = await getRunbook(theirs.id, OTHER_ENTITY);
+      expect(after!.name).toBe('Test Runbook');
+    });
+
+    it("refuses to run another tenant's runbook", async () => {
+      const theirs = await createRunbook(defaultRunbookParams, OTHER_ENTITY);
+
+      await expect(executeRunbook(theirs.id, 'user-1', ENTITY)).rejects.toThrow(
+        'not found'
+      );
+
+      expect(await listRunbookExecutions(theirs.id, OTHER_ENTITY)).toHaveLength(0);
     });
 
     it('should filter by isActive', async () => {
-      await createRunbook({ ...defaultRunbookParams, isActive: true });
-      await createRunbook({ ...defaultRunbookParams, isActive: false });
+      await createRunbook({ ...defaultRunbookParams, isActive: true }, ENTITY);
+      await createRunbook({ ...defaultRunbookParams, isActive: false }, ENTITY);
 
-      const active = await listRunbooks('entity-1', { isActive: true });
+      const active = await listRunbooks(ENTITY, { isActive: true });
       expect(active).toHaveLength(1);
       expect(active[0].isActive).toBe(true);
 
-      const inactive = await listRunbooks('entity-1', { isActive: false });
+      const inactive = await listRunbooks(ENTITY, { isActive: false });
       expect(inactive).toHaveLength(1);
       expect(inactive[0].isActive).toBe(false);
     });
@@ -180,29 +395,29 @@ describe('RunbookService', () => {
       await createRunbook({
         ...defaultRunbookParams,
         tags: ['finance', 'weekly'],
-      });
+      }, ENTITY);
       await createRunbook({
         ...defaultRunbookParams,
         tags: ['onboarding'],
-      });
+      }, ENTITY);
 
-      const finance = await listRunbooks('entity-1', { tag: 'finance' });
+      const finance = await listRunbooks(ENTITY, { tag: 'finance' });
       expect(finance).toHaveLength(1);
       expect(finance[0].tags).toContain('finance');
     });
 
-    it('should return empty for non-matching entityId', async () => {
-      await createRunbook(defaultRunbookParams);
+    it('should return empty for a different entity', async () => {
+      await createRunbook(defaultRunbookParams, ENTITY);
 
-      const result = await listRunbooks('nonexistent');
+      const result = await listRunbooks(OTHER_ENTITY);
       expect(result).toHaveLength(0);
     });
   });
 
   describe('executeRunbook', () => {
     it('should execute all steps sequentially', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      const execution = await executeRunbook(runbook.id, 'user-1');
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      const execution = await executeRunbook(runbook.id, 'user-1', ENTITY);
 
       expect(execution.id).toBeDefined();
       expect(execution.runbookId).toBe(runbook.id);
@@ -250,9 +465,9 @@ describe('RunbookService', () => {
             continueOnFailure: false,
           },
         ],
-      });
+      }, ENTITY);
 
-      const execution = await executeRunbook(runbook.id, 'user-1');
+      const execution = await executeRunbook(runbook.id, 'user-1', ENTITY);
 
       expect(execution.status).toBe('PAUSED');
       expect(execution.stepResults[0].status).toBe('COMPLETED');
@@ -275,9 +490,9 @@ describe('RunbookService', () => {
             continueOnFailure: false,
           },
         ],
-      });
+      }, ENTITY);
 
-      const execution = await executeRunbook(runbook.id, 'user-1');
+      const execution = await executeRunbook(runbook.id, 'user-1', ENTITY);
 
       // BULK_SEND with 200 recipients will score higher than LOW
       // The step maxBlastRadius is LOW, so it should pause
@@ -287,10 +502,10 @@ describe('RunbookService', () => {
     });
 
     it('should update runbook lastRunAt and lastRunStatus on completion', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      await executeRunbook(runbook.id, 'user-1');
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      await executeRunbook(runbook.id, 'user-1', ENTITY);
 
-      const updated = await getRunbook(runbook.id);
+      const updated = await getRunbook(runbook.id, ENTITY);
       expect(updated!.lastRunAt).toBeInstanceOf(Date);
       expect(updated!.lastRunStatus).toBe('SUCCESS');
     });
@@ -310,16 +525,16 @@ describe('RunbookService', () => {
             continueOnFailure: false,
           },
         ],
-      });
+      }, ENTITY);
 
-      await executeRunbook(runbook.id, 'user-1');
+      await executeRunbook(runbook.id, 'user-1', ENTITY);
 
-      const updated = await getRunbook(runbook.id);
+      const updated = await getRunbook(runbook.id, ENTITY);
       expect(updated!.lastRunStatus).toBe('PARTIAL');
     });
 
     it('should throw for non-existent runbook', async () => {
-      await expect(executeRunbook('nonexistent', 'user-1')).rejects.toThrow(
+      await expect(executeRunbook('nonexistent', 'user-1', ENTITY)).rejects.toThrow(
         'Runbook nonexistent not found'
       );
     });
@@ -327,27 +542,27 @@ describe('RunbookService', () => {
 
   describe('getRunbookExecution', () => {
     it('should return execution by ID', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      const execution = await executeRunbook(runbook.id, 'user-1');
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      const execution = await executeRunbook(runbook.id, 'user-1', ENTITY);
 
-      const found = await getRunbookExecution(execution.id);
+      const found = await getRunbookExecution(execution.id, ENTITY);
       expect(found).toBeDefined();
       expect(found!.id).toBe(execution.id);
     });
 
     it('should return null for non-existent execution', async () => {
-      const found = await getRunbookExecution('nonexistent');
+      const found = await getRunbookExecution('nonexistent', ENTITY);
       expect(found).toBeNull();
     });
   });
 
   describe('listRunbookExecutions', () => {
     it('should list executions for a runbook', async () => {
-      const runbook = await createRunbook(defaultRunbookParams);
-      await executeRunbook(runbook.id, 'user-1');
-      await executeRunbook(runbook.id, 'user-2');
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
+      await executeRunbook(runbook.id, 'user-1', ENTITY);
+      await executeRunbook(runbook.id, 'user-2', ENTITY);
 
-      const executions = await listRunbookExecutions(runbook.id);
+      const executions = await listRunbookExecutions(runbook.id, ENTITY);
 
       expect(executions).toHaveLength(2);
       // Should be sorted by startedAt descending
@@ -357,14 +572,14 @@ describe('RunbookService', () => {
     });
 
     it('should return empty for runbook with no executions', async () => {
-      const executions = await listRunbookExecutions('nonexistent');
+      const executions = await listRunbookExecutions('nonexistent', ENTITY);
       expect(executions).toHaveLength(0);
     });
   });
 
   describe('createFromTemplate', () => {
     it('should create runbook from template index 0 (Weekly CFO Pack)', async () => {
-      const runbook = await createFromTemplate(0, 'entity-1', 'user-1');
+      const runbook = await createFromTemplate(0, ENTITY, 'user-1');
 
       expect(runbook.name).toBe('Weekly CFO Pack');
       expect(runbook.entityId).toBe('entity-1');
@@ -374,14 +589,14 @@ describe('RunbookService', () => {
     });
 
     it('should create runbook from template index 1 (Client Onboarding)', async () => {
-      const runbook = await createFromTemplate(1, 'entity-1', 'user-1');
+      const runbook = await createFromTemplate(1, ENTITY, 'user-1');
 
       expect(runbook.name).toBe('Client Onboarding');
       expect(runbook.steps.length).toBe(BUILTIN_TEMPLATES[1].steps.length);
     });
 
     it('should create runbook from template index 2 (Close the Loop Fridays)', async () => {
-      const runbook = await createFromTemplate(2, 'entity-1', 'user-1');
+      const runbook = await createFromTemplate(2, ENTITY, 'user-1');
 
       expect(runbook.name).toBe('Close the Loop Fridays');
       expect(runbook.schedule).toBe('0 9 * * 5');
@@ -389,7 +604,7 @@ describe('RunbookService', () => {
 
     it('should throw for invalid template index', async () => {
       await expect(
-        createFromTemplate(99, 'entity-1', 'user-1')
+        createFromTemplate(99, ENTITY, 'user-1')
       ).rejects.toThrow('Template index 99 not found');
     });
   });
@@ -510,7 +725,7 @@ describe('RunbookService', () => {
         suggestions: ['Add a pre-validation step', 'Enable approval for step 2'],
       });
 
-      const runbook = await createRunbook(defaultRunbookParams);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
       const validation = await validateRunbookWithAI(runbook);
 
       expect(generateJSON).toHaveBeenCalled();
@@ -521,7 +736,7 @@ describe('RunbookService', () => {
     it('should return valid with no suggestions on AI failure', async () => {
       generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
-      const runbook = await createRunbook(defaultRunbookParams);
+      const runbook = await createRunbook(defaultRunbookParams, ENTITY);
       const validation = await validateRunbookWithAI(runbook);
 
       expect(validation.valid).toBe(true);

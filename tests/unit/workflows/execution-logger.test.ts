@@ -5,12 +5,17 @@ import {
   rollbackExecution,
 } from '@/modules/workflows/services/execution-logger';
 import type { WorkflowExecution, StepExecutionResult } from '@/modules/workflows/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 // --- Mocks ---
 
 const mockActionLogCreate = jest.fn();
 const mockActionLogFindMany = jest.fn();
 const mockActionLogUpdate = jest.fn();
+// P-09: reading or reversing a run now proves the tenant on the parent chain
+// (run record -> workflow -> entity) before it touches a single log row.
+const mockRecordFindUnique = jest.fn();
+const mockWorkflowFindFirst = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -19,14 +24,25 @@ jest.mock('@/lib/db', () => ({
       findMany: (...args: unknown[]) => mockActionLogFindMany(...args),
       update: (...args: unknown[]) => mockActionLogUpdate(...args),
     },
+    workflowExecutionRecord: {
+      findUnique: (...args: unknown[]) => mockRecordFindUnique(...args),
+    },
+    workflow: {
+      findFirst: (...args: unknown[]) => mockWorkflowFindFirst(...args),
+    },
   },
 }));
+
+const ENTITY = verifiedEntityIdForTest('ent-1');
 
 // --- Tests ---
 
 describe('ExecutionLogger', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // The run belongs to ENTITY unless a test says otherwise.
+    mockRecordFindUnique.mockResolvedValue({ workflowId: 'wf-1' });
+    mockWorkflowFindFirst.mockResolvedValue({ id: 'wf-1' });
   });
 
   describe('logExecution', () => {
@@ -182,7 +198,7 @@ describe('ExecutionLogger', () => {
 
       mockActionLogFindMany.mockResolvedValue(logs);
 
-      const result = await getExecutionLog('exec-1');
+      const result = await getExecutionLog('exec-1', ENTITY);
 
       expect(result).toHaveLength(2);
       expect(result[0].id).toBe('log-1');
@@ -193,10 +209,19 @@ describe('ExecutionLogger', () => {
       });
     });
 
+    it("returns nothing for a run belonging to another tenant", async () => {
+      mockWorkflowFindFirst.mockResolvedValue(null);
+
+      const result = await getExecutionLog('exec-1', ENTITY);
+
+      expect(result).toEqual([]);
+      expect(mockActionLogFindMany).not.toHaveBeenCalled();
+    });
+
     it('should return empty array when no logs exist for execution', async () => {
       mockActionLogFindMany.mockResolvedValue([]);
 
-      const result = await getExecutionLog('exec-nonexistent');
+      const result = await getExecutionLog('exec-nonexistent', ENTITY);
 
       expect(result).toEqual([]);
     });
@@ -229,7 +254,7 @@ describe('ExecutionLogger', () => {
       mockActionLogUpdate.mockResolvedValue({});
       mockActionLogCreate.mockResolvedValue({ id: 'rollback-log' });
 
-      const result = await rollbackExecution('exec-1');
+      const result = await rollbackExecution('exec-1', ENTITY);
 
       expect(result.rolledBack).toHaveLength(2);
       expect(result.failed).toHaveLength(0);
@@ -251,6 +276,17 @@ describe('ExecutionLogger', () => {
       expect(firstRollbackLog.status).toBe('EXECUTED');
     });
 
+    it('refuses to roll back a run belonging to another tenant, and writes nothing', async () => {
+      // The workflow lookup is scoped, so a foreign run resolves to no owner.
+      mockWorkflowFindFirst.mockResolvedValue(null);
+
+      await expect(rollbackExecution('exec-1', ENTITY)).rejects.toThrow('not found');
+
+      expect(mockActionLogFindMany).not.toHaveBeenCalled();
+      expect(mockActionLogUpdate).not.toHaveBeenCalled();
+      expect(mockActionLogCreate).not.toHaveBeenCalled();
+    });
+
     it('should handle rollback failures gracefully', async () => {
       const logs = [
         {
@@ -267,7 +303,7 @@ describe('ExecutionLogger', () => {
       mockActionLogFindMany.mockResolvedValue(logs);
       mockActionLogUpdate.mockRejectedValue(new Error('DB connection failed'));
 
-      const result = await rollbackExecution('exec-1');
+      const result = await rollbackExecution('exec-1', ENTITY);
 
       expect(result.rolledBack).toHaveLength(0);
       expect(result.failed).toHaveLength(1);

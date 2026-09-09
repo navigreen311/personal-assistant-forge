@@ -11,6 +11,66 @@ import {
   clearAgentRegistry,
 } from '@/modules/workflows/services/agent-orchestrator';
 import type { AgentConfig } from '@/modules/workflows/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+// P-09: an agent run is autonomous execution against real records, so the
+// orchestrator has to say which tenant it is acting for.
+const ENTITY = verifiedEntityIdForTest('entity-1');
+
+
+// P-09: WorkflowExecutionRecord is a table now; an agent run writes a real row.
+type MockRow = Record<string, unknown>;
+
+function mockExecutionRecordDelegate() {
+  const store = globalThis as { __p09AgentRuns?: Map<string, MockRow> };
+  if (!store.__p09AgentRuns) store.__p09AgentRuns = new Map<string, MockRow>();
+  const rows = store.__p09AgentRuns;
+  let seq = rows.size;
+  return {
+    create: async (args: { data: MockRow }) => {
+      const id = `rec-${(seq += 1)}`;
+      const row: MockRow = {
+        completedAt: null,
+        currentNodeId: null,
+        error: null,
+        startedAt: new Date(),
+        variables: {},
+        stepResults: [],
+        ...args.data,
+        id,
+      };
+      rows.set(id, row);
+      return { ...row };
+    },
+    findUnique: async (args: { where: { id: string } }) => {
+      const row = rows.get(args.where.id);
+      return row ? { ...row } : null;
+    },
+    findMany: async () => Array.from(rows.values()).map((r) => ({ ...r })),
+    count: async () => rows.size,
+    updateMany: async (args: { where: { id?: string }; data: MockRow }) => {
+      let count = 0;
+      for (const [id, row] of rows) {
+        if (args.where.id === undefined || args.where.id === id) {
+          rows.set(id, { ...row, ...args.data });
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    upsert: async (args: { where: { id: string }; create: MockRow; update: MockRow }) => {
+      const existing = rows.get(args.where.id);
+      const row = existing ? { ...existing, ...args.update } : { ...args.create };
+      rows.set(args.where.id, row);
+      return { ...row };
+    },
+    deleteMany: async () => {
+      const count = rows.size;
+      rows.clear();
+      return { count };
+    },
+  };
+}
 
 // --- Mocks ---
 
@@ -18,7 +78,15 @@ jest.mock('@/lib/db', () => ({
   prisma: {
     workflow: {
       findUnique: jest.fn(),
+      // P-09 trap 1: the scoped reads use findFirst, the scoped writes
+      // updateMany, so the entity can ride in the WHERE clause.
+      findFirst: (...args: unknown[]) =>
+        (jest.requireMock('@/lib/db').prisma.workflow.findUnique as jest.Mock)(...args),
       update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    get workflowExecutionRecord() {
+      return mockExecutionRecordDelegate();
     },
     actionLog: {
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
@@ -95,7 +163,7 @@ describe('AgentOrchestrator', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeAutonomousWorkflow('wf-agent-1', 'agent-1');
+      const execution = await executeAutonomousWorkflow('wf-agent-1', 'agent-1', ENTITY);
 
       expect(execution).toBeDefined();
       expect(execution.triggeredBy).toBe('agent-1');
@@ -147,7 +215,7 @@ describe('AgentOrchestrator', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeAutonomousWorkflow('wf-agent-2', 'agent-1');
+      const execution = await executeAutonomousWorkflow('wf-agent-2', 'agent-1', ENTITY);
 
       // Should be paused due to high blast radius
       expect(execution.status).toBe('PAUSED');
@@ -184,7 +252,7 @@ describe('AgentOrchestrator', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeAutonomousWorkflow('wf-agent-3', 'agent-1');
+      const execution = await executeAutonomousWorkflow('wf-agent-3', 'agent-1', ENTITY);
 
       expect(execution.status).toBe('COMPLETED');
     });
@@ -220,14 +288,14 @@ describe('AgentOrchestrator', () => {
       });
       prisma.workflow.update.mockResolvedValue({});
 
-      const execution = await executeAutonomousWorkflow('wf-agent-4', 'agent-1', 5);
+      const execution = await executeAutonomousWorkflow('wf-agent-4', 'agent-1', ENTITY, 5);
 
       expect(execution.variables.__maxSteps).toBe(5);
     });
 
     it('should throw for non-existent agent', async () => {
       await expect(
-        executeAutonomousWorkflow('wf-1', 'nonexistent-agent')
+        executeAutonomousWorkflow('wf-1', 'nonexistent-agent', ENTITY)
       ).rejects.toThrow('not found');
     });
   });

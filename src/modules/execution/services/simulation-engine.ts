@@ -3,12 +3,19 @@
 // Simulates actions without executing them to preview effects and risks
 // ============================================================================
 
-import { v4 as uuidv4 } from 'uuid';
+// P-09: `crypto.randomUUID` rather than the `uuid` package. `uuid` ships ESM
+// only, so anything importing it is unloadable by the real-database suite --
+// `jest.db.config.ts` is frozen and has no `transformIgnorePatterns`. A
+// control-plane route that cannot be tested against a real database is exactly
+// the problem this package exists to close, and nothing here needed the
+// package: `randomUUID` has been in Node's standard library since 14.17.
+import { randomUUID } from 'node:crypto';
 import type {
   SimulationRequest,
   SimulationResult,
   SimulatedEffect,
 } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { scoreAction } from './blast-radius-scorer';
 import { estimateActionCost } from './cost-estimator';
 import { generateJSON } from '@/lib/ai';
@@ -432,9 +439,19 @@ Return JSON with:
 
 // --- Public API ---
 
+/**
+ * Simulate one action against a verified tenant.
+ *
+ * P-09 (T-001): the entity is a separate branded argument, not a field on the
+ * request the route parsed. A simulation names the records it would touch, so a
+ * caller-supplied entity here would preview another tenant's data -- the read
+ * half of the same bug, and easy to miss because nothing is written.
+ */
 export async function simulateAction(
-  request: SimulationRequest
+  params: Omit<SimulationRequest, 'entityId'>,
+  entityId: VerifiedEntityId
 ): Promise<SimulationResult> {
+  const request: SimulationRequest = { ...params, entityId };
   const simulator = simulators[request.actionType] ?? simulateGeneric;
   const { effects, sideEffects, warnings } = simulator(request);
 
@@ -477,7 +494,7 @@ export async function simulateAction(
   }
 
   return {
-    id: uuidv4(),
+    id: randomUUID(),
     request,
     wouldDo: effects,
     sideEffects: allSideEffects,
@@ -492,9 +509,10 @@ export async function simulateAction(
 }
 
 export async function simulateMultipleActions(
-  requests: SimulationRequest[]
+  requests: Omit<SimulationRequest, 'entityId'>[],
+  entityId: VerifiedEntityId
 ): Promise<SimulationResult[]> {
-  return Promise.all(requests.map(simulateAction));
+  return Promise.all(requests.map((request) => simulateAction(request, entityId)));
 }
 
 export function generateImpactReport(result: SimulationResult): string {

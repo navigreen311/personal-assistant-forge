@@ -3,32 +3,82 @@
 // Evaluates conditions before allowing action execution
 // Uses safe expression parsing (no eval)
 // ============================================================================
+//
+// P-09 (T-007 / T-034): the gate rules used to live in a module-level Map.
+// A gate is the mechanism that STOPS an action, so a gate that disappears on
+// `restart: unless-stopped` is worse than no gate at all -- the console still
+// reports the action as protected. Rules now live in `ExecutionGateRule` and
+// every read goes to Postgres, so a restart, a second process, or a direct
+// service call all see the same rules.
+//
+// P-09 (T-001): gates are tenant-scoped in the WHERE clause. A rule may only
+// be edited or removed by the entity that owns it, and a rule only ever
+// applies to actions of the entity that owns it. A gate belonging to nobody
+// (`entityId = null`, seeded by the platform, not reachable from this API)
+// is the only truly global one, and nothing here can delete it.
 
-import { v4 as uuidv4 } from 'uuid';
+import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ExecutionGate, QueuedAction } from '../types';
 
-// --- In-Memory Gate Store ---
+// --- Row <-> interface reconciliation ---
 
-const gateStore = new Map<string, ExecutionGate>();
+interface GateRow {
+  id: string;
+  name: string;
+  expression: string;
+  description: string;
+  scope: string;
+  entityId: string | null;
+  isActive: boolean;
+}
+
+function toExecutionGate(row: GateRow): ExecutionGate {
+  return {
+    id: row.id,
+    name: row.name,
+    expression: row.expression,
+    description: row.description,
+    scope: row.scope as ExecutionGate['scope'],
+    entityId: row.entityId ?? undefined,
+    isActive: row.isActive,
+  };
+}
 
 // --- Public API ---
 
-export function createGate(
-  params: Omit<ExecutionGate, 'id'>
-): ExecutionGate {
-  const gate: ExecutionGate = {
-    id: uuidv4(),
-    ...params,
-  };
-  gateStore.set(gate.id, gate);
-  return gate;
+/**
+ * Create a gate owned by `entityId`.
+ *
+ * The scope is recorded as asked for, but the owner is always the verified
+ * caller: `getApplicableGates` only ever matches a gate against actions of the
+ * entity that owns it, so a tenant cannot install a rule into another tenant's
+ * execution path (a gate you can inject is a denial of service, the mirror of
+ * a gate you can bypass).
+ */
+export async function createGate(
+  params: Omit<ExecutionGate, 'id' | 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<ExecutionGate> {
+  const row = await prisma.executionGateRule.create({
+    data: {
+      name: params.name,
+      expression: params.expression,
+      description: params.description,
+      scope: params.scope,
+      isActive: params.isActive,
+      // LAST and unconditional: the caller does not name its own tenant.
+      entityId,
+    },
+  });
+  return toExecutionGate(row);
 }
 
 export async function evaluateGates(
   action: QueuedAction,
   context: Record<string, unknown>
 ): Promise<{ passed: boolean; blockedBy?: ExecutionGate; reason?: string }> {
-  const applicableGates = getApplicableGates(action);
+  const applicableGates = await getApplicableGates(action);
 
   for (const gate of applicableGates) {
     if (!gate.isActive) continue;
@@ -55,43 +105,64 @@ export async function evaluateGates(
   return { passed: true };
 }
 
-export function listGates(
-  scope?: string,
-  entityId?: string
-): ExecutionGate[] {
-  let gates = Array.from(gateStore.values());
+export async function listGates(
+  entityId: VerifiedEntityId,
+  scope?: string
+): Promise<ExecutionGate[]> {
+  const rows = await prisma.executionGateRule.findMany({
+    where: {
+      ...(scope ? { scope } : {}),
+      // Applied last and unconditionally, so no filter combination widens it.
+      OR: [{ entityId }, { entityId: null, scope: 'GLOBAL' }],
+    },
+    orderBy: { createdAt: 'asc' },
+  });
 
-  if (scope) {
-    gates = gates.filter((g) => g.scope === scope);
-  }
-  if (entityId) {
-    gates = gates.filter(
-      (g) => g.entityId === entityId || g.scope === 'GLOBAL'
-    );
-  }
-
-  return gates;
+  return rows.map(toExecutionGate);
 }
 
-export function updateGate(
+export async function updateGate(
   gateId: string,
-  updates: Partial<ExecutionGate>
-): ExecutionGate {
-  const gate = gateStore.get(gateId);
-  if (!gate) {
+  updates: Partial<Omit<ExecutionGate, 'id' | 'entityId'>>,
+  entityId: VerifiedEntityId
+): Promise<ExecutionGate> {
+  const data: Record<string, unknown> = {};
+  if (updates.name !== undefined) data.name = updates.name;
+  if (updates.expression !== undefined) data.expression = updates.expression;
+  if (updates.description !== undefined) data.description = updates.description;
+  if (updates.scope !== undefined) data.scope = updates.scope;
+  if (updates.isActive !== undefined) data.isActive = updates.isActive;
+
+  // updateMany, not update: a unique WHERE cannot carry the entity, so a
+  // foreign gate would be editable by anyone who knew its id.
+  const { count } = await prisma.executionGateRule.updateMany({
+    where: { id: gateId, entityId },
+    data,
+  });
+
+  if (count === 0) {
     throw new Error(`Gate ${gateId} not found`);
   }
 
-  const updated: ExecutionGate = { ...gate, ...updates, id: gate.id };
-  gateStore.set(gateId, updated);
-  return updated;
+  const row = await prisma.executionGateRule.findFirst({
+    where: { id: gateId, entityId },
+  });
+  if (!row) {
+    throw new Error(`Gate ${gateId} not found`);
+  }
+  return toExecutionGate(row);
 }
 
-export function deleteGate(gateId: string): void {
-  if (!gateStore.has(gateId)) {
+export async function deleteGate(
+  gateId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const { count } = await prisma.executionGateRule.deleteMany({
+    where: { id: gateId, entityId },
+  });
+  if (count === 0) {
     throw new Error(`Gate ${gateId} not found`);
   }
-  gateStore.delete(gateId);
 }
 
 // --- Safe Expression Evaluator ---
@@ -320,16 +391,30 @@ export function evaluateExpression(
 
 // --- Helpers ---
 
-function getApplicableGates(action: QueuedAction): ExecutionGate[] {
-  return Array.from(gateStore.values()).filter((gate) => {
-    if (gate.scope === 'GLOBAL') return true;
-    if (gate.scope === 'ENTITY' && gate.entityId === action.entityId) return true;
-    return false;
+/**
+ * The gates that apply to one action.
+ *
+ * The scope is in the WHERE clause, so a gate belonging to another tenant is
+ * simply not returned -- there is no post-filter to forget. A platform gate
+ * (`entityId = null`, `scope = 'GLOBAL'`) applies to everyone; a tenant's own
+ * gate applies only to that tenant's actions, whatever scope it declares.
+ */
+async function getApplicableGates(action: QueuedAction): Promise<ExecutionGate[]> {
+  const rows = await prisma.executionGateRule.findMany({
+    where: {
+      OR: [
+        { entityId: null, scope: 'GLOBAL' },
+        { entityId: action.entityId },
+      ],
+    },
+    orderBy: { createdAt: 'asc' },
   });
+  return rows.map(toExecutionGate);
 }
 
 // --- Testing Helpers ---
 
-export function _clearGateStore(): void {
-  gateStore.clear();
+/** Remove every gate rule. Real deletes now -- there is no Map to clear. */
+export async function _clearGateStore(): Promise<void> {
+  await prisma.executionGateRule.deleteMany({});
 }

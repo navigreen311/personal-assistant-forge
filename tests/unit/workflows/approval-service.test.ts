@@ -11,13 +11,193 @@ import {
 } from '@/modules/workflows/services/approval-service';
 import type { HumanApprovalNodeConfig } from '@/modules/workflows/types';
 
+// ---------------------------------------------------------------------------
+// P-09: the stores this suite used to exercise are TABLES now.
+//
+// The suite stays offline, so each table gets a small in-memory double with the
+// delegate surface the service actually calls. It is a real typed object, not a
+// bag of `any`: a delegate or column name that does not exist still fails here.
+// That is the failure the persistence pattern exists to stop -- a mocked Prisma
+// client will happily accept `prisma.tableThatDoesNotExist.create()`, which is
+// exactly how four delegates that were never in the schema shipped green.
+//
+// The real cross-process assertions -- that the state is in Postgres and that
+// the gate cannot be bypassed by a restart -- live in tests/db/, where they can
+// actually be true.
+// ---------------------------------------------------------------------------
+
+type MockRow = Record<string, unknown>;
+type MockWhere = Record<string, unknown>;
+
+function mockMatches(row: MockRow, where: MockWhere): boolean {
+  return Object.entries(where).every(([key, cond]) => {
+    if (cond === undefined) return true;
+    if (key === 'OR' && Array.isArray(cond)) {
+      return (cond as MockWhere[]).some((c) => mockMatches(row, c));
+    }
+    const value = row[key];
+    if (cond !== null && typeof cond === 'object' && !(cond instanceof Date)) {
+      const c = cond as MockWhere;
+      if ('in' in c) return (c.in as unknown[]).includes(value);
+      if ('gte' in c && Number(value) < Number(c.gte)) return false;
+      if ('lte' in c && Number(value) > Number(c.lte)) return false;
+      return true;
+    }
+    return value === cond;
+  });
+}
+
+function mockApply(row: MockRow, data: MockRow): MockRow {
+  const next: MockRow = { ...row };
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== null && typeof value === 'object' && 'increment' in (value as MockRow)) {
+      next[key] = Number(next[key] ?? 0) + Number((value as MockRow).increment);
+    } else {
+      next[key] = value;
+    }
+  }
+  return next;
+}
+
+function mockMakeTable(prefix: string) {
+  const rows = new Map<string, MockRow>();
+  let seq = 0;
+
+  const list = (args?: {
+    where?: MockWhere;
+    orderBy?: MockRow;
+    skip?: number;
+    take?: number;
+  }): MockRow[] => {
+    let out = Array.from(rows.values()).filter((r) => mockMatches(r, args?.where ?? {}));
+    const orderBy = args?.orderBy;
+    if (orderBy) {
+      const [key, dir] = Object.entries(orderBy)[0];
+      out = out.slice().sort((a, b) => {
+        const av = Number(a[key] instanceof Date ? (a[key] as Date).getTime() : a[key]);
+        const bv = Number(b[key] instanceof Date ? (b[key] as Date).getTime() : b[key]);
+        return dir === 'desc' ? bv - av : av - bv;
+      });
+    }
+    const skip = args?.skip ?? 0;
+    const take = args?.take ?? out.length;
+    return out.slice(skip, skip + take).map((r) => ({ ...r }));
+  };
+
+  return {
+    rows,
+    clear: () => rows.clear(),
+    seed: (row: MockRow) => {
+      rows.set(row.id as string, row);
+    },
+    create: async (args: { data: MockRow }) => {
+      const id = (args.data.id as string) ?? `${prefix}-${(seq += 1)}`;
+      // `createdAt` / `updatedAt` / `startedAt` stand in for the schema's
+      // `@default(now())` and `@updatedAt`, which the real client fills in.
+      const row: MockRow = {
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        startedAt: new Date(),
+        ...args.data,
+        id,
+      };
+      rows.set(id, row);
+      return { ...row };
+    },
+    findUnique: async (args: { where: MockWhere }) => {
+      const row = Array.from(rows.values()).find((r) => mockMatches(r, args.where));
+      return row ? { ...row } : null;
+    },
+    findFirst: async (args?: { where?: MockWhere; orderBy?: MockRow }) => {
+      const found = list(args)[0];
+      return found ?? null;
+    },
+    findMany: async (args?: {
+      where?: MockWhere;
+      orderBy?: MockRow;
+      skip?: number;
+      take?: number;
+    }) => list(args),
+    count: async (args?: { where?: MockWhere }) =>
+      Array.from(rows.values()).filter((r) => mockMatches(r, args?.where ?? {})).length,
+    update: async (args: { where: MockWhere; data: MockRow }) => {
+      const entry = Array.from(rows.entries()).find(([, r]) => mockMatches(r, args.where));
+      if (!entry) throw new Error(`${prefix}: no row matches update`);
+      const next = mockApply(entry[1], { updatedAt: new Date(), ...args.data });
+      rows.set(entry[0], next);
+      return { ...next };
+    },
+    updateMany: async (args: { where: MockWhere; data: MockRow }) => {
+      let count = 0;
+      for (const [id, row] of rows) {
+        if (mockMatches(row, args.where)) {
+          rows.set(id, mockApply(row, { updatedAt: new Date(), ...args.data }));
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    upsert: async (args: { where: MockWhere; create: MockRow; update: MockRow }) => {
+      const entry = Array.from(rows.entries()).find(([, r]) => mockMatches(r, args.where));
+      if (entry) {
+        const next = mockApply(entry[1], args.update);
+        rows.set(entry[0], next);
+        return { ...next };
+      }
+      const id = `${prefix}-${(seq += 1)}`;
+      const row: MockRow = { createdAt: new Date(), ...args.create, id };
+      rows.set(id, row);
+      return { ...row };
+    },
+    deleteMany: async (args?: { where?: MockWhere }) => {
+      let count = 0;
+      for (const [id, row] of Array.from(rows.entries())) {
+        if (mockMatches(row, args?.where ?? {})) {
+          rows.delete(id);
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    aggregate: async (args: { where?: MockWhere; _sum?: MockRow }) => {
+      const matched = Array.from(rows.values()).filter((r) =>
+        mockMatches(r, args.where ?? {})
+      );
+      const sums: MockRow = {};
+      for (const key of Object.keys(args._sum ?? {})) {
+        sums[key] = matched.reduce((total, r) => total + Number(r[key] ?? 0), 0);
+      }
+      return { _sum: sums };
+    },
+  };
+}
+
 // --- Mocks ---
 
+function mockMakeDb() {
+  return {
+    workflowApproval: mockMakeTable('appr'),
+    actionLog: mockMakeTable('log'),
+  };
+}
+
+function mockDb(): ReturnType<typeof mockMakeDb> {
+  // Held on globalThis rather than in a module-level `let`: jest.mock factories
+  // are hoisted above every declaration in the file, and the shared test
+  // helpers read `prisma` at import time, so a `let` here is still in its
+  // temporal dead zone the first time this is called.
+  const store = globalThis as { __p09MockDb?: ReturnType<typeof mockMakeDb> };
+  if (!store.__p09MockDb) store.__p09MockDb = mockMakeDb();
+  return store.__p09MockDb;
+}
+
 jest.mock('@/lib/db', () => ({
-  prisma: {
-    actionLog: {
-      create: jest.fn().mockResolvedValue({ id: 'log-1' }),
-    },
+  __esModule: true,
+  get prisma() {
+    return mockDb();
+  },
+  get default() {
+    return mockDb();
   },
 }));
 

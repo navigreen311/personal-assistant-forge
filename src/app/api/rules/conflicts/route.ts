@@ -1,8 +1,16 @@
+// ============================================================================
+// POST /api/rules/conflicts - Report conflicting policy rules
+// ============================================================================
+//
+// P-09 (T-001): same shape as /api/rules/evaluate -- the session was discarded
+// and `entityId` came off the body, so the conflict report described another
+// tenant's rule set.
+
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { evaluateRules, resolveConflicts } from '@/engines/policy/rule-engine';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const ConflictsSchema = z.object({
   context: z.record(z.string(), z.unknown()),
@@ -10,7 +18,7 @@ const ConflictsSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = ConflictsSchema.safeParse(body);
@@ -21,7 +29,8 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const evaluated = await evaluateRules(parsed.data.context, parsed.data.entityId);
+      // The verified entity, not the one in the body.
+      const evaluated = await evaluateRules(parsed.data.context, entityId);
       const conflicts = await resolveConflicts(evaluated);
 
       return success({

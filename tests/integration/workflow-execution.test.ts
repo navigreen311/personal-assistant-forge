@@ -10,14 +10,87 @@
 
 // --- Infrastructure mocks ---
 
+
+// ---------------------------------------------------------------------------
+// P-09: WorkflowExecutionRecord is a TABLE now, not a module-level Map.
+// This suite runs offline, so the table gets a small in-memory double that
+// answers the same delegate calls the executor makes. A delegate or field name
+// that does not exist still fails here -- which is the whole point of moving
+// off a `Map` and onto a schema.
+// ---------------------------------------------------------------------------
+
+type MockRow = Record<string, unknown>;
+
+const mockExecutionRows = new Map<string, MockRow>();
+let mockExecutionSeq = 0;
+
+function mockRowMatches(row: MockRow, where: MockRow): boolean {
+  return Object.entries(where).every(([key, value]) => row[key] === value);
+}
+
+const mockExecutionRecordDelegate = {
+  create: async (args: { data: MockRow }) => {
+    const id = (args.data.id as string) ?? `rec-${(mockExecutionSeq += 1)}`;
+    const row: MockRow = {
+      completedAt: null,
+      currentNodeId: null,
+      error: null,
+      startedAt: new Date(),
+      variables: {},
+      stepResults: [],
+      ...args.data,
+      id,
+    };
+    mockExecutionRows.set(id, row);
+    return { ...row };
+  },
+  findUnique: async (args: { where: { id: string } }) => {
+    const row = mockExecutionRows.get(args.where.id);
+    return row ? { ...row } : null;
+  },
+  findMany: async (args?: { where?: MockRow }) =>
+    Array.from(mockExecutionRows.values())
+      .filter((r) => mockRowMatches(r, args?.where ?? {}))
+      .map((r) => ({ ...r })),
+  count: async (args?: { where?: MockRow }) =>
+    Array.from(mockExecutionRows.values()).filter((r) => mockRowMatches(r, args?.where ?? {}))
+      .length,
+  updateMany: async (args: { where: MockRow; data: MockRow }) => {
+    let count = 0;
+    for (const [id, row] of mockExecutionRows) {
+      if (mockRowMatches(row, args.where)) {
+        mockExecutionRows.set(id, { ...row, ...args.data });
+        count += 1;
+      }
+    }
+    return { count };
+  },
+  upsert: async (args: { where: { id: string }; create: MockRow; update: MockRow }) => {
+    const existing = mockExecutionRows.get(args.where.id);
+    const row = existing ? { ...existing, ...args.update } : { ...args.create };
+    mockExecutionRows.set(args.where.id, row);
+    return { ...row };
+  },
+  deleteMany: async () => {
+    const count = mockExecutionRows.size;
+    mockExecutionRows.clear();
+    return { count };
+  },
+};
+
 const mockPrisma = {
   workflow: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    // P-09 trap 1: the scoped reads use findFirst so the entity rides in the
+    // WHERE clause. Aliased so the double cannot answer undefined in silence.
+    findFirst: (...args: unknown[]) => mockPrisma.workflow.findUnique(...args),
     update: jest.fn(),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     findMany: jest.fn(),
     count: jest.fn(),
   },
+  workflowExecutionRecord: mockExecutionRecordDelegate,
 };
 
 jest.mock('@/lib/db', () => ({
@@ -63,6 +136,9 @@ import {
 import { evaluateExpression } from '@/modules/workflows/services/condition-evaluator';
 import { executeAction } from '@/modules/workflows/services/action-handlers';
 import type { WorkflowGraph, WorkflowNode, WorkflowEdge } from '@/modules/workflows/types';
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+const ENTITY = verifiedEntityIdForTest('ent-1');
 
 const mockedExecuteAction = executeAction as jest.MockedFunction<typeof executeAction>;
 
@@ -95,9 +171,9 @@ function makeEdge(sourceNodeId: string, targetNodeId: string, label?: string): W
 }
 
 describe('Workflow Execution Integration Tests', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
-    clearExecutionStore();
+    await clearExecutionStore();
   });
 
   describe('Simple workflow execution', () => {
@@ -130,7 +206,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(workflowRecord);
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
-      const execution = await executeWorkflow('wf-1', 'system', 'EVENT');
+      const execution = await executeWorkflow('wf-1', 'system', 'EVENT', ENTITY);
 
       expect(execution.workflowId).toBe('wf-1');
       expect(execution.status).toBe('COMPLETED');
@@ -145,8 +221,10 @@ describe('Workflow Execution Integration Tests', () => {
       );
 
       // Verify workflow was updated with lastRun
-      expect(mockPrisma.workflow.update).toHaveBeenCalledWith({
-        where: { id: 'wf-1' },
+      // CORRECTED BY P-09: `where: { id }` alone carried no tenant, so the
+      // write was reachable for any workflow id. The entity is in the WHERE.
+      expect(mockPrisma.workflow.updateMany).toHaveBeenCalledWith({
+        where: { id: 'wf-1', entityId: ENTITY },
         data: expect.objectContaining({
           lastRun: expect.any(Date),
           successRate: expect.any(Number),
@@ -203,7 +281,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(workflowRecord);
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
-      const execution = await executeWorkflow('wf-2', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-2', 'user-1', 'MANUAL', ENTITY);
 
       expect(execution.status).toBe('COMPLETED');
       expect(execution.stepResults).toHaveLength(4); // trigger + 3 actions
@@ -259,7 +337,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
       // Execute with amount > 1000 (meets condition)
-      const execution = await executeWorkflow('wf-3', 'user-1', 'MANUAL', { amount: 5000 });
+      const execution = await executeWorkflow('wf-3', 'user-1', 'MANUAL', ENTITY, { amount: 5000 });
 
       expect(execution.status).toBe('COMPLETED');
 
@@ -316,7 +394,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
       // Execute with amount < 1000 (does NOT meet condition)
-      const execution = await executeWorkflow('wf-3b', 'user-1', 'MANUAL', { amount: 50 });
+      const execution = await executeWorkflow('wf-3b', 'user-1', 'MANUAL', ENTITY, { amount: 50 });
 
       expect(execution.status).toBe('COMPLETED');
 
@@ -379,7 +457,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(workflowRecord);
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
-      const execution = await executeWorkflow('wf-4', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-4', 'user-1', 'MANUAL', ENTITY);
 
       // Execution should be marked as failed
       expect(execution.status).toBe('FAILED');
@@ -434,7 +512,7 @@ describe('Workflow Execution Integration Tests', () => {
       mockPrisma.workflow.findUnique.mockResolvedValue(workflowRecord);
       mockPrisma.workflow.update.mockResolvedValue(workflowRecord);
 
-      const execution = await executeWorkflow('wf-5', 'user-1', 'MANUAL');
+      const execution = await executeWorkflow('wf-5', 'user-1', 'MANUAL', ENTITY);
 
       // Even though a step failed, the error handler ran so the workflow completes
       expect(execution.status).toBe('COMPLETED');
