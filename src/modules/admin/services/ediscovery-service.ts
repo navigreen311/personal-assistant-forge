@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { EDiscoveryExport } from '../types';
 
 export const exportStore = new Map<string, EDiscoveryExport>();
@@ -134,8 +135,9 @@ export async function createHold(
   return { id: rule.id, name: rule.name, entityId, status: 'ACTIVE', createdAt: rule.createdAt };
 }
 
+// P-10/T-001.
 export async function requestExport(
-  entityId: string,
+  entityId: VerifiedEntityId,
   requestedBy: string,
   dateRange: { start: Date; end: Date },
   dataTypes: string[]
@@ -188,7 +190,7 @@ export async function getExportStatus(exportId: string): Promise<EDiscoveryExpor
   return exp;
 }
 
-export async function listExports(entityId: string): Promise<EDiscoveryExport[]> {
+export async function listExports(entityId: VerifiedEntityId): Promise<EDiscoveryExport[]> {
   const results: EDiscoveryExport[] = [];
   for (const exp of exportStore.values()) {
     if (exp.entityId === entityId) results.push(exp);

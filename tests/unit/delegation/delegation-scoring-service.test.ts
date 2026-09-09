@@ -344,10 +344,19 @@ describe('getScoreboard', () => {
       status: 'PENDING',
     });
 
-    const scoreboard = await getScoreboard('entity-1');
+    // P-10/T-001, CORRECTED IN PLACE. This read `getScoreboard('entity-1')`
+    // and expected every delegatee back. The parameter was named `_entityId`
+    // and IGNORED, so the test was asserting that the function returns
+    // everything in the store to anyone who asks -- it encoded the leak as
+    // the requirement. The scope is the DELEGATOR, and `createDelegation`
+    // above sets `delegatedBy: 'owner-1'`.
+    const scoreboard = await getScoreboard('owner-1');
 
     expect(scoreboard).toHaveLength(2);
     expect(scoreboard[0].delegateeId).toBe('delegate-high');
     expect(scoreboard[0].overallScore).toBeGreaterThanOrEqual(scoreboard[1].overallScore);
+
+    // The assertion the old shape could not make.
+    expect(await getScoreboard('owner-2')).toEqual([]);
   });
 });

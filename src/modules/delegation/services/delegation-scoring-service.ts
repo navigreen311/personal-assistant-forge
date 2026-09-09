@@ -91,10 +91,29 @@ export async function getBestDelegate(
   return best;
 }
 
-export async function getScoreboard(_entityId: string): Promise<DelegationScore[]> {
+/**
+ * The delegation scoreboard for one delegator.
+ *
+ * P-10/T-001 — BEHAVIOUR CHANGE, DECLARED. This took `_entityId` and IGNORED
+ * IT: the underscore was not a style choice, it meant the function returned
+ * every delegation in the process to whoever asked, and the route handed it a
+ * caller-supplied `?entityId=` that made no difference to the answer. Verifying
+ * that entityId would have closed nothing — a cross-tenant 403 test would pass
+ * while the leak stayed exactly where it was.
+ *
+ * There is no tenant to scope by: `DelegationTask` has no `entityId`, and there
+ * is no delegation table in the frozen schema (the store is still in memory —
+ * flagged in the PR). The scope that DOES exist in the model is the delegator,
+ * so the scoreboard is now the caller's own delegations, taken from the
+ * verified session and not from the request.
+ *
+ * Narrower than before. That is the point, and it is a change a reviewer cannot
+ * see in a diff of the route alone, which is why it is written down here.
+ */
+export async function getScoreboard(delegatedBy: string): Promise<DelegationScore[]> {
   const allDelegatees = new Set<string>();
   for (const d of delegationStore.values()) {
-    allDelegatees.add(d.delegatedTo);
+    if (d.delegatedBy === delegatedBy) allDelegatees.add(d.delegatedTo);
   }
 
   const scores: DelegationScore[] = [];

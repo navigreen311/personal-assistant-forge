@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuditedAuth } from '@/modules/security/audit-wiring';
 import * as dmsService from '@/modules/crisis/services/dead-man-switch-service';
 
 const configSchema = z.object({
@@ -18,11 +18,21 @@ const configSchema = z.object({
   })),
 });
 
+const AUDIT = { resource: 'crisis.dead-man-switch', sensitivityLevel: 'RESTRICTED' as const };
+
+// The switch is USER-scoped: `DeadManSwitch.userId` is unique and the model has
+// no entityId. `session.userId` is therefore the whole authorization, and there
+// is no path by which a caller can name someone else's switch.
+
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuditedAuth(request, AUDIT, async (req, session) => {
     try {
       const status = await dmsService.getStatus(session.userId);
-      return success(status);
+      // Report the evaluation alongside the configuration. Returning only the
+      // stored row let a switch sit tripped while an operator looked straight
+      // at it. This read has no side effects; POST /evaluate is what acts.
+      const evaluation = await dmsService.evaluateSwitch(session.userId);
+      return success({ ...status, evaluation });
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
@@ -30,7 +40,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuditedAuth(request, AUDIT, async (req, session) => {
     try {
       const body = await req.json();
       const parsed = configSchema.safeParse(body);
