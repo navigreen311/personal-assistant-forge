@@ -332,6 +332,75 @@ across `bullmq` and `next-auth` is a real major upgrade with real blast radius,
 and it touches `package.json` / `package-lock.json`, which no in-flight package
 may hold. It must run alone.
 
+## MID-RUN RE-SCORE — 37% → 48% (measured 2026-09-09, after 7 packages)
+
+Re-derived against master, not asserted. The audit's original weighting, the same
+six dimensions, the same platform bar.
+
+| Dimension | Audit | Now | What moved |
+|---|---|---|---|
+| Feature completeness | 66 | **72** | 4 of 13 BROKEN spec items closed, 1 partial |
+| Wiring & integration | 38 | **48** | a whole unreachable layer (async) now runs; tenancy only 11% |
+| Test coverage | 22 | **45** | 138 real-database tests where there were none; suite proven green |
+| Quality & polish | 45 | **58** | `tsc` 0; `ignoreBuildErrors` and 192 lint errors remain |
+| Production readiness | 30 | **45** | CI green 4/5, worker deployed; 30 vulns, no Sentry, no metrics |
+| Platform reliability | 12 | **20** | control plane still in `Map`s; audit log still never written |
+
+**Weighted: 48%** (range 44–52). Was 37%.
+
+### Closed since the audit
+
+| item | evidence |
+|---|---|
+| Type safety | 72 errors → **0** |
+| CI/CD pipeline | 0 successes in 115 runs → **4 of 5 jobs green** |
+| Test suite touches a real database | 0 → **138 tests** |
+| Async job processing | workers never started → **running, retry policy executing** |
+| Audit actor attribution | read from `x-user-id` → verified session |
+
+### Still open, with the honest number attached
+
+| item | state |
+|---|---|
+| Entity-scoped multi-tenancy | **16 of ~145 affected routes converted — 11%** |
+| Audit log written at all | 4 callers, still all in dead middleware. **Zero audit rows exist.** |
+| In-memory control plane | **78 stores remain** (P-09 takes 7 of the load-bearing ones) |
+| `ignoreBuildErrors` | still set — P-19 |
+| eslint | **192 errors** — P-19 |
+
+The number moved 11 points on infrastructure. **The tenancy surface itself is 11%
+done**, and that is the dimension the platform bar actually turns on — so expect
+the next 11 points to be slower and to come mostly from Wave 2 landing.
+
+## ⚠️ THE AUDIT'S HEADLINE METRIC IS NOW MISLEADING — DO NOT RE-RUN IT NAIVELY
+
+`grep -rl "_session" src/app/api --include=route.ts` returns **156**, which is
+*higher* than the audit's 149, after two packages fixed 16 routes. The metric is
+broken, not the work.
+
+After conversion, this is **correct** code:
+
+```ts
+withEntityScope(request, async (req, _session, entityId) => { ... })
+```
+
+The scope is enforced by the wrapper; the handler simply has no use for the
+session. P-04 anticipated this and left a note at the top of
+`src/app/api/tasks/route.ts` saying `_session` is "the thing to grep for and the
+thing to mistake".
+
+**The metric that actually means something:**
+
+```bash
+# routes still on the bad pattern: withAuth + a discarded session, unconverted
+for f in $(find src/app/api -name route.ts); do
+  grep -q "_session" "$f" && grep -q "withAuth" "$f" && ! grep -q "withEntityScope" "$f" && echo "$f"
+done | wc -l
+```
+
+**129 today, from ~145.** Anyone re-scoring this run with the naive grep will
+report it going backwards.
+
 ## FINDINGS FROM WAVE 1 THAT CHANGE OTHER PACKAGES' CARDS
 
 **P-09 — the cron scheduler has no producer.** P-11 found `registerCronTrigger`
