@@ -36,6 +36,7 @@
  */
 
 import type { Contact, Entity, Prisma, Project, Task, User } from '@prisma/client';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { db } from './db';
 
 let seq = 0;
@@ -249,4 +250,27 @@ export async function createTwoTenants(): Promise<{ tenantA: Tenant; tenantB: Te
   const tenantA = await createTenant();
   const tenantB = await createTenant();
   return { tenantA, tenantB };
+}
+
+// ---------------------------------------------------------------------------
+// P-00b amendment — the one place tests manufacture the brand
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint a VerifiedEntityId for a unit test.
+ *
+ * A VerifiedEntityId can normally only be produced by withEntityScope, which
+ * needs a NextRequest, or by verifyEntityForUser, which needs a real database.
+ * A unit test that calls a service directly has neither, so P-04 ended up with a
+ * named test-only cast in each of ten files. Nine more packages doing the same
+ * would have scattered roughly ninety of them.
+ *
+ * This is that cast, once, where it can be found.
+ *
+ * Use it ONLY in unit tests calling a service directly. A real-database test in
+ * tests/db/ should go through the route with requestAs(), which exercises the
+ * production path and proves something this cannot.
+ */
+export function verifiedEntityIdForTest(entityId: string): VerifiedEntityId {
+  return entityId as VerifiedEntityId;
 }
