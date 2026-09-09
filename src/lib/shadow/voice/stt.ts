@@ -11,6 +11,19 @@
 
 export type TranscriptHandler = (text: string, isFinal: boolean) => void;
 
+/**
+ * Called when recognition fails, or when this fallback cannot run at all.
+ *
+ * T-022: before this existed, `onerror` wrote to console.error and returned.
+ * The caller -- a UI with a live mic button -- was told nothing, so a denied
+ * microphone permission, a network drop or an unsupported browser all looked
+ * exactly like a user who had simply stopped talking. That is silent failure,
+ * and it is the same shape as a TTS/STT provider chain that reports success
+ * with an empty result. Nothing here reaches Deepgram; this class is the
+ * key-less fallback the provider chain lands on.
+ */
+export type SttErrorHandler = (reason: string, detail: unknown) => void;
+
 interface SpeechRecognitionLike {
   continuous: boolean;
   interimResults: boolean;
@@ -35,9 +48,11 @@ export function isBrowserSttSupported(): boolean {
 export class ShadowSTT {
   private recognition: SpeechRecognitionLike | null = null;
   private readonly onTranscript: TranscriptHandler;
+  private readonly onError?: SttErrorHandler;
 
-  constructor(onTranscript: TranscriptHandler) {
+  constructor(onTranscript: TranscriptHandler, onError?: SttErrorHandler) {
     this.onTranscript = onTranscript;
+    this.onError = onError;
   }
 
   start(lang: string = 'en-US'): void {
@@ -47,7 +62,12 @@ export class ShadowSTT {
     };
     const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!Ctor) {
-      throw new Error('Speech recognition not supported in this browser');
+      // Report AND throw. A caller that registered a handler learns why the mic
+      // is dead; one that did not still gets the exception rather than a button
+      // that silently does nothing.
+      const reason = 'Speech recognition not supported in this browser';
+      this.onError?.(reason, undefined);
+      throw new Error(reason);
     }
 
     const recognition = new Ctor();
@@ -75,8 +95,14 @@ export class ShadowSTT {
     };
 
     recognition.onerror = (event: unknown) => {
-      // eslint-disable-next-line no-console
+      const detail = event as { error?: unknown } | undefined;
+      const reason =
+        typeof detail?.error === 'string' ? detail.error : 'speech recognition error';
       console.error('[ShadowSTT] recognition error', event);
+      this.onError?.(reason, event);
+      // The engine has stopped; drop the handle so isListening() and a later
+      // stop() do not claim a session that no longer exists.
+      this.recognition = null;
     };
 
     recognition.start();
@@ -86,5 +112,10 @@ export class ShadowSTT {
   stop(): void {
     this.recognition?.stop();
     this.recognition = null;
+  }
+
+  /** Whether a recognition session is actually live right now. */
+  isListening(): boolean {
+    return this.recognition !== null;
   }
 }
