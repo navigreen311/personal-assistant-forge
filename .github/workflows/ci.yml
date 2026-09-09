@@ -82,7 +82,13 @@ jobs:
     name: Real-Database Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: lint-typecheck-test
+
+    # Deliberately NOT gated on lint-typecheck-test. That job is red on the 67
+    # standing type errors until P-19, and gating this behind it would mean the
+    # real-database lane never executes for the entire parallel run -- so every
+    # cross-tenant test P-04..P-14 add would be collected by nobody. This job
+    # provisions its own Postgres and runs its own migrations; it needs nothing
+    # from the unit job.
 
     # P-00: this job exists because the audit found 186 of 320 test files calling
     # jest.mock('@/lib/db'), and zero tests touching a real database. A suite that
