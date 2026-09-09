@@ -16,6 +16,58 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: jest.fn().mockResolvedValue({ isCrisis: false, confidence: 0.1, explanation: 'AI: No crisis detected.' }),
 }));
 
+// P-10/T-015. The dead man switch is stored in `DeadManSwitch` now rather than a
+// process Map, so this suite -- which drives the services directly, with no
+// database -- needs the delegate stubbed. Behaviour under test is unchanged.
+const dmsRows = new Map<string, Record<string, unknown>>();
+
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    deadManSwitch: {
+      findUnique: jest.fn(async ({ where }: { where: { userId: string } }) =>
+        dmsRows.get(where.userId) ?? null),
+      upsert: jest.fn(async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { userId: string };
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => {
+        const existing = dmsRows.get(where.userId);
+        const row = existing ? { ...existing, ...update } : { ...create };
+        dmsRows.set(where.userId, row);
+        return row;
+      }),
+      update: jest.fn(async ({
+        where,
+        data,
+      }: {
+        where: { userId: string };
+        data: Record<string, unknown>;
+      }) => {
+        const existing = dmsRows.get(where.userId);
+        if (!existing) throw new Error('record not found');
+        const row = { ...existing, ...data };
+        dmsRows.set(where.userId, row);
+        return row;
+      }),
+    },
+    auditLogEntry: {
+      create: jest.fn(async () => ({ id: 'audit-1' })),
+      findFirst: jest.fn(async () => null),
+      findMany: jest.fn(async () => []),
+      count: jest.fn(async () => 0),
+    },
+    $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        auditLogEntry: { create: jest.fn(async () => ({ id: 'audit-1' })), findFirst: jest.fn(async () => null) },
+        $executeRaw: jest.fn(async () => 1),
+      })),
+  },
+}));
+
 jest.mock('@/modules/crisis/services/playbook-service', () => ({
   getPlaybook: jest.fn().mockReturnValue({ id: 'pb-legal', name: 'Legal Threat Response', crisisType: 'LEGAL_THREAT', estimatedResolutionHours: 72, steps: [] }),
 }));

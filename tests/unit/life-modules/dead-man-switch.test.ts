@@ -1,3 +1,114 @@
+// ---------------------------------------------------------------------------
+// P-10/T-015. The dead man switch is stored in `DeadManSwitch` now, not a Map,
+// so this file stands a small in-memory fake behind the Prisma delegates the
+// service uses.
+//
+// NOTE ON BACKDATING. These tests used to simulate an overdue user by writing
+// `status.lastCheckIn = <3 hours ago>` on the object `getStatus()` returned.
+// That did anything at all only because `getStatus` handed back the very object
+// inside the Map -- against a real row it mutates a detached copy and the
+// service never sees it. `backdateStoredCheckIn()` edits the stored row, which
+// is what the test was trying to express.
+// ---------------------------------------------------------------------------
+
+interface FakeSwitchRow {
+  userId: string;
+  isEnabled: boolean;
+  checkInIntervalHours: number;
+  lastCheckIn: Date;
+  missedCheckIns: number;
+  triggerAfterMisses: number;
+  protocols: unknown;
+}
+
+const switchRows = new Map<string, FakeSwitchRow>();
+const auditRows: Array<Record<string, unknown>> = [];
+let auditSeq = 0;
+
+const auditLogEntryDelegate = {
+  create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    auditSeq += 1;
+    const row = { ...data, id: `audit-${auditSeq}` };
+    auditRows.push(row);
+    return row;
+  }),
+  findFirst: jest.fn(async ({ where }: { where?: Record<string, unknown> } = {}) => {
+    const w = (where ?? {}) as {
+      actorId?: string;
+      resource?: string;
+      action?: string;
+      resourceId?: string;
+      entityId?: string;
+      timestamp?: { gte?: Date };
+    };
+    const hit = auditRows.find((r) => {
+      if (w.actorId !== undefined && r.actorId !== w.actorId) return false;
+      if (w.resourceId !== undefined && r.resourceId !== w.resourceId) return false;
+      if (w.resource !== undefined && r.resource !== w.resource) return false;
+      if (w.action !== undefined && r.action !== w.action) return false;
+      if (w.entityId !== undefined && r.entityId !== w.entityId) return false;
+      if (w.timestamp?.gte && (r.timestamp as Date) < w.timestamp.gte) return false;
+      return true;
+    });
+    return hit ?? null;
+  }),
+  findMany: jest.fn(async () => auditRows),
+  count: jest.fn(async () => auditRows.length),
+};
+
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    deadManSwitch: {
+      findUnique: jest.fn(async ({ where }: { where: { userId: string } }) =>
+        switchRows.get(where.userId) ?? null),
+      upsert: jest.fn(async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { userId: string };
+        create: FakeSwitchRow;
+        update: Partial<FakeSwitchRow>;
+      }) => {
+        const existing = switchRows.get(where.userId);
+        const row = existing ? { ...existing, ...update } : { ...create };
+        switchRows.set(where.userId, row);
+        return row;
+      }),
+      update: jest.fn(async ({
+        where,
+        data,
+      }: {
+        where: { userId: string };
+        data: Partial<FakeSwitchRow>;
+      }) => {
+        const existing = switchRows.get(where.userId);
+        if (!existing) throw new Error('record not found');
+        const row = { ...existing, ...data };
+        switchRows.set(where.userId, row);
+        return row;
+      }),
+    },
+    auditLogEntry: auditLogEntryDelegate,
+    $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ auditLogEntry: auditLogEntryDelegate, $executeRaw: jest.fn(async () => 1) })),
+  },
+}));
+
+/** Move a STORED switch's last check-in into the past. */
+function backdateStoredCheckIn(userId: string, hoursAgo: number): void {
+  const row = switchRows.get(userId);
+  if (!row) throw new Error(`no stored switch for ${userId}`);
+  row.lastCheckIn = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+  row.missedCheckIns = 0;
+}
+
+beforeEach(() => {
+  switchRows.clear();
+  auditRows.length = 0;
+  auditSeq = 0;
+});
+
 import { configure, checkIn, evaluateSwitch, getStatus, addProtocol } from '@/modules/crisis/services/dead-man-switch-service';
 import type { DeadManProtocol } from '@/modules/crisis/types';
 
@@ -27,8 +138,7 @@ describe('evaluateSwitch', () => {
     });
 
     // Simulate last check-in was 3 hours ago
-    const status = await getStatus('dms-user-2');
-    status.lastCheckIn = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backdateStoredCheckIn('dms-user-2', 3);
 
     const result = await evaluateSwitch('dms-user-2');
     expect(result.missedCheckIns).toBeGreaterThanOrEqual(1);
@@ -47,8 +157,7 @@ describe('evaluateSwitch', () => {
     });
 
     // Simulate last check-in was 3 hours ago (3 missed check-ins > 2 trigger threshold)
-    const status = await getStatus('dms-user-3');
-    status.lastCheckIn = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    backdateStoredCheckIn('dms-user-3', 3);
 
     const result = await evaluateSwitch('dms-user-3');
     expect(result.triggered).toBe(true);
@@ -68,8 +177,7 @@ describe('evaluateSwitch', () => {
       protocols,
     });
 
-    const status = await getStatus('dms-user-4');
-    status.lastCheckIn = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    backdateStoredCheckIn('dms-user-4', 2);
 
     const result = await evaluateSwitch('dms-user-4');
     expect(result.triggered).toBe(true);
@@ -87,8 +195,7 @@ describe('evaluateSwitch', () => {
       protocols: [{ order: 1, action: 'Test', contactName: 'Test', message: 'Test', delayHoursAfterTrigger: 0 }],
     });
 
-    const status = await getStatus('dms-user-5');
-    status.lastCheckIn = new Date(Date.now() - 10 * 60 * 60 * 1000);
+    backdateStoredCheckIn('dms-user-5', 10);
 
     const result = await evaluateSwitch('dms-user-5');
     expect(result.triggered).toBe(false);
@@ -106,8 +213,7 @@ describe('checkIn', () => {
       protocols: [],
     });
 
-    const status = await getStatus('dms-checkin-1');
-    status.lastCheckIn = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    backdateStoredCheckIn('dms-checkin-1', 5);
     await evaluateSwitch('dms-checkin-1');
 
     const updated = await checkIn('dms-checkin-1');

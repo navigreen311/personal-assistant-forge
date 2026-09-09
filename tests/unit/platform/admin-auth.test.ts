@@ -1,44 +1,86 @@
 import { NextRequest } from 'next/server';
 
-// Mock auth middleware
-jest.mock('@/shared/middleware/auth', () => ({
-  withAuth: jest.fn(async (req: NextRequest, handler: Function) => {
+// ---------------------------------------------------------------------------
+// P-10/T-001. The admin routes now compose the role gate with `withEntityScope`
+// (see src/modules/security/audit-wiring.ts), so this mock needed two changes:
+//
+//   1. `withAuth` hard-coded `role: 'member'`, with the role logic living only
+//      in the `withRole` mock. Once the route stopped calling `withRole`, every
+//      admin request was a member and the "admin gets through" case returned
+//      403. The role now comes off `x-test-role` in one place.
+//   2. `withEntityScope` was not mocked at all. It is here, and it performs the
+//      same ownership check as the real one against the mocked Prisma client,
+//      so a route that dropped the check would fail these tests rather than
+//      quietly pass them. The real cross-tenant proof is in tests/db/.
+// ---------------------------------------------------------------------------
+jest.mock('@/shared/middleware/auth', () => {
+  async function sessionFor(req: NextRequest) {
     const token = req.headers.get('authorization');
-    if (!token) {
-      const { error } = await import('@/shared/utils/api-response');
-      return error('UNAUTHORIZED', 'Authentication required', 401);
-    }
-    const session = {
-      userId: 'user-1',
-      email: 'user@test.com',
-      name: 'Test User',
-      role: 'member' as const,
-      activeEntityId: 'entity-1',
-    };
-    return handler(req, session);
-  }),
-  withRole: jest.fn(async (req: NextRequest, roles: string[], handler: Function) => {
-    const token = req.headers.get('authorization');
-    if (!token) {
-      const { error } = await import('@/shared/utils/api-response');
-      return error('UNAUTHORIZED', 'Authentication required', 401);
-    }
+    if (!token) return null;
     const role = req.headers.get('x-test-role') || 'member';
-    if (!roles.includes(role)) {
-      const { error } = await import('@/shared/utils/api-response');
-      return error('FORBIDDEN', 'Insufficient permissions', 403);
-    }
-    const session = {
+    return {
       userId: 'user-1',
-      email: 'admin@test.com',
-      name: 'Admin User',
-      role: role,
+      email: role === 'admin' ? 'admin@test.com' : 'user@test.com',
+      name: 'Test User',
+      role,
       activeEntityId: 'entity-1',
     };
-    return handler(req, session);
-  }),
-  withEntityAccess: jest.fn(),
-}));
+  }
+
+  return {
+    withAuth: jest.fn(async (req: NextRequest, handler: Function) => {
+      const session = await sessionFor(req);
+      if (!session) {
+        const { error } = await import('@/shared/utils/api-response');
+        return error('UNAUTHORIZED', 'Authentication required', 401);
+      }
+      return handler(req, session);
+    }),
+    withRole: jest.fn(async (req: NextRequest, roles: string[], handler: Function) => {
+      const session = await sessionFor(req);
+      const { error } = await import('@/shared/utils/api-response');
+      if (!session) return error('UNAUTHORIZED', 'Authentication required', 401);
+      if (!roles.includes(session.role)) {
+        return error('FORBIDDEN', 'Insufficient permissions', 403);
+      }
+      return handler(req, session);
+    }),
+    withEntityScope: jest.fn(async (
+      req: NextRequest,
+      handler: Function,
+      explicitEntityId?: string,
+    ) => {
+      const session = await sessionFor(req);
+      const { error } = await import('@/shared/utils/api-response');
+      if (!session) return error('UNAUTHORIZED', 'Authentication required', 401);
+
+      let candidate = explicitEntityId ?? req.nextUrl.searchParams.get('entityId') ?? undefined;
+      if (!candidate && req.method !== 'GET' && req.method !== 'DELETE') {
+        try {
+          const body = await req.clone().json();
+          if (typeof body?.entityId === 'string') candidate = body.entityId;
+        } catch { /* no JSON body */ }
+      }
+      candidate = candidate ?? session.activeEntityId;
+      if (!candidate) return error('ENTITY_REQUIRED', 'No entity in scope', 400);
+
+      const { prisma } = await import('@/lib/db');
+      const entity = await prisma.entity.findUnique({ where: { id: candidate } });
+      if (!entity) return error('NOT_FOUND', 'Entity not found', 404);
+      if (entity.userId !== session.userId) {
+        return error('FORBIDDEN', 'You do not have access to this entity', 403);
+      }
+
+      return handler(req, session, entity.id);
+    }),
+    withEntityAccess: jest.fn(),
+    resolveActor: jest.fn(async (req: NextRequest) => {
+      const session = await sessionFor(req);
+      return session ? { actor: session.email, actorId: session.userId } : null;
+    }),
+    resolveVerifiedEntityId: jest.fn(async () => null),
+  };
+});
 
 const mockPrisma = {
   rule: {
@@ -57,9 +99,17 @@ const mockPrisma = {
     findUnique: jest.fn().mockResolvedValue(null),
   },
   entity: {
-    findFirst: jest.fn().mockResolvedValue(null),
-    findUnique: jest.fn().mockResolvedValue(null),
+    findFirst: jest.fn().mockResolvedValue({ id: 'e1', userId: 'user-1' }),
+    // Owned by the session user, so `withEntityScope` lets these through and the
+    // 401/403 assertions below are about auth, not about a missing fixture.
+    findUnique: jest.fn().mockResolvedValue({ id: 'e1', userId: 'user-1', complianceProfile: [] }),
     update: jest.fn().mockResolvedValue({}),
+  },
+  auditLogEntry: {
+    create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+    findFirst: jest.fn().mockResolvedValue(null),
+    findMany: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
   },
   calendarEvent: {
     create: jest.fn().mockResolvedValue({}),
@@ -68,7 +118,11 @@ const mockPrisma = {
 };
 
 jest.mock('@/lib/db', () => ({
-  prisma: mockPrisma,
+  prisma: {
+    ...mockPrisma,
+    $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ auditLogEntry: mockPrisma.auditLogEntry, $executeRaw: jest.fn(async () => 1) })),
+  },
 }));
 
 function createRequest(url: string, options: { method?: string; headers?: Record<string, string>; body?: unknown } = {}): NextRequest {

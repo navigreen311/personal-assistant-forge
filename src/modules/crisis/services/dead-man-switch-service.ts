@@ -210,11 +210,15 @@ export interface DeadManSwitchFiring {
  * not only written — an audit log with no reader drifts back to being decorative.
  */
 async function alreadyFiredSince(userId: string, lastCheckIn: Date): Promise<boolean> {
+  // Keyed on resourceId (the SWITCH's owner), not actorId: the actor is
+  // whoever ran the evaluation -- a scheduler, an operator -- and keying on
+  // that would let a second caller re-fire a switch the first had already
+  // fired, notifying the contacts twice.
   const prior = await prisma.auditLogEntry.findFirst({
     where: {
-      actorId: userId,
       resource: DMS_RESOURCE,
       action: DMS_FIRED,
+      resourceId: userId,
       timestamp: { gte: lastCheckIn },
     },
     select: { id: true },
