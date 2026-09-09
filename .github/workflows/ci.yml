@@ -103,6 +103,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/paf_dbtest
       NEXTAUTH_SECRET: ci-test-secret-do-not-use-in-production
       NEXTAUTH_URL: http://localhost:3000
+      REDIS_URL: redis://localhost:6379
 
     services:
       postgres:
@@ -115,6 +116,28 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # P-11: CI had no Redis anywhere, and tests/db/queue-worker.test.ts proves
+      # a BullMQ worker consumes a job off a real queue and writes the result to
+      # Postgres. That needs a real queue, so this job provisions one.
+      #
+      # DELIBERATELY NOT ADDED TO `lint-typecheck-test`. The unit job's
+      # offline-queue tests exist to prove the documented degradation path --
+      # "falls back to in-memory storage when Redis is unavailable" -- actually
+      # degrades. Handing that job a Redis would make those tests pass by
+      # removing the condition they are written to exercise, turning the board
+      # green over a broken fallback in production code. Same repository, same
+      # missing service, opposite correct answer: here the service is the honest
+      # fix, there it would be the mask.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5

@@ -16,7 +16,7 @@
     "test": "jest --passWithNoTests",
     "test:db": "jest --config jest.db.config.ts --runInBand",
     "typecheck": "tsc --noEmit",
-    "worker": "node scripts/worker.js"
+    "worker": "node --import tsx scripts/worker.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
@@ -58,6 +58,7 @@
     "tailwindcss": "^4",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }

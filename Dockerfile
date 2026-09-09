@@ -29,7 +29,55 @@ ENV NODE_ENV=production
 RUN npm run build
 
 # ============================================
-# Stage 3: Runner
+# Stage 3: Worker (BullMQ queue consumer)
+# ============================================
+#
+# P-11 / T-006. Before this stage the image had exactly one CMD -- `node
+# server.js` -- so every deployment of this platform ran producers and no
+# consumers. Jobs were enqueued into Redis by the web process and read by
+# nobody.
+#
+# This stage is deliberately placed BEFORE `runner`. `docker build .` with no
+# `--target` builds the LAST stage in the file, and `.github/workflows/ci.yml`'s
+# docker job builds exactly that way. Appending the worker at the end would have
+# silently changed what CI publishes as `personal-assistant-forge:latest` from
+# the app to the worker.
+#
+# It carries the builder's full node_modules rather than a production-pruned
+# tree, because the entrypoint runs TypeScript through `tsx`, a devDependency.
+# The alternative -- a second tsconfig and a compiled output directory -- adds a
+# build artefact that nothing else in the repo produces or tests. The cost is
+# image size on a process that serves no traffic.
+FROM node:20-alpine AS worker
+RUN apk add --no-cache libc6-compat openssl
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+COPY --from=builder --chown=nextjs:nodejs /app/src ./src
+COPY --from=builder /app/prisma ./prisma
+
+USER nextjs
+
+# No EXPOSE and no HEALTHCHECK. This process listens on no port, so an HTTP
+# probe would be a lie, and a probe that only pings Redis would report healthy
+# for a worker whose event loop is wedged -- the same "retry policy with no
+# consumer" shape this package exists to remove. Liveness here is the process
+# itself: scripts/worker.ts exits non-zero on a fatal error and Compose's
+# `restart: unless-stopped` restarts it.
+
+CMD ["node", "--import", "tsx", "scripts/worker.ts"]
+
+# ============================================
+# Stage 4: Runner
 # ============================================
 FROM node:20-alpine AS runner
 RUN apk add --no-cache libc6-compat openssl
