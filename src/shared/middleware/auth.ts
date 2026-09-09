@@ -241,3 +241,63 @@ export async function resolveVerifiedEntityId(
     return null;
   }
 }
+
+// ============================================================================
+// === P-00b AMENDMENT (2026-09-09) — server-side paths to a VerifiedEntityId ===
+//
+// Added by the coordinator after P-04, the reference implementation, reported
+// that the interface as frozen had no supported way to obtain the brand outside
+// an HTTP request. Every module has code that acts on an entity with no request
+// in play: a worker, a cron job, a webhook pipeline, an AI job. P-04 was
+// correctly forbidden from casting, so it had to invent a module-local escape
+// hatch. Nine more packages would have invented nine more, with nine names.
+//
+// This is the amendment window described in the coordination plan: additive
+// only, coordinator-signed, landed between waves.
+//
+// There are TWO situations here and they are NOT the same. Conflating them into
+// one helper would have been worse than the cast, because it would let the
+// weaker one masquerade as the stronger.
+// ============================================================================
+
+/**
+ * Prove an entity belongs to a user, outside a request.
+ *
+ * For trusted server-side code that already knows *whose* work it is doing --
+ * a scheduled job running a named user's workflow, a webhook handler that has
+ * resolved an account. This performs the same database ownership check as
+ * `withEntityScope`; it simply does not need a `NextRequest` to do it.
+ *
+ * Returns null when the entity does not exist or is not that user's, so callers
+ * must handle refusal explicitly rather than receiving a throw they might catch
+ * and ignore.
+ */
+export async function verifyEntityForUser(
+  entityId: string,
+  userId: string
+): Promise<VerifiedEntityId | null> {
+  if (!entityId || !userId) return null;
+
+  const entity = await prisma.entity.findFirst({
+    where: { id: entityId, userId },
+    select: { id: true },
+  });
+
+  return entity ? (entity.id as VerifiedEntityId) : null;
+}
+
+// entityFromTrustedRecord() was drafted here and DELIBERATELY NOT SHIPPED.
+//
+// It would have been a named, greppable cast for server-side code that has no
+// user to verify against. P-04 demonstrated a strictly better answer for that
+// case and shipped it: two public entry points over one private write --
+// createTask(params, userId), which proves ownership, and
+// createTaskForEntityOwner(params), which takes a plain string and is only
+// reachable from code holding a value off a database row. It never mints the
+// brand at all, so there is no cast to misuse.
+//
+// Adding a weaker alternative beside a working stronger one would have meant
+// nine followers reaching for whichever was easier at 5pm. The convention is
+// therefore the dual entry point, named <verb><Noun>ForEntityOwner so that
+// grep -rn ForEntityOwner src/ finds every trusted write in the codebase.
+// See docs/parallel-build/tenancy-pattern.md.
