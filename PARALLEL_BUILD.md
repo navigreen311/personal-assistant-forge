@@ -166,7 +166,26 @@ sending nothing at all. Fixed in P-00 and now fails closed.
 `Notification`; shadow `trustedDevices` → `ShadowTrustedDevice`. These need
 **pointing at, not new models**. The schema comments say so at each site.
 
-**C6 — A green test suite was holding the vulnerability in place.**
+**C6 — A green test suite was holding the vulnerability in place. THIS HAS NOW
+HAPPENED THREE TIMES. Expect it in your package.**
+
+| # | Package | The test asserted |
+|---|---|---|
+| 1 | P-00 | `middleware-security.test.ts:303` — the audit actor equals the client-supplied `x-user-id` header |
+| 2 | P-02 | `compliance.test.ts` mocked retention rows using DTO field names, validating the DB contract against a schema that does not exist |
+| 3 | P-03 | `entity-service-expanded.test.ts` — `getCurrentUserId(Headers{'x-user-id': ...})` returns the header, and its absence returns `'stub-user-id'` |
+
+This is not three coincidences. When code and test are written together against a
+placeholder, the test records the placeholder as the requirement, and the suite
+then defends it. It is why 5,268 passing tests and 115 CI runs never surfaced any
+of this.
+
+**So: when an existing test fights your change, read what it actually asserts
+before assuming your change is wrong.** If it encodes the defect, correcting or
+deleting it is right — but say so loudly in your PR, show that nothing else moved,
+and replace it with a test that would fail against the old code. P-03 did this
+well: it restored the pre-fix route and confirmed 8 of 9 new tests failed, so the
+replacement is load-bearing rather than merely present.
 `tests/unit/security/middleware-security.test.ts:303` asserted
 `expect(loggedEntry.actor).toBe('user-42')`, where `user-42` came from the
 `x-user-id` header the test itself set. The vulnerability *was the requirement*.
@@ -225,7 +244,7 @@ split the test-repair work out as its own package.
 | Package | Flag | Why |
 |---|---|---|
 | P-03 | **AUTH** | removes an authentication bypass (`getCurrentUserId`) |
-| P-06 | **PII** | inbox, contacts, communications; also deletes the second `getCurrentUserId`, which writes rows under the literal string `'default-user'` |
+| P-06 | **PII** | inbox, contacts, communications. Also deletes the second `getCurrentUserId` (`inbox.service.ts:17-22`). **Note the constant: the inbox twin falls back to `'default-user'`, NOT `'stub-user-id'` — do not grep for the wrong string and conclude the finding is bogus.** It is also worse than the entities one: lines 496 and 594 call it with **no arguments at all**, so those two write paths unconditionally stamp `'default-user'` as the userId. That is a hardcoded identity, not merely a trusted header. |
 | P-07 | **PCI** | finance and billing; Stripe is the only place idempotency exists today |
 | P-10 | **AUDIT** | owns the audit trail, and per C3 must wire it as well as persist it |
 | P-12 | **PHI** | health module; the HIPAA guard above it now fails closed |
@@ -262,6 +281,7 @@ One row per merge. Appended by the coordinator at merge time.
 | 1 | P-00 coordinator | [#57](https://github.com/navigreen311/personal-assistant-forge/pull/57) | `e18a8f7` | 67 | 319/320 | 5267/5268 | 16/16 | **none** | 2026-09-09 18:59Z |
 | 2 | P-01 db harness | [#58](https://github.com/navigreen311/personal-assistant-forge/pull/58) | `5c3256b` | 67 | 319/320 | 5267/5268 | **45/45** | **none** | 2026-09-09 19:2xZ |
 | 3 | P-02 typecheck repair | [#59](https://github.com/navigreen311/personal-assistant-forge/pull/59) | `a271698` | **0** | 319/320 | 5267/5268 | 45/45 | **none** | 2026-09-09 19:4xZ |
+| 4 | P-03 entity identity | [#60](https://github.com/navigreen311/personal-assistant-forge/pull/60) | `701d821` | 0 | 319/320 | 5264/5265 | **83/83** | **none** | 2026-09-09 20:1xZ |
 
 ---
 
