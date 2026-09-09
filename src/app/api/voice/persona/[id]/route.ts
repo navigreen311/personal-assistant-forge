@@ -1,8 +1,14 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
+import { prisma } from '@/lib/db';
 import { getPersona, updatePersona } from '@/modules/voiceforge/services/persona-service';
-import { withAuth } from '@/shared/middleware/auth';
+import {
+  withAuth,
+  withEntityScope,
+  type VerifiedEntityId,
+} from '@/shared/middleware/auth';
+import type { AuthSession } from '@/lib/auth/types';
 
 const UpdatePersonaSchema = z.object({
   name: z.string().min(1).optional(),
@@ -30,14 +36,36 @@ const UpdatePersonaSchema = z.object({
   status: z.enum(['ACTIVE', 'DRAFT', 'ARCHIVED']).optional(),
 });
 
+/** Section 4 -- the entity is a property of the row. Duplicated per file, section 3d. */
+async function withPersonaScope(
+  request: NextRequest,
+  personaId: string,
+  handler: (
+    req: NextRequest,
+    session: AuthSession,
+    entityId: VerifiedEntityId
+  ) => Promise<Response>
+): Promise<Response> {
+  return withAuth(request, async (authedReq) => {
+    const owner = await prisma.document.findFirst({
+      where: { id: personaId, type: 'VOICE_PERSONA' },
+      select: { entityId: true },
+    });
+    if (!owner) {
+      return error('NOT_FOUND', `Persona ${personaId} not found`, 404);
+    }
+    return withEntityScope(authedReq, handler, owner.entityId);
+  });
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (_req, _session) => {
+  const { id } = await params;
+  return withPersonaScope(request, id, async (_req, _session, entityId) => {
     try {
-      const { id } = await params;
-      const persona = await getPersona(id);
+      const persona = await getPersona(id, entityId);
 
       if (!persona) {
         return error('NOT_FOUND', `Persona ${id} not found`, 404);
@@ -54,9 +82,9 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, _session) => {
+  const { id } = await params;
+  return withPersonaScope(request, id, async (req, _session, entityId) => {
     try {
-      const { id } = await params;
       const body = await req.json();
       const parsed = UpdatePersonaSchema.safeParse(body);
 
@@ -66,7 +94,7 @@ export async function PUT(
         });
       }
 
-      const persona = await updatePersona(id, parsed.data);
+      const persona = await updatePersona(id, entityId, parsed.data);
       return success(persona);
     } catch (err) {
       if (err instanceof Error && err.message.includes('not found')) {

@@ -5,10 +5,10 @@ import {
   createCampaign,
   listCampaigns,
 } from '@/modules/voiceforge/services/campaign-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const CampaignSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1),
   description: z.string(),
   personaId: z.string().min(1),
@@ -33,14 +33,15 @@ const CampaignSchema = z.object({
   status: z.enum(['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'STOPPED']).default('DRAFT'),
 });
 
+/**
+ * Single-entity list (section 5b). Campaigns belong to one entity and the UI
+ * has always shown one entity's campaigns at a time, so withEntityScope is the
+ * right wrapper: omitting entityId now resolves to the session's active entity
+ * instead of 400ing, which is strictly more useful and never wider.
+ */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
-      }
-
       const campaigns = await listCampaigns(entityId);
       return success(campaigns);
     } catch (err) {
@@ -50,7 +51,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CampaignSchema.safeParse(body);
@@ -61,7 +62,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const campaign = await createCampaign(parsed.data);
+      // entityId LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const campaign = await createCampaign({ ...draft, entityId });
       return success(campaign, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);

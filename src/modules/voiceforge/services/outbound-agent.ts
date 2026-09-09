@@ -104,7 +104,7 @@ export async function initiateOutboundCall(
   const isVoicemail = await detectVoicemail(session.callSid);
 
   if (isVoicemail) {
-    await dropVoicemail(session.callSid, request.personaId, request.purpose);
+    await dropVoicemail(session.callSid, request.personaId, request.purpose, request.entityId);
 
     await prisma.call.updateMany({
       where: { id: call.id, entityId: request.entityId },
@@ -234,11 +234,13 @@ export async function detectVoicemail(callSid: string): Promise<boolean> {
 export async function dropVoicemail(
   callSid: string,
   personaId: string,
-  message: string
+  message: string,
+  entityId: VerifiedEntityId
 ): Promise<void> {
   try {
-    // Load persona for voice settings and personality
-    const persona = await getPersona(personaId);
+    // Load persona for voice settings and personality. Scoped: a voicemail must
+    // never be generated from another tenant's persona.
+    const persona = await getPersona(personaId, entityId);
 
     let voicemailText: string;
 

@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createScript, listScripts } from '@/modules/voiceforge/services/script-engine';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const ScriptNodeSchema = z.object({
   id: z.string().min(1),
@@ -22,7 +22,7 @@ const ScriptNodeSchema = z.object({
 });
 
 const CreateScriptSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1),
   description: z.string(),
   nodes: z.array(ScriptNodeSchema),
@@ -30,14 +30,10 @@ const CreateScriptSchema = z.object({
   status: z.enum(['DRAFT', 'ACTIVE', 'ARCHIVED']).default('DRAFT'),
 });
 
+/** Single-entity list (section 5b): a script library belongs to one entity. */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId = req.nextUrl.searchParams.get('entityId');
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query parameter required', 400);
-      }
-
       const scripts = await listScripts(entityId);
       return success(scripts);
     } catch (err) {
@@ -47,7 +43,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CreateScriptSchema.safeParse(body);
@@ -58,7 +54,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const script = await createScript(parsed.data);
+      // entityId LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...draft } = parsed.data;
+      const script = await createScript({ ...draft, entityId });
       return success(script, 201);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
