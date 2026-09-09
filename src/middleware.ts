@@ -2,6 +2,18 @@ import { getToken } from 'next-auth/jwt';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+/**
+ * Paths that end in one of these extensions are served as static assets and
+ * never require a session. Matched against `pathname` only -- `NextURL.pathname`
+ * excludes the query string, so `?x=.png` cannot smuggle a path past it.
+ *
+ * `_next/static`, `_next/image`, `favicon.ico` and the raster/vector image
+ * extensions in `config.matcher` below never reach this file at all; they are
+ * listed here anyway so the rule stays correct if the matcher is ever widened.
+ */
+const STATIC_ASSET_PATTERN =
+  /\.(?:css|js|mjs|cjs|map|json|webmanifest|txt|xml|ico|svg|png|jpe?g|gif|webp|avif|bmp|woff2?|ttf|otf|eot|mp4|webm|ogg|mp3|wav|pdf)$/i;
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -24,6 +36,21 @@ export async function middleware(request: NextRequest) {
   const isAuthenticated = !!token;
 
   // 2. Define public paths that never require auth
+  //
+  // T-038. This used to end in `pathname.includes('.')` -- ANY path containing a
+  // dot was public. `/dashboard/report.2024`, `/settings/profile.edit` and
+  // `/admin.php` all matched, and so did `/api/anything.json`. It was not an
+  // auth bypass only because step 4 below (the `/api/` 401) runs before step 5
+  // (the public-path redirect), so API routes were caught first. That is an
+  // ordering accident, not a control: moving step 5 above step 4, or adding a
+  // dotted page route, turns it into one.
+  //
+  // The rule exists to let static assets through, so it now matches only a path
+  // that ENDS in a known asset extension -- and never one under `/api/`, so the
+  // guarantee no longer depends on the order of the checks below.
+  const isStaticAsset =
+    !pathname.startsWith('/api/') && STATIC_ASSET_PATTERN.test(pathname);
+
   const isPublicPath =
     pathname === '/' ||
     pathname.startsWith('/login') ||
@@ -32,7 +59,7 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/api/health') ||
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
-    pathname.includes('.');
+    isStaticAsset;
 
   // 3. Auth page redirect: if authenticated user visits /login or /register, redirect to /dashboard
   if (isAuthenticated && (pathname.startsWith('/login') || pathname.startsWith('/register'))) {

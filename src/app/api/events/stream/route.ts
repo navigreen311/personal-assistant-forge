@@ -1,23 +1,27 @@
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { error } from '@/shared/utils/api-response';
 import { createSSEStream, encodeSSEMessage } from '@/lib/realtime/sse';
 import { getRecentEvents } from '@/lib/realtime/events';
 
 // GET /api/events/stream?entityId=xxx
 // Returns: SSE stream (Content-Type: text/event-stream)
+//
+// P-23 tenancy: this route took `?entityId=` on trust. `createSSEStream`
+// subscribes the client to that entity's event bus and `getRecentEvents`
+// replays its buffer, so an authenticated user could name any tenant's entity
+// and receive a live feed of their events plus everything already buffered --
+// a long-lived read of another tenant, not a single response.
+//
+// Single-entity, deliberately (tenancy-pattern.md §5b): a stream is one
+// subscription to one entity, so `withEntityScope` matches the shape exactly.
+// The only behaviour change is the refusal code -- a missing entity is now
+// ENTITY_REQUIRED rather than MISSING_ENTITY, both 400.
 export async function GET(req: NextRequest) {
-  return withAuth(req, async (_req, session) => {
+  return withEntityScope(req, async (scopedReq, session, entityId) => {
     try {
-      const params = req.nextUrl.searchParams;
-      const entityId = params.get('entityId') ?? session.activeEntityId;
-
-      if (!entityId) {
-        return error('MISSING_ENTITY', 'entityId is required', 400);
-      }
-
       // Check for Last-Event-ID header (reconnection support)
-      const lastEventId = req.headers.get('Last-Event-ID') ?? undefined;
+      const lastEventId = scopedReq.headers.get('Last-Event-ID') ?? undefined;
 
       // Create SSE stream
       const { stream, clientId } = createSSEStream({
