@@ -126,6 +126,20 @@ const API_TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 /**
+ * Copy a Node `Buffer` into a plain `Uint8Array` backed by an `ArrayBuffer`.
+ *
+ * A `Buffer` is typed `Uint8Array<ArrayBufferLike>`, so its backing store may
+ * be a `SharedArrayBuffer` — which the DOM `BlobPart` / `BodyInit` types
+ * reject. Buffers here hold a single utterance, so copying is cheap and lets
+ * the conversion stay type-safe instead of asserted.
+ */
+function toBodyBytes(buffer: Buffer): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(buffer.byteLength);
+  bytes.set(buffer);
+  return bytes;
+}
+
+/**
  * Execute a fetch with a timeout. Returns the Response or throws on timeout.
  */
 async function fetchWithTimeout(
@@ -787,7 +801,7 @@ export class VoiceInAppHandler {
     const mimeType = format.includes('/') ? format : `audio/${format}`;
 
     const formData = new FormData();
-    const blob = new Blob([audio], { type: mimeType });
+    const blob = new Blob([toBodyBytes(audio)], { type: mimeType });
     formData.append('file', blob, `audio.${ext}`);
     formData.append('model', 'whisper-1');
     formData.append('language', language);
@@ -853,7 +867,7 @@ export class VoiceInAppHandler {
         Authorization: `Token ${apiKey}`,
         'Content-Type': mimeType,
       },
-      body: audio,
+      body: toBodyBytes(audio),
     });
 
     if (!response.ok) {

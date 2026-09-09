@@ -1,35 +1,68 @@
 // ============================================================================
 // Shadow Voice Agent — Call Playbook Service
-// CRUD operations for call playbooks (structured scripts for outbound/inbound
-// call handling). Playbooks define step-by-step conversation flows,
-// objection handling, escalation rules, and compliance checkpoints.
+// CRUD operations for call playbooks: the per-scenario guardrails Shadow uses
+// on a call — opening script, what data it may disclose, what it must never
+// disclose, when to escalate, and what outcome it must record.
+//
+// Backed by the `VoiceforgeCallPlaybook` table. This service previously
+// addressed a `shadowCallPlaybook` model that has never existed, and described
+// a different entity (a step-by-step flow with `steps`/`isActive`/`tags`);
+// every call therefore threw at runtime. The DTO below is the real table.
 // ============================================================================
 
 import { prisma } from '@/lib/db';
 
 // --- Types ---
 
-export interface PlaybookStep {
-  order: number;
-  type: 'greeting' | 'question' | 'script' | 'objection_handler' | 'escalation' | 'closing';
-  content: string;
-  expectedResponses?: string[];
-  nextStepOnSuccess?: number;
-  nextStepOnFailure?: number;
-  requiredCompliance?: string[];
-}
-
 export interface Playbook {
   id: string;
   entityId: string;
   name: string;
-  description: string;
-  type: string;
-  steps: PlaybookStep[];
-  isActive: boolean;
-  tags: string[];
-  createdAt: Date;
-  updatedAt: Date;
+  /** What this playbook is for, e.g. "Confirm upcoming appointments". */
+  scenario: string;
+  openingScript: string | null;
+  /** Field names the agent is permitted to disclose on this call. */
+  dataAllowed: string[];
+  /** Field names the agent must never disclose on this call. */
+  neverDisclose: string[];
+  /** Conditions that hand the call to a human. */
+  escalationTriggers: string[];
+  escalationAction: string | null;
+  /** Hard cap on call length, in seconds. */
+  maxDuration: number;
+  /** Outcomes the agent must record when the call ends. */
+  outcomeFields: string[];
+}
+
+/** The subset of `VoiceforgeCallPlaybook` columns this service reads. */
+type PlaybookRow = {
+  id: string;
+  entityId: string;
+  name: string;
+  scenario: string;
+  openingScript: string | null;
+  dataAllowed: unknown;
+  neverDisclose: unknown;
+  escalationTriggers: unknown;
+  escalationAction: string | null;
+  maxDuration: number;
+  outcomeFields: unknown;
+};
+
+// --- Helpers ---
+
+/** Coerce a Prisma `Json` column that is documented as a string array. */
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string');
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? toStringArray(value) : undefined;
 }
 
 // --- Call Playbook Service ---
@@ -37,12 +70,11 @@ export interface Playbook {
 export class CallPlaybookService {
   /**
    * List all playbooks for an entity.
-   * Returns active playbooks by default.
    */
   async listPlaybooks(entityId: string): Promise<Playbook[]> {
-    const playbooks = await prisma.shadowCallPlaybook.findMany({
+    const playbooks = await prisma.voiceforgeCallPlaybook.findMany({
       where: { entityId },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { name: 'asc' },
     });
 
     return playbooks.map((p) => this.mapPlaybook(p));
@@ -52,7 +84,7 @@ export class CallPlaybookService {
    * Get a single playbook by ID.
    */
   async getPlaybook(id: string): Promise<Playbook> {
-    const playbook = await prisma.shadowCallPlaybook.findUnique({
+    const playbook = await prisma.voiceforgeCallPlaybook.findUnique({
       where: { id },
     });
 
@@ -64,18 +96,31 @@ export class CallPlaybookService {
   }
 
   /**
-   * Create a new playbook.
+   * Create a new playbook. `entityId`, `name` and `scenario` are required;
+   * everything else falls back to the column default.
    */
   async createPlaybook(data: Record<string, unknown>): Promise<Playbook> {
-    const playbook = await prisma.shadowCallPlaybook.create({
+    const entityId = optionalString(data.entityId);
+    const name = optionalString(data.name);
+    // `description` is the legacy request field for what is now `scenario`.
+    const scenario = optionalString(data.scenario) ?? optionalString(data.description);
+
+    if (!entityId) throw new Error('entityId is required');
+    if (!name) throw new Error('name is required');
+    if (!scenario) throw new Error('scenario is required');
+
+    const playbook = await prisma.voiceforgeCallPlaybook.create({
       data: {
-        entityId: data.entityId as string,
-        name: data.name as string,
-        description: (data.description as string) ?? '',
-        type: (data.type as string) ?? 'general',
-        steps: (data.steps ?? []) as Parameters<typeof prisma.shadowCallPlaybook.create>[0]['data']['steps'],
-        isActive: (data.isActive as boolean) ?? true,
-        tags: (data.tags ?? []) as string[],
+        entityId,
+        name,
+        scenario,
+        openingScript: optionalString(data.openingScript) ?? null,
+        dataAllowed: optionalStringArray(data.dataAllowed) ?? [],
+        neverDisclose: optionalStringArray(data.neverDisclose) ?? [],
+        escalationTriggers: optionalStringArray(data.escalationTriggers) ?? [],
+        escalationAction: optionalString(data.escalationAction) ?? null,
+        ...(typeof data.maxDuration === 'number' ? { maxDuration: data.maxDuration } : {}),
+        outcomeFields: optionalStringArray(data.outcomeFields) ?? [],
       },
     });
 
@@ -83,13 +128,10 @@ export class CallPlaybookService {
   }
 
   /**
-   * Update an existing playbook.
+   * Update an existing playbook. Only the fields present in `data` are written.
    */
-  async updatePlaybook(
-    id: string,
-    data: Record<string, unknown>,
-  ): Promise<Playbook> {
-    const existing = await prisma.shadowCallPlaybook.findUnique({
+  async updatePlaybook(id: string, data: Record<string, unknown>): Promise<Playbook> {
+    const existing = await prisma.voiceforgeCallPlaybook.findUnique({
       where: { id },
     });
 
@@ -97,18 +139,28 @@ export class CallPlaybookService {
       throw new Error(`Playbook ${id} not found`);
     }
 
-    const updateData: Record<string, unknown> = {};
+    const name = optionalString(data.name);
+    const scenario = optionalString(data.scenario) ?? optionalString(data.description);
+    const openingScript = optionalString(data.openingScript);
+    const escalationAction = optionalString(data.escalationAction);
+    const dataAllowed = optionalStringArray(data.dataAllowed);
+    const neverDisclose = optionalStringArray(data.neverDisclose);
+    const escalationTriggers = optionalStringArray(data.escalationTriggers);
+    const outcomeFields = optionalStringArray(data.outcomeFields);
 
-    if (data.name !== undefined) updateData.name = data.name;
-    if (data.description !== undefined) updateData.description = data.description;
-    if (data.type !== undefined) updateData.type = data.type;
-    if (data.steps !== undefined) updateData.steps = data.steps;
-    if (data.isActive !== undefined) updateData.isActive = data.isActive;
-    if (data.tags !== undefined) updateData.tags = data.tags;
-
-    const playbook = await prisma.shadowCallPlaybook.update({
+    const playbook = await prisma.voiceforgeCallPlaybook.update({
       where: { id },
-      data: updateData,
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(scenario !== undefined ? { scenario } : {}),
+        ...(openingScript !== undefined ? { openingScript } : {}),
+        ...(escalationAction !== undefined ? { escalationAction } : {}),
+        ...(dataAllowed !== undefined ? { dataAllowed } : {}),
+        ...(neverDisclose !== undefined ? { neverDisclose } : {}),
+        ...(escalationTriggers !== undefined ? { escalationTriggers } : {}),
+        ...(outcomeFields !== undefined ? { outcomeFields } : {}),
+        ...(typeof data.maxDuration === 'number' ? { maxDuration: data.maxDuration } : {}),
+      },
     });
 
     return this.mapPlaybook(playbook);
@@ -118,7 +170,7 @@ export class CallPlaybookService {
    * Delete a playbook.
    */
   async deletePlaybook(id: string): Promise<void> {
-    const existing = await prisma.shadowCallPlaybook.findUnique({
+    const existing = await prisma.voiceforgeCallPlaybook.findUnique({
       where: { id },
     });
 
@@ -126,25 +178,26 @@ export class CallPlaybookService {
       throw new Error(`Playbook ${id} not found`);
     }
 
-    await prisma.shadowCallPlaybook.delete({
+    await prisma.voiceforgeCallPlaybook.delete({
       where: { id },
     });
   }
 
   // --- Private helpers ---
 
-  private mapPlaybook(dbPlaybook: Record<string, unknown>): Playbook {
+  private mapPlaybook(row: PlaybookRow): Playbook {
     return {
-      id: dbPlaybook.id as string,
-      entityId: dbPlaybook.entityId as string,
-      name: dbPlaybook.name as string,
-      description: (dbPlaybook.description as string) ?? '',
-      type: (dbPlaybook.type as string) ?? 'general',
-      steps: (dbPlaybook.steps ?? []) as PlaybookStep[],
-      isActive: (dbPlaybook.isActive as boolean) ?? true,
-      tags: (dbPlaybook.tags ?? []) as string[],
-      createdAt: dbPlaybook.createdAt as Date,
-      updatedAt: dbPlaybook.updatedAt as Date,
+      id: row.id,
+      entityId: row.entityId,
+      name: row.name,
+      scenario: row.scenario,
+      openingScript: row.openingScript,
+      dataAllowed: toStringArray(row.dataAllowed),
+      neverDisclose: toStringArray(row.neverDisclose),
+      escalationTriggers: toStringArray(row.escalationTriggers),
+      escalationAction: row.escalationAction,
+      maxDuration: row.maxDuration,
+      outcomeFields: toStringArray(row.outcomeFields),
     };
   }
 }

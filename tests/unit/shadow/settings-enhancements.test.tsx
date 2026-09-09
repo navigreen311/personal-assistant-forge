@@ -38,7 +38,7 @@ jest.mock('next/link', () => {
 
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
-import SettingsGeneral from '@/modules/shadow/components/SettingsGeneral';
+import SettingsGeneral, { type GeneralSettings } from '@/modules/shadow/components/SettingsGeneral';
 import SettingsVoicePhone from '@/modules/shadow/components/SettingsVoicePhone';
 
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ const mockConfigResponse = {
       sidekickAutoActivate: true,
       sidekickObservationFrequency: 'normal',
       sidekickNotificationThreshold: 'p0_only',
-    },
+    } satisfies GeneralSettings,
     voicePhone: {
       voicePersona: 'default',
       speechSpeed: 1.0,

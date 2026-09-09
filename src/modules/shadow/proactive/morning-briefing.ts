@@ -1,26 +1,31 @@
 import { prisma } from '@/lib/db';
 
 // ---- Types ----
+//
+// These are declared as `type` aliases rather than `interface`s deliberately:
+// only a type alias gets an implicit index signature, which is what lets the
+// briefing payload be assigned to Prisma's `InputJsonObject` when it is stored
+// in `Notification.metadata`.
 
-export interface BriefingCalendarEvent {
+export type BriefingCalendarEvent = {
   title: string;
   time: string;
   type: string;
-}
+};
 
-export interface BriefingTask {
+export type BriefingTask = {
   title: string;
   priority: string;
   dueDate?: string;
-}
+};
 
-export interface BriefingRecommendation {
+export type BriefingRecommendation = {
   action: string;
   reason: string;
   priority: string;
-}
+};
 
-export interface BriefingContent {
+export type BriefingContent = {
   calendar: {
     events: BriefingCalendarEvent[];
     conflicts: number;
@@ -43,7 +48,7 @@ export interface BriefingContent {
   };
   recommendations: BriefingRecommendation[];
   summary: string;
-}
+};
 
 // ---- Helpers ----
 

@@ -19,4 +19,4 @@ export { GDPRService, gdprService } from './gdpr-export';
 export type { GDPRExportResult, GDPRDeleteResult, SelectiveDeleteParams } from './gdpr-export';
 
 export { CallPlaybookService, callPlaybookService } from './call-playbook';
-export type { Playbook, PlaybookStep } from './call-playbook';
+export type { Playbook } from './call-playbook';

@@ -7,7 +7,7 @@
 
 jest.mock('@/lib/db', () => ({
   prisma: {
-    shadowDNCEntry: {
+    contactCallPreference: {
       findUnique: jest.fn(),
     },
     shadowCallAttempt: {
@@ -46,7 +46,9 @@ import { DNCChecker } from '@/modules/shadow/compliance/dnc-checker';
 import { RetentionService } from '@/modules/shadow/compliance/retention';
 
 // Type-safe mock references
-const mockDNCEntry = prisma.shadowDNCEntry as jest.Mocked<typeof prisma.shadowDNCEntry>;
+const mockDNCEntry = prisma.contactCallPreference as jest.Mocked<
+  typeof prisma.contactCallPreference
+>;
 const mockCallAttempt = prisma.shadowCallAttempt as jest.Mocked<typeof prisma.shadowCallAttempt>;
 const mockRetentionConfig = prisma.shadowRetentionConfig as jest.Mocked<typeof prisma.shadowRetentionConfig>;
 const mockMessage = prisma.shadowMessage as jest.Mocked<typeof prisma.shadowMessage>;
@@ -440,11 +442,10 @@ describe('RetentionService', () => {
     it('should return stored config when it exists', async () => {
       (mockRetentionConfig.findUnique as jest.Mock).mockResolvedValue({
         entityId: 'entity-1',
-        recordingsDays: 30,
-        transcriptsDays: 180,
-        messagesDays: 180,
-        consentReceiptsDays: 2555,
-        updatedAt: new Date(),
+        recordingRetentionDays: 30,
+        transcriptRetentionDays: 180,
+        messageRetentionDays: 180,
+        consentRetentionDays: 2555,
       });
 
       const config = await service.getRetentionConfig('entity-1');
@@ -467,11 +468,10 @@ describe('RetentionService', () => {
     it('should upsert the retention config', async () => {
       const mockResult = {
         entityId: 'entity-1',
-        recordingsDays: 60,
-        transcriptsDays: 365,
-        messagesDays: 365,
-        consentReceiptsDays: 2555,
-        updatedAt: new Date(),
+        recordingRetentionDays: 60,
+        transcriptRetentionDays: 365,
+        messageRetentionDays: 365,
+        consentRetentionDays: 2555,
       };
       (mockRetentionConfig.upsert as jest.Mock).mockResolvedValue(mockResult);
 

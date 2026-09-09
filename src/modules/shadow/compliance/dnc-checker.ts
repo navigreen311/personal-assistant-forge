@@ -35,7 +35,7 @@ export class DNCChecker {
    */
   async canCall(contactId: string): Promise<DNCCheckResult> {
     // 1. Check DNC flag
-    const contact = await prisma.shadowDNCEntry.findUnique({
+    const contact = await prisma.contactCallPreference.findUnique({
       where: { contactId },
     });
 
