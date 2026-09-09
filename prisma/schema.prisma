@@ -1288,3 +1288,283 @@ model VafIntegrationConfig {
 
   @@map("vaf_integration_config")
 }
+
+// ============================================================================
+// === P-00 COORDINATOR — CONTROL PLANE ===
+//
+// Landed by P-00 (feature/p-00-coordinator) for the platform parallel build.
+//
+// These tables replace module-level in-memory Map stores that lost all state on
+// process restart. Audit finding: 38 such stores; the ones below held
+// control-plane state (audit trail, execution gate, approvals, rollback, kill
+// switch, RBAC, second factors, signatures) and were classified BLOCKER.
+//
+// MODELLING RULES USED HERE — follow them if you extend this section:
+//  1. Scalar interface fields become columns; nested objects/arrays become Json.
+//     This matches the existing convention (see ShadowSessionOutcome).
+//  2. entityId / userId are INDEXED COLUMNS, NOT Prisma relations. Deliberate:
+//     control-plane records must NOT cascade-delete when an entity is removed.
+//     An audit trail that disappears with its subject is not an audit trail.
+//     Precedent: ShadowConsentReceipt.entityId already does this.
+//  3. Because of (2), P-00 does not modify the User or Entity model bodies at
+//     all, so no downstream package inherits a changed core model.
+// ============================================================================
+
+/// T-002 - replaces the in-memory array at security/services/audit-service.ts:40.
+/// The SHA-256 hash chain was real; the storage was a process-local array.
+/// actor/actorId are written from the verified session, never from a header.
+model AuditLogEntry {
+  id               String   @id @default(cuid())
+  timestamp        DateTime @default(now())
+  actor            String
+  actorId          String?
+  action           String
+  resource         String
+  resourceId       String
+  entityId         String
+  ipAddress        String?
+  userAgent        String?
+  requestMethod    String
+  requestPath      String
+  statusCode       Int
+  sensitivityLevel String
+  details          Json     @default("{}")
+  hash             String?
+  previousHash     String?
+
+  @@index([entityId])
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([resource, resourceId])
+}
+
+/// T-007 - replaces execution/services/execution-gate.ts:12.
+/// A gate held in memory is cleared by a restart, which silently opens it.
+model ExecutionGateRule {
+  id          String   @id @default(cuid())
+  name        String
+  expression  String
+  description String
+  scope       String
+  entityId    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([entityId])
+  @@index([isActive])
+}
+
+/// T-007 - replaces execution/services/action-queue.ts:16.
+/// idempotencyKey supports T-019; it is nullable so existing call sites compile
+/// unchanged, and unique so a retried enqueue cannot double-apply.
+model QueuedAction {
+  id                  String    @id @default(cuid())
+  actionLogId         String
+  actor               String
+  actorId             String?
+  actionType          String
+  target              String
+  description         String
+  reason              String
+  impact              String
+  rollbackPlan        String
+  blastRadius         String
+  reversible          Boolean   @default(false)
+  estimatedCost       Float?
+  status              String    @default("QUEUED")
+  requiresApproval    Boolean   @default(false)
+  approvedBy          String?
+  approvedAt          DateTime?
+  executedAt          DateTime?
+  scheduledFor        DateTime?
+  entityId            String
+  projectId           String?
+  workflowExecutionId String?
+  idempotencyKey      String?   @unique
+  createdAt           DateTime  @default(now())
+
+  @@index([entityId])
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+/// T-007 - replaces execution/services/rollback-service.ts:12.
+/// steps holds the RollbackStep[] value object.
+model RollbackPlan {
+  id                  String   @id @default(cuid())
+  actionId            String   @unique
+  steps               Json     @default("[]")
+  estimatedDuration   Int      @default(0)
+  canAutoRollback     Boolean  @default(false)
+  requiresManualSteps Boolean  @default(false)
+  manualInstructions  String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+/// T-007 - replaces workflows/services/approval-service.ts:10.
+/// NOTE for P-09: that file also mints ids from a module-level approvalCounter,
+/// which resets on restart and can collide within one millisecond. Use the cuid
+/// default here instead of porting the counter.
+model WorkflowApproval {
+  id           String   @id @default(cuid())
+  executionId  String
+  workflowName String
+  stepLabel    String
+  config       Json     @default("{}")
+  stepData     Json     @default("{}")
+  responses    Json     @default("[]")
+  status       String   @default("PENDING")
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  @@index([executionId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+/// T-007 - replaces crisis/services/dead-man-switch-service.ts:3.
+/// A kill switch in a Map is cleared by a restart, and the next checkIn() throws
+/// "not configured", which reads as a config error rather than as data loss.
+model DeadManSwitch {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  isEnabled            Boolean  @default(false)
+  checkInIntervalHours Int      @default(24)
+  lastCheckIn          DateTime @default(now())
+  missedCheckIns       Int      @default(0)
+  triggerAfterMisses   Int      @default(3)
+  protocols            Json     @default("[]")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([isEnabled])
+}
+
+/// T-007 - replaces delegation/services/role-service.ts:5 (roleStore).
+/// Distinct from the existing PermissionGrant model, which is a direct
+/// user-to-resource grant. This is the role definition itself.
+model Role {
+  id          String   @id @default(cuid())
+  roleName    String   @unique
+  permissions Json     @default("[]")
+  entityScope Json     @default("[]")
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// T-007 - replaces delegation/services/role-service.ts:6 (userRoleMap).
+model UserRoleAssignment {
+  id         String   @id @default(cuid())
+  userId     String
+  roleId     String
+  assignedBy String?
+  assignedAt DateTime @default(now())
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+/// T-007 - replaces shadow/safety/auth-manager.ts:109.
+/// In-flight second factors vanishing on restart strand a user mid-verification.
+model ShadowSmsCode {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  code      String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// T-007 - replaces documents/services/esign-service.ts:4.
+model ESignRequest {
+  id         String   @id @default(cuid())
+  documentId String
+  signers    Json     @default("[]")
+  status     String   @default("DRAFT")
+  provider   String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([documentId])
+  @@index([status])
+}
+
+/// T-007 - replaces workflows/services/workflow-executor.ts:28.
+/// Without this a workflow's progress is unrecoverable after a crash, and the
+/// BullMQ retry policy has nothing to resume from.
+model WorkflowExecutionRecord {
+  id            String    @id @default(cuid())
+  workflowId    String
+  status        String    @default("PENDING")
+  triggeredBy   String
+  triggerType   String
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+  currentNodeId String?
+  variables     Json      @default("{}")
+  stepResults   Json      @default("[]")
+  error         String?
+
+  @@index([workflowId])
+  @@index([status])
+}
+
+/// T-007 - replaces execution/services/runbook-service.ts:19 (executionStore).
+/// The Runbook model ALREADY EXISTS above; runbookStore at runbook-service.ts:18
+/// shadows it. P-09: point at the existing model, do not add a second one.
+model RunbookExecution {
+  id          String    @id @default(cuid())
+  runbookId   String
+  status      String    @default("RUNNING")
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  stepResults Json      @default("[]")
+  triggeredBy String
+
+  @@index([runbookId])
+  @@index([status])
+}
+
+// ============================================================================
+// === P-00 COORDINATOR — T-008 SCHEMA HALF ===
+//
+// The audit listed FOUR Prisma delegates that the shadow/compliance code calls
+// but that do not exist. Reading the receiving side rather than the names shows
+// three of them already exist under different identifiers, and only one table
+// is genuinely absent.
+//
+// RENAME MAP for P-02 (code half) — these are edits to call sites, not schema:
+//
+//   prisma.shadowCallPlaybook   -> prisma.voiceforgeCallPlaybook   (exists)
+//   prisma.shadowConsentConfig  -> prisma.voiceforgeConsentConfig  (exists)
+//   prisma.shadowDNCEntry       -> prisma.contactCallPreference    (exists;
+//        already carries contactId @unique, doNotCall and maxCallsPerWeek,
+//        which is the exact shape dnc-checker.ts:38 reads)
+//   prisma.shadowCallAttempt    -> NEW, defined below
+//
+// Also for P-02: shadow/compliance/retention.ts reads recordingsDays /
+// transcriptsDays / messagesDays / consentReceiptsDays. The existing
+// ShadowRetentionConfig model spells these recordingRetentionDays /
+// transcriptRetentionDays / messageRetentionDays / consentRetentionDays, and has
+// no updatedAt column. That is 16 of the 72 type errors and it is a field rename
+// on the read side, not a schema change. Do not add duplicate columns.
+// ============================================================================
+
+/// T-008 - genuinely missing. Called by shadow/compliance/dnc-checker.ts at
+/// :74 (count for the weekly frequency limit), :104 (create on attempt) and
+/// :122 (deleteMany to reset weekly counts).
+/// The composite index serves the count-by-contact-since-date query directly.
+model ShadowCallAttempt {
+  id          String   @id @default(cuid())
+  contactId   String
+  attemptedAt DateTime @default(now())
+
+  @@index([contactId, attemptedAt])
+  @@index([attemptedAt])
+}
