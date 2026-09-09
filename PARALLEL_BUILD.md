@@ -62,6 +62,23 @@ After P-00: **67**. The five that resolved were `prisma.shadowCallAttempt`
 references, fixed by adding the one genuinely missing model. The remaining 67
 belong to P-02.
 
+### ⚠️ CORRECTION TO THIS BASELINE (2026-09-09, after P-02)
+
+**The baseline below was measured with the wrong command, by me, and downstream
+packages should use the corrected figures.**
+
+CI runs `npx jest --passWithNoTests --coverage --ci`. I recorded the baseline with
+`npx jest --ci`, without `--coverage`, and only on Windows. The counts happen to
+be the same either way, so the numbers below stand — but they were never a
+faithful reproduction of the CI command, and on Linux they are not the whole
+story. **Run the CI command verbatim when you measure.**
+
+P-02 taking `tsc` to 0 caused the `Run tests` step to execute in CI **for the
+first time in this repository's history**. It immediately surfaced 10 pre-existing
+`OfflineQueue` failures that appear only on the Linux runner and pass on Windows.
+They are not P-02's, they were never observable before, and they are now on the
+P-19 blocker list below.
+
 ### Unit suite — `npx jest --ci`
 
 ```
@@ -159,6 +176,22 @@ actually asserts before assuming your change is wrong.
 
 ---
 
+## WHAT NOW STANDS BETWEEN THIS REPO AND ITS FIRST GREEN CI RUN
+
+`tsc` is 0 as of P-02. The type errors were never the only thing. **P-19 cannot
+declare CI green until all four of these are closed**, and my plan sized P-19 as
+M on the assumption it was only the config flip. It is not.
+
+| # | Blocker | Evidence | Owner |
+|---|---|---|---|
+| 1 | `tests/unit/analytics/goal-tracking.test.ts` fails | `ON_TRACK` expected, `AT_RISK` received, at `:130` | **P-13** |
+| 2 | `tests/unit/engines/adoption-activation.test.ts` flakes | 1 ms wall-clock compare; ~1 run in 4; seen independently by P-01, P-02 and the coordinator | **P-13** |
+| 3 | `tests/unit/capture/offline-queue.test.ts` — 10 failures, **Linux only** | passes on Windows, fails on the CI runner; invisible until P-02 unblocked the step | **P-13** |
+| 4 | `npx eslint src` → **192 errors, 65 warnings** | P-19 is meant to remove `continue-on-error: true` from the Lint step. That is not a one-line change. | **P-19**, resize to L |
+
+Blockers 1–3 all land on **P-13**, which my plan sized M. **Resize P-13 to L**, or
+split the test-repair work out as its own package.
+
 ## CAVEATS CARRIED FORWARD
 
 - **Measure, do not predict.** An intermediate state of P-00 was 5 failed suites
@@ -228,10 +261,19 @@ One row per merge. Appended by the coordinator at merge time.
 | — | *baseline* `0f098288` | — | — | 72 | 319/320 | 5267/5268 | n/a | — | 2026-09-09 |
 | 1 | P-00 coordinator | [#57](https://github.com/navigreen311/personal-assistant-forge/pull/57) | `e18a8f7` | 67 | 319/320 | 5267/5268 | 16/16 | **none** | 2026-09-09 18:59Z |
 | 2 | P-01 db harness | [#58](https://github.com/navigreen311/personal-assistant-forge/pull/58) | `5c3256b` | 67 | 319/320 | 5267/5268 | **45/45** | **none** | 2026-09-09 19:2xZ |
+| 3 | P-02 typecheck repair | [#59](https://github.com/navigreen311/personal-assistant-forge/pull/59) | `a271698` | **0** | 319/320 | 5267/5268 | 45/45 | **none** | 2026-09-09 19:4xZ |
 
 ---
 
 ## STATUS
+
+**⚠️ P-17, before you wire the retention cron:** `shadow/compliance` was
+unreachable — every service addressed a nonexistent Prisma model and threw on
+first call. P-02 fixed that, so the module now executes. In particular
+`retention.ts` **will actually delete data**. `runRetentionCleanup()` currently
+has no caller anywhere, so the deletion path is latent; issue #25's "retention
+policies + nightly cleanup cron" is the thing that makes it live. Read it against
+a scratch database before pointing it at anything real.
 
 **P-16 and P-17 are quarantined.** They implement Sprint 5 (issue #24, 14
 deliverables) and Sprint 6 (issue #25, 20 deliverables), both of which cite
