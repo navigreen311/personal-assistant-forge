@@ -24,6 +24,9 @@ const config: Config = {
   roots: ['<rootDir>/tests/db'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    // uuid@13 is ESM-only with no CommonJS build; see tests/helpers/uuid-cjs-shim.ts
+    // for why this is a mapping rather than transformIgnorePatterns.
+    '^uuid$': '<rootDir>/tests/helpers/uuid-cjs-shim.ts',
   },
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.json' }],

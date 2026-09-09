@@ -183,6 +183,42 @@ name: the id must have been read from a database column, never from a request.
 
 `grep -rn "as VerifiedEntityId" src/` must stay at **zero**.
 
+## 5b. `withEntityScope` has NO "all my entities" mode — declare it, do not drift into it
+
+**Found independently by P-05 (calendar) and P-07 (finance) within the same hour.
+Two packages, same gap, same workaround. If your module has a genuine
+cross-entity view, you will hit it too.**
+
+`withEntityScope` resolves to exactly ONE entity. So a list route that used to
+mean *"everything I own"* when `entityId` was omitted now silently means *"my
+active entity"*. That is a **behaviour change, not a tenancy fix**, and it is
+invisible in a 403 test — every cross-tenant assertion still passes while the
+feature quietly stops doing what it did.
+
+P-04 never saw this because tasks were already single-entity.
+
+**If the route is genuinely single-entity** (most are): use `withEntityScope` and
+move on.
+
+**If the route genuinely spans the caller's entities** — an executive view, a
+cross-entity rollup, a unified inbox — do NOT use `withEntityScope`. Keep
+`withAuth` and prove each entity explicitly:
+
+```ts
+return withAuth(request, async (req, session) => {
+  const ids = await entitiesOwnedBy(session.userId);          // scope = the SET
+  // or, for a caller-supplied list, verify each one:
+  const verified = await Promise.all(
+    requested.map((id) => verifyEntityForUser(id, session.userId))
+  );
+  if (verified.some((v) => v === null)) return error('FORBIDDEN', '...', 403);
+});
+```
+
+**Say which you chose in your PR.** A route that silently narrowed from "all" to
+"one" is a regression a reviewer cannot see in the diff, and P-20 will not catch
+it either — its fuzz suite tests for leaks, not for things that stopped working.
+
 ## 6. The tenancy test
 
 Real database, `tests/db/<module>-tenancy.test.ts`, P-01's harness, `getToken`
@@ -231,6 +267,22 @@ already correct — say so rather than claiming a fix you did not make.
 3. **Unit tests cannot mint the brand.** Use `verifiedEntityIdForTest()` from
    `tests/helpers/factories.ts` — landed by P-00b so nine packages don't scatter
    ninety casts. Real-database tests go through the route with `requestAs()`.
+3b. **`uuid@13` is ESM-only and ALREADY FIXED — do not work around it again.**
+   It has no CommonJS build, so a `tests/db/` file importing any service that
+   transitively uses it used to die with `SyntaxError: Unexpected token 'export'`
+   at *import*, which reads like a broken test rather than a module-format
+   problem. P-11 hit it, P-05 hit it, and it is now mapped centrally in
+   `jest.db.config.ts` to `tests/helpers/uuid-cjs-shim.ts`. `src/` still imports
+   the real `uuid`. If you need an export beyond `v4`, add it to the shim.
+3c. **Trap 1 has a second half** (P-05): it is not only `findUnique`→`findFirst`.
+   A write that now re-asserts the owner calls a *different delegate*
+   (`prisma.entity.findUnique`), and a mock that aliases several models onto one
+   `jest.fn` will return the wrong row — one whose `userId` is `undefined`. Give
+   it its own mock.
+3d. **The §4 `[id]` block is duplicated per route file on purpose.** Next.js route
+   files may export only HTTP handlers, so it cannot be extracted into a shared
+   helper in the same directory. Expect four near-identical copies; do not
+   "clean it up" into a module the build will reject.
 4. **`tsc` includes `tests/**`.** A signature change breaks every calling test at
    once (~170 sites in P-04). That is the mechanism showing you the call sites.
 5. **Callers outside your module.** `grep -rn "@/modules/<yours>" src/ tests/ -l`
