@@ -14,28 +14,55 @@
 
 // --- Infrastructure mocks ---
 
+// Single-record reads are now findFirst, so the verified entity can travel in
+// the WHERE clause rather than being compared after the read. Alias the three
+// single-row readers onto one mock so a test that sets up findUnique or
+// findUniqueOrThrow still answers -- tenancy-pattern.md §8.1. `financialRecord`
+// keeps a distinct findFirst for generateInvoiceNumber, which is a genuine
+// findFirst and is set up separately.
+const mockRecordFindOne = jest.fn();
+const mockDocumentFindOne = jest.fn();
+
 const mockPrisma = {
   financialRecord: {
     create: jest.fn(),
-    findUnique: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
-    findFirst: jest.fn(),
+    findUnique: mockRecordFindOne,
+    findUniqueOrThrow: mockRecordFindOne,
+    findFirst: mockRecordFindOne,
     findMany: jest.fn(),
     update: jest.fn(),
+    // update takes a unique WHERE and cannot carry the entity, so every scoped
+    // write is an updateMany over { id, entityId } -- tenancy-pattern.md §3.
+    updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
     count: jest.fn(),
   },
   document: {
     create: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
+    findUniqueOrThrow: mockDocumentFindOne,
+    findFirst: mockDocumentFindOne,
   },
   entity: {
     findUniqueOrThrow: jest.fn(),
+    // createInvoice / createExpense / createBudget re-assert the caller against
+    // the entity's owner, as defence in depth -- tenancy-pattern.md §2.
+    findUnique: jest.fn(() => Promise.resolve({ id: 'entity-1', userId: 'user-1' })),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A test
+ * calling a service directly has neither, so it uses the one named test-only
+ * helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn(),
@@ -132,7 +159,7 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.document.create.mockResolvedValue(budgetDoc);
 
       const budget = await createBudget({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         name: 'Q1 2026 Budget',
         totalBudgeted: 16000,
         period: { start: new Date('2026-01-01'), end: new Date('2026-03-31') },
@@ -142,7 +169,7 @@ describe('Finance Management E2E Tests', () => {
           { category: 'Marketing', budgeted: 8000, spent: 0, remaining: 8000, percentUsed: 0, forecast: 0, alert: null },
         ],
         status: 'ACTIVE',
-      });
+      }, 'user-1');
 
       expect(budget.id).toBe('budget-1');
       expect(budget.totalBudgeted).toBe(16000);
@@ -155,7 +182,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ type: 'EXPENSE', amount: 2000, category: 'Marketing' }),
       ]);
 
-      const budgetWithActuals = await getBudgetWithActuals('budget-1');
+      const budgetWithActuals = (await getBudgetWithActuals('budget-1', scoped('entity-1')))!;
 
       expect(budgetWithActuals.totalSpent).toBe(4300);
       expect(budgetWithActuals.remainingBudget).toBe(11700);
@@ -189,7 +216,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ type: 'EXPENSE', amount: 1700, category: 'Travel' }),
       ]);
 
-      const result = await getBudgetWithActuals('budget-warn');
+      const result = (await getBudgetWithActuals('budget-warn', scoped('entity-1')))!;
       const travelCat = result.categories.find((c) => c.category === 'Travel');
       expect(travelCat?.percentUsed).toBe(85);
       expect(travelCat?.alert).toBe('WARNING');
@@ -219,7 +246,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ type: 'EXPENSE', amount: 500, category: 'Events' }),
       ]);
 
-      const result = await getBudgetWithActuals('budget-over');
+      const result = (await getBudgetWithActuals('budget-over', scoped('entity-1')))!;
       const eventsCat = result.categories.find((c) => c.category === 'Events');
       expect(eventsCat?.percentUsed).toBe(110);
       expect(eventsCat?.alert).toBe('OVER_BUDGET');
@@ -250,7 +277,7 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.create.mockResolvedValue(expenseRecord);
 
       const expense = await createExpense({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         amount: 299.99,
         currency: 'USD',
         category: 'Software & SaaS',
@@ -260,7 +287,7 @@ describe('Finance Management E2E Tests', () => {
         isRecurring: true,
         recurringFrequency: 'ANNUAL',
         tags: ['design', 'tools'],
-      });
+      }, 'user-1');
 
       expect(expense.id).toBe('exp-1');
       expect(expense.amount).toBe(299.99);
@@ -276,7 +303,7 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue(records);
       mockPrisma.financialRecord.count.mockResolvedValue(2);
 
-      const result = await listExpenses('entity-1', { category: 'Office' }, 1, 20);
+      const result = await listExpenses(scoped('entity-1'), { category: 'Office' }, 1, 20);
 
       expect(result.expenses).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -307,7 +334,7 @@ describe('Finance Management E2E Tests', () => {
         .mockResolvedValueOnce(currentRecords)
         .mockResolvedValueOnce(previousRecords);
 
-      const result = await getExpensesByCategory('entity-1', {
+      const result = await getExpensesByCategory(scoped('entity-1'), {
         start: new Date('2026-02-01'),
         end: new Date('2026-02-28'),
       });
@@ -328,8 +355,9 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ id: 'dup-1', type: 'EXPENSE', amount: 99.99, vendor: 'Slack', dueDate: new Date('2026-02-14'), description: '{}' }),
       ]);
 
-      const duplicates = await detectDuplicates({
-        entityId: 'entity-1',
+      // The scope is now its own leading argument rather than a field on the
+      // filter bag -- tenancy-pattern.md §2.
+      const duplicates = await detectDuplicates(scoped('entity-1'), {
         amount: 99.99,
         vendor: 'Slack',
         date: new Date('2026-02-15'),
@@ -345,7 +373,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ type: 'EXPENSE', amount: 50, status: 'PAID' }),
       ]);
 
-      const totals = await getExpenseTotals('entity-1');
+      const totals = await getExpenseTotals(scoped('entity-1'));
 
       expect(totals.total).toBe(400);
       expect(totals.average).toBeCloseTo(133.33, 0);
@@ -367,13 +395,20 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue(existingRecord);
       mockPrisma.financialRecord.update.mockResolvedValue(updatedRecord);
 
-      const updated = await updateExpense('upd-exp', { amount: 600, description: 'Updated description' });
-      expect(updated.amount).toBe(600);
+      const updated = await updateExpense('upd-exp', scoped('entity-1'), {
+        amount: 600,
+        description: 'Updated description',
+      });
+      expect(updated).not.toBeNull();
+      expect(updated!.amount).toBe(600);
 
       mockPrisma.financialRecord.update.mockResolvedValue({ ...updatedRecord, status: 'CANCELLED' });
-      await deleteExpense('upd-exp');
-      expect(mockPrisma.financialRecord.update).toHaveBeenCalledWith({
-        where: { id: 'upd-exp' },
+      await deleteExpense('upd-exp', scoped('entity-1'));
+      // CORRECTED: this asserted `update({ where: { id: 'upd-exp' } })` -- no
+      // entity at all, so any caller who knew an expense id could cancel any
+      // tenant's expense. tenancy-pattern.md §3, §8.7.
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledWith({
+        where: { id: 'upd-exp', entityId: 'entity-1' },
         data: { status: 'CANCELLED' },
       });
     });
@@ -386,7 +421,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ vendor: 'Slack', amount: 12.50, createdAt: new Date('2025-12-01') }),
       ]);
 
-      const recurring = await getRecurringExpenses('entity-1');
+      const recurring = await getRecurringExpenses(scoped('entity-1'));
 
       expect(recurring.length).toBeGreaterThanOrEqual(1);
       const slack = recurring.find((r) => r.vendor === 'Slack');
@@ -418,11 +453,11 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.create.mockResolvedValue(invoiceRecord);
 
       const invoice = await createInvoice({
-        entityId: 'entity-1', contactId: 'client-1',
+        entityId: scoped('entity-1'), contactId: 'client-1',
         lineItems: [{ description: 'Web Development', quantity: 50, unitPrice: 150, total: 7500 }],
         tax: 0, currency: 'USD', status: 'SENT',
         issuedDate: new Date('2026-02-01'), dueDate: new Date('2026-03-01'), paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(invoice.id).toBe('inv-lifecycle');
       expect(invoice.total).toBe(7500);
@@ -431,7 +466,7 @@ describe('Finance Management E2E Tests', () => {
 
       // Get invoice
       mockPrisma.financialRecord.findUnique.mockResolvedValue(invoiceRecord);
-      const fetched = await getInvoice('inv-lifecycle');
+      const fetched = await getInvoice('inv-lifecycle', scoped('entity-1'));
       expect(fetched).not.toBeNull();
       expect(fetched!.total).toBe(7500);
 
@@ -450,11 +485,14 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue(invoiceRecord);
       mockPrisma.financialRecord.update.mockResolvedValue(paidRecord);
 
-      const paidInvoice = await updateInvoiceStatus('inv-lifecycle', 'PAID');
-      expect(paidInvoice.status).toBe('PAID');
-      expect(paidInvoice.paidDate).toBeDefined();
-      expect(mockPrisma.financialRecord.update).toHaveBeenCalledWith({
-        where: { id: 'inv-lifecycle' },
+      const paidInvoice = await updateInvoiceStatus('inv-lifecycle', scoped('entity-1'), 'PAID');
+      expect(paidInvoice).not.toBeNull();
+      expect(paidInvoice!.status).toBe('PAID');
+      expect(paidInvoice!.paidDate).toBeDefined();
+      // CORRECTED: this asserted `update({ where: { id: 'inv-lifecycle' } })`.
+      // tenancy-pattern.md §3, §8.7.
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledWith({
+        where: { id: 'inv-lifecycle', entityId: 'entity-1' },
         data: expect.objectContaining({ status: 'PAID' }),
       });
     });
@@ -474,7 +512,7 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue(records);
       mockPrisma.financialRecord.count.mockResolvedValue(2);
 
-      const result = await listInvoices('entity-1', { status: 'PAID' }, 1, 20);
+      const result = await listInvoices(scoped('entity-1'), { status: 'PAID' }, 1, 20);
 
       expect(result.invoices).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -502,11 +540,11 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.create.mockResolvedValue(newRecord);
 
       const invoice = await createInvoice({
-        entityId: 'entity-1', contactId: 'client-1',
+        entityId: scoped('entity-1'), contactId: 'client-1',
         lineItems: [{ description: 'Service', quantity: 1, unitPrice: 500, total: 500 }],
         tax: 0, currency: 'USD', status: 'DRAFT',
         issuedDate: new Date('2026-02-15'), dueDate: new Date('2026-03-01'), paymentTerms: 'Net 15',
-      });
+      }, 'user-1');
 
       expect(invoice.invoiceNumber).toBe('INV-2026-0006');
     });
@@ -536,7 +574,7 @@ describe('Finance Management E2E Tests', () => {
         .mockResolvedValueOnce(currentRecords)
         .mockResolvedValueOnce(previousRecords);
 
-      const pnl = await generatePnL('entity-1', { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
+      const pnl = await generatePnL(scoped('entity-1'), { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
 
       expect(pnl.entityName).toBe('Tech Startup LLC');
       expect(pnl.totalRevenue).toBe(40000);
@@ -567,7 +605,7 @@ describe('Finance Management E2E Tests', () => {
         .mockResolvedValueOnce([]);
 
       const comparison = await comparePeriods(
-        'entity-1',
+        scoped('entity-1'),
         { start: new Date('2026-01-01'), end: new Date('2026-01-31') },
         { start: new Date('2026-02-01'), end: new Date('2026-02-28') }
       );
@@ -585,7 +623,7 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.entity.findUniqueOrThrow.mockResolvedValue({ name: 'Empty Co' });
       mockPrisma.financialRecord.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
-      const pnl = await generatePnL('entity-1', { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
+      const pnl = await generatePnL(scoped('entity-1'), { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
 
       expect(pnl.totalRevenue).toBe(0);
       expect(pnl.totalExpenses).toBe(0);
@@ -606,7 +644,7 @@ describe('Finance Management E2E Tests', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const forecast = await forecastCashFlow('entity-1', 10000, 30);
+      const forecast = await forecastCashFlow(scoped('entity-1'), 10000, 30);
 
       expect(forecast.entityId).toBe('entity-1');
       expect(forecast.startingBalance).toBe(10000);
@@ -628,7 +666,7 @@ describe('Finance Management E2E Tests', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const forecast = await forecastCashFlow('entity-1', 100, 30);
+      const forecast = await forecastCashFlow(scoped('entity-1'), 100, 30);
 
       expect(forecast.alerts.length).toBeGreaterThan(0);
       expect(forecast.alerts.some((a) => a.includes('below $0'))).toBe(true);
@@ -646,7 +684,7 @@ describe('Finance Management E2E Tests', () => {
           createMockFinancialRecord({ type: 'EXPENSE', amount: 16500 }),
         ]);
 
-      const burnRate = await calculateBurnRate('entity-1', 3);
+      const burnRate = await calculateBurnRate(scoped('entity-1'), 3);
 
       expect(burnRate.entityName).toBe('Startup');
       expect(burnRate.monthlyBurn).toBeGreaterThan(0);
@@ -670,7 +708,7 @@ describe('Finance Management E2E Tests', () => {
           createMockFinancialRecord({ type: 'EXPENSE', amount: 12000 }),
         ]);
 
-      const scenario = await runScenario('entity-1', {
+      const scenario = await runScenario(scoped('entity-1'), {
         name: 'Lose Key Client',
         adjustments: [
           { type: 'REVENUE_LOSS', description: 'Key client churns', monthlyAmount: 5000, startDate: new Date('2026-03-01') },
@@ -706,11 +744,11 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.create.mockResolvedValue(invoiceRecord);
 
       const invoice = await createInvoice({
-        entityId: 'entity-1', contactId: 'client-1',
+        entityId: scoped('entity-1'), contactId: 'client-1',
         lineItems: [{ description: 'Consulting', quantity: 20, unitPrice: 500, total: 10000 }],
         tax: 0, currency: 'USD', status: 'PAID',
         issuedDate: new Date('2026-02-01'), dueDate: new Date('2026-03-01'), paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
       expect(invoice.total).toBe(10000);
 
       // Step 2: Create expense
@@ -721,10 +759,10 @@ describe('Finance Management E2E Tests', () => {
       mockPrisma.financialRecord.create.mockResolvedValue(expenseRecord);
 
       const expense = await createExpense({
-        entityId: 'entity-1', amount: 3000, currency: 'USD', category: 'Consulting',
+        entityId: scoped('entity-1'), amount: 3000, currency: 'USD', category: 'Consulting',
         vendor: 'Subcontractor LLC', description: 'Subcontractor',
         date: new Date('2026-02-15'), isRecurring: false, tags: [],
-      });
+      }, 'user-1');
       expect(expense.amount).toBe(3000);
 
       // Step 3: Check budget
@@ -741,7 +779,7 @@ describe('Finance Management E2E Tests', () => {
         createMockFinancialRecord({ type: 'EXPENSE', amount: 3000, category: 'Consulting' }),
       ]);
 
-      const budgetActuals = await getBudgetWithActuals('cross-budget');
+      const budgetActuals = (await getBudgetWithActuals('cross-budget', scoped('entity-1')))!;
       expect(budgetActuals.totalSpent).toBe(3000);
       expect(budgetActuals.categories[0].percentUsed).toBe(60);
 
@@ -754,7 +792,7 @@ describe('Finance Management E2E Tests', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const pnl = await generatePnL('entity-1', { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
+      const pnl = await generatePnL(scoped('entity-1'), { start: new Date('2026-01-01'), end: new Date('2026-03-31') });
 
       expect(pnl.totalRevenue).toBe(10000);
       expect(pnl.totalExpenses).toBe(3000);

@@ -5,20 +5,44 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
 }));
 
+// Reads that used to be findUnique/findUniqueOrThrow are now findFirst, so the
+// entity can travel in the WHERE clause instead of being compared afterwards.
+// Alias the two, so a test that sets up findUniqueOrThrow still answers rather
+// than silently returning undefined -- tenancy-pattern.md §8.1.
+const mockExpenseFindOne = jest.fn();
+
 const mockPrisma = {
   financialRecord: {
     create: jest.fn(),
     findMany: jest.fn(),
     findUnique: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
+    findUniqueOrThrow: mockExpenseFindOne,
+    findFirst: (...a: unknown[]) => mockExpenseFindOne(...a),
     update: jest.fn(),
+    updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
     count: jest.fn(),
+  },
+  // createExpense re-asserts the caller against the entity's owner, as defence
+  // in depth behind the VerifiedEntityId -- tenancy-pattern.md §2.
+  entity: {
+    findUnique: jest.fn(() => Promise.resolve({ id: 'entity-1', userId: 'user-1' })),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 import {
   createExpense,
@@ -92,7 +116,7 @@ describe('Expense Service', () => {
       });
 
       const result = await createExpense({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         amount: 150,
         currency: 'USD',
         category: 'Software & SaaS',
@@ -101,7 +125,7 @@ describe('Expense Service', () => {
         date: new Date('2026-02-15'),
         isRecurring: false,
         tags: [],
-      });
+      }, 'user-1');
 
       expect(result.amount).toBeCloseTo(150, 2);
       expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
@@ -120,9 +144,9 @@ describe('Expense Service', () => {
       });
 
       await createExpense({
-        entityId: 'e-1', amount: 50, currency: 'USD', category: '',
+        entityId: scoped('e-1'), amount: 50, currency: 'USD', category: '',
         vendor: '', description: '', date: new Date(), isRecurring: false, tags: [],
-      });
+      }, 'user-1');
 
       expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ status: 'PAID' }),
@@ -145,7 +169,7 @@ describe('Expense Service', () => {
           { category: 'Travel', amount: 400, type: 'EXPENSE' },
         ]);
 
-      const result = await getExpensesByCategory('entity-1', period);
+      const result = await getExpensesByCategory(scoped('entity-1'), period);
 
       const softwareCategory = result.find((c) => c.category === 'Software & SaaS');
       expect(softwareCategory).toBeDefined();
@@ -169,7 +193,7 @@ describe('Expense Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const result = await getExpensesByCategory('entity-1', period);
+      const result = await getExpensesByCategory(scoped('entity-1'), period);
       const catA = result.find((c) => c.category === 'A')!;
       const catB = result.find((c) => c.category === 'B')!;
 
@@ -188,7 +212,7 @@ describe('Expense Service', () => {
           { category: 'Software', amount: 500, type: 'EXPENSE' },
         ]);
 
-      const result = await getExpensesByCategory('entity-1', period);
+      const result = await getExpensesByCategory(scoped('entity-1'), period);
       const sw = result.find((c) => c.category === 'Software');
       // 1000 vs 500 prev = +100% change
       expect(sw!.trend).toBe('UP');
@@ -217,8 +241,9 @@ describe('Expense Service', () => {
         },
       ]);
 
-      const duplicates = await detectDuplicates({
-        entityId: 'entity-1',
+      // The scope is now its own leading argument, not a field on the filter
+      // bag: a bag parsed wholesale off a request would let the caller name it.
+      const duplicates = await detectDuplicates(scoped('entity-1'), {
         amount: 99.99,
         vendor: 'Slack',
         date: targetDate,
@@ -231,8 +256,9 @@ describe('Expense Service', () => {
     it('should return empty when no duplicates', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const duplicates = await detectDuplicates({
-        entityId: 'entity-1',
+      // The scope is now its own leading argument, not a field on the filter
+      // bag: a bag parsed wholesale off a request would let the caller name it.
+      const duplicates = await detectDuplicates(scoped('entity-1'), {
         amount: 99.99,
         vendor: 'Slack',
         date: new Date(),
@@ -242,7 +268,7 @@ describe('Expense Service', () => {
     });
 
     it('should return empty when missing required fields', async () => {
-      const duplicates = await detectDuplicates({});
+      const duplicates = await detectDuplicates(scoped('entity-1'), {});
       expect(duplicates).toHaveLength(0);
     });
   });
@@ -258,7 +284,7 @@ describe('Expense Service', () => {
 
       mockGenerateJSON.mockResolvedValue({ suggestedCategory: 'Rent & Facilities', confidence: 0.9 });
 
-      const result = await categorizeExpenseWithAI('exp-1');
+      const result = await categorizeExpenseWithAI('exp-1', scoped('entity-1'));
 
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.suggestedCategory).toBe('Rent & Facilities');
@@ -273,7 +299,7 @@ describe('Expense Service', () => {
 
       mockGenerateJSON.mockResolvedValue({ suggestedCategory: 'Software & SaaS', confidence: 0.85 });
 
-      const result = await categorizeExpenseWithAI('exp-1');
+      const result = await categorizeExpenseWithAI('exp-1', scoped('entity-1'));
 
       // Should not have called update
       expect(mockPrisma.financialRecord.update).not.toHaveBeenCalled();
@@ -288,7 +314,7 @@ describe('Expense Service', () => {
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await categorizeExpenseWithAI('exp-1');
+      const result = await categorizeExpenseWithAI('exp-1', scoped('entity-1'));
 
       expect(result.suggestedCategory).toBe('General');
       expect(result.confidence).toBe(0);
@@ -312,7 +338,7 @@ describe('Expense Service', () => {
 
       mockPrisma.financialRecord.findMany.mockResolvedValue(entries);
 
-      const result = await getRecurringExpenses('entity-1');
+      const result = await getRecurringExpenses(scoped('entity-1'));
 
       expect(result.length).toBeGreaterThanOrEqual(1);
       const slack = result.find((r) => r.vendor === 'Slack');
@@ -332,7 +358,7 @@ describe('Expense Service', () => {
         { type: 'EXPENSE', amount: 500, vendor: 'RandomCo', status: 'PAID', createdAt: new Date(now.getFullYear(), now.getMonth() - 1, 10) },
       ]);
 
-      const result = await getRecurringExpenses('entity-1');
+      const result = await getRecurringExpenses(scoped('entity-1'));
 
       const netflix = result.find((r) => r.vendor === 'Netflix');
       expect(netflix).toBeDefined();
@@ -353,7 +379,7 @@ describe('Expense Service', () => {
         { amount: 50 },
       ]);
 
-      const result = await getExpenseTotals('entity-1');
+      const result = await getExpenseTotals(scoped('entity-1'));
 
       expect(result.total).toBeCloseTo(850, 2);
       expect(result.average).toBeCloseTo(212.5, 2);
@@ -365,7 +391,7 @@ describe('Expense Service', () => {
     it('should handle empty results', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const result = await getExpenseTotals('entity-1');
+      const result = await getExpenseTotals(scoped('entity-1'));
 
       expect(result.total).toBe(0);
       expect(result.count).toBe(0);

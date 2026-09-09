@@ -11,6 +11,17 @@ jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
+
 import { runScenario } from '@/modules/finance/services/cashflow-service';
 
 describe('Scenario Modeling', () => {
@@ -46,7 +57,7 @@ describe('Scenario Modeling', () => {
       // Base burn: $10k/month, balance: $50k
       setupBurnRateMocks([10000, 10000, 10000], 80000, 30000);
 
-      const result = await runScenario('entity-1', {
+      const result = await runScenario(scoped('entity-1'), {
         name: 'Lose Client X',
         adjustments: [
           {
@@ -73,7 +84,7 @@ describe('Scenario Modeling', () => {
       // Base burn: $10k/month, balance: $50k
       setupBurnRateMocks([10000, 10000, 10000], 80000, 30000);
 
-      const result = await runScenario('entity-1', {
+      const result = await runScenario(scoped('entity-1'), {
         name: 'New Office Lease',
         adjustments: [
           {
@@ -99,7 +110,7 @@ describe('Scenario Modeling', () => {
       // Base burn: $10k/month, balance: $50k
       setupBurnRateMocks([10000, 10000, 10000], 80000, 30000);
 
-      const result = await runScenario('entity-1', {
+      const result = await runScenario(scoped('entity-1'), {
         name: 'Combined Scenario',
         adjustments: [
           {
@@ -138,7 +149,7 @@ describe('Scenario Modeling', () => {
       // Base burn: $10k/month, balance: $50k
       setupBurnRateMocks([10000, 10000, 10000], 80000, 30000);
 
-      const result = await runScenario('entity-1', {
+      const result = await runScenario(scoped('entity-1'), {
         name: 'New Client Win',
         adjustments: [
           {

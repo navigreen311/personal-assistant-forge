@@ -1,5 +1,15 @@
+/**
+ * Cash-flow service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * Everything here is an AGGREGATE: forecasts, burn rate, scenarios and renewal
+ * radars all sum across many rows. An aggregate over an unscoped set leaks
+ * totals without ever returning a foreign row, and no 403 test would see it, so
+ * every one of these takes a `VerifiedEntityId`.
+ */
+
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   CashFlowProjection,
   CashFlowForecast,
@@ -13,7 +23,7 @@ function round2(n: number): number {
 }
 
 export async function forecastCashFlow(
-  entityId: string,
+  entityId: VerifiedEntityId,
   startingBalance: number,
   days: number
 ): Promise<CashFlowForecast> {
@@ -131,7 +141,7 @@ export async function forecastCashFlow(
 }
 
 export async function calculateBurnRate(
-  entityId: string,
+  entityId: VerifiedEntityId,
   months: number
 ): Promise<BurnRate> {
   const entity = await prisma.entity.findUniqueOrThrow({
@@ -203,7 +213,7 @@ export async function calculateBurnRate(
 }
 
 export async function runScenario(
-  entityId: string,
+  entityId: VerifiedEntityId,
   scenario: Omit<ScenarioModel, 'id' | 'projectedImpact'>
 ): Promise<ScenarioModel> {
   const burnRate = await calculateBurnRate(entityId, 3);
@@ -258,7 +268,7 @@ export async function runScenario(
 }
 
 export async function getRenewalRadar(
-  entityId: string,
+  entityId: VerifiedEntityId,
   daysAhead: number
 ): Promise<Renewal[]> {
   const now = new Date();
@@ -298,7 +308,7 @@ export async function getRenewalRadar(
 // --- Phase 3: Cash Flow Calculations ---
 
 export async function getCashFlow(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: 'day' | 'week' | 'month',
   dateRange?: { start: Date; end: Date }
 ) {
@@ -353,7 +363,7 @@ export async function getCashFlow(
 }
 
 export async function getRunningBalance(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ) {
   const cashFlowData = await getCashFlow(entityId, 'day', dateRange);
@@ -365,7 +375,7 @@ export async function getRunningBalance(
   });
 }
 
-export async function projectCashFlow(entityId: string, forecastMonths: number) {
+export async function projectCashFlow(entityId: VerifiedEntityId, forecastMonths: number) {
   const now = new Date();
   const threeMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 3, 1);
 
@@ -413,7 +423,7 @@ export async function projectCashFlow(entityId: string, forecastMonths: number) 
   return projections;
 }
 
-export async function identifyTrends(entityId: string) {
+export async function identifyTrends(entityId: VerifiedEntityId) {
   try {
     const now = new Date();
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, 1);
@@ -475,7 +485,7 @@ Return JSON with:
   }
 }
 
-export async function getCashFlowSummary(entityId: string) {
+export async function getCashFlowSummary(entityId: VerifiedEntityId) {
   const now = new Date();
   const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
@@ -518,7 +528,7 @@ export async function getCashFlowSummary(entityId: string) {
 // --- AI-Enhanced Cash Flow Prediction ---
 
 export async function forecastCashFlowWithAI(
-  entityId: string,
+  entityId: VerifiedEntityId,
   startingBalance: number,
   days: number
 ): Promise<{ prediction: string; riskLevel: 'LOW' | 'MEDIUM' | 'HIGH'; suggestions: string[] }> {

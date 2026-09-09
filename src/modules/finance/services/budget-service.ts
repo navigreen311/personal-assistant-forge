@@ -1,6 +1,17 @@
+/**
+ * Budget service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * Two representations live here for historical reasons: the "budget as a
+ * Document of type REPORT" pair (createBudget / getBudgetWithActuals) and the
+ * Budget Prisma model. Both are scoped the same way, by a `VerifiedEntityId`
+ * in the WHERE clause.
+ */
+
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Budget, BudgetCategory, BudgetForecast } from '@/modules/finance/types';
+import { assertEntityOwner } from './entity-guard';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -29,9 +40,17 @@ function parseBudgetFromDocument(doc: {
   };
 }
 
+export type BudgetDraft = Omit<
+  Budget,
+  'id' | 'totalSpent' | 'remainingBudget' | 'entityId'
+>;
+
 export async function createBudget(
-  data: Omit<Budget, 'id' | 'totalSpent' | 'remainingBudget'>
+  data: BudgetDraft & { entityId: VerifiedEntityId },
+  userId: string
 ): Promise<Budget> {
+  await assertEntityOwner(data.entityId, userId);
+
   const totalBudgeted = round2(
     data.categories.reduce((sum, cat) => sum + cat.budgeted, 0)
   );
@@ -78,8 +97,12 @@ export async function createBudget(
   };
 }
 
-export async function getBudgetWithActuals(id: string): Promise<Budget> {
-  const doc = await prisma.document.findUniqueOrThrow({ where: { id } });
+export async function getBudgetWithActuals(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Budget | null> {
+  const doc = await prisma.document.findFirst({ where: { id, entityId } });
+  if (!doc) return null;
   const budget = parseBudgetFromDocument(doc);
 
   const expenses = await prisma.financialRecord.findMany({
@@ -130,7 +153,7 @@ export async function getBudgetWithActuals(id: string): Promise<Budget> {
 }
 
 export async function forecastSpending(
-  entityId: string,
+  entityId: VerifiedEntityId,
   category: string,
   months: number
 ): Promise<BudgetForecast> {
@@ -209,8 +232,12 @@ export async function forecastSpending(
   };
 }
 
-export async function checkBudgetAlerts(budgetId: string): Promise<BudgetCategory[]> {
-  const budget = await getBudgetWithActuals(budgetId);
+export async function checkBudgetAlerts(
+  budgetId: string,
+  entityId: VerifiedEntityId
+): Promise<BudgetCategory[]> {
+  const budget = await getBudgetWithActuals(budgetId, entityId);
+  if (!budget) return [];
   return budget.categories.filter(
     (cat) => cat.percentUsed >= 80
   );
@@ -219,10 +246,18 @@ export async function checkBudgetAlerts(budgetId: string): Promise<BudgetCategor
 // --- AI-Enhanced Budget Analysis ---
 
 export async function analyzeBudgetWithAI(
-  budgetId: string
+  budgetId: string,
+  entityId: VerifiedEntityId
 ): Promise<{ analysis: string; recommendations: string[]; riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' }> {
   try {
-    const budget = await getBudgetWithActuals(budgetId);
+    const budget = await getBudgetWithActuals(budgetId, entityId);
+    if (!budget) {
+      return {
+        analysis: 'Budget not found.',
+        recommendations: [],
+        riskLevel: 'MEDIUM',
+      };
+    }
 
     const categorySummary = budget.categories
       .map((c) => `${c.category}: $${c.spent}/$${c.budgeted} (${c.percentUsed}% used, ${c.alert})`)
@@ -279,7 +314,7 @@ export interface BudgetInput {
 }
 
 export async function createBudgetRecord(
-  entityId: string,
+  entityId: VerifiedEntityId,
   budget: BudgetInput
 ) {
   return prisma.budget.create({
@@ -300,23 +335,25 @@ export async function createBudgetRecord(
 }
 
 export async function getBudgets(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters?: { status?: string; category?: string; period?: string }
 ) {
-  const where: Record<string, unknown> = { entityId };
+  const where: Record<string, unknown> = {};
   if (filters?.status) where.status = filters.status;
   if (filters?.category) where.category = filters.category;
   if (filters?.period) where.period = filters.period;
+  where.entityId = entityId;
 
   return prisma.budget.findMany({ where, orderBy: { createdAt: 'desc' } });
 }
 
-export async function getBudget(budgetId: string) {
-  return prisma.budget.findUnique({ where: { id: budgetId } });
+export async function getBudget(budgetId: string, entityId: VerifiedEntityId) {
+  return prisma.budget.findFirst({ where: { id: budgetId, entityId } });
 }
 
 export async function updateBudget(
   budgetId: string,
+  entityId: VerifiedEntityId,
   updates: Partial<BudgetInput>
 ) {
   const data: Record<string, unknown> = {};
@@ -329,22 +366,30 @@ export async function updateBudget(
   if (updates.alerts !== undefined) data.alerts = updates.alerts;
   if (updates.notes !== undefined) data.notes = updates.notes;
 
-  return prisma.budget.update({ where: { id: budgetId }, data });
+  const { count } = await prisma.budget.updateMany({ where: { id: budgetId, entityId }, data });
+  if (count === 0) return null;
+  return prisma.budget.findFirst({ where: { id: budgetId, entityId } });
 }
 
-export async function deleteBudget(budgetId: string) {
-  return prisma.budget.update({
-    where: { id: budgetId },
+export async function deleteBudget(budgetId: string, entityId: VerifiedEntityId) {
+  const { count } = await prisma.budget.updateMany({
+    where: { id: budgetId, entityId },
     data: { status: 'closed' },
   });
+  if (count === 0) return null;
+  return prisma.budget.findFirst({ where: { id: budgetId, entityId } });
 }
 
 export async function recordSpending(
   budgetId: string,
+  entityId: VerifiedEntityId,
   amount: number,
   description?: string
 ) {
-  const budget = await prisma.budget.findUniqueOrThrow({ where: { id: budgetId } });
+  const budget = await prisma.budget.findFirst({ where: { id: budgetId, entityId } });
+  if (!budget) {
+    throw new Error(`Budget not found: ${budgetId}`);
+  }
   const newSpent = round2(budget.spent + amount);
   const alerts = (budget.alerts as Array<{ threshold: number; type: string; notified: boolean }>) ?? [];
   const triggeredAlerts: Array<{ threshold: number; type: string; triggered: boolean; message: string }> = [];
@@ -367,16 +412,19 @@ export async function recordSpending(
 
   const newStatus = newSpent >= budget.amount ? 'exhausted' : budget.status;
 
-  await prisma.budget.update({
-    where: { id: budgetId },
+  await prisma.budget.updateMany({
+    where: { id: budgetId, entityId },
     data: { spent: newSpent, alerts, status: newStatus },
   });
 
   return { spent: newSpent, status: newStatus, triggeredAlerts };
 }
 
-export async function checkThresholds(budgetId: string) {
-  const budget = await prisma.budget.findUniqueOrThrow({ where: { id: budgetId } });
+export async function checkThresholds(budgetId: string, entityId: VerifiedEntityId) {
+  const budget = await prisma.budget.findFirst({ where: { id: budgetId, entityId } });
+  if (!budget) {
+    throw new Error(`Budget not found: ${budgetId}`);
+  }
   const alerts = (budget.alerts as Array<{ threshold: number; type: string; notified: boolean }>) ?? [];
   const utilization = budget.amount === 0 ? 0 : round2((budget.spent / budget.amount) * 100);
 
@@ -400,7 +448,7 @@ export async function checkThresholds(budgetId: string) {
   };
 }
 
-export async function getBudgetUtilization(entityId: string) {
+export async function getBudgetUtilization(entityId: VerifiedEntityId) {
   const budgets = await prisma.budget.findMany({
     where: { entityId, status: 'active' },
   });
@@ -417,7 +465,7 @@ export async function getBudgetUtilization(entityId: string) {
     .sort((a, b) => b.utilization - a.utilization);
 }
 
-export async function suggestBudgetAdjustments(entityId: string) {
+export async function suggestBudgetAdjustments(entityId: VerifiedEntityId) {
   try {
     const budgets = await prisma.budget.findMany({
       where: { entityId, status: 'active' },

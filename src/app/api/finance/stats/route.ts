@@ -5,7 +5,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
 // --- Validation Schema ---
@@ -92,25 +92,21 @@ export async function GET(request: NextRequest) {
 
       const { entityId, period } = parsed.data;
 
-      // Verify entity ownership if entityId is provided
-      if (entityId) {
-        const entity = await prisma.entity.findUnique({
-          where: { id: entityId },
-        });
-
-        if (!entity) {
-          return error('NOT_FOUND', 'Entity not found', 404);
-        }
-
-        if (entity.userId !== session.userId) {
-          return error('FORBIDDEN', 'You do not have access to this entity', 403);
-        }
-      }
-
-      // Get all entity IDs for this user if no specific entityId
+      // Every figure below is an AGGREGATE -- nine sums over FinancialRecord.
+      // None of them returns a row, so an unscoped set leaks a tenant's income,
+      // burn rate and runway without ever failing a single-record 403 test.
+      // The scope is therefore established once, here, and every query uses it.
+      //
+      // A requested entityId is proven with the ownership in the WHERE clause
+      // (verifyEntityForUser) rather than read-then-compared. With no entityId
+      // the scope is every entity this user owns -- and only those.
       let entityIds: string[] = [];
       if (entityId) {
-        entityIds = [entityId];
+        const verified = await verifyEntityForUser(entityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        entityIds = [verified];
       } else {
         try {
           const entities = await prisma.entity.findMany({
@@ -150,7 +146,7 @@ export async function GET(request: NextRequest) {
         // Total income: sum of income transactions in period
         safeAggregate(
           () =>
-            (prisma as any).financialRecord.aggregate({
+            prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 ...dateFilter,
@@ -164,7 +160,7 @@ export async function GET(request: NextRequest) {
         // Total expenses: sum of expense transactions in period
         safeAggregate(
           () =>
-            (prisma as any).financialRecord.aggregate({
+            prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 ...dateFilter,
@@ -178,7 +174,7 @@ export async function GET(request: NextRequest) {
         // Pending AR: sum of outstanding invoices (status SENT, VIEWED, or OVERDUE)
         safeAggregate(
           () =>
-            (prisma as any).financialRecord.aggregate({
+            prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 type: 'INVOICE',
@@ -192,7 +188,7 @@ export async function GET(request: NextRequest) {
         // Overdue AP: sum of overdue payables
         safeAggregate(
           () =>
-            (prisma as any).financialRecord.aggregate({
+            prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 type: { in: ['EXPENSE', 'PAYABLE'] },
@@ -210,7 +206,7 @@ export async function GET(request: NextRequest) {
             const threeMonthsAgo = new Date();
             threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-            const result = await (prisma as any).financialRecord.aggregate({
+            const result = await prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 type: 'EXPENSE',
@@ -229,7 +225,7 @@ export async function GET(request: NextRequest) {
         // SaaS spend: sum of recurring subscription costs in period
         (async (): Promise<number> => {
           try {
-            const result = await (prisma as any).financialRecord.aggregate({
+            const result = await prisma.financialRecord.aggregate({
               where: {
                 ...entityFilter,
                 ...dateFilter,

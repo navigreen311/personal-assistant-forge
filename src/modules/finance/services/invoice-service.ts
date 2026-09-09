@@ -1,6 +1,18 @@
+/**
+ * Invoice service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * Every entity-scoped function takes a `VerifiedEntityId`, so a call site that
+ * passes a raw value off a request body fails to compile. The verified id goes
+ * into the WHERE clause rather than being checked after the read, so a foreign
+ * invoice is simply not found. `update` takes a unique WHERE and cannot carry
+ * the entity, so writes use `updateMany` and treat `count === 0` as not-found.
+ */
+
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Invoice, InvoiceLineItem, AgingReport } from '@/modules/finance/types';
+import { assertEntityOwner } from './entity-guard';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -43,9 +55,17 @@ function parseInvoiceFromRecord(record: {
   };
 }
 
+export type InvoiceDraft = Omit<
+  Invoice,
+  'id' | 'invoiceNumber' | 'subtotal' | 'total' | 'entityId'
+>;
+
 export async function createInvoice(
-  data: Omit<Invoice, 'id' | 'invoiceNumber' | 'subtotal' | 'total'>
+  data: InvoiceDraft & { entityId: VerifiedEntityId },
+  userId: string
 ): Promise<Invoice> {
+  await assertEntityOwner(data.entityId, userId);
+
   const lineItems: InvoiceLineItem[] = data.lineItems.map((item) => ({
     ...item,
     total: calculateLineItemTotal(item),
@@ -101,16 +121,25 @@ export async function createInvoice(
   };
 }
 
-export async function getInvoice(id: string): Promise<Invoice | null> {
-  const record = await prisma.financialRecord.findUnique({
-    where: { id },
+export async function getInvoice(
+  id: string,
+  entityId: VerifiedEntityId
+): Promise<Invoice | null> {
+  const record = await prisma.financialRecord.findFirst({
+    where: { id, entityId },
   });
   if (!record || record.type !== 'INVOICE') return null;
   return parseInvoiceFromRecord(record);
 }
 
-export async function updateInvoiceStatus(id: string, status: string): Promise<Invoice> {
-  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id } });
+export async function updateInvoiceStatus(
+  id: string,
+  entityId: VerifiedEntityId,
+  status: string
+): Promise<Invoice | null> {
+  const record = await prisma.financialRecord.findFirst({ where: { id, entityId } });
+  if (!record) return null;
+
   const extended = record.description ? JSON.parse(record.description) : {};
   extended.invoiceStatus = status;
   if (status === 'PAID') {
@@ -118,20 +147,20 @@ export async function updateInvoiceStatus(id: string, status: string): Promise<I
   }
 
   const dbStatus = status === 'PAID' ? 'PAID' : status === 'CANCELLED' ? 'CANCELLED' : status === 'OVERDUE' ? 'OVERDUE' : 'PENDING';
+  const description = JSON.stringify(extended);
 
-  const updated = await prisma.financialRecord.update({
-    where: { id },
-    data: {
-      status: dbStatus,
-      description: JSON.stringify(extended),
-    },
+  // updateMany, not update: a unique WHERE cannot carry the entity.
+  const { count } = await prisma.financialRecord.updateMany({
+    where: { id, entityId },
+    data: { status: dbStatus, description },
   });
+  if (count === 0) return null;
 
-  return parseInvoiceFromRecord(updated);
+  return parseInvoiceFromRecord({ ...record, status: dbStatus, description });
 }
 
 export async function listInvoices(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters: { status?: string; contactId?: string },
   page: number,
   pageSize: number
@@ -169,7 +198,7 @@ export async function listInvoices(
   return { invoices, total };
 }
 
-export async function getAgingReport(entityId: string): Promise<AgingReport> {
+export async function getAgingReport(entityId: VerifiedEntityId): Promise<AgingReport> {
   const now = new Date();
   const records = await prisma.financialRecord.findMany({
     where: {
@@ -213,7 +242,7 @@ export async function getAgingReport(entityId: string): Promise<AgingReport> {
   return report;
 }
 
-export async function generateInvoiceNumber(entityId: string): Promise<string> {
+export async function generateInvoiceNumber(entityId: VerifiedEntityId): Promise<string> {
   const year = new Date().getFullYear();
   const prefix = `INV-${year}-`;
 
@@ -238,7 +267,7 @@ export async function generateInvoiceNumber(entityId: string): Promise<string> {
   return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
-export async function detectOverdueInvoices(entityId: string): Promise<Invoice[]> {
+export async function detectOverdueInvoices(entityId: VerifiedEntityId): Promise<Invoice[]> {
   const now = new Date();
   const records = await prisma.financialRecord.findMany({
     where: {
@@ -256,9 +285,11 @@ export async function detectOverdueInvoices(entityId: string): Promise<Invoice[]
 
 export async function updateInvoice(
   invoiceId: string,
+  entityId: VerifiedEntityId,
   updates: Partial<Pick<Invoice, 'dueDate' | 'notes' | 'paymentTerms' | 'status'>>
 ) {
-  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: invoiceId } });
+  const record = await prisma.financialRecord.findFirst({ where: { id: invoiceId, entityId } });
+  if (!record) return null;
   const extended = record.description ? JSON.parse(record.description) : {};
 
   const data: Record<string, unknown> = {};
@@ -271,32 +302,38 @@ export async function updateInvoice(
   }
   data.description = JSON.stringify(extended);
 
-  const updated = await prisma.financialRecord.update({
-    where: { id: invoiceId },
+  const { count } = await prisma.financialRecord.updateMany({
+    where: { id: invoiceId, entityId },
     data,
   });
+  if (count === 0) return null;
 
-  return parseInvoiceFromRecord(updated);
+  return parseInvoiceFromRecord({ ...record, ...data } as typeof record);
 }
 
-export async function markAsPaid(invoiceId: string, paidDate?: Date) {
-  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: invoiceId } });
+export async function markAsPaid(
+  invoiceId: string,
+  entityId: VerifiedEntityId,
+  paidDate?: Date
+) {
+  const record = await prisma.financialRecord.findFirst({ where: { id: invoiceId, entityId } });
+  if (!record) return null;
+
   const extended = record.description ? JSON.parse(record.description) : {};
   extended.invoiceStatus = 'PAID';
   extended.paidDate = (paidDate ?? new Date()).toISOString();
+  const description = JSON.stringify(extended);
 
-  const updated = await prisma.financialRecord.update({
-    where: { id: invoiceId },
-    data: {
-      status: 'PAID',
-      description: JSON.stringify(extended),
-    },
+  const { count } = await prisma.financialRecord.updateMany({
+    where: { id: invoiceId, entityId },
+    data: { status: 'PAID', description },
   });
+  if (count === 0) return null;
 
-  return parseInvoiceFromRecord(updated);
+  return parseInvoiceFromRecord({ ...record, status: 'PAID', description });
 }
 
-export async function markAsOverdue(entityId: string) {
+export async function markAsOverdue(entityId: VerifiedEntityId) {
   const now = new Date();
   const pendingOverdue = await prisma.financialRecord.findMany({
     where: {
@@ -311,20 +348,21 @@ export async function markAsOverdue(entityId: string) {
   for (const record of pendingOverdue) {
     const extended = record.description ? JSON.parse(record.description) : {};
     extended.invoiceStatus = 'OVERDUE';
-    await prisma.financialRecord.update({
-      where: { id: record.id },
+    // Scope every hop, including the one inside a loop over already-scoped rows.
+    const { count } = await prisma.financialRecord.updateMany({
+      where: { id: record.id, entityId },
       data: {
         status: 'OVERDUE',
         description: JSON.stringify(extended),
       },
     });
-    updatedCount++;
+    updatedCount += count;
   }
 
   return { count: updatedCount };
 }
 
-export async function getAccountsReceivable(entityId: string) {
+export async function getAccountsReceivable(entityId: VerifiedEntityId) {
   const records = await prisma.financialRecord.findMany({
     where: {
       entityId,
@@ -343,7 +381,7 @@ export async function getAccountsReceivable(entityId: string) {
 }
 
 export async function getInvoiceSummary(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ) {
   const where: Record<string, unknown> = {

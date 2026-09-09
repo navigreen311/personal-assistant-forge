@@ -1,6 +1,16 @@
+/**
+ * Expense service -- tenancy-scoped per docs/parallel-build/tenancy-pattern.md.
+ *
+ * The scope is a `VerifiedEntityId` and it goes into the WHERE clause, applied
+ * last and unconditionally, so no filter combination can widen it and a foreign
+ * expense is simply not found rather than found-and-rejected.
+ */
+
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Expense, ExpenseByCategory } from '@/modules/finance/types';
+import { assertEntityOwner } from './entity-guard';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -37,7 +47,14 @@ function parseExpenseFromRecord(record: {
   };
 }
 
-export async function createExpense(data: Omit<Expense, 'id'>): Promise<Expense> {
+export type ExpenseDraft = Omit<Expense, 'id' | 'entityId'>;
+
+export async function createExpense(
+  data: ExpenseDraft & { entityId: VerifiedEntityId },
+  userId: string
+): Promise<Expense> {
+  await assertEntityOwner(data.entityId, userId);
+
   const category = data.category || categorizeExpense(data.description, data.vendor);
 
   const extended = {
@@ -67,7 +84,7 @@ export async function createExpense(data: Omit<Expense, 'id'>): Promise<Expense>
 }
 
 export async function listExpenses(
-  entityId: string,
+  entityId: VerifiedEntityId,
   filters: {
     category?: string;
     vendor?: string;
@@ -76,15 +93,14 @@ export async function listExpenses(
   page: number,
   pageSize: number
 ): Promise<{ expenses: Expense[]; total: number }> {
-  const where: Record<string, unknown> = {
-    entityId,
-    type: 'EXPENSE',
-  };
+  const where: Record<string, unknown> = { type: 'EXPENSE' };
   if (filters.category) where.category = filters.category;
   if (filters.vendor) where.vendor = filters.vendor;
   if (filters.dateRange) {
     where.dueDate = { gte: filters.dateRange.start, lte: filters.dateRange.end };
   }
+  // Last and unconditional: no filter combination can widen the scope.
+  where.entityId = entityId;
 
   const [records, total] = await Promise.all([
     prisma.financialRecord.findMany({
@@ -125,7 +141,7 @@ export function categorizeExpense(description: string, vendor: string): string {
 }
 
 export async function getExpensesByCategory(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: { start: Date; end: Date }
 ): Promise<ExpenseByCategory[]> {
   const previousPeriodLength = period.end.getTime() - period.start.getTime();
@@ -188,14 +204,13 @@ export async function getExpensesByCategory(
   });
 }
 
-export async function detectDuplicates(expense: Partial<Expense>): Promise<Expense[]> {
-  if (!expense.entityId) {
-    return [];
-  }
-
-  // Build a flexible query: match on any combination of available fields
+export async function detectDuplicates(
+  entityId: VerifiedEntityId,
+  expense: Omit<Partial<Expense>, 'entityId'>
+): Promise<Expense[]> {
+  // The scope is its own leading argument, not a field on the filter bag: a bag
+  // parsed wholesale off a request would otherwise let the caller name it.
   const where: Record<string, unknown> = {
-    entityId: expense.entityId,
     type: 'EXPENSE',
     status: { not: 'CANCELLED' },
   };
@@ -228,6 +243,8 @@ export async function detectDuplicates(expense: Partial<Expense>): Promise<Expen
     }
   }
 
+  where.entityId = entityId;
+
   const records = await prisma.financialRecord.findMany({
     where,
     orderBy: { createdAt: 'desc' },
@@ -244,17 +261,22 @@ export async function detectDuplicates(expense: Partial<Expense>): Promise<Expen
 
 // --- Phase 3: Additional Expense Operations ---
 
-export async function getExpense(expenseId: string): Promise<Expense | null> {
-  const record = await prisma.financialRecord.findUnique({ where: { id: expenseId } });
+export async function getExpense(
+  expenseId: string,
+  entityId: VerifiedEntityId
+): Promise<Expense | null> {
+  const record = await prisma.financialRecord.findFirst({ where: { id: expenseId, entityId } });
   if (!record || record.type !== 'EXPENSE') return null;
   return parseExpenseFromRecord(record);
 }
 
 export async function updateExpense(
   expenseId: string,
+  entityId: VerifiedEntityId,
   updates: Partial<Pick<Expense, 'amount' | 'category' | 'vendor' | 'description' | 'date' | 'currency'>>
 ) {
-  const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: expenseId } });
+  const record = await prisma.financialRecord.findFirst({ where: { id: expenseId, entityId } });
+  if (!record) return null;
   const extended = record.description ? JSON.parse(record.description) : {};
 
   const data: Record<string, unknown> = {};
@@ -268,24 +290,29 @@ export async function updateExpense(
     data.description = JSON.stringify(extended);
   }
 
-  const updated = await prisma.financialRecord.update({
-    where: { id: expenseId },
+  const { count } = await prisma.financialRecord.updateMany({
+    where: { id: expenseId, entityId },
     data,
   });
+  if (count === 0) return null;
 
-  return parseExpenseFromRecord(updated);
+  return parseExpenseFromRecord({ ...record, ...data } as typeof record);
 }
 
-export async function deleteExpense(expenseId: string) {
-  return prisma.financialRecord.update({
-    where: { id: expenseId },
+export async function deleteExpense(expenseId: string, entityId: VerifiedEntityId) {
+  // updateMany, not update: `count === 0` is the not-found signal, and a
+  // foreign id can never reach the row.
+  const { count } = await prisma.financialRecord.updateMany({
+    where: { id: expenseId, entityId },
     data: { status: 'CANCELLED' },
   });
+  return count === 0 ? null : { count };
 }
 
-export async function categorizeExpenseWithAI(expenseId: string) {
+export async function categorizeExpenseWithAI(expenseId: string, entityId: VerifiedEntityId) {
   try {
-    const record = await prisma.financialRecord.findUniqueOrThrow({ where: { id: expenseId } });
+    const record = await prisma.financialRecord.findFirst({ where: { id: expenseId, entityId } });
+    if (!record) return { suggestedCategory: 'General', confidence: 0 };
     const extended = record.description ? JSON.parse(record.description) : {};
 
     const result = await generateJSON<{ suggestedCategory: string; confidence: number }>(
@@ -311,7 +338,7 @@ Return JSON with:
   }
 }
 
-export async function getRecurringExpenses(entityId: string) {
+export async function getRecurringExpenses(entityId: VerifiedEntityId) {
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -376,7 +403,7 @@ export async function getRecurringExpenses(entityId: string) {
 }
 
 export async function getExpenseTotals(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ) {
   const where: Record<string, unknown> = {

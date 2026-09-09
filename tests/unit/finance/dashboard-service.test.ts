@@ -5,12 +5,28 @@ const mockPrisma = {
   entity: {
     findUniqueOrThrow: jest.fn(),
     findMany: jest.fn(),
+    // getUnifiedDashboard re-proves each of the user's entities through
+    // verifyEntityForUser rather than casting the id it read off the row.
+    findFirst: jest.fn((args: { where: { id: string } }) =>
+      Promise.resolve({ id: args.where.id })
+    ),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 import {
   getUnifiedDashboard,
@@ -35,7 +51,7 @@ describe('Dashboard Service', () => {
         { type: 'BILL', amount: 500, status: 'OVERDUE' },
       ]);
 
-      const summary = await getEntitySummary('entity-1', {
+      const summary = await getEntitySummary(scoped('entity-1'), {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -62,7 +78,7 @@ describe('Dashboard Service', () => {
         .mockResolvedValueOnce([]) // all records for low cash
         .mockResolvedValueOnce([]); // upcoming renewals
 
-      const alerts = await generateAlerts('entity-1');
+      const alerts = await generateAlerts(scoped('entity-1'));
       const overdueAlert = alerts.find((a) => a.type === 'OVERDUE_INVOICE');
       expect(overdueAlert).toBeDefined();
       expect(overdueAlert!.severity).toBe('WARNING');
@@ -79,7 +95,7 @@ describe('Dashboard Service', () => {
         .mockResolvedValueOnce([]) // all records
         .mockResolvedValueOnce([]); // renewals
 
-      const alerts = await generateAlerts('entity-1');
+      const alerts = await generateAlerts(scoped('entity-1'));
       const billAlert = alerts.find((a) => a.type === 'OVERDUE_BILL');
       expect(billAlert).toBeDefined();
       expect(billAlert!.severity).toBe('CRITICAL');
@@ -100,7 +116,7 @@ describe('Dashboard Service', () => {
         ]) // all records (negative balance)
         .mockResolvedValueOnce([]); // renewals
 
-      const alerts = await generateAlerts('entity-1');
+      const alerts = await generateAlerts(scoped('entity-1'));
       const burnAlert = alerts.find((a) => a.type === 'HIGH_BURN');
       expect(burnAlert).toBeDefined();
       expect(burnAlert!.severity).toBe('WARNING');
@@ -117,7 +133,7 @@ describe('Dashboard Service', () => {
         ]) // Net negative
         .mockResolvedValueOnce([]);
 
-      const alerts = await generateAlerts('entity-1');
+      const alerts = await generateAlerts(scoped('entity-1'));
       const cashAlert = alerts.find((a) => a.type === 'LOW_CASH');
       expect(cashAlert).toBeDefined();
       expect(cashAlert!.severity).toBe('CRITICAL');
@@ -139,7 +155,7 @@ describe('Dashboard Service', () => {
           { id: 'renewal-1', amount: 1200, type: 'BILL', vendor: 'SaaS Co', dueDate: futureDate },
         ]);
 
-      const alerts = await generateAlerts('entity-1');
+      const alerts = await generateAlerts(scoped('entity-1'));
       const renewalAlert = alerts.find((a) => a.type === 'RENEWAL_DUE');
       expect(renewalAlert).toBeDefined();
       expect(renewalAlert!.severity).toBe('INFO');

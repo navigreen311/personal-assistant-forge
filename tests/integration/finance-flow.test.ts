@@ -10,28 +10,53 @@
 
 // --- Infrastructure mocks ---
 
+// Single-record reads are now findFirst, so the verified entity can travel in
+// the WHERE clause rather than being compared after the read. Alias the three
+// single-row readers onto one mock so a test that sets up findUnique or
+// findUniqueOrThrow still answers -- tenancy-pattern.md §8.1.
+const mockRecordFindOne = jest.fn();
+const mockDocumentFindOne = jest.fn();
+
 const mockPrisma = {
   financialRecord: {
     create: jest.fn(),
-    findUnique: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
-    findFirst: jest.fn(),
+    findUnique: mockRecordFindOne,
+    findUniqueOrThrow: mockRecordFindOne,
+    findFirst: mockRecordFindOne,
     findMany: jest.fn(),
     update: jest.fn(),
+    // update takes a unique WHERE and cannot carry the entity, so every scoped
+    // write is an updateMany over { id, entityId } -- tenancy-pattern.md §3.
+    updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
     count: jest.fn(),
   },
   document: {
     create: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
+    findUniqueOrThrow: mockDocumentFindOne,
+    findFirst: mockDocumentFindOne,
   },
   entity: {
     findUniqueOrThrow: jest.fn(),
+    // createInvoice / createBudget re-assert the caller against the entity's
+    // owner, as defence in depth -- tenancy-pattern.md §2.
+    findUnique: jest.fn(() => Promise.resolve({ id: 'entity-1', userId: 'user-1' })),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A test
+ * calling a service directly has neither, so it uses the one named test-only
+ * helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn(),
@@ -103,7 +128,7 @@ describe('Finance Flow Integration Tests', () => {
 
       // Step 1: Create the invoice
       const invoice = await createInvoice({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         contactId: 'client-1',
         lineItems: [
           { description: 'Consulting Services', quantity: 10, unitPrice: 500, total: 5000 },
@@ -114,7 +139,7 @@ describe('Finance Flow Integration Tests', () => {
         issuedDate: new Date('2026-02-01'),
         dueDate: new Date('2026-03-01'),
         paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(invoice.id).toBe('inv-1');
       expect(invoice.total).toBe(5000);
@@ -149,7 +174,7 @@ describe('Finance Flow Integration Tests', () => {
       mockPrisma.document.create.mockResolvedValue(budgetDoc);
 
       const budget = await createBudget({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         name: 'Q1 2026 Budget',
         totalBudgeted: 10000,
         period: {
@@ -160,7 +185,7 @@ describe('Finance Flow Integration Tests', () => {
           { category: 'INVOICE', budgeted: 10000, spent: 0, remaining: 10000, percentUsed: 0, forecast: 0, alert: null },
         ],
         status: 'ACTIVE',
-      });
+      }, 'user-1');
 
       expect(budget.id).toBe('budget-1');
       expect(budget.totalBudgeted).toBe(10000);
@@ -176,7 +201,7 @@ describe('Finance Flow Integration Tests', () => {
         }),
       ]);
 
-      const budgetWithActuals = await getBudgetWithActuals('budget-1');
+      const budgetWithActuals = (await getBudgetWithActuals('budget-1', scoped('entity-1')))!;
 
       expect(budgetWithActuals.totalSpent).toBe(2000);
       expect(budgetWithActuals.remainingBudget).toBe(8000);
@@ -215,7 +240,7 @@ describe('Finance Flow Integration Tests', () => {
 
       // Step 1: Create invoice
       const invoice = await createInvoice({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         contactId: 'client-1',
         lineItems: [
           { description: 'Web Development', quantity: 1, unitPrice: 3000, total: 3000 },
@@ -226,7 +251,7 @@ describe('Finance Flow Integration Tests', () => {
         issuedDate: new Date('2026-02-01'),
         dueDate: new Date('2026-03-01'),
         paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(invoice.status).toBe('SENT');
       expect(invoice.total).toBe(3000);
@@ -254,15 +279,19 @@ describe('Finance Flow Integration Tests', () => {
       mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue(invoiceRecord);
       mockPrisma.financialRecord.update.mockResolvedValue(paidRecord);
 
-      const paidInvoice = await updateInvoiceStatus('inv-pay', 'PAID');
+      const paidInvoice = await updateInvoiceStatus('inv-pay', scoped('entity-1'), 'PAID');
 
-      expect(paidInvoice.status).toBe('PAID');
-      expect(paidInvoice.paidDate).toBeDefined();
-      expect(paidInvoice.total).toBe(3000);
+      expect(paidInvoice).not.toBeNull();
+      expect(paidInvoice!.status).toBe('PAID');
+      expect(paidInvoice!.paidDate).toBeDefined();
+      expect(paidInvoice!.total).toBe(3000);
 
-      // Verify the DB update was called with correct status
-      expect(mockPrisma.financialRecord.update).toHaveBeenCalledWith({
-        where: { id: 'inv-pay' },
+      // Verify the DB write was scoped as well as correct.
+      // CORRECTED: this asserted `update({ where: { id: 'inv-pay' } })` -- a
+      // unique WHERE with no entity in it, so any caller who knew an invoice id
+      // could mark any tenant's invoice paid. tenancy-pattern.md §3, §8.7.
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledWith({
+        where: { id: 'inv-pay', entityId: 'entity-1' },
         data: expect.objectContaining({
           status: 'PAID',
         }),
@@ -341,7 +370,7 @@ describe('Finance Flow Integration Tests', () => {
         .mockResolvedValueOnce(currentRecords)
         .mockResolvedValueOnce(previousRecords);
 
-      const pnl = await generatePnL('entity-1', period);
+      const pnl = await generatePnL(scoped('entity-1'), period);
 
       expect(pnl.entityId).toBe('entity-1');
       expect(pnl.entityName).toBe('Test Business');
@@ -414,7 +443,7 @@ describe('Finance Flow Integration Tests', () => {
         .mockResolvedValueOnce(period2Current)    // P2 current
         .mockResolvedValueOnce(period2Previous);  // P2 previous
 
-      const comparison = await comparePeriods('entity-1', period1, period2);
+      const comparison = await comparePeriods(scoped('entity-1'), period1, period2);
 
       // Period 1 verification
       expect(comparison.period1.totalRevenue).toBe(8000);
@@ -472,7 +501,7 @@ describe('Finance Flow Integration Tests', () => {
       mockPrisma.financialRecord.count.mockResolvedValue(2);
 
       const result = await listInvoices(
-        'entity-1',
+        scoped('entity-1'),
         { status: 'PAID' },
         1,
         20

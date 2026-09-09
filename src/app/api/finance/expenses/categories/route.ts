@@ -2,16 +2,17 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { getExpensesByCategory } from '@/modules/finance/services/expense-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const querySchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   startDate: z.string().datetime(),
   endDate: z.string().datetime(),
 });
 
+/** An AGGREGATE: category totals summed across every expense row in scope. */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId, startDate, endDate } = parsed.data;
+      const { startDate, endDate } = parsed.data;
       const categories = await getExpensesByCategory(entityId, {
         start: new Date(startDate),
         end: new Date(endDate),

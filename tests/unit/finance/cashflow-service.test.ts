@@ -18,6 +18,17 @@ jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
+
 import {
   forecastCashFlow,
   calculateBurnRate,
@@ -47,7 +58,7 @@ describe('Cash Flow Service', () => {
         ])
         .mockResolvedValueOnce([]);  // No scheduled items
 
-      const forecast = await forecastCashFlow('entity-1', 10000, 30);
+      const forecast = await forecastCashFlow(scoped('entity-1'), 10000, 30);
 
       expect(forecast.entityId).toBe('entity-1');
       expect(forecast.startingBalance).toBe(10000);
@@ -83,7 +94,7 @@ describe('Cash Flow Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const forecast = await forecastCashFlow('entity-1', 50000, 90);
+      const forecast = await forecastCashFlow(scoped('entity-1'), 50000, 90);
 
       expect(forecast.summary.thirtyDay).toBeDefined();
       expect(forecast.summary.sixtyDay).toBeDefined();
@@ -105,7 +116,7 @@ describe('Cash Flow Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const forecast = await forecastCashFlow('entity-1', 100, 30);
+      const forecast = await forecastCashFlow(scoped('entity-1'), 100, 30);
 
       // With starting balance of 100 and high burn, should go negative
       expect(forecast.alerts.length).toBeGreaterThan(0);
@@ -128,7 +139,7 @@ describe('Cash Flow Service', () => {
           { type: 'EXPENSE', amount: 30000, status: 'PAID' },
         ]);
 
-      const result = await calculateBurnRate('entity-1', 3);
+      const result = await calculateBurnRate(scoped('entity-1'), 3);
 
       expect(result.monthlyBurn).toBeCloseTo(10000, 2);
       expect(result.entityName).toBe('Test LLC');
@@ -147,7 +158,7 @@ describe('Cash Flow Service', () => {
           { type: 'EXPENSE', amount: 30000, status: 'PAID' },
         ]);
 
-      const result = await calculateBurnRate('entity-1', 3);
+      const result = await calculateBurnRate(scoped('entity-1'), 3);
 
       expect(result.monthlyBurn).toBeCloseTo(10000, 2);
       // Balance = 80000 - 30000 = 50000
@@ -164,7 +175,7 @@ describe('Cash Flow Service', () => {
         .mockResolvedValueOnce([])  // no expenses month 1
         .mockResolvedValueOnce([]); // no records
 
-      const result = await calculateBurnRate('entity-1', 3);
+      const result = await calculateBurnRate(scoped('entity-1'), 3);
       expect(result.monthlyBurn).toBe(0);
       expect(result.runwayMonths).toBe(Infinity);
     });
@@ -184,7 +195,7 @@ describe('Cash Flow Service', () => {
         { type: 'EXPENSE', amount: 1000, status: 'PAID', createdAt: jan20 },
       ]);
 
-      const result = await getCashFlow('entity-1', 'month', {
+      const result = await getCashFlow(scoped('entity-1'), 'month', {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -199,7 +210,7 @@ describe('Cash Flow Service', () => {
     it('should handle periods with no transactions', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const result = await getCashFlow('entity-1', 'month', {
+      const result = await getCashFlow(scoped('entity-1'), 'month', {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -212,7 +223,7 @@ describe('Cash Flow Service', () => {
         { type: 'INCOME', amount: 1000, status: 'PAID', createdAt: new Date('2026-01-15') },
       ]);
 
-      const result = await getCashFlow('entity-1', 'day', {
+      const result = await getCashFlow(scoped('entity-1'), 'day', {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -241,7 +252,7 @@ describe('Cash Flow Service', () => {
 
       mockPrisma.financialRecord.findMany.mockResolvedValue(records);
 
-      const result = await projectCashFlow('entity-1', 3);
+      const result = await projectCashFlow(scoped('entity-1'), 3);
 
       expect(result).toHaveLength(3);
       expect(result[0].projectedIncome).toBeCloseTo(10000, 0);
@@ -252,7 +263,7 @@ describe('Cash Flow Service', () => {
     it('should handle insufficient data gracefully', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const result = await projectCashFlow('entity-1', 3);
+      const result = await projectCashFlow(scoped('entity-1'), 3);
 
       expect(result).toHaveLength(3);
       expect(result[0].projectedIncome).toBe(0);
@@ -273,7 +284,7 @@ describe('Cash Flow Service', () => {
           { type: 'EXPENSE', amount: 7000, status: 'PAID' },
         ]);
 
-      const result = await getCashFlowSummary('entity-1');
+      const result = await getCashFlowSummary(scoped('entity-1'));
 
       expect(result.income).toBeCloseTo(15000, 2);
       expect(result.expenses).toBeCloseTo(8000, 2);
@@ -291,7 +302,7 @@ describe('Cash Flow Service', () => {
           { type: 'EXPENSE', amount: 5000, status: 'PAID' },
         ]);
 
-      const result = await getCashFlowSummary('entity-1');
+      const result = await getCashFlowSummary(scoped('entity-1'));
 
       // Current net: 10000, Prev net: 5000, change = 100%
       expect(result.changes.netChange).toBeCloseTo(100, 2);
@@ -303,7 +314,7 @@ describe('Cash Flow Service', () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await identifyTrends('entity-1');
+      const result = await identifyTrends(scoped('entity-1'));
 
       expect(result.insights).toContain('unavailable');
       expect(result.trends).toHaveLength(1);

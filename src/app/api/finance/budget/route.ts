@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { createBudget } from '@/modules/finance/services/budget-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import type { Budget } from '@/modules/finance/types';
 
 const listQuerySchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
 });
 
 const categorySchema = z.object({
@@ -21,7 +21,7 @@ const categorySchema = z.object({
 });
 
 const createSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1),
   period: z.object({
     start: z.string().datetime(),
@@ -33,7 +33,7 @@ const createSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = listQuerySchema.safeParse(params);
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
       }
 
       const docs = await prisma.document.findMany({
-        where: { entityId: parsed.data.entityId, type: 'REPORT' },
+        where: { entityId, type: 'REPORT' },
         orderBy: { createdAt: 'desc' },
       });
 
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createSchema.safeParse(body);
@@ -84,14 +84,19 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const data = parsed.data;
-      const budget = await createBudget({
-        ...data,
-        period: {
-          start: new Date(data.period.start),
-          end: new Date(data.period.end),
+      // `entityId` LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...data } = parsed.data;
+      const budget = await createBudget(
+        {
+          ...data,
+          period: {
+            start: new Date(data.period.start),
+            end: new Date(data.period.end),
+          },
+          entityId,
         },
-      });
+        session.userId
+      );
 
       return success(budget, 201);
     } catch (err) {

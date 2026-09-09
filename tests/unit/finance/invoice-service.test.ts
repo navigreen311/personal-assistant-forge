@@ -16,16 +16,31 @@ const mockPrisma = {
     findMany: jest.fn(),
     count: jest.fn(),
     update: jest.fn(),
-    updateMany: jest.fn(),
+    updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
   },
   entity: {
     findUniqueOrThrow: jest.fn(),
+    // createInvoice re-asserts the caller against the entity's owner.
+    findUnique: jest.fn(() =>
+      Promise.resolve({ id: 'entity-1', userId: 'user-1' })
+    ),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 import {
   createInvoice,
@@ -84,7 +99,7 @@ describe('Invoice Service', () => {
       });
 
       const result = await createInvoice({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         lineItems,
         tax: 99,
         currency: 'USD',
@@ -92,7 +107,7 @@ describe('Invoice Service', () => {
         issuedDate: new Date('2026-02-15'),
         dueDate: new Date('2026-03-15'),
         paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(result.subtotal).toBeCloseTo(1250, 2);
       expect(result.tax).toBeCloseTo(99, 2);
@@ -113,11 +128,11 @@ describe('Invoice Service', () => {
       });
 
       await createInvoice({
-        entityId: 'e-1',
+        entityId: scoped('e-1'),
         lineItems: [{ description: 'Item', quantity: 1, unitPrice: 100, total: 0 }],
         tax: 0, currency: 'USD', status: 'DRAFT',
         issuedDate: new Date(), dueDate: new Date(), paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ type: 'INVOICE' }),
@@ -135,11 +150,11 @@ describe('Invoice Service', () => {
       });
 
       await createInvoice({
-        entityId: 'e-1',
+        entityId: scoped('e-1'),
         lineItems: [{ description: 'Item', quantity: 0, unitPrice: 100, total: 0 }],
         tax: 0, currency: 'USD', status: 'DRAFT',
         issuedDate: new Date(), dueDate: new Date(), paymentTerms: 'Net 30',
-      });
+      }, 'user-1');
 
       expect(mockPrisma.financialRecord.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ status: 'PENDING' }),
@@ -151,7 +166,7 @@ describe('Invoice Service', () => {
     it('should generate INV-YYYY-0001 for first invoice', async () => {
       mockPrisma.financialRecord.findFirst.mockResolvedValue(null);
 
-      const number = await generateInvoiceNumber('entity-1');
+      const number = await generateInvoiceNumber(scoped('entity-1'));
       const year = new Date().getFullYear();
       expect(number).toBe(`INV-${year}-0001`);
     });
@@ -162,7 +177,7 @@ describe('Invoice Service', () => {
         description: JSON.stringify({ invoiceNumber: `INV-${year}-0005` }),
       });
 
-      const number = await generateInvoiceNumber('entity-1');
+      const number = await generateInvoiceNumber(scoped('entity-1'));
       expect(number).toBe(`INV-${year}-0006`);
     });
 
@@ -172,7 +187,7 @@ describe('Invoice Service', () => {
         description: JSON.stringify({ invoiceNumber: `INV-${year}-0099` }),
       });
 
-      const number = await generateInvoiceNumber('entity-1');
+      const number = await generateInvoiceNumber(scoped('entity-1'));
       expect(number).toBe(`INV-${year}-0100`);
     });
   });
@@ -193,7 +208,7 @@ describe('Invoice Service', () => {
         { id: '5', amount: 500, dueDate: makeDueDate(120), createdAt: makeDueDate(120) },
       ]);
 
-      const report = await getAgingReport('entity-1');
+      const report = await getAgingReport(scoped('entity-1'));
 
       expect(report.current.count).toBe(1);
       expect(report.current.amount).toBeCloseTo(100, 2);
@@ -220,7 +235,7 @@ describe('Invoice Service', () => {
         { id: '2', amount: 300, dueDate: makeDueDate(15), createdAt: makeDueDate(15) },
       ]);
 
-      const report = await getAgingReport('entity-1');
+      const report = await getAgingReport(scoped('entity-1'));
 
       expect(report.current.count).toBe(2);
       expect(report.current.amount).toBeCloseTo(800, 2);
@@ -230,7 +245,7 @@ describe('Invoice Service', () => {
     it('should handle no overdue invoices', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const report = await getAgingReport('entity-1');
+      const report = await getAgingReport(scoped('entity-1'));
 
       expect(report.current.count).toBe(0);
       expect(report.thirtyDays.count).toBe(0);
@@ -260,7 +275,7 @@ describe('Invoice Service', () => {
         },
       ]);
 
-      const overdue = await detectOverdueInvoices('entity-1');
+      const overdue = await detectOverdueInvoices(scoped('entity-1'));
       expect(overdue).toHaveLength(1);
       expect(overdue[0].id).toBe('inv-overdue');
     });
@@ -268,8 +283,11 @@ describe('Invoice Service', () => {
 
   describe('updateInvoiceStatus', () => {
     it('should set paidDate when marking as PAID', async () => {
-      mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue({
+      // findFirst, not findUniqueOrThrow: the entity travels in the WHERE
+      // clause now, so a foreign invoice is simply not found.
+      mockPrisma.financialRecord.findFirst.mockResolvedValue({
         id: 'inv-1',
+        entityId: 'entity-1',
         description: JSON.stringify({ invoiceNumber: 'INV-2026-0001', invoiceStatus: 'SENT' }),
       });
 
@@ -292,9 +310,10 @@ describe('Invoice Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await updateInvoiceStatus('inv-1', 'PAID');
-      expect(result.status).toBe('PAID');
-      expect(result.paidDate).toBeDefined();
+      const result = await updateInvoiceStatus('inv-1', scoped('entity-1'), 'PAID');
+      expect(result).not.toBeNull();
+      expect(result!.status).toBe('PAID');
+      expect(result!.paidDate).toBeDefined();
     });
   });
 
@@ -302,8 +321,9 @@ describe('Invoice Service', () => {
 
   describe('markAsPaid', () => {
     it('should update status to PAID', async () => {
-      mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue({
+      mockPrisma.financialRecord.findFirst.mockResolvedValue({
         id: 'inv-1',
+        entityId: 'entity-1',
         description: JSON.stringify({ invoiceNumber: 'INV-2026-0001', invoiceStatus: 'SENT' }),
       });
 
@@ -318,19 +338,25 @@ describe('Invoice Service', () => {
         createdAt: new Date(), updatedAt: new Date(),
       });
 
-      const result = await markAsPaid('inv-1');
+      const result = await markAsPaid('inv-1', scoped('entity-1'));
 
-      expect(result.status).toBe('PAID');
-      expect(mockPrisma.financialRecord.update).toHaveBeenCalledWith({
-        where: { id: 'inv-1' },
+      expect(result).not.toBeNull();
+      expect(result!.status).toBe('PAID');
+      // CORRECTED: this asserted `update({ where: { id: 'inv-1' } })` -- a
+      // unique WHERE with no entity in it, so any caller who knew an invoice id
+      // could mark any tenant's invoice paid. The write is now an updateMany
+      // carrying the verified entity. tenancy-pattern.md §3, §8.7.
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledWith({
+        where: { id: 'inv-1', entityId: 'entity-1' },
         data: expect.objectContaining({ status: 'PAID' }),
       });
     });
 
     it('should record payment date', async () => {
       const paidDate = new Date('2026-03-01');
-      mockPrisma.financialRecord.findUniqueOrThrow.mockResolvedValue({
+      mockPrisma.financialRecord.findFirst.mockResolvedValue({
         id: 'inv-1',
+        entityId: 'entity-1',
         description: JSON.stringify({ invoiceNumber: 'INV-2026-0001' }),
       });
 
@@ -345,8 +371,9 @@ describe('Invoice Service', () => {
         createdAt: new Date(), updatedAt: new Date(),
       });
 
-      const result = await markAsPaid('inv-1', paidDate);
-      expect(result.paidDate).toBeDefined();
+      const result = await markAsPaid('inv-1', scoped('entity-1'), paidDate);
+      expect(result).not.toBeNull();
+      expect(result!.paidDate).toBeDefined();
     });
   });
 
@@ -360,18 +387,22 @@ describe('Invoice Service', () => {
           id: 'inv-2', description: JSON.stringify({ invoiceNumber: 'INV-2', invoiceStatus: 'SENT' }),
         },
       ]);
-      mockPrisma.financialRecord.update.mockResolvedValue({});
-
-      const result = await markAsOverdue('entity-1');
+      const result = await markAsOverdue(scoped('entity-1'));
 
       expect(result.count).toBe(2);
-      expect(mockPrisma.financialRecord.update).toHaveBeenCalledTimes(2);
+      // Each row is rewritten with the entity in the WHERE clause.
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.financialRecord.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ entityId: 'entity-1' }),
+        })
+      );
     });
 
     it('should return count of newly overdue invoices', async () => {
       mockPrisma.financialRecord.findMany.mockResolvedValue([]);
 
-      const result = await markAsOverdue('entity-1');
+      const result = await markAsOverdue(scoped('entity-1'));
 
       expect(result.count).toBe(0);
     });
@@ -385,7 +416,7 @@ describe('Invoice Service', () => {
         { amount: 500, status: 'PENDING' },
       ]);
 
-      const result = await getAccountsReceivable('entity-1');
+      const result = await getAccountsReceivable(scoped('entity-1'));
 
       expect(result.total).toBeCloseTo(3500, 2);
       expect(result.pendingCount).toBe(2);
@@ -403,7 +434,7 @@ describe('Invoice Service', () => {
         { amount: 500, status: 'PENDING', description: '{}' },
       ]);
 
-      const result = await getInvoiceSummary('entity-1');
+      const result = await getInvoiceSummary(scoped('entity-1'));
 
       expect(result.totalInvoiced).toBeCloseTo(3500, 2);
       expect(result.totalPaid).toBeCloseTo(1000, 2);

@@ -6,10 +6,18 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: (...args: unknown[]) => mockGenerateJSON(...args),
 }));
 
+// Reads that used to be findUnique/findUniqueOrThrow are now findFirst, so the
+// entity can travel in the WHERE clause instead of being compared afterwards.
+// Alias each pair, so a test that sets up findUniqueOrThrow still answers rather
+// than silently returning undefined -- tenancy-pattern.md §8.1.
+const mockDocumentFindOne = jest.fn();
+const mockBudgetFindOne = jest.fn();
+
 const mockPrisma = {
   document: {
     create: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
+    findUniqueOrThrow: mockDocumentFindOne,
+    findFirst: (...a: unknown[]) => mockDocumentFindOne(...a),
   },
   financialRecord: {
     findMany: jest.fn(),
@@ -17,15 +25,35 @@ const mockPrisma = {
   budget: {
     create: jest.fn(),
     findMany: jest.fn(),
-    findUnique: jest.fn(),
-    findUniqueOrThrow: jest.fn(),
+    findUnique: mockBudgetFindOne,
+    findUniqueOrThrow: mockBudgetFindOne,
+    findFirst: (...a: unknown[]) => mockBudgetFindOne(...a),
     update: jest.fn(),
+    // update takes a unique WHERE and cannot carry the entity, so every write
+    // is an updateMany scoped by { id, entityId } -- tenancy-pattern.md §3.
+    updateMany: jest.fn(() => Promise.resolve({ count: 1 })),
+  },
+  // createBudget re-asserts the caller against the entity's owner, as defence
+  // in depth behind the VerifiedEntityId -- tenancy-pattern.md §2.
+  entity: {
+    findUnique: jest.fn(() => Promise.resolve({ id: 'entity-1', userId: 'user-1' })),
   },
 };
 
 jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
+
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
 
 import {
   createBudget,
@@ -66,7 +94,7 @@ describe('Budget Service', () => {
       });
 
       const result = await createBudget({
-        entityId: 'entity-1',
+        entityId: scoped('entity-1'),
         name: 'Q1 Budget',
         period: { start: new Date('2026-01-01'), end: new Date('2026-03-31') },
         categories: [
@@ -75,7 +103,7 @@ describe('Budget Service', () => {
         ],
         totalBudgeted: 5000,
         status: 'DRAFT',
-      });
+      }, 'user-1');
 
       expect(result.totalBudgeted).toBeCloseTo(5000, 2);
       expect(result.totalSpent).toBe(0);
@@ -110,7 +138,7 @@ describe('Budget Service', () => {
         { category: 'Marketing', amount: 200, type: 'EXPENSE' },  // 40% of $500 -> ON_TRACK
       ]);
 
-      const result = await getBudgetWithActuals('budget-1');
+      const result = (await getBudgetWithActuals('budget-1', scoped('entity-1')))!;
 
       const software = result.categories.find((c) => c.category === 'Software')!;
       expect(software.spent).toBeCloseTo(850, 2);
@@ -154,7 +182,7 @@ describe('Budget Service', () => {
         { category: 'Test', amount: 800, type: 'EXPENSE' },
       ]);
 
-      const result = await getBudgetWithActuals('budget-2');
+      const result = (await getBudgetWithActuals('budget-2', scoped('entity-1')))!;
       expect(result.categories[0].alert).toBe('WARNING');
     });
 
@@ -180,7 +208,7 @@ describe('Budget Service', () => {
         { category: 'Test', amount: 1000, type: 'EXPENSE' },
       ]);
 
-      const result = await getBudgetWithActuals('budget-3');
+      const result = (await getBudgetWithActuals('budget-3', scoped('entity-1')))!;
       expect(result.categories[0].alert).toBe('OVER_BUDGET');
     });
   });
@@ -210,7 +238,7 @@ describe('Budget Service', () => {
         { category: 'High', amount: 900, type: 'EXPENSE' },  // 90%
       ]);
 
-      const alerts = await checkBudgetAlerts('budget-4');
+      const alerts = await checkBudgetAlerts('budget-4', scoped('entity-1'));
       expect(alerts).toHaveLength(1);
       expect(alerts[0].category).toBe('High');
     });
@@ -225,7 +253,7 @@ describe('Budget Service', () => {
         .mockResolvedValueOnce([{ amount: 800 }])   // month 1 ago
         .mockResolvedValueOnce([{ amount: 500 }]);   // current month so far
 
-      const forecast = await forecastSpending('entity-1', 'Software', 3);
+      const forecast = await forecastSpending(scoped('entity-1'), 'Software', 3);
 
       expect(forecast.category).toBe('Software');
       expect(forecast.historicalMonthlyAvg).toBeCloseTo(1000, 2);
@@ -254,7 +282,7 @@ describe('Budget Service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await createBudgetRecord('entity-1', {
+      const result = await createBudgetRecord(scoped('entity-1'), {
         name: 'Marketing Q1',
         amount: 10000,
         period: 'quarterly',
@@ -281,7 +309,7 @@ describe('Budget Service', () => {
         notes: null, startDate: null, endDate: null, createdAt: new Date(), updatedAt: new Date(),
       });
 
-      const result = await createBudgetRecord('e-1', {
+      const result = await createBudgetRecord(scoped('e-1'), {
         name: 'Test', amount: 5000, period: 'monthly', category: 'ops',
       });
 
@@ -297,11 +325,14 @@ describe('Budget Service', () => {
       });
       mockPrisma.budget.update.mockResolvedValue({});
 
-      const result = await recordSpending('b-1', 500);
+      const result = await recordSpending('b-1', scoped('entity-1'), 500);
 
       expect(result.spent).toBeCloseTo(2500, 2);
-      expect(mockPrisma.budget.update).toHaveBeenCalledWith({
-        where: { id: 'b-1' },
+      // CORRECTED: this asserted `update({ where: { id: 'b-1' } })` -- a unique
+      // WHERE with no entity in it, so any caller who knew a budget id could
+      // book spending against any tenant's budget. tenancy-pattern.md §3, §8.7.
+      expect(mockPrisma.budget.updateMany).toHaveBeenCalledWith({
+        where: { id: 'b-1', entityId: 'entity-1' },
         data: expect.objectContaining({ spent: 2500 }),
       });
     });
@@ -313,7 +344,7 @@ describe('Budget Service', () => {
       });
       mockPrisma.budget.update.mockResolvedValue({});
 
-      const result = await recordSpending('b-1', 600);
+      const result = await recordSpending('b-1', scoped('entity-1'), 600);
 
       expect(result.spent).toBeCloseTo(8100, 2);
       expect(result.triggeredAlerts).toHaveLength(1);
@@ -327,7 +358,7 @@ describe('Budget Service', () => {
       });
       mockPrisma.budget.update.mockResolvedValue({});
 
-      const result = await recordSpending('b-1', 200);
+      const result = await recordSpending('b-1', scoped('entity-1'), 200);
 
       expect(result.status).toBe('exhausted');
     });
@@ -339,7 +370,7 @@ describe('Budget Service', () => {
       });
       mockPrisma.budget.update.mockResolvedValue({});
 
-      const result = await recordSpending('b-1', 500);
+      const result = await recordSpending('b-1', scoped('entity-1'), 500);
 
       expect(result.spent).toBeCloseTo(1500, 2);
       expect(result.status).toBe('exhausted');
@@ -356,7 +387,7 @@ describe('Budget Service', () => {
         ],
       });
 
-      const result = await checkThresholds('b-1');
+      const result = await checkThresholds('b-1', scoped('entity-1'));
 
       expect(result.alerts[0].triggered).toBe(true);
       expect(result.alerts[1].triggered).toBe(true);
@@ -372,7 +403,7 @@ describe('Budget Service', () => {
         ],
       });
 
-      const result = await checkThresholds('b-1');
+      const result = await checkThresholds('b-1', scoped('entity-1'));
 
       expect(result.alerts[0].triggered).toBe(false);
       expect(result.alerts[1].triggered).toBe(false);
@@ -390,7 +421,7 @@ describe('Budget Service', () => {
         suggestions: [{ budgetName: 'Marketing', action: 'increase', reason: 'Near capacity', suggestedAmount: 7000 }],
       });
 
-      const result = await suggestBudgetAdjustments('entity-1');
+      const result = await suggestBudgetAdjustments(scoped('entity-1'));
 
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.suggestions).toHaveLength(1);
@@ -404,7 +435,7 @@ describe('Budget Service', () => {
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await suggestBudgetAdjustments('entity-1');
+      const result = await suggestBudgetAdjustments(scoped('entity-1'));
 
       expect(result.suggestions).toHaveLength(1);
       expect(result.suggestions[0].reason).toContain('unavailable');

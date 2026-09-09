@@ -11,6 +11,17 @@ jest.mock('@/lib/db', () => ({
   prisma: mockPrisma,
 }));
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * A `VerifiedEntityId` can only be minted by `withEntityScope` (which needs a
+ * NextRequest) or `verifyEntityForUser` (which needs a real database). A unit
+ * test calling a service directly has neither, so it uses the one named
+ * test-only helper rather than scattering casts.
+ * See docs/parallel-build/tenancy-pattern.md §8.3.
+ */
+const scoped = verifiedEntityIdForTest;
+
 import { generatePnL, comparePeriods, getTrends } from '@/modules/finance/services/pnl-service';
 
 describe('P&L Service', () => {
@@ -34,7 +45,7 @@ describe('P&L Service', () => {
         .mockResolvedValueOnce(records)   // current period
         .mockResolvedValueOnce([]);       // previous period
 
-      const pnl = await generatePnL('entity-1', {
+      const pnl = await generatePnL(scoped('entity-1'), {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -54,7 +65,7 @@ describe('P&L Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const pnl = await generatePnL('entity-1', {
+      const pnl = await generatePnL(scoped('entity-1'), {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -72,7 +83,7 @@ describe('P&L Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const pnl = await generatePnL('entity-1', {
+      const pnl = await generatePnL(scoped('entity-1'), {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -92,7 +103,7 @@ describe('P&L Service', () => {
         ])
         .mockResolvedValueOnce([]);
 
-      const pnl = await generatePnL('entity-1', {
+      const pnl = await generatePnL(scoped('entity-1'), {
         start: new Date('2026-01-01'),
         end: new Date('2026-01-31'),
       });
@@ -123,7 +134,7 @@ describe('P&L Service', () => {
         ]);
 
       const result = await comparePeriods(
-        'entity-1',
+        scoped('entity-1'),
         { start: new Date('2026-01-01'), end: new Date('2026-01-31') },
         { start: new Date('2026-02-01'), end: new Date('2026-02-28') }
       );
@@ -144,7 +155,7 @@ describe('P&L Service', () => {
         ]);
       }
 
-      const trends = await getTrends('entity-1', 3);
+      const trends = await getTrends(scoped('entity-1'), 3);
 
       expect(trends).toHaveLength(3);
       for (const trend of trends) {

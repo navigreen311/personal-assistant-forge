@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { runScenario } from '@/modules/finance/services/cashflow-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 
 const adjustmentSchema = z.object({
   type: z.enum(['REVENUE_LOSS', 'REVENUE_GAIN', 'EXPENSE_INCREASE', 'EXPENSE_DECREASE']),
@@ -13,13 +13,18 @@ const adjustmentSchema = z.object({
 });
 
 const scenarioSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1),
   adjustments: z.array(adjustmentSchema).min(1),
 });
 
+/**
+ * An AGGREGATE: a scenario is computed from the entity's burn rate and its
+ * whole financial-record history, so an unscoped run models someone else's
+ * business and hands the numbers back.
+ */
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = scenarioSchema.safeParse(body);
@@ -27,7 +32,7 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId, name, adjustments } = parsed.data;
+      const { name, adjustments } = parsed.data;
       const result = await runScenario(entityId, {
         name,
         adjustments: adjustments.map((a) => ({
