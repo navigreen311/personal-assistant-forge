@@ -117,8 +117,16 @@ export type VerifiedEntityId = string & { readonly __verifiedEntity: unique symb
  * came from does not matter -- a caller-supplied id is fine precisely because it
  * is verified before the handler ever sees it.
  *
- * Returns 400 if no entity can be resolved, 404 if it does not exist, 403 if it
- * belongs to someone else.
+ * P-30 / DECISION 1: ownership is necessary and NOT sufficient. Whatever the
+ * resolution order lands on must ALSO be the entity the session is currently
+ * acting in (`session.activeEntityId`, moved by `POST /api/auth/switch-entity`).
+ * So steps 1-3 no longer choose a tenant; they only say which tenant the
+ * request is ABOUT, and the session says which tenant the caller is IN. The two
+ * must agree. See the block inside the function for the full reasoning.
+ *
+ * Returns 400 if no entity can be resolved OR the session is acting in none,
+ * 404 if the entity does not exist, 403 if it belongs to someone else, and 403
+ * `ENTITY_SCOPE_MISMATCH` if it is another of the caller's OWN entities.
  */
 export async function withEntityScope(
   req: NextRequest,
@@ -153,11 +161,12 @@ export async function withEntityScope(
     }
 
     if (!candidate) {
-      return error(
-        'ENTITY_REQUIRED',
-        'No entity in scope. Pass entityId, or switch to an entity first.',
-        400
-      );
+      // P-30: was "Pass entityId, or switch to an entity first." Under
+      // Decision 1 passing `entityId` no longer helps a session that is acting
+      // in no entity -- see the block below -- so the advice would have been
+      // wrong in the one situation that reaches it. Only the wording changed;
+      // the code and the status are what tests assert and both are untouched.
+      return error('ENTITY_REQUIRED', 'No entity in scope. Switch to an entity first.', 400);
     }
 
     const entity = await prisma.entity.findUnique({
@@ -172,7 +181,95 @@ export async function withEntityScope(
     if (entity.userId !== session.userId) {
       // Deliberately the same shape as a genuine 403, and deliberately not
       // distinguishable from "exists but not yours" in the message body.
+      //
+      // THIS CHECK RUNS FIRST AND IS UNCHANGED. Decision 1 ADDS the rule below;
+      // it does not replace this one. ~138 cross-USER refusal cases across
+      // eleven module suites assert exactly this status and this code, and they
+      // must keep asserting it -- a caller naming a stranger's entity must not
+      // be told "wrong scope", which would confirm the id exists.
       return error('FORBIDDEN', 'You do not have access to this entity', 403);
+    }
+
+    // -----------------------------------------------------------------------
+    // DECISION 1 (P-30) — OWNERSHIP IS NECESSARY AND NO LONGER SUFFICIENT.
+    //
+    // docs/parallel-build/decision-01-entity-isolation.md, decided by the owner
+    // 2026-09-10:
+    //
+    //   "The Green Companies architecture is built around entity separation --
+    //    different compliance profiles (HIPAA on MedLink, not on CRE Forge),
+    //    different disclosure rules, different contacts, different VIP lists. A
+    //    request scoped to Entity A touching Entity B's records is a bug, even
+    //    when the same person owns both."
+    //
+    // Everything above resolves WHICH ENTITY OWNS THE THING BEING ADDRESSED.
+    // Until this rule existed, resolving it was the same act as being allowed
+    // into it, so addressing a row by id silently moved the caller into
+    // whatever entity owned that row.
+    //
+    // WHY THE RULE LIVES HERE AND NOT IN THE ROUTES
+    //
+    // `src/app/api/**` holds 49 local `with<Thing>Scope` helpers in 49 route
+    // files, and all 49 pass the addressed row's OWN `entityId` into this
+    // function as `explicitEntityId` (52 direct call sites plus the two inside
+    // `audit-wiring.ts` that the audited helpers funnel through). P-04 wrote
+    // `withTaskScope` as the reference implementation and every module copied
+    // it. All 49 are corrected by this one rule, by construction, with no edit
+    // to any of them: they keep resolving the owning entity, and resolving it
+    // stops being permission to enter it.
+    //
+    // THE ABSENT-CLAIM CASE IS STRICT, DELIBERATELY.
+    //
+    // A session with no `activeEntityId` is acting in no entity, so it may not
+    // reach into one by naming it. Falling back to ownership here would mean a
+    // token that merely OMITS the claim bypasses isolation entirely -- the
+    // precise shape of the worst defect the original audit found, recorded in
+    // `resolveVerifiedEntityId`'s comment below: `withHIPAAGuard` "passed
+    // through when the header was absent -- so a caller disabled PHI protection
+    // by sending nothing at all". A rule that any caller can switch off by
+    // sending less is not a rule.
+    //
+    // This costs nothing real: both supported sign-up paths create a default
+    // `Personal` entity before the session is minted (`POST /api/auth/register`
+    // and the Google `signIn` callback), and `authOptions.callbacks.jwt` sets
+    // `activeEntityId` from `entities[0]` at sign-in, so every session issued by
+    // this product has the claim. A session without it can only come from a User
+    // row created outside those paths, and it recovers with one call to
+    // `POST /api/auth/switch-entity` -- proved by
+    // `tests/db/entity-switching.test.ts`, "switches a token that has no
+    // activeEntityId at all". The existing `ENTITY_REQUIRED` 400 is reused
+    // because it is the same condition, reached from the other direction.
+    //
+    // 403, NOT 404 — the open question the decision left to this package.
+    //
+    // The 404 argument is that the `[id]` helpers already 404 for a missing row,
+    // so matching them stops a caller distinguishing "no such row" from "not in
+    // this scope". That argument is about an EXISTENCE LEAK, and there is none
+    // to plug here: this branch is reachable only after the ownership check
+    // above has passed, i.e. only when the caller owns the entity in question
+    // and therefore already knows it exists. Nothing is disclosed that the
+    // caller could not read off `GET /api/entities`.
+    //
+    // What 404 would cost is real: the UI would be told the record vanished,
+    // when in fact it is one `switch-entity` call away. So this is a distinct,
+    // honest, actionable code. Note the asymmetry is safe in the direction that
+    // matters -- a caller probing a STRANGER's id still gets the indistinct
+    // `FORBIDDEN` above, never this one.
+    // -----------------------------------------------------------------------
+    if (!session.activeEntityId) {
+      return error(
+        'ENTITY_REQUIRED',
+        'No entity in scope. Switch to an entity first.',
+        400
+      );
+    }
+
+    if (entity.id !== session.activeEntityId) {
+      return error(
+        'ENTITY_SCOPE_MISMATCH',
+        'That entity is not the one you are acting in. Switch to it first.',
+        403
+      );
     }
 
     return handler(innerReq, session, entity.id as VerifiedEntityId);
@@ -235,6 +332,19 @@ export async function resolveVerifiedEntityId(
       select: { id: true, userId: true },
     });
     if (!entity || entity.userId !== token.userId) return null;
+
+    // P-30 / Decision 1, the same rule `withEntityScope` applies, for the same
+    // reason. This function answers "which tenant is this request acting for",
+    // and its callers use the answer to pick a COMPLIANCE PROFILE and to stamp
+    // an audit row. If a request naming entity B from a session acting in A is
+    // going to be refused, then it is not acting for B, and enforcing B's HIPAA
+    // profile or filing the row under B would both be false. Returning null is
+    // the fail-closed answer every caller here is already written for:
+    // `withHIPAAGuard` refuses, `withConsentCheck` refuses, the classification
+    // guard keeps the STRICTER default, and the audit rows record
+    // `UNRESOLVED_ENTITY` / 'unknown' rather than a tenant that was never in
+    // scope.
+    if (!token.activeEntityId || entity.id !== token.activeEntityId) return null;
 
     return entity.id as VerifiedEntityId;
   } catch {

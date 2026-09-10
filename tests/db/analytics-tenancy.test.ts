@@ -128,6 +128,7 @@ import {
 import { GET as pluginsGET, POST as pluginsPOST } from '@/app/api/developer/plugins/route';
 
 import { GET as dashboardGET } from '@/app/api/dashboard/route';
+import { POST as switchEntityPOST } from '@/app/api/auth/switch-entity/route';
 
 import { db, setupTestDatabase } from '../helpers/db';
 import { createTwoTenants, createEntity, type Tenant } from '../helpers/factories';
@@ -138,6 +139,36 @@ setupTestDatabase();
 type ErrBody = { success: false; error: { code: string; message: string } };
 type OkBody<T> = { success: true; data: T };
 type PageBody<T> = { success: true; data: T[]; meta: { total: number } };
+
+/**
+ * Act in `entityId`, and return the token that does.
+ *
+ * P-30 / Decision 1. Writing into an entity now requires the session to BE in
+ * it: naming one in a request body no longer moves the scope. Switching is how
+ * the product moves it, and `POST /api/auth/switch-entity` moves it by
+ * re-minting the session cookie (P-29), so this lifts that cookie out of the
+ * response exactly as a browser would. Only the SETUP of one cross-entity test
+ * below needs it; what that test asserts is unchanged.
+ */
+async function actingIn(
+  actor: Parameters<typeof requestAs>[0],
+  entityId: string,
+): Promise<string> {
+  const res = await switchEntityPOST(
+    requestAs(actor, '/api/auth/switch-entity', { method: 'POST', body: { entityId } }),
+  );
+  expect(res.status).toBe(200);
+
+  const headers: string[] =
+    typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : (res.headers.get('set-cookie') ?? '').split(/,(?=\s*[A-Za-z0-9_.-]+=)/);
+  for (const header of headers) {
+    const match = header.trim().match(/^(?:__Secure-)?next-auth\.session-token=([^;]*)/);
+    if (match && match[1]) return decodeURIComponent(match[1]);
+  }
+  throw new Error('the switch set no session cookie');
+}
 
 /** Next 15 hands a route its path params as a promise; mirror that exactly. */
 function ctx(id: string): { params: Promise<{ id: string }> } {
@@ -467,15 +498,21 @@ describe('cross-entity views were not silently narrowed to the active entity', (
         body: { source: 'MANUAL', contentType: 'TEXT', rawContent: 'one' },
       })
     );
+    // P-30 / Decision 1. This second capture used to be written by naming
+    // `entityId: second.id` in the body from a session acting in
+    // `tenantA.entity` -- precisely the cross-entity write the owner ruled a
+    // bug, and which `withEntityScope` now refuses. So the SETUP encoded the
+    // defect; the assertion did not, and is untouched.
+    //
+    // The claim this test makes -- that `GET /api/capture` spans every entity
+    // the caller owns rather than narrowing to the active one -- is at least as
+    // well evidenced now: the row is created from INSIDE the second entity, and
+    // then read back through a session token that is still acting in the first.
+    const inSecond = await actingIn(tenantA, second.id);
     await capturePOST(
-      requestAs(tenantA, '/api/capture', {
+      requestAs(inSecond, '/api/capture', {
         method: 'POST',
-        body: {
-          source: 'MANUAL',
-          contentType: 'TEXT',
-          rawContent: 'two',
-          entityId: second.id,
-        },
+        body: { source: 'MANUAL', contentType: 'TEXT', rawContent: 'two' },
       })
     );
 
