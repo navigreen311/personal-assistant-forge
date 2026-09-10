@@ -1,5 +1,6 @@
 import { search, searchByType, getSearchSuggestions } from '@/lib/search';
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 // Mock prisma
 jest.mock('@/lib/db', () => ({
@@ -9,6 +10,28 @@ jest.mock('@/lib/db', () => ({
 }));
 
 const mockQueryRaw = prisma.$queryRawUnsafe as jest.Mock;
+
+/**
+ * P-26 -- WHAT THIS FILE CAN AND CANNOT PROVE, stated once so the next reader
+ * does not have to work it out from a green run.
+ *
+ * `prisma.$queryRawUnsafe` is a `jest.fn()` here. It accepts any string and
+ * returns whatever the test told it to. It therefore proves that the search
+ * layer BUILDS the SQL it means to build, passes the right bind parameters,
+ * and shapes the rows it gets back correctly -- and it proves nothing at all
+ * about whether Postgres would accept the statement.
+ *
+ * That distinction is not academic. `getSearchSuggestions` emitted
+ * `SELECT DISTINCT title ... ORDER BY "updatedAt"`, which Postgres rejects with
+ * 42P10, and the cases at the bottom of this file passed against it for the
+ * entire life of the endpoint. A mock is a yes-man: the only opinion it has
+ * about SQL is the one the test wrote into it.
+ *
+ * Validity is proved in `tests/db/search.test.ts`, against a real database,
+ * and nowhere else. Do not add a "the SQL is valid" assertion here -- it would
+ * be the same fiction in a new costume.
+ */
+const SCOPE = verifiedEntityIdForTest('entity-abc');
 
 describe('Unified Search', () => {
   beforeEach(() => {
@@ -21,7 +44,7 @@ describe('Unified Search', () => {
       // 5 models × 2 calls = 10 calls
       mockQueryRaw.mockResolvedValue([]);
 
-      const result = await search({ query: 'test query' });
+      const result = await search(SCOPE, { query: 'test query' });
 
       // Should have called for each searchable model (data + count per model)
       expect(mockQueryRaw).toHaveBeenCalled();
@@ -33,7 +56,7 @@ describe('Unified Search', () => {
     it('should filter to specific model when type is provided via filters', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      const result = await search({
+      const result = await search(SCOPE, {
         query: 'test',
         filters: { model: 'task' },
       });
@@ -83,7 +106,7 @@ describe('Unified Search', () => {
         return [];
       });
 
-      const result = await search({ query: 'test' });
+      const result = await search(SCOPE, { query: 'test' });
 
       // Results should be sorted by rank DESC — message (0.8) before task (0.5)
       if (result.results.length >= 2) {
@@ -93,26 +116,29 @@ describe('Unified Search', () => {
       }
     });
 
-    it('should apply entity filter from session', async () => {
+    // WAS: 'should apply entity filter from session', which passed
+    // `filters: { entityId: 'entity-abc' }` -- the scope as a caller-supplied
+    // field on the filter bag, which is the shape the tenancy pattern forbids
+    // (§2). The scope is now a required leading argument, so the interesting
+    // assertion is no longer "it is applied when given" but "there is no way
+    // to not give it": omitting it is a compile error, not a test case.
+    it('binds the verified scope on every statement it issues', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      await search({
-        query: 'test',
-        filters: { entityId: 'entity-abc' },
-      });
+      await search(SCOPE, { query: 'test' });
 
-      // Verify entityId was passed as a parameter
       const calls = mockQueryRaw.mock.calls;
-      const hasEntityFilter = calls.some((call: unknown[]) =>
-        call.some((param: unknown) => param === 'entity-abc'),
-      );
-      expect(hasEntityFilter).toBe(true);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.slice(1)).toContain('entity-abc');
+        expect(String(call[0])).toContain('"entityId"');
+      }
     });
 
     it('should return search timing metadata', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      const result = await search({ query: 'test' });
+      const result = await search(SCOPE, { query: 'test' });
 
       expect(typeof result.searchTimeMs).toBe('number');
       expect(result.searchTimeMs).toBeGreaterThanOrEqual(0);
@@ -121,14 +147,14 @@ describe('Unified Search', () => {
     it('should handle empty results', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      const result = await search({ query: 'nonexistent' });
+      const result = await search(SCOPE, { query: 'nonexistent' });
 
       expect(result.results).toEqual([]);
       expect(result.total).toBe(0);
     });
 
     it('should return empty for query shorter than 2 chars', async () => {
-      const result = await search({ query: 'a' });
+      const result = await search(SCOPE, { query: 'a' });
 
       expect(result.results).toEqual([]);
       expect(result.total).toBe(0);
@@ -140,7 +166,7 @@ describe('Unified Search', () => {
     it('should search only the specified model', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      const result = await searchByType({
+      const result = await searchByType(SCOPE, {
         query: 'test',
         type: 'document',
       });
@@ -156,11 +182,10 @@ describe('Unified Search', () => {
     it('should apply all filters', async () => {
       mockQueryRaw.mockResolvedValue([]);
 
-      await searchByType({
+      await searchByType(SCOPE, {
         query: 'report',
         type: 'task',
         filters: {
-          entityId: 'e1',
           status: 'TODO',
           priority: 'P0',
         },
@@ -196,7 +221,7 @@ describe('Unified Search', () => {
 
       const suggestions = await getSearchSuggestions({
         query: 'par',
-        entityId: 'e1',
+        entityId: SCOPE,
       });
 
       expect(suggestions.length).toBeGreaterThan(0);
@@ -212,7 +237,7 @@ describe('Unified Search', () => {
 
       const suggestions = await getSearchSuggestions({
         query: 'test',
-        entityId: 'e1',
+        entityId: SCOPE,
         limit: 2,
       });
 
@@ -222,7 +247,7 @@ describe('Unified Search', () => {
     it('should require minimum 2 character query', async () => {
       const suggestions = await getSearchSuggestions({
         query: 'a',
-        entityId: 'e1',
+        entityId: SCOPE,
       });
 
       expect(suggestions).toEqual([]);
