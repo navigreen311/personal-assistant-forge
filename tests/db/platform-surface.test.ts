@@ -226,21 +226,24 @@ describe('POST /api/auth/switch-entity', () => {
   });
 
   /**
-   * A FINDING, not a fix. Nothing persists the switch.
+   * P-23 recorded this as a FINDING it was not allowed to fix, and wrote the
+   * assertions to pass against the broken code:
    *
-   * The route returns `{ activeEntityId }` and stops. `token.activeEntityId` is
-   * written in exactly one place -- the `jwt` callback in
-   * `src/lib/auth/config.ts`, inside `if (user)`, which runs only on initial
-   * sign-in and picks `entities[0]` ordered by `createdAt asc`. There is no
-   * `trigger === 'update'` branch, and the route sets no cookie, so the client's
-   * `await update()` in `src/lib/auth/use-session.ts` re-issues the SAME
-   * activeEntityId it already had.
+   *     expect(res.headers.get('set-cookie')).toBeNull();
+   *     expect(searchBody.data.filters.entityId).toBe(tenantA.entity.id);
    *
-   * This test pins that behaviour so the gap is visible rather than assumed. It
-   * is deliberately written to pass against today's code: the fix belongs in
-   * `src/lib/auth/config.ts`, which P-23 may not modify.
+   * -- i.e. "the switch changes nothing", pinned so the gap stayed visible. The
+   * route returned `{ activeEntityId }` and stopped; `token.activeEntityId` was
+   * written only in the `jwt` callback's `if (user)` branch, at initial sign-in,
+   * from `entities[0]` ordered by `createdAt asc`.
+   *
+   * P-29 fixed it (`docs/parallel-build/decision-01-entity-isolation.md` makes
+   * a working switch the prerequisite for entity isolation), so the assertions
+   * are inverted here: the same two observations, now expecting the opposite.
+   * The behaviour was wrong, not the test. `tests/db/entity-switching.test.ts`
+   * carries the full proof.
    */
-  it('FINDING: a successful switch does not change the session token', async () => {
+  it('a successful switch re-mints the session token and moves the scope', async () => {
     const second = await db.entity.create({
       data: { userId: tenantA.user.id, name: 'Second', type: 'LLC' },
     });
@@ -254,16 +257,28 @@ describe('POST /api/auth/switch-entity', () => {
 
     expect(res.status).toBe(200);
 
-    // No Set-Cookie: the session JWT the browser holds is untouched.
-    expect(res.headers.get('set-cookie')).toBeNull();
+    // A Set-Cookie: the session JWT the browser holds is replaced.
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).toContain('next-auth.session-token=');
 
-    // And the fallback that withEntityScope uses is therefore still the OLD
-    // entity. Proven through a real scoped route rather than by inspection.
-    const searchRes = await searchGET(requestAs(tenantA, '/api/search?q=anything'));
+    const switched = /(?:^|[;,\s])(?:__Secure-)?next-auth\.session-token=([^;]+)/.exec(
+      setCookie ?? ''
+    )?.[1];
+    expect(switched).toBeTruthy();
+
+    // And the fallback that withEntityScope uses is now the NEW entity. Proven
+    // through a real scoped route rather than by inspection.
+    const searchRes = await searchGET(requestAs(switched!, '/api/search?q=anything'));
     expect(searchRes.status).toBe(200);
     const searchBody = await readJson<OkBody<{ filters: { entityId?: string } }>>(searchRes);
-    expect(searchBody.data.filters.entityId).toBe(tenantA.entity.id);
-    expect(searchBody.data.filters.entityId).not.toBe(second.id);
+    expect(searchBody.data.filters.entityId).toBe(second.id);
+    expect(searchBody.data.filters.entityId).not.toBe(tenantA.entity.id);
+
+    // The pre-switch token is untouched and still scoped where it was, so the
+    // fix moves a session forward rather than rewriting history.
+    const oldRes = await searchGET(requestAs(tenantA, '/api/search?q=anything'));
+    const oldBody = await readJson<OkBody<{ filters: { entityId?: string } }>>(oldRes);
+    expect(oldBody.data.filters.entityId).toBe(tenantA.entity.id);
   });
 
   it('a token whose activeEntityId names a foreign entity still cannot use it', async () => {

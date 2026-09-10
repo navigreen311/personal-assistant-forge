@@ -35,7 +35,12 @@ export function useAuthSession(): {
       throw new Error(data.error?.message ?? 'Failed to switch entity');
     }
 
-    // Refresh the session to pick up the new activeEntityId
+    // P-29: this line used to be a lie. The endpoint returned the value it was
+    // given and wrote nothing, so `update()` re-read the same cookie and
+    // re-issued the same activeEntityId. The endpoint now sets a re-minted
+    // session cookie on this very response -- `fetch` is same-origin, so the
+    // browser has already stored it by the time we get here -- and `update()`
+    // is what makes the React session object catch up with it.
     await update();
   };
 
