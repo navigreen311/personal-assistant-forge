@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { syntheticMonitor } from '@/modules/shadow/monitoring/synthetic-tests';
 
 /**
@@ -9,7 +10,7 @@ import { syntheticMonitor } from '@/modules/shadow/monitoring/synthetic-tests';
  * Tests database connectivity and session lifecycle as proxy for voice readiness.
  */
 export async function POST(request: NextRequest) {
-  return withAuth(request, async () => {
+  return withRole(request, ['owner', 'admin'], async () => {
     try {
       // Voice test: run DB connectivity + session lifecycle tests
       const [dbResult, lifecycleResult] = await Promise.all([

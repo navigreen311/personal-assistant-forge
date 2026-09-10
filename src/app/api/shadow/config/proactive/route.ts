@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 
@@ -84,7 +84,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = updateProactiveConfigSchema.safeParse(body);

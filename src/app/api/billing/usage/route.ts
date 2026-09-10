@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { recordUsage, getUsageSummary } from '@/engines/cost/usage-metering';
 
 const RecordUsageSchema = z.object({
@@ -12,28 +12,30 @@ const RecordUsageSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = RecordUsageSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = RecordUsageSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const record = await recordUsage(
+          entityId,
+          parsed.data.metricType,
+          parsed.data.amount,
+          parsed.data.source
+        );
+        return success(record, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to record usage', 500);
       }
-
-      const record = await recordUsage(
-        entityId,
-        parsed.data.metricType,
-        parsed.data.amount,
-        parsed.data.source
-      );
-      return success(record, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to record usage', 500);
-    }
-  });
+    })
+  );
 }
 
 /** An AGGREGATE: metered usage and cost summed over a date range. */

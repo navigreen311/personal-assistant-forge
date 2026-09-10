@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { eventUpdateSchema } from '@/modules/calendar/calendar.validation';
@@ -106,23 +106,25 @@ export async function PATCH(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = eventUpdateSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEventScope(request, eventId, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = eventUpdateSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid event update', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid event update', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const event = await schedulingService.updateEvent(eventId, parsed.data, entityId);
+        return success(event);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to update event', 500);
       }
-
-      const event = await schedulingService.updateEvent(eventId, parsed.data, entityId);
-      return success(event);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to update event', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function PUT(
@@ -131,26 +133,28 @@ export async function PUT(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = eventUpdateSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEventScope(request, eventId, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = eventUpdateSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid event update', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid event update', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // The old handler ran an unscoped `findUnique` here purely to turn a
+        // missing row into a 404. `withEventScope` already does that, and
+        // `updateEvent` scopes the write itself, so the extra read is gone.
+        const event = await schedulingService.updateEvent(eventId, parsed.data, entityId);
+        return success(event);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to update event', 500);
       }
-
-      // The old handler ran an unscoped `findUnique` here purely to turn a
-      // missing row into a 404. `withEventScope` already does that, and
-      // `updateEvent` scopes the write itself, so the extra read is gone.
-      const event = await schedulingService.updateEvent(eventId, parsed.data, entityId);
-      return success(event);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to update event', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -159,12 +163,14 @@ export async function DELETE(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (_req, _session, entityId) => {
-    try {
-      await schedulingService.deleteEvent(eventId, entityId);
-      return success({ deleted: true });
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to delete event', 500);
-    }
-  });
+  return withRole(request, ['owner', 'admin'], () =>
+    withEventScope(request, eventId, async (_req, _session, entityId) => {
+      try {
+        await schedulingService.deleteEvent(eventId, entityId);
+        return success({ deleted: true });
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to delete event', 500);
+      }
+    })
+  );
 }

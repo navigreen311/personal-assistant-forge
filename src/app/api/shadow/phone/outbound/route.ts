@@ -7,7 +7,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { PhoneOutboundHandler } from '@/modules/shadow/interfaces/phone-outbound';
 
 const handler = new PhoneOutboundHandler();
@@ -35,7 +36,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   // Mode 2: Authenticated API call to initiate outbound call
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = OutboundCallSchema.safeParse(body);

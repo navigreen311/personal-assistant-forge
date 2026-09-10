@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, verifyEntityForUser } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, verifyEntityForUser, withRole } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 import type { CaptureSource, CaptureContentType } from '@/modules/capture/types';
 
@@ -42,32 +42,34 @@ const CreateCaptureSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateCaptureSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateCaptureSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        // `userId` and `entityId` last, deliberately: they overwrite anything the
+        // caller sent.
+        const capture = await captureService.createCapture({
+          source: parsed.data.source as CaptureSource,
+          contentType: parsed.data.contentType as CaptureContentType,
+          rawContent: parsed.data.rawContent,
+          metadata: parsed.data.metadata,
+          userId: session.userId,
+          entityId,
+        });
+
+        return success(capture, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create capture';
+        return error('CREATE_FAILED', message, 500);
       }
-
-      // `userId` and `entityId` last, deliberately: they overwrite anything the
-      // caller sent.
-      const capture = await captureService.createCapture({
-        source: parsed.data.source as CaptureSource,
-        contentType: parsed.data.contentType as CaptureContentType,
-        rawContent: parsed.data.rawContent,
-        metadata: parsed.data.metadata,
-        userId: session.userId,
-        entityId,
-      });
-
-      return success(capture, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create capture';
-      return error('CREATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function GET(request: NextRequest) {

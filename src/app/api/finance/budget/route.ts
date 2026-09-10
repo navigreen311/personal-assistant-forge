@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { createBudget } from '@/modules/finance/services/budget-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { Budget } from '@/modules/finance/types';
 
 const listQuerySchema = z.object({
@@ -76,31 +76,33 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
 
-      // `entityId` LAST, deliberately: it overwrites the caller's own value.
-      const { entityId: _requested, ...data } = parsed.data;
-      const budget = await createBudget(
-        {
-          ...data,
-          period: {
-            start: new Date(data.period.start),
-            end: new Date(data.period.end),
+        // `entityId` LAST, deliberately: it overwrites the caller's own value.
+        const { entityId: _requested, ...data } = parsed.data;
+        const budget = await createBudget(
+          {
+            ...data,
+            period: {
+              start: new Date(data.period.start),
+              end: new Date(data.period.end),
+            },
+            entityId,
           },
-          entityId,
-        },
-        session.userId
-      );
+          session.userId
+        );
 
-      return success(budget, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        return success(budget, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   createHabit,
   getHabits,
@@ -47,19 +47,21 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = postBodySchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = postBodySchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const habit = await createHabit(entityId, parsed.data.name, parsed.data.frequency);
+        return success(habit, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to create habit', 500);
       }
-
-      const habit = await createHabit(entityId, parsed.data.name, parsed.data.frequency);
-      return success(habit, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to create habit', 500);
-    }
-  });
+    })
+  );
 }

@@ -1,13 +1,14 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { sessionManager } from '@/modules/shadow/interfaces/session-manager';
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (_req, session) => {
     try {
       const { id } = await params;
 

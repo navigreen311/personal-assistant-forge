@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { syntheticMonitor } from '@/modules/shadow/monitoring/synthetic-tests';
 
 /**
@@ -9,7 +10,7 @@ import { syntheticMonitor } from '@/modules/shadow/monitoring/synthetic-tests';
  * Tests the full suite as proxy for phone readiness (DB + tools + session).
  */
 export async function POST(request: NextRequest) {
-  return withAuth(request, async () => {
+  return withRole(request, ['owner', 'admin'], async () => {
     try {
       // Phone test: run the full synthetic test suite
       const suiteResult = await syntheticMonitor.runAllTests();

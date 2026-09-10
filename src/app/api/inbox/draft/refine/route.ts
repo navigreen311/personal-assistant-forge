@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 import { DraftService } from '@/modules/inbox';
 import { refineDraftSchema } from '@/modules/inbox/inbox.validation';
@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
   // No tenant data is read or written here: refineDraft rewrites text handed
   // in by the caller and touches no database row. withAuth is the whole
   // requirement, and the session is deliberately unused.
-  return withAuth(request, async (req, _session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = refineDraftSchema.safeParse(body);

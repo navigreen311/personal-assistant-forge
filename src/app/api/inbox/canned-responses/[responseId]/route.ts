@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 import { updateCannedResponseSchema } from '@/modules/inbox/inbox.validation';
@@ -35,7 +35,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ responseId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const { responseId } = await params;
       const body = await req.json();
@@ -70,7 +70,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ responseId: string }> }
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { responseId } = await params;
       await inboxService.deleteCannedResponse(responseId, session.userId);

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withRole, withEntityScope } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 import { sendDraftSchema } from '@/modules/inbox/inbox.validation';
@@ -10,7 +10,8 @@ const inboxService = new InboxService();
 
 export async function POST(request: NextRequest) {
   // Authenticate first: an anonymous caller must not reach the database.
-  return withAuth(request, async (authedReq) => {
+  // RBAC (P-15): sending is irreversible and speaks in the entity's name.
+  return withRole(request, ['owner', 'admin'], async (authedReq) => {
     let parsedMessageId: string;
     try {
       const body = await authedReq.clone().json();

@@ -110,7 +110,11 @@ describe('POST /api/calendar/[eventId]/post-meeting', () => {
     mockEntityFindUnique.mockReset();
 
     // The session's own entity, owned by the session's own user.
-    mockGetToken.mockResolvedValue({ userId: 'user-1', activeEntityId: 'entity-1' });
+    // P-15: `role` added. This token carried no role claim, and `withAuth`
+    // defaults a missing claim to 'viewer' -- correctly, it fails closed -- so
+    // once the route is role-gated a roleless token is refused with 403. The
+    // fixture, not the route, was the thing that was wrong.
+    mockGetToken.mockResolvedValue({ userId: 'user-1', role: 'owner', activeEntityId: 'entity-1' });
     mockEntityFindUnique.mockResolvedValue({ id: 'entity-1', userId: 'user-1' });
     mockCapturePostMeeting.mockResolvedValue({
       event: { id: 'evt-1' },

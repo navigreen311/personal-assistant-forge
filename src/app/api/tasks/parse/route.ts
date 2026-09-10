@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   parseTaskFromText,
   resolveEntityReferences,
@@ -23,22 +23,24 @@ const ParseSchema = z.object({
  * another tenant cannot be discovered by guessing at names.
  */
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = ParseSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = ParseSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const result = await parseTaskFromText(parsed.data.text);
+        const references = await resolveEntityReferences(result, entityId);
+
+        return success({ ...result, ...references });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to parse task';
+        return error('PARSE_FAILED', message, 500);
       }
-
-      const result = await parseTaskFromText(parsed.data.text);
-      const references = await resolveEntityReferences(result, entityId);
-
-      return success({ ...result, ...references });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to parse task';
-      return error('PARSE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
 import { getDLPRules, createDLPRule } from '@/modules/admin/services/dlp-service';
+import { withRole } from '@/shared/middleware/auth';
 
 // P-10/T-001. `withRole(['admin'])` alone proved the caller holds a role. Roles
 // in this system are GLOBAL (`AuthSession.role`), so an admin of tenant A passed
@@ -24,7 +25,7 @@ const createDLPRuleSchema = z.object({
 const AUDIT = { resource: 'admin.dlp', sensitivityLevel: 'CONFIDENTIAL' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const rules = await getDLPRules(entityId);
       return success(rules);
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createDLPRuleSchema.safeParse(body);

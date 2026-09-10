@@ -1,11 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 /**
@@ -64,20 +60,22 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withCallScope(request, id, async (_req, _session, entityId) => {
-    try {
-      // deleteMany, not delete: a unique WHERE cannot carry the entity, so
-      // `delete({ where: { id } })` would let anyone holding an id destroy any
-      // tenant's call record. count === 0 is not-found. Section 3.
-      const res = await prisma.call.deleteMany({ where: { id, entityId } });
+  return withRole(request, ['owner', 'admin'], () =>
+    withCallScope(request, id, async (_req, _session, entityId) => {
+      try {
+        // deleteMany, not delete: a unique WHERE cannot carry the entity, so
+        // `delete({ where: { id } })` would let anyone holding an id destroy any
+        // tenant's call record. count === 0 is not-found. Section 3.
+        const res = await prisma.call.deleteMany({ where: { id, entityId } });
 
-      if (res.count === 0) {
-        return error('NOT_FOUND', `Call ${id} not found`, 404);
+        if (res.count === 0) {
+          return error('NOT_FOUND', `Call ${id} not found`, 404);
+        }
+
+        return success({ deleted: true });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-
-      return success({ deleted: true });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { success, error } from '@/shared/utils/api-response';
@@ -71,21 +71,23 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  return withDocumentScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = signSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin'], () =>
+    withDocumentScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = signSchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const signRequest = await createSignRequest(
-        id,
-        parsed.data.signers,
-        entityId,
-        parsed.data.provider
-      );
-      return success(signRequest, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        const signRequest = await createSignRequest(
+          id,
+          parsed.data.signers,
+          entityId,
+          parsed.data.provider
+        );
+        return success(signRequest, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

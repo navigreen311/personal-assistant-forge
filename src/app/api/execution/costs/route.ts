@@ -14,7 +14,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   estimateActionCost,
   getDailyCostSummary,
@@ -35,7 +35,7 @@ const dailySummarySchema = z.object({
 // --- Handlers ---
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, _session) => {
     try {
       const body: unknown = await req.json();
 

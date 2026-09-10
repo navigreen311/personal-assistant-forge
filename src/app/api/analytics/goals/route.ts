@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser, withRole } from '@/shared/middleware/auth';
 import {
   createGoal,
   getGoals,
@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = postBodySchema.safeParse(body);

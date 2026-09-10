@@ -6,7 +6,7 @@ import {
   updateMemory,
   deleteMemory,
 } from '@/engines/memory/memory-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 // P-13 / tenancy-pattern.md 4 -- SINGLE-RECORD, USER-SCOPED.
 //
@@ -49,7 +49,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -77,7 +77,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { id } = await params;
       await deleteMemory(id, session.userId);

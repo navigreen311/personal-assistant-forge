@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createMemory, getMemoriesByType } from '@/engines/memory/memory-service';
 import { prisma } from '@/lib/db';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 const CreateMemorySchema = z.object({
   type: z.enum(['SHORT_TERM', 'WORKING', 'LONG_TERM', 'EPISODIC']),
@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = CreateMemorySchema.safeParse(body);

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { addLearningItem } from '@/modules/knowledge/services/learning-tracker';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { StoredLearningData, LearningItem } from '@/modules/knowledge/types';
 
 const addLearningSchema = z.object({
@@ -70,27 +70,29 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = addLearningSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = addLearningSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const data = {
+          ...draft,
+          startedAt: draft.startedAt ? new Date(draft.startedAt) : undefined,
+          completedAt: draft.completedAt ? new Date(draft.completedAt) : undefined,
+          nextReviewDate: draft.nextReviewDate ? new Date(draft.nextReviewDate) : undefined,
+        };
+
+        const item = await addLearningItem(data, entityId);
+        return success(item, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to add learning item', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const data = {
-        ...draft,
-        startedAt: draft.startedAt ? new Date(draft.startedAt) : undefined,
-        completedAt: draft.completedAt ? new Date(draft.completedAt) : undefined,
-        nextReviewDate: draft.nextReviewDate ? new Date(draft.nextReviewDate) : undefined,
-      };
-
-      const item = await addLearningItem(data, entityId);
-      return success(item, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to add learning item', 500);
-    }
-  });
+    })
+  );
 }

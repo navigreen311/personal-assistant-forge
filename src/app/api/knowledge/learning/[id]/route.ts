@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { updateProgress } from '@/modules/knowledge/services/learning-tracker';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -43,23 +43,25 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  return withEntryScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateProgressSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntryScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateProgressSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
 
-      const item = await updateProgress(id, entityId, parsed.data.progress);
-      return success(item);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update learning progress';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        const item = await updateProgress(id, entityId, parsed.data.progress);
+        return success(item);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to update learning progress';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

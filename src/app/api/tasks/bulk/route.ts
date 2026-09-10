@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { bulkUpdateTasks } from '@/modules/tasks/services/task-crud';
 
 const BulkUpdateSchema = z.object({
@@ -26,24 +26,26 @@ const BulkUpdateSchema = z.object({
  * also the honest answer to "did my request apply".
  */
 export async function PATCH(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = BulkUpdateSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = BulkUpdateSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const result = await bulkUpdateTasks(
+          parsed.data.taskIds,
+          parsed.data.updates,
+          entityId
+        );
+        return success(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to bulk update';
+        return error('BULK_UPDATE_FAILED', message, 500);
       }
-
-      const result = await bulkUpdateTasks(
-        parsed.data.taskIds,
-        parsed.data.updates,
-        entityId
-      );
-      return success(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to bulk update';
-      return error('BULK_UPDATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser, withRole } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 
 // P-13 / tenancy-pattern.md 4 -- SINGLE-RECORD.
@@ -43,7 +43,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -79,7 +79,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 }
 
 export async function DELETE(_request: NextRequest, { params }: RouteParams) {
-  return withAuth(_request, async (_req, session) => {
+  return withRole(_request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { id } = await params;
       const capture = await captureService.getCaptureById(id, session.userId);

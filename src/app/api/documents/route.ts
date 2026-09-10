@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const documentTypeEnum = z.enum([
   'BRIEF', 'MEMO', 'SOP', 'MINUTES', 'INVOICE', 'SOW', 'PROPOSAL', 'CONTRACT', 'REPORT', 'DECK',
@@ -107,37 +107,39 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = createDocumentSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid document data', 400, {
-          issues: parsed.error.issues,
+        const parsed = createDocumentSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid document data', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const data = parsed.data;
+
+        const document = await prisma.document.create({
+          data: {
+            title: data.title,
+            // entityId comes from the verified scope, never from `data`.
+            entityId,
+            type: data.type,
+            content: data.content,
+            templateId: data.templateId,
+            status: data.status,
+          },
+          include: {
+            entity: { select: { id: true, name: true } },
+          },
         });
+
+        return success(document, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create document', 500);
       }
-
-      const data = parsed.data;
-
-      const document = await prisma.document.create({
-        data: {
-          title: data.title,
-          // entityId comes from the verified scope, never from `data`.
-          entityId,
-          type: data.type,
-          content: data.content,
-          templateId: data.templateId,
-          status: data.status,
-        },
-        include: {
-          entity: { select: { id: true, name: true } },
-        },
-      });
-
-      return success(document, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create document', 500);
-    }
-  });
+    })
+  );
 }

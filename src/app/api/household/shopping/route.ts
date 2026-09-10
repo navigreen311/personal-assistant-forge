@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import * as shoppingService from '@/modules/household/services/shopping-service';
 
 const addItemSchema = z.object({
@@ -29,20 +29,22 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = addItemSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = addItemSchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const { entityId: _requested, ...draft } = parsed.data;
-      const item = await shoppingService.addItem(entityId, session.userId, {
-        ...draft,
-        userId: session.userId,
-      });
-      return success(item, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        const { entityId: _requested, ...draft } = parsed.data;
+        const item = await shoppingService.addItem(entityId, session.userId, {
+          ...draft,
+          userId: session.userId,
+        });
+        return success(item, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

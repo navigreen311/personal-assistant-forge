@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { PostMeetingService } from '@/modules/calendar/post-meeting.service';
 import { postMeetingSchema } from '@/modules/calendar/calendar.validation';
 import { prisma } from '@/lib/db';
@@ -79,31 +79,33 @@ export async function POST(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEventScope(request, eventId, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = postMeetingSchema.safeParse({ ...body, eventId });
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid post-meeting data', 400, {
-          issues: parsed.error.issues,
-        });
+        const parsed = postMeetingSchema.safeParse({ ...body, eventId });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid post-meeting data', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // `entityId` spread LAST. Under the old code the body's own value decided
+        // which entity the action-item tasks and the follow-up event were created
+        // in, and `capturePostMeeting` overwrote the meeting notes of whatever
+        // event id it was handed, with no tenant in the WHERE clause.
+        const { entityId: _requested, ...draft } = parsed.data;
+
+        const result = await postMeetingService.capturePostMeeting({ ...draft, entityId });
+
+        // Fire-and-forget: don't await, don't fail the response on errors.
+        void maybeAutoProcess(eventId, session.userId);
+
+        return success(result, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to capture post-meeting data', 500);
       }
-
-      // `entityId` spread LAST. Under the old code the body's own value decided
-      // which entity the action-item tasks and the follow-up event were created
-      // in, and `capturePostMeeting` overwrote the meeting notes of whatever
-      // event id it was handed, with no tenant in the WHERE clause.
-      const { entityId: _requested, ...draft } = parsed.data;
-
-      const result = await postMeetingService.capturePostMeeting({ ...draft, entityId });
-
-      // Fire-and-forget: don't await, don't fail the response on errors.
-      void maybeAutoProcess(eventId, session.userId);
-
-      return success(result, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to capture post-meeting data', 500);
-    }
-  });
+    })
+  );
 }

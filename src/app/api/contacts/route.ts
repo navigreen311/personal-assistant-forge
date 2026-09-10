@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 
 const createContactSchema = z.object({
@@ -61,38 +61,40 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createContactSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createContactSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const data = parsed.data;
+
+        // The entity has already been proven to belong to the caller by
+        // withEntityScope; the "verify entity exists" lookup that stood here
+        // checked existence and nothing else.
+        const contact = await prisma.contact.create({
+          data: {
+            name: data.name,
+            email: data.email,
+            phone: data.phone,
+            channels: data.channels,
+            preferences: data.preferences,
+            tags: data.tags,
+            // Last, deliberately: it overwrites whatever the caller sent.
+            entityId,
+          },
         });
+
+        return success(contact, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create contact', 500);
       }
-
-      const data = parsed.data;
-
-      // The entity has already been proven to belong to the caller by
-      // withEntityScope; the "verify entity exists" lookup that stood here
-      // checked existence and nothing else.
-      const contact = await prisma.contact.create({
-        data: {
-          name: data.name,
-          email: data.email,
-          phone: data.phone,
-          channels: data.channels,
-          preferences: data.preferences,
-          tags: data.tags,
-          // Last, deliberately: it overwrites whatever the caller sent.
-          entityId,
-        },
-      });
-
-      return success(contact, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create contact', 500);
-    }
-  });
+    })
+  );
 }

@@ -10,7 +10,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   getQueuedActions,
   enqueueAction,
@@ -96,37 +96,39 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = enqueueSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
+        const parsed = enqueueSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+
+        const action = await enqueueAction(
+          {
+            ...draft,
+            actionLogId: '',
+            // A HUMAN action is by the authenticated caller, not by whoever the
+            // body named. Stop writing an actor the audit trail cannot verify.
+            actorId: draft.actor === 'HUMAN' ? session.userId : draft.actorId,
+            requiresApproval: true,
+          },
+          entityId
         );
+        return success(action, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-
-      const action = await enqueueAction(
-        {
-          ...draft,
-          actionLogId: '',
-          // A HUMAN action is by the authenticated caller, not by whoever the
-          // body named. Stop writing an actor the audit trail cannot verify.
-          actorId: draft.actor === 'HUMAN' ? session.userId : draft.actorId,
-          requiresApproval: true,
-        },
-        entityId
-      );
-      return success(action, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { gdprService } from '@/modules/shadow/compliance/gdpr-export';
 
 const DeleteAllSchema = z.object({
@@ -18,7 +19,7 @@ const EXPECTED_TOKEN = 'DELETE-ALL-MY-DATA';
  * Requires a confirmation token in the body to prevent accidental deletion.
  */
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = DeleteAllSchema.safeParse(body);

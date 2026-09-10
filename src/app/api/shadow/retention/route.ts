@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { retentionService } from '@/modules/shadow/compliance/retention';
 
 const UpdateRetentionSchema = z.object({
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
  * Update retention configuration for an entity.
  */
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req) => {
+  return withRole(request, ['owner', 'admin'], async (req) => {
     try {
       const body = await req.json();
       const parsed = UpdateRetentionSchema.safeParse(body);

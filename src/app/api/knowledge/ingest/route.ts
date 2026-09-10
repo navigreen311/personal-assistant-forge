@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { ingestDocument } from '@/modules/knowledge/services/ingestion-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const ingestSchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -13,20 +13,22 @@ const ingestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = ingestSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = ingestSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const result = await ingestDocument(draft, entityId);
+        return success(result, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to ingest document', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const result = await ingestDocument(draft, entityId);
-      return success(result, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to ingest document', 500);
-    }
-  });
+    })
+  );
 }

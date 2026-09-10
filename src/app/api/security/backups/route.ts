@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { error } from '@/shared/utils/api-response';
-import { withAuditedEntityScope } from '@/modules/security/audit-wiring';
+import { withAuditedEntityScope, withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
 
 /**
  * P-10 / T-026 — backups: an honest 501 in place of a reassuring fiction.
@@ -36,8 +36,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedEntityScope(
-    request,
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'],
     { resource: 'security.backups', sensitivityLevel: 'CONFIDENTIAL' },
     async () =>
       error(

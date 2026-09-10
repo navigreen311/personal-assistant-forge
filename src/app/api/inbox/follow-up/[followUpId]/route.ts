@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 
 import { InboxService } from '@/modules/inbox';
 import { updateFollowUpSchema } from '@/modules/inbox/inbox.validation';
@@ -16,7 +17,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ followUpId: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const { followUpId } = await params;
       const body = await req.json();
@@ -51,7 +52,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ followUpId: string }> }
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { followUpId } = await params;
       await inboxService.cancelFollowUp(followUpId, session.userId);

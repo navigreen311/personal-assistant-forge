@@ -11,11 +11,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import {
   getRollbackPlan,
@@ -74,22 +70,24 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withActionScope(request, id, async (_req, session, entityId) => {
-    if (session.role !== 'admin' && session.role !== 'owner') {
-      return error('FORBIDDEN', 'Insufficient permissions', 403);
-    }
-
-    try {
-      const result = await executeRollback(id, entityId);
-
-      return success(result);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Rollback execution failed';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withActionScope(request, id, async (_req, session, entityId) => {
+      if (session.role !== 'admin' && session.role !== 'owner') {
+        return error('FORBIDDEN', 'Insufficient permissions', 403);
       }
-      return error('ROLLBACK_EXECUTION_ERROR', message, 500);
-    }
-  });
+
+      try {
+        const result = await executeRollback(id, entityId);
+
+        return success(result);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Rollback execution failed';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('ROLLBACK_EXECUTION_ERROR', message, 500);
+      }
+    })
+  );
 }

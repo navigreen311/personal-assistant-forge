@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { EntityService } from '@/modules/entities/entity.service';
 import { createEntitySchema, listEntitiesSchema } from '@/modules/entities/entity.validation';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 
 const entityService = new EntityService();
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
 

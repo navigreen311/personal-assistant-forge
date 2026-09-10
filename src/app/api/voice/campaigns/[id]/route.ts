@@ -8,11 +8,7 @@ import {
   pauseCampaign,
   stopCampaign,
 } from '@/modules/voiceforge/services/campaign-service';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 const UpdateCampaignSchema = z.object({
@@ -66,36 +62,38 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withCampaignScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = UpdateCampaignSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withCampaignScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = UpdateCampaignSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
 
-      let campaign;
-      switch (parsed.data.action) {
-        case 'start':
-          campaign = await startCampaign(id, entityId);
-          break;
-        case 'pause':
-          campaign = await pauseCampaign(id, entityId);
-          break;
-        case 'stop':
-          campaign = await stopCampaign(id, entityId);
-          break;
-      }
+        let campaign;
+        switch (parsed.data.action) {
+          case 'start':
+            campaign = await startCampaign(id, entityId);
+            break;
+          case 'pause':
+            campaign = await pauseCampaign(id, entityId);
+            break;
+          case 'stop':
+            campaign = await stopCampaign(id, entityId);
+            break;
+        }
 
-      return success(campaign);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('not found')) {
-        return error('NOT_FOUND', err.message, 404);
+        return success(campaign);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('not found')) {
+          return error('NOT_FOUND', err.message, 404);
+        }
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

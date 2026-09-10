@@ -1,10 +1,11 @@
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { success, error } from '@/shared/utils/api-response';
 import { morningBriefingService } from '@/modules/shadow/proactive/morning-briefing';
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const result = await morningBriefingService.deliverBriefing(session.userId);
       return success(result, 201);

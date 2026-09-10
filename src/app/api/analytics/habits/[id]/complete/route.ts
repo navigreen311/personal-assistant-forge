@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import { recordCompletion } from '@/modules/analytics/services/habit-tracking-service';
 
@@ -40,25 +40,27 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withHabitScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = bodySchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withHabitScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = bodySchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const habit = await recordCompletion(
+          id,
+          entityId,
+          parsed.data.date,
+          parsed.data.completed
+        );
+        return success(habit);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to record completion';
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      const habit = await recordCompletion(
-        id,
-        entityId,
-        parsed.data.date,
-        parsed.data.completed
-      );
-      return success(habit);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to record completion';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

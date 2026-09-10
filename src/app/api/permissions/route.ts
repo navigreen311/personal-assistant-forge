@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import {
   getPermissions,
   updatePermission,
@@ -45,7 +45,7 @@ const patchSchema = z.object({
  * Body: { userId?, integrationId, read?, draft?, execute? }
  */
 export async function PATCH(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = patchSchema.safeParse(body);

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { error } from '@/shared/utils/api-response';
-import { withAuditedEntityScope } from '@/modules/security/audit-wiring';
+import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
+
 
 /**
  * P-10 / T-026 — the most dangerous of the fabricated routes.
@@ -24,8 +25,7 @@ const blockIpSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuditedEntityScope(
-    request,
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'],
     { resource: 'security.block-ip', sensitivityLevel: 'RESTRICTED' },
     async (req) => {
       const body = await req.json().catch(() => null);

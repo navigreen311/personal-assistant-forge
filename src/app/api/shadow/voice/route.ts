@@ -5,7 +5,8 @@
 // ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { success, error } from '@/shared/utils/api-response';
 import { VoiceInAppHandler } from '@/modules/shadow/interfaces/voice-in-app';
 import { BargeInHandler } from '@/modules/shadow/interfaces/barge-in-handler';
@@ -22,7 +23,7 @@ const bargeInHandler = new BargeInHandler();
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const contentType = req.headers.get('content-type') ?? '';
 

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedAuth, withAuditedRole } from '@/modules/security/audit-wiring';
 import * as dmsService from '@/modules/crisis/services/dead-man-switch-service';
 
 const configSchema = z.object({
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedAuth(request, AUDIT, async (req, session) => {
+  return withAuditedRole(request, ['owner', 'admin'], AUDIT, async (req, session) => {
     try {
       const body = await req.json();
       const parsed = configSchema.safeParse(body);

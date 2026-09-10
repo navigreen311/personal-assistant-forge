@@ -2,11 +2,7 @@ import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { getScript, validateScript } from '@/modules/voiceforge/services/script-engine';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 /** Section 4 -- the entity is a property of the row. Duplicated per file, section 3d. */
@@ -36,18 +32,20 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withScriptScope(request, id, async (_req, _session, entityId) => {
-    try {
-      const script = await getScript(id, entityId);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withScriptScope(request, id, async (_req, _session, entityId) => {
+      try {
+        const script = await getScript(id, entityId);
 
-      if (!script) {
-        return error('NOT_FOUND', `Script ${id} not found`, 404);
+        if (!script) {
+          return error('NOT_FOUND', `Script ${id} not found`, 404);
+        }
+
+        const validation = validateScript(script);
+        return success(validation);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-
-      const validation = validateScript(script);
-      return success(validation);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

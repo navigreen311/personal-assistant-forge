@@ -24,11 +24,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import {
   getActionById,
@@ -114,56 +110,58 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withActionScope(request, id, async (req, session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withActionScope(request, id, async (req, session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = patchSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
-      }
-
-      const payload = parsed.data;
-
-      switch (payload.action) {
-        case 'APPROVE': {
-          const result = await approveAction(id, session.userId, entityId);
-          return success(result);
+        const parsed = patchSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
         }
-        case 'REJECT': {
-          const result = await rejectAction(id, payload.reason, entityId);
-          return success(result);
-        }
-        case 'EXECUTE': {
-          const result = await executeAction(id, entityId);
-          return success(result);
-        }
-        case 'SCHEDULE': {
-          const result = await scheduleAction(id, payload.scheduledFor, entityId);
-          return success(result);
-        }
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
 
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
-      }
-      if (message.includes('Execution blocked')) {
-        return error('GATE_BLOCKED', message, 403);
-      }
-      if (message.includes('Cannot')) {
-        return error('INVALID_STATE', message, 409);
-      }
+        const payload = parsed.data;
 
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+        switch (payload.action) {
+          case 'APPROVE': {
+            const result = await approveAction(id, session.userId, entityId);
+            return success(result);
+          }
+          case 'REJECT': {
+            const result = await rejectAction(id, payload.reason, entityId);
+            return success(result);
+          }
+          case 'EXECUTE': {
+            const result = await executeAction(id, entityId);
+            return success(result);
+          }
+          case 'SCHEDULE': {
+            const result = await scheduleAction(id, payload.scheduledFor, entityId);
+            return success(result);
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        if (message.includes('Execution blocked')) {
+          return error('GATE_BLOCKED', message, 403);
+        }
+        if (message.includes('Cannot')) {
+          return error('INVALID_STATE', message, 409);
+        }
+
+        return error('INTERNAL_ERROR', message, 500);
+      }
+    })
+  );
 }
 
 export async function DELETE(
@@ -171,25 +169,27 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withActionScope(request, id, async (_req, session, entityId) => {
-    if (session.role !== 'admin' && session.role !== 'owner') {
-      return error('FORBIDDEN', 'Insufficient permissions', 403);
-    }
-
-    try {
-      const result = await cancelAction(id, entityId);
-      return success(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
-      }
-      if (message.includes('Cannot cancel')) {
-        return error('INVALID_STATE', message, 409);
+  return withRole(request, ['owner', 'admin'], () =>
+    withActionScope(request, id, async (_req, session, entityId) => {
+      if (session.role !== 'admin' && session.role !== 'owner') {
+        return error('FORBIDDEN', 'Insufficient permissions', 403);
       }
 
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+      try {
+        const result = await cancelAction(id, entityId);
+        return success(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        if (message.includes('Cannot cancel')) {
+          return error('INVALID_STATE', message, 409);
+        }
+
+        return error('INTERNAL_ERROR', message, 500);
+      }
+    })
+  );
 }

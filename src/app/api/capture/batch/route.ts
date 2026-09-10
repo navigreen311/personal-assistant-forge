@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
+
 import { batchCaptureService } from '@/modules/capture/services/batch-capture';
 
 // P-13 -- POST is SINGLE-ENTITY (a batch is filed against one entity, and the
@@ -31,26 +32,28 @@ const CompleteBatchSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, authSession, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = StartBatchSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, authSession, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = StartBatchSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const session = batchCaptureService.startBatchSession(authSession.userId, entityId);
+        return success(session, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to start batch session';
+        return error('START_BATCH_FAILED', message, 500);
       }
-
-      const session = batchCaptureService.startBatchSession(authSession.userId, entityId);
-      return success(session, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to start batch session';
-      return error('START_BATCH_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = AddToBatchSchema.safeParse(body);
@@ -75,7 +78,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = CompleteBatchSchema.safeParse(body);

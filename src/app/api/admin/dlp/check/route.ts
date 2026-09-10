@@ -16,7 +16,7 @@ const checkContentSchema = z.object({
 export async function POST(request: NextRequest) {
   return withAuditedRoleEntityScope(
     request,
-    ['admin'],
+    ['owner', 'admin'],
     { resource: 'admin.dlp.check', sensitivityLevel: 'CONFIDENTIAL' },
     async (req, session, entityId) => {
       try {

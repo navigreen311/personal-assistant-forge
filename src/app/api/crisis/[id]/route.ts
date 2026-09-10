@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedAuth, withAuditedRole } from '@/modules/security/audit-wiring';
 import { getCrisisForUser, updateCrisis } from '@/modules/crisis/services/detection-service';
 
 // P-10/T-001. All three handlers called `getCrisisById(id)` and acted on
@@ -44,7 +44,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuditedAuth(request, AUDIT, async (req, session) => {
+  return withAuditedRole(request, ['owner', 'admin', 'member'], AUDIT, async (req, session) => {
     try {
       const { id } = await params;
       const crisis = getCrisisForUser(id, session.userId);
@@ -79,7 +79,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuditedAuth(request, AUDIT, async (_req, session) => {
+  return withAuditedRole(request, ['owner', 'admin'], AUDIT, async (_req, session) => {
     try {
       const { id } = await params;
       const crisis = getCrisisForUser(id, session.userId);

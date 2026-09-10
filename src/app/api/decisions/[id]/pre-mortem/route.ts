@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
@@ -44,26 +44,28 @@ export async function POST(
 ) {
   const { id: decisionId } = await params;
 
-  return withDecisionScope(request, decisionId, async (req) => {
-    try {
-      const body = await req.json();
-      const parsed = PreMortemRequestSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withDecisionScope(request, decisionId, async (req) => {
+      try {
+        const body = await req.json();
+        const parsed = PreMortemRequestSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const result = await runPreMortem({
+          decisionId,
+          chosenOptionId: parsed.data.chosenOptionId,
+          timeHorizon: parsed.data.timeHorizon,
         });
+
+        return success(result);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to run pre-mortem analysis', 500);
       }
-
-      const result = await runPreMortem({
-        decisionId,
-        chosenOptionId: parsed.data.chosenOptionId,
-        timeHorizon: parsed.data.timeHorizon,
-      });
-
-      return success(result);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to run pre-mortem analysis', 500);
-    }
-  });
+    })
+  );
 }

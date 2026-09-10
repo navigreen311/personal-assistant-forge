@@ -14,7 +14,7 @@ const enqueueSchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
-  return withRole(req, ['admin'], async (req) => {
+  return withRole(req, ['owner', 'admin'], async (req) => {
     try {
       const { searchParams } = new URL(req.url);
       const status = searchParams.get('status') ?? 'completed';
@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  return withRole(req, ['admin'], async (req) => {
+  return withRole(req, ['owner', 'admin'], async (req) => {
     try {
       const body = await req.json();
       const parsed = enqueueSchema.safeParse(body);

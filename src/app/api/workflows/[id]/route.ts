@@ -14,11 +14,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import {
   getWorkflow,
@@ -91,38 +87,40 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withWorkflowScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateWorkflowSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withWorkflowScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateWorkflowSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const updates: {
+          name?: string;
+          graph?: WorkflowGraph;
+          triggers?: TriggerNodeConfig[];
+          status?: string;
+        } = {};
+
+        if (parsed.data.name) updates.name = parsed.data.name;
+        if (parsed.data.status) updates.status = parsed.data.status;
+        if (parsed.data.graph) updates.graph = parsed.data.graph as unknown as WorkflowGraph;
+        if (parsed.data.triggers) updates.triggers = parsed.data.triggers as unknown as TriggerNodeConfig[];
+
+        const workflow = await updateWorkflow(id, updates, entityId);
+        return success(workflow);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to update workflow';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('UPDATE_FAILED', message, 500);
       }
-
-      const updates: {
-        name?: string;
-        graph?: WorkflowGraph;
-        triggers?: TriggerNodeConfig[];
-        status?: string;
-      } = {};
-
-      if (parsed.data.name) updates.name = parsed.data.name;
-      if (parsed.data.status) updates.status = parsed.data.status;
-      if (parsed.data.graph) updates.graph = parsed.data.graph as unknown as WorkflowGraph;
-      if (parsed.data.triggers) updates.triggers = parsed.data.triggers as unknown as TriggerNodeConfig[];
-
-      const workflow = await updateWorkflow(id, updates, entityId);
-      return success(workflow);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to update workflow';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
-      }
-      return error('UPDATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -130,17 +128,19 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withWorkflowScope(request, id, async (_req, _session, entityId) => {
-    try {
-      await deleteWorkflow(id, entityId);
-      return success({ archived: true });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to delete workflow';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withWorkflowScope(request, id, async (_req, _session, entityId) => {
+      try {
+        await deleteWorkflow(id, entityId);
+        return success({ archived: true });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to delete workflow';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('DELETE_FAILED', message, 500);
       }
-      return error('DELETE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

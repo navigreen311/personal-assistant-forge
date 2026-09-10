@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import * as tripService from '@/modules/travel/services/trip-service';
 
 const querySchema = z.object({
@@ -73,36 +73,38 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createTripSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createTripSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const trip = await tripService.createTrip(entityId, draft);
+
+        return success(
+          {
+            id: trip.id,
+            name: trip.name,
+            destination: trip.destination,
+            origin: trip.origin,
+            startDate: trip.startDate.toISOString(),
+            endDate: trip.endDate.toISOString(),
+            type: trip.type,
+            status: trip.status,
+            budget: trip.budget,
+            spent: trip.spent,
+          },
+          201
+        );
+      } catch (err) {
+        // The old handler answered 201 with a fabricated id when the write failed.
+        // A failed write is a failure.
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create trip', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const trip = await tripService.createTrip(entityId, draft);
-
-      return success(
-        {
-          id: trip.id,
-          name: trip.name,
-          destination: trip.destination,
-          origin: trip.origin,
-          startDate: trip.startDate.toISOString(),
-          endDate: trip.endDate.toISOString(),
-          type: trip.type,
-          status: trip.status,
-          budget: trip.budget,
-          spent: trip.spent,
-        },
-        201
-      );
-    } catch (err) {
-      // The old handler answered 201 with a fabricated id when the write failed.
-      // A failed write is a failure.
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create trip', 500);
-    }
-  });
+    })
+  );
 }

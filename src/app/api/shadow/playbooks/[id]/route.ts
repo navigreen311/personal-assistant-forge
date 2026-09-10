@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { callPlaybookService } from '@/modules/shadow/compliance/call-playbook';
 
 const UpdatePlaybookSchema = z.object({
@@ -29,7 +30,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withAuth(request, async (req) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -59,7 +60,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withAuth(request, async () => {
+  return withRole(request, ['owner', 'admin'], async () => {
     try {
       const { id } = await params;
       await callPlaybookService.deletePlaybook(id);

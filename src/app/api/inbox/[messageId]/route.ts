@@ -1,11 +1,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 import { InboxService } from '@/modules/inbox';
@@ -73,36 +69,38 @@ export async function PATCH(
 ) {
   const { messageId } = await params;
 
-  return withMessageScope(request, messageId, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateMessageSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withMessageScope(request, messageId, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateMessageSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid update request', 400, {
-          issues: parsed.error.issues,
-        });
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid update request', 400, {
+            issues: parsed.error.issues,
+          });
+        }
 
-      if (parsed.data.isRead !== undefined) {
-        await inboxService.markAsRead(messageId, parsed.data.isRead, entityId);
-      }
-      if (parsed.data.isStarred !== undefined) {
-        await inboxService.toggleStar(messageId, entityId);
-      }
-      if (parsed.data.archived) {
-        await inboxService.archiveMessage(messageId, entityId);
-      }
+        if (parsed.data.isRead !== undefined) {
+          await inboxService.markAsRead(messageId, parsed.data.isRead, entityId);
+        }
+        if (parsed.data.isStarred !== undefined) {
+          await inboxService.toggleStar(messageId, entityId);
+        }
+        if (parsed.data.archived) {
+          await inboxService.archiveMessage(messageId, entityId);
+        }
 
-      return success({ messageId, updated: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        return success({ messageId, updated: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -111,16 +109,18 @@ export async function DELETE(
 ) {
   const { messageId } = await params;
 
-  return withMessageScope(request, messageId, async (_req, _session, entityId) => {
-    try {
-      await inboxService.archiveMessage(messageId, entityId);
-      return success({ messageId, archived: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withMessageScope(request, messageId, async (_req, _session, entityId) => {
+      try {
+        await inboxService.archiveMessage(messageId, entityId);
+        return success({ messageId, archived: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

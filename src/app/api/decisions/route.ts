@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   createDecisionBrief,
   listDecisionBriefs,
@@ -36,29 +36,31 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateDecisionSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateDecisionSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const brief = await createDecisionBrief(
+          {
+            ...draft,
+            deadline: draft.deadline ? new Date(draft.deadline) : undefined,
+          },
+          entityId
+        );
+
+        return success(brief, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to create decision brief', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const brief = await createDecisionBrief(
-        {
-          ...draft,
-          deadline: draft.deadline ? new Date(draft.deadline) : undefined,
-        },
-        entityId
-      );
-
-      return success(brief, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to create decision brief', 500);
-    }
-  });
+    })
+  );
 }

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
 // ---------------------------------------------------------------------------
@@ -159,30 +159,32 @@ function standardSeasonalTemplate(propertyId: string): SeasonalSchedule {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = generateSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = generateSchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      // The property is a row, so its owner is a property of the row -- prove the
-      // caller's entity owns it before answering about it. Select the id only:
-      // no property data crosses this line.
-      const property = await prisma.document.findFirst({
-        where: {
-          id: parsed.data.propertyId,
-          entityId,
-          type: 'PROPERTY',
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-      if (!property) return error('NOT_FOUND', 'Property not found', 404);
+        // The property is a row, so its owner is a property of the row -- prove the
+        // caller's entity owns it before answering about it. Select the id only:
+        // no property data crosses this line.
+        const property = await prisma.document.findFirst({
+          where: {
+            id: parsed.data.propertyId,
+            entityId,
+            type: 'PROPERTY',
+            deletedAt: null,
+          },
+          select: { id: true },
+        });
+        if (!property) return error('NOT_FOUND', 'Property not found', 404);
 
-      const schedule = standardSeasonalTemplate(property.id);
-      return success(schedule);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        const schedule = standardSeasonalTemplate(property.id);
+        return success(schedule);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import { SchedulingService } from '@/modules/calendar/scheduling.service';
 import { dragDropSchema } from '@/modules/calendar/calendar.validation';
@@ -43,29 +43,31 @@ export async function POST(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEventScope(request, eventId, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = dragDropSchema.safeParse({ ...body, eventId });
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid reschedule request', 400, {
-          issues: parsed.error.issues,
-        });
+        const parsed = dragDropSchema.safeParse({ ...body, eventId });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid reschedule request', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // Before P-05 this handler was `withAuth(request, async (req, session))`
+        // and `rescheduleEvent` wrote `update({ where: { id } })` -- no tenant in
+        // the WHERE -- so a drag-and-drop naming any event id moved that meeting.
+        const result = await schedulingService.rescheduleEvent(
+          parsed.data,
+          entityId,
+          session.userId
+        );
+
+        return success(result);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to reschedule event', 500);
       }
-
-      // Before P-05 this handler was `withAuth(request, async (req, session))`
-      // and `rescheduleEvent` wrote `update({ where: { id } })` -- no tenant in
-      // the WHERE -- so a drag-and-drop naming any event id moved that meeting.
-      const result = await schedulingService.rescheduleEvent(
-        parsed.data,
-        entityId,
-        session.userId
-      );
-
-      return success(result);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to reschedule event', 500);
-    }
-  });
+    })
+  );
 }

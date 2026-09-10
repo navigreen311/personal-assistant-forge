@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { getBrandKit, updateBrandKit } from '@/modules/documents/services/brand-kit-service';
 
@@ -29,18 +29,20 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateBrandKitSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateBrandKitSchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      // The caller's entityId is discarded: `entityId` from the scope wins.
-      const { entityId: _requested, ...config } = parsed.data;
-      const brandKit = await updateBrandKit(entityId, config);
-      return success(brandKit);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        // The caller's entityId is discarded: `entityId` from the scope wins.
+        const { entityId: _requested, ...config } = parsed.data;
+        const brandKit = await updateBrandKit(entityId, config);
+        return success(brandKit);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

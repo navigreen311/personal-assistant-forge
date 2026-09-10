@@ -14,7 +14,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   listGates,
   createGate,
@@ -85,82 +85,88 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = createGateSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
+        const parsed = createGateSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
+
+        // Drop the caller's own entityId; the verified one is the owner.
+        const { entityId: _requested, ...draft } = parsed.data;
+        const gate = await createGate(draft, entityId);
+        return success(gate, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      // Drop the caller's own entityId; the verified one is the owner.
-      const { entityId: _requested, ...draft } = parsed.data;
-      const gate = await createGate(draft, entityId);
-      return success(gate, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function PUT(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = updateGateSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
-      }
+        const parsed = updateGateSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
 
-      const { id, entityId: _requested, ...updates } = parsed.data;
-      const gate = await updateGate(id, updates, entityId);
-      return success(gate);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        const { id, entityId: _requested, ...updates } = parsed.data;
+        const gate = await updateGate(id, updates, entityId);
+        return success(gate);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = deleteGateSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
-      }
+        const parsed = deleteGateSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
 
-      await deleteGate(parsed.data.id, entityId);
-      return success({ deleted: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        await deleteGate(parsed.data.id, entityId);
+        return success({ deleted: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

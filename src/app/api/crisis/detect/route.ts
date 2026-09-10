@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedRole } from '@/modules/security/audit-wiring';
+
 import * as detectionService from '@/modules/crisis/services/detection-service';
 
 const detectSchema = z.object({
@@ -17,8 +18,7 @@ const detectSchema = z.object({
 export async function POST(request: NextRequest) {
   // P-10/T-002: audited. Stateless analysis of caller-supplied signals; no
   // entity in the model, so no entity scope to add.
-  return withAuditedAuth(
-    request,
+  return withAuditedRole(request, ['owner', 'admin', 'member'],
     { resource: 'crisis.detect' },
     async (req, _session) => {
     try {

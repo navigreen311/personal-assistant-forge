@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedRole } from '@/modules/security/audit-wiring';
+
 import {
   advanceApproval,
   getDelegationForParty,
@@ -24,8 +25,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuditedAuth(
-    request,
+  return withAuditedRole(request, ['owner', 'admin'],
     { resource: 'delegation.approve', sensitivityLevel: 'CONFIDENTIAL' },
     async (req, session) => {
       try {

@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createExpense, listExpenses } from '@/modules/finance/services/expense-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const listQuerySchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -61,24 +61,26 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        // `entityId` LAST, deliberately: it overwrites the caller's own value.
+        const { entityId: _requested, ...data } = parsed.data;
+        const expense = await createExpense(
+          { ...data, date: new Date(data.date), entityId },
+          session.userId
+        );
+
+        return success(expense, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-
-      // `entityId` LAST, deliberately: it overwrites the caller's own value.
-      const { entityId: _requested, ...data } = parsed.data;
-      const expense = await createExpense(
-        { ...data, date: new Date(data.date), entityId },
-        session.userId
-      );
-
-      return success(expense, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

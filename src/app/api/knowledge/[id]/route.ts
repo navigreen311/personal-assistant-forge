@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { knowledgeEntryToCaptured, parseStoredData } from '@/modules/knowledge/services/capture-service';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import type { KnowledgeEntry } from '@/shared/types';
@@ -90,52 +90,54 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  return withEntryScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntryScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const existing = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
+        if (!existing) {
+          return error('NOT_FOUND', 'Knowledge entry not found', 404);
+        }
+
+        const existingKe = existing as unknown as KnowledgeEntry;
+        const stored = parseStoredData(existingKe.content);
+
+        const updatedStored: StoredKnowledgeData = {
+          ...stored,
+          body: parsed.data.content || stored.body,
+          title: parsed.data.title || stored.title,
+          metadata: parsed.data.metadata || stored.metadata,
+        };
+
+        const updateData: Record<string, unknown> = {
+          content: JSON.stringify(updatedStored),
+        };
+        if (parsed.data.tags) updateData.tags = parsed.data.tags;
+        if (parsed.data.source) updateData.source = parsed.data.source;
+
+        // updateMany, not update: a unique WHERE cannot carry the entity.
+        const result = await prisma.knowledgeEntry.updateMany({
+          where: { id, entityId },
+          data: updateData,
+        });
+
+        if (result.count === 0) {
+          return error('NOT_FOUND', 'Knowledge entry not found', 404);
+        }
+
+        const updated = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
+        return success(knowledgeEntryToCaptured(updated as unknown as KnowledgeEntry));
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to update knowledge entry', 500);
       }
-
-      const existing = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
-      if (!existing) {
-        return error('NOT_FOUND', 'Knowledge entry not found', 404);
-      }
-
-      const existingKe = existing as unknown as KnowledgeEntry;
-      const stored = parseStoredData(existingKe.content);
-
-      const updatedStored: StoredKnowledgeData = {
-        ...stored,
-        body: parsed.data.content || stored.body,
-        title: parsed.data.title || stored.title,
-        metadata: parsed.data.metadata || stored.metadata,
-      };
-
-      const updateData: Record<string, unknown> = {
-        content: JSON.stringify(updatedStored),
-      };
-      if (parsed.data.tags) updateData.tags = parsed.data.tags;
-      if (parsed.data.source) updateData.source = parsed.data.source;
-
-      // updateMany, not update: a unique WHERE cannot carry the entity.
-      const result = await prisma.knowledgeEntry.updateMany({
-        where: { id, entityId },
-        data: updateData,
-      });
-
-      if (result.count === 0) {
-        return error('NOT_FOUND', 'Knowledge entry not found', 404);
-      }
-
-      const updated = await prisma.knowledgeEntry.findFirst({ where: { id, entityId } });
-      return success(knowledgeEntryToCaptured(updated as unknown as KnowledgeEntry));
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to update knowledge entry', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -144,18 +146,20 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  return withEntryScope(request, id, async (_req, _session, entityId) => {
-    try {
-      // deleteMany, not delete: the scope goes in the WHERE clause.
-      const result = await prisma.knowledgeEntry.deleteMany({ where: { id, entityId } });
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntryScope(request, id, async (_req, _session, entityId) => {
+      try {
+        // deleteMany, not delete: the scope goes in the WHERE clause.
+        const result = await prisma.knowledgeEntry.deleteMany({ where: { id, entityId } });
 
-      if (result.count === 0) {
-        return error('NOT_FOUND', 'Knowledge entry not found', 404);
+        if (result.count === 0) {
+          return error('NOT_FOUND', 'Knowledge entry not found', 404);
+        }
+
+        return success({ deleted: true });
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to delete knowledge entry', 500);
       }
-
-      return success({ deleted: true });
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to delete knowledge entry', 500);
-    }
-  });
+    })
+  );
 }
