@@ -8,7 +8,10 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findUnique: jest.fn(),
+    findFirst: jest.fn(),
+    findFirstOrThrow: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
 };
 
@@ -22,6 +25,22 @@ jest.mock('@/lib/ai', () => ({
 
 import { generateAnnualSchedule, completeTask, createTask } from '@/modules/household/services/maintenance-service';
 import type { MaintenanceTask } from '@/modules/household/types';
+
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column. The scope is now a `VerifiedEntityId`, which a
+ * plain string is not assignable to, so a call site handing a service an
+ * unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+/** One scope for the whole file: every task here belongs to the same entity. */
+const SCOPE = entity('1');
+
 
 beforeEach(() => {
   taskStore.clear();
@@ -55,6 +74,32 @@ beforeEach(() => {
     return taskStore.get(where.id) ?? null;
   });
 
+  // The service moved from findUnique to scoped finders. A mock without them
+  // returns undefined and the test passes for the wrong reason (trap 1).
+  const scopedFind = async ({ where }: any) => {
+    const task = taskStore.get(where.id);
+    if (!task) return null;
+    if (where.entityId && task.entityId !== where.entityId) return null;
+    return task;
+  };
+  mockPrisma.task.findFirst.mockImplementation(scopedFind);
+  mockPrisma.task.findFirstOrThrow.mockImplementation(async (args: any) => {
+    const task = await scopedFind(args);
+    if (!task) throw new Error(`Task ${args.where.id} not found`);
+    return task;
+  });
+
+  mockPrisma.task.updateMany.mockImplementation(async ({ where, data }: any) => {
+    const existing = taskStore.get(where.id);
+    if (!existing || (where.entityId && existing.entityId !== where.entityId)) {
+      return { count: 0 };
+    }
+    const updated = { ...existing, ...data, updatedAt: new Date() };
+    if (data.createdFrom !== undefined) updated.createdFrom = data.createdFrom;
+    taskStore.set(where.id, updated);
+    return { count: 1 };
+  });
+
   mockPrisma.task.update.mockImplementation(async ({ where, data }: any) => {
     const existing = taskStore.get(where.id);
     if (!existing) throw new Error(`Task ${where.id} not found`);
@@ -78,19 +123,19 @@ beforeEach(() => {
 
 describe('generateAnnualSchedule', () => {
   it('should create quarterly HVAC filter tasks', async () => {
-    const tasks = await generateAnnualSchedule('maint-user-1');
+    const tasks = await generateAnnualSchedule(SCOPE, 'maint-user-1');
     const hvacFilters = tasks.filter(t => t.title === 'Replace HVAC filter');
     expect(hvacFilters.length).toBe(4);
   });
 
   it('should create biannual gutter cleaning tasks', async () => {
-    const tasks = await generateAnnualSchedule('maint-user-2');
+    const tasks = await generateAnnualSchedule(SCOPE, 'maint-user-2');
     const gutterTasks = tasks.filter(t => t.title === 'Clean gutters');
     expect(gutterTasks.length).toBe(2);
   });
 
   it('should create seasonal lawn care tasks', async () => {
-    const tasks = await generateAnnualSchedule('maint-user-3');
+    const tasks = await generateAnnualSchedule(SCOPE, 'maint-user-3');
     const lawnTasks = tasks.filter(t => t.title === 'Lawn mowing and maintenance');
     expect(lawnTasks.length).toBe(9); // Mar-Nov, 9 months
     const springLawn = lawnTasks.filter(t => t.season === 'SPRING');
@@ -102,7 +147,7 @@ describe('generateAnnualSchedule', () => {
   });
 
   it('should assign correct seasons to tasks', async () => {
-    const tasks = await generateAnnualSchedule('maint-user-4');
+    const tasks = await generateAnnualSchedule(SCOPE, 'maint-user-4');
     const springGutter = tasks.find(t => t.title === 'Clean gutters' && t.season === 'SPRING');
     const fallGutter = tasks.find(t => t.title === 'Clean gutters' && t.season === 'FALL');
     expect(springGutter).toBeDefined();
@@ -110,7 +155,7 @@ describe('generateAnnualSchedule', () => {
   });
 
   it('should calculate next due dates correctly', async () => {
-    const tasks = await generateAnnualSchedule('maint-user-5');
+    const tasks = await generateAnnualSchedule(SCOPE, 'maint-user-5');
     for (const task of tasks) {
       expect(task.nextDueDate).toBeDefined();
       expect(task.nextDueDate instanceof Date).toBe(true);
@@ -120,7 +165,7 @@ describe('generateAnnualSchedule', () => {
 
 describe('completeTask', () => {
   it('should calculate next due date based on frequency', async () => {
-    const task = await createTask('complete-user-1', {
+    const task = await createTask(SCOPE, 'complete-user-1', {
       userId: 'complete-user-1',
       category: 'HVAC',
       title: 'Test Task',
@@ -128,13 +173,13 @@ describe('completeTask', () => {
       nextDueDate: new Date('2026-03-15'),
     });
 
-    const completed = await completeTask(task.id);
+    const completed = await completeTask(SCOPE, 'complete-user-1', task.id);
     expect(completed.status).toBe('COMPLETED');
     expect(completed.lastCompletedDate).toBeDefined();
   });
 
   it('should handle ONE_TIME tasks (no next date)', async () => {
-    const task = await createTask('complete-user-2', {
+    const task = await createTask(SCOPE, 'complete-user-2', {
       userId: 'complete-user-2',
       category: 'GENERAL',
       title: 'One Time Task',
@@ -142,7 +187,7 @@ describe('completeTask', () => {
       nextDueDate: new Date('2026-06-01'),
     });
 
-    const completed = await completeTask(task.id);
+    const completed = await completeTask(SCOPE, 'complete-user-1', task.id);
     expect(completed.status).toBe('COMPLETED');
   });
 });

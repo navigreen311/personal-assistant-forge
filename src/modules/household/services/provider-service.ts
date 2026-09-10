@@ -1,19 +1,23 @@
 import { generateText } from '@/lib/ai';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { ServiceProvider } from '../types';
 
-function contactToProvider(contact: {
-  id: string;
-  entityId: string;
-  name: string;
-  phone: string | null;
-  email: string | null;
-  preferences: unknown;
-}): ServiceProvider {
+function contactToProvider(
+  contact: {
+    id: string;
+    entityId: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    preferences: unknown;
+  },
+  userId: string
+): ServiceProvider {
   const prefs = (contact.preferences ?? {}) as Record<string, unknown>;
   return {
     id: contact.id,
-    userId: contact.entityId,
+    userId,
     name: contact.name,
     category: (prefs.category as string) ?? '',
     phone: contact.phone ?? undefined,
@@ -26,12 +30,13 @@ function contactToProvider(contact: {
 }
 
 export async function addProvider(
+  entityId: VerifiedEntityId,
   userId: string,
   provider: Omit<ServiceProvider, 'id' | 'costHistory'>
 ): Promise<ServiceProvider> {
   const created = await prisma.contact.create({
     data: {
-      entityId: userId,
+      entityId,
       name: provider.name,
       phone: provider.phone ?? null,
       email: provider.email ?? null,
@@ -46,33 +51,39 @@ export async function addProvider(
     },
   });
 
-  return contactToProvider(created);
+  return contactToProvider(created, userId);
 }
 
-export async function getProviders(userId: string, category?: string): Promise<ServiceProvider[]> {
+export async function getProviders(
+  entityId: VerifiedEntityId,
+  userId: string,
+  category?: string
+): Promise<ServiceProvider[]> {
   const contacts = await prisma.contact.findMany({
     where: {
-      entityId: userId,
+      entityId,
       tags: { has: 'service_provider' },
       deletedAt: null,
     },
   });
 
-  const providers: ServiceProvider[] = contacts.map(contactToProvider);
+  const providers: ServiceProvider[] = contacts.map((c) => contactToProvider(c, userId));
   if (category) return providers.filter((p: ServiceProvider) => p.category === category);
   return providers;
 }
 
 export async function updateProvider(
+  entityId: VerifiedEntityId,
+  userId: string,
   providerId: string,
   updates: Partial<ServiceProvider>
 ): Promise<ServiceProvider> {
-  const existing = await prisma.contact.findUnique({ where: { id: providerId } });
+  const existing = await prisma.contact.findFirst({ where: { id: providerId, entityId } });
   if (!existing) throw new Error(`Provider ${providerId} not found`);
 
   const currentPrefs = (existing.preferences ?? {}) as Record<string, unknown>;
-  const updated = await prisma.contact.update({
-    where: { id: providerId },
+  const changed = await prisma.contact.updateMany({
+    where: { id: providerId, entityId },
     data: {
       name: updates.name ?? existing.name,
       phone: updates.phone !== undefined ? (updates.phone ?? null) : existing.phone,
@@ -86,25 +97,30 @@ export async function updateProvider(
       },
     },
   });
+  if (changed.count === 0) throw new Error(`Provider ${providerId} not found`);
 
-  return contactToProvider(updated);
+  const updated = await prisma.contact.findFirstOrThrow({ where: { id: providerId, entityId } });
+
+  return contactToProvider(updated, userId);
 }
 
 export async function logServiceCall(
+  entityId: VerifiedEntityId,
+  userId: string,
   providerId: string,
   date: Date,
   amount: number,
   service: string
 ): Promise<ServiceProvider> {
-  const existing = await prisma.contact.findUnique({ where: { id: providerId } });
+  const existing = await prisma.contact.findFirst({ where: { id: providerId, entityId } });
   if (!existing) throw new Error(`Provider ${providerId} not found`);
 
   const prefs = (existing.preferences ?? {}) as Record<string, unknown>;
   const costHistory = (prefs.costHistory as { date: string; amount: number; service: string }[]) ?? [];
   costHistory.push({ date: date.toISOString(), amount, service });
 
-  const updated = await prisma.contact.update({
-    where: { id: providerId },
+  const changed = await prisma.contact.updateMany({
+    where: { id: providerId, entityId },
     data: {
       lastTouch: date,
       preferences: {
@@ -114,15 +130,19 @@ export async function logServiceCall(
       },
     },
   });
+  if (changed.count === 0) throw new Error(`Provider ${providerId} not found`);
 
-  return contactToProvider(updated);
+  const updated = await prisma.contact.findFirstOrThrow({ where: { id: providerId, entityId } });
+
+  return contactToProvider(updated, userId);
 }
 
 export async function getRecommendedProvider(
+  entityId: VerifiedEntityId,
   userId: string,
   category: string
 ): Promise<{ provider: ServiceProvider; rationale: string } | null> {
-  const providers = await getProviders(userId, category);
+  const providers = await getProviders(entityId, userId, category);
   if (providers.length === 0) return null;
 
   providers.sort((a, b) => {

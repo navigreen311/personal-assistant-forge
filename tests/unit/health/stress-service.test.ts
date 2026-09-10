@@ -31,6 +31,21 @@ import {
   getStressTrend,
 } from '@/modules/health/services/stress-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
 
@@ -43,7 +58,7 @@ describe('stress-service', () => {
     it('creates HealthMetric with type=stress', async () => {
       (mockPrisma.healthMetric.create as jest.Mock).mockResolvedValue({
         id: 'hm-stress-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'stress',
         value: 65,
         unit: 'score',
@@ -53,11 +68,11 @@ describe('stress-service', () => {
         createdAt: new Date(),
       });
 
-      const result = await recordStressLevel('user-1', 65, 'manual', ['work']);
+      const result = await recordStressLevel(entity('1'), 'user-1', 65, 'manual', ['work']);
 
       expect(mockPrisma.healthMetric.create).toHaveBeenCalledWith({
         data: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'stress',
           value: 65,
           unit: 'score',
@@ -74,7 +89,7 @@ describe('stress-service', () => {
       const triggers = ['deadline', 'meetings', 'commute'];
       (mockPrisma.healthMetric.create as jest.Mock).mockResolvedValue({
         id: 'hm-stress-2',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'stress',
         value: 80,
         unit: 'score',
@@ -84,7 +99,7 @@ describe('stress-service', () => {
         createdAt: new Date(),
       });
 
-      const result = await recordStressLevel('user-1', 80, 'manual', triggers);
+      const result = await recordStressLevel(entity('1'), 'user-1', 80, 'manual', triggers);
 
       expect(result.triggers).toEqual(triggers);
     });
@@ -93,7 +108,7 @@ describe('stress-service', () => {
       // Test over 100
       (mockPrisma.healthMetric.create as jest.Mock).mockImplementation(({ data }: { data: { value: number } }) => ({
         id: 'hm-clamped',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'stress',
         value: data.value,
         unit: 'score',
@@ -103,7 +118,7 @@ describe('stress-service', () => {
         createdAt: new Date(),
       }));
 
-      await recordStressLevel('user-1', 150, 'manual');
+      await recordStressLevel(entity('1'), 'user-1', 150, 'manual');
       expect(mockPrisma.healthMetric.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ value: 100 }),
@@ -111,7 +126,7 @@ describe('stress-service', () => {
       );
 
       // Test under 0
-      await recordStressLevel('user-1', -10, 'manual');
+      await recordStressLevel(entity('1'), 'user-1', -10, 'manual');
       expect(mockPrisma.healthMetric.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ value: 0 }),
@@ -122,7 +137,7 @@ describe('stress-service', () => {
     it('defaults triggers to empty array when not provided', async () => {
       (mockPrisma.healthMetric.create as jest.Mock).mockResolvedValue({
         id: 'hm-no-triggers',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'stress',
         value: 40,
         unit: 'score',
@@ -132,7 +147,7 @@ describe('stress-service', () => {
         createdAt: new Date(),
       });
 
-      const result = await recordStressLevel('user-1', 40, 'wearable');
+      const result = await recordStressLevel(entity('1'), 'user-1', 40, 'wearable');
 
       expect(mockPrisma.healthMetric.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -149,11 +164,11 @@ describe('stress-service', () => {
     it('queries DB with date filter', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getStressHistory('user-1', 7);
+      await getStressHistory(entity('1'), 'user-1', 7);
 
       expect(mockPrisma.healthMetric.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           type: 'stress',
           recordedAt: { gte: expect.any(Date) },
         },
@@ -164,14 +179,14 @@ describe('stress-service', () => {
     it('maps DB records to StressLevel', async () => {
       const mockRecords = [
         {
-          id: 'hm-1', entityId: 'user-1', type: 'stress', value: 75, unit: 'score',
+          id: 'hm-1', entityId: 'entity-1', type: 'stress', value: 75, unit: 'score',
           source: 'wearable', metadata: { triggers: ['meeting'] },
           recordedAt: new Date('2026-02-15T10:00:00Z'), createdAt: new Date(),
         },
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
 
-      const result = await getStressHistory('user-1', 7);
+      const result = await getStressHistory(entity('1'), 'user-1', 7);
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
@@ -188,27 +203,27 @@ describe('stress-service', () => {
     it('returns empty for low stress', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'hm-low', entityId: 'user-1', type: 'stress', value: 40, unit: 'score',
+          id: 'hm-low', entityId: 'entity-1', type: 'stress', value: 40, unit: 'score',
           source: 'manual', metadata: { triggers: [] },
           recordedAt: new Date(), createdAt: new Date(),
         },
       ]);
 
-      const result = await suggestScheduleAdjustments('user-1');
+      const result = await suggestScheduleAdjustments(entity('1'), 'user-1');
       expect(result).toEqual([]);
     });
 
     it('returns empty when no stress data exists', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await suggestScheduleAdjustments('user-1');
+      const result = await suggestScheduleAdjustments(entity('1'), 'user-1');
       expect(result).toEqual([]);
     });
 
     it('calls generateJSON for high stress', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'hm-high', entityId: 'user-1', type: 'stress', value: 85, unit: 'score',
+          id: 'hm-high', entityId: 'entity-1', type: 'stress', value: 85, unit: 'score',
           source: 'manual', metadata: { triggers: ['deadline'] },
           recordedAt: new Date(), createdAt: new Date(),
         },
@@ -219,7 +234,7 @@ describe('stress-service', () => {
       ];
       mockGenerateJSON.mockResolvedValue(mockAdjustments);
 
-      const result = await suggestScheduleAdjustments('user-1');
+      const result = await suggestScheduleAdjustments(entity('1'), 'user-1');
 
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result).toEqual(mockAdjustments);
@@ -228,7 +243,7 @@ describe('stress-service', () => {
     it('falls back to rule-based suggestions when AI fails', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([
         {
-          id: 'hm-critical', entityId: 'user-1', type: 'stress', value: 95, unit: 'score',
+          id: 'hm-critical', entityId: 'entity-1', type: 'stress', value: 95, unit: 'score',
           source: 'manual', metadata: { triggers: [] },
           recordedAt: new Date(), createdAt: new Date(),
         },
@@ -236,7 +251,7 @@ describe('stress-service', () => {
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await suggestScheduleAdjustments('user-1');
+      const result = await suggestScheduleAdjustments(entity('1'), 'user-1');
 
       expect(result.length).toBeGreaterThan(0);
       // Critical stress (>90) should include CANCEL and BREAK
@@ -250,24 +265,24 @@ describe('stress-service', () => {
     it('aggregates daily averages correctly', async () => {
       const mockRecords = [
         {
-          id: 'hm-1', entityId: 'user-1', type: 'stress', value: 60, unit: 'score',
+          id: 'hm-1', entityId: 'entity-1', type: 'stress', value: 60, unit: 'score',
           source: 'manual', metadata: { triggers: [] },
           recordedAt: new Date('2026-02-15T08:00:00Z'), createdAt: new Date(),
         },
         {
-          id: 'hm-2', entityId: 'user-1', type: 'stress', value: 80, unit: 'score',
+          id: 'hm-2', entityId: 'entity-1', type: 'stress', value: 80, unit: 'score',
           source: 'manual', metadata: { triggers: [] },
           recordedAt: new Date('2026-02-15T14:00:00Z'), createdAt: new Date(),
         },
         {
-          id: 'hm-3', entityId: 'user-1', type: 'stress', value: 50, unit: 'score',
+          id: 'hm-3', entityId: 'entity-1', type: 'stress', value: 50, unit: 'score',
           source: 'manual', metadata: { triggers: [] },
           recordedAt: new Date('2026-02-14T10:00:00Z'), createdAt: new Date(),
         },
       ];
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue(mockRecords);
 
-      const result = await getStressTrend('user-1', 7);
+      const result = await getStressTrend(entity('1'), 7);
 
       expect(result).toHaveLength(2);
       // Sorted by date ascending
@@ -280,7 +295,7 @@ describe('stress-service', () => {
     it('returns empty for no data', async () => {
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await getStressTrend('user-1', 7);
+      const result = await getStressTrend(entity('1'), 7);
       expect(result).toEqual([]);
     });
   });

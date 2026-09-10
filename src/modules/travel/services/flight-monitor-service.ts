@@ -1,11 +1,23 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateText } from '@/lib/ai';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { FlightAlert, Itinerary, ItineraryLeg, DisruptionResponse } from '../types';
 import { getItinerary } from './itinerary-service';
 
-export async function checkFlightStatus(itineraryId: string): Promise<FlightAlert[]> {
-  const itinerary = await getItinerary(itineraryId);
+/**
+ * NO AIRLINE IS CALLED HERE.
+ *
+ * `flightStatus` and `delayMinutes` are read out of the itinerary's own
+ * `prepPacket` JSON -- values something else wrote into this database. There is
+ * no flight-status provider wired up, so a real delay produces no alert. This
+ * function reports what the record already says; it does not discover anything.
+ */
+export async function checkFlightStatus(
+  entityId: VerifiedEntityId,
+  itineraryId: string
+): Promise<FlightAlert[]> {
+  const itinerary = await getItinerary(entityId, itineraryId);
   if (!itinerary) return [];
 
   const alerts: FlightAlert[] = [];
@@ -14,6 +26,7 @@ export async function checkFlightStatus(itineraryId: string): Promise<FlightAler
   // Query CalendarEvent records that belong to this itinerary
   const calendarEvents = await prisma.calendarEvent.findMany({
     where: {
+      entityId,
       prepPacket: {
         path: ['itineraryId'],
         equals: itineraryId,
@@ -101,6 +114,20 @@ export async function checkFlightStatus(itineraryId: string): Promise<FlightAler
   return alerts;
 }
 
+/**
+ * THE ALTERNATIVES BELOW ARE NOT REAL FLIGHTS.
+ *
+ * No booking or search provider is integrated. "Alternative Airline A" and
+ * "Alternative Airline B" are the original leg with an hour or two added and the
+ * price scaled by 1.1 and 0.95. They are not bookable, the times are not
+ * schedules, and the prices are arithmetic.
+ *
+ * The response now carries `isSimulated: true` so a caller cannot mistake this
+ * for a rebooking option, and the AI-written `reason` says so in words. Left in
+ * place rather than deleted because the disruption flow around it is real and
+ * this is the seam a provider would plug into -- but it must not be presented to
+ * a traveller as a flight they can take.
+ */
 export async function generateDisruptionResponse(
   alert: FlightAlert,
   itinerary: Itinerary
@@ -108,12 +135,12 @@ export async function generateDisruptionResponse(
   const originalLeg = itinerary.legs.find(l => l.id === alert.legId);
   if (!originalLeg) throw new Error(`Leg ${alert.legId} not found`);
 
-  // Generate simulated alternatives
+  // Simulated alternatives -- see the note above. Not bookable.
   const alternatives: ItineraryLeg[] = [
     {
       ...originalLeg,
       id: uuidv4(),
-      provider: 'Alternative Airline A',
+      provider: 'Example alternative A (simulated -- not bookable)',
       departureTime: new Date(new Date(originalLeg.departureTime).getTime() + 3600000),
       arrivalTime: new Date(new Date(originalLeg.arrivalTime).getTime() + 3600000),
       costUsd: originalLeg.costUsd * 1.1,
@@ -122,7 +149,7 @@ export async function generateDisruptionResponse(
     {
       ...originalLeg,
       id: uuidv4(),
-      provider: 'Alternative Airline B',
+      provider: 'Example alternative B (simulated -- not bookable)',
       departureTime: new Date(new Date(originalLeg.departureTime).getTime() + 7200000),
       arrivalTime: new Date(new Date(originalLeg.arrivalTime).getTime() + 7200000),
       costUsd: originalLeg.costUsd * 0.95,
@@ -154,7 +181,10 @@ Explain in 2-3 sentences why the recommended alternative is the best choice cons
     originalLeg,
     alternatives,
     recommendation,
-    reason,
+    isSimulated: true,
+    reason:
+      'These alternatives are simulated placeholders, not real or bookable ' +
+      `flights; no booking provider is integrated. ${reason}`,
     additionalCost: recommendation.costUsd - originalLeg.costUsd,
   };
 }

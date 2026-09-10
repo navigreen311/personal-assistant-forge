@@ -1,115 +1,93 @@
 import { NextRequest } from 'next/server';
-import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
+import * as medicalService from '@/modules/health/services/medical-service';
+import * as wearableService from '@/modules/health/services/wearable-service';
 
-const safeQuery = async <T>(fn: () => Promise<T>, defaultVal: T): Promise<T> => {
-  try {
-    return await fn();
-  } catch {
-    return defaultVal;
-  }
-};
+/**
+ * WHAT CHANGED HERE, AND WHY IT MATTERS MORE THAN THE TENANCY FIX
+ *
+ * This handler used to read seven Prisma delegates that are not in the schema --
+ * `energyLog`, `sleepLog`, `activityLog`, `stressLog`, `appointment`,
+ * `medicationReminder`, `wearableConnection` -- through `(prisma as any)`, each
+ * wrapped in a `safeQuery` that swallowed the "delegate is undefined" TypeError
+ * and returned a hardcoded default. Every call threw, every default was
+ * returned, and the page rendered `energyLevel: 7`, `sleepHours: 7.2`,
+ * `stepsToday: 4320`, `stressLevel: 'low'` for every user on every request.
+ *
+ * That is invented medical data presented as measurement. The tenancy audit
+ * called fabricated data the most operationally dangerous finding in this repo,
+ * and a fabricated PHI dashboard is the sharpest version of it: a reading of
+ * "4320 steps, stress low" is something a person could act on.
+ *
+ * It now reads the models that actually exist -- `HealthMetric` and `Document`,
+ * both entity-scoped -- and reports `null` where there is no measurement.
+ * Absent data reads as absent.
+ */
+
+/** The most recent reading of a metric type, or null when there is none. */
+async function latestValue(entityId: string, type: string): Promise<number | null> {
+  const row = await prisma.healthMetric.findFirst({
+    where: { entityId, type },
+    orderBy: { recordedAt: 'desc' },
+    select: { value: true },
+  });
+  return row?.value ?? null;
+}
+
+function describeStress(level: number | null): string | null {
+  if (level === null) return null;
+  if (level >= 80) return 'high';
+  if (level >= 50) return 'moderate';
+  return 'low';
+}
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (_req, session, entityId) => {
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
 
-      const energyLevel = await safeQuery(async () => {
-        const entry = await (prisma as any).energyLog.findFirst({
-          where: { userId: session.userId, date: { gte: today } },
-          orderBy: { date: 'desc' },
-        });
-        return entry?.level ?? 7;
-      }, 7);
+      const [energyLevel, sleepHours, stressScore] = await Promise.all([
+        latestValue(entityId, 'energy'),
+        latestValue(entityId, 'sleep'),
+        latestValue(entityId, 'stress'),
+      ]);
 
-      const sleepHours = await safeQuery(async () => {
-        const entry = await (prisma as any).sleepLog.findFirst({
-          where: { userId: session.userId, date: { gte: today } },
-          orderBy: { date: 'desc' },
-        });
-        return entry?.hours ?? 7.2;
-      }, 7.2);
+      // Steps are cumulative for the day rather than a latest reading.
+      const stepsAggregate = await prisma.healthMetric.aggregate({
+        where: { entityId, type: 'steps', recordedAt: { gte: startOfToday } },
+        _sum: { value: true },
+      });
+      const stepsToday = stepsAggregate._sum.value ?? null;
 
-      const stepsToday = await safeQuery(async () => {
-        const entry = await (prisma as any).activityLog.findFirst({
-          where: { userId: session.userId, date: { gte: today } },
-          orderBy: { date: 'desc' },
-        });
-        return entry?.steps ?? 4320;
-      }, 4320);
+      const [upcomingAppointments, medicationReminders, connections] = await Promise.all([
+        medicalService.getUpcomingAppointments(entityId, session.userId, 30),
+        medicalService.getMedicationReminders(entityId, session.userId),
+        wearableService.getConnections(entityId, session.userId),
+      ]);
 
-      const stressLevel = await safeQuery(async () => {
-        const entry = await (prisma as any).stressLog.findFirst({
-          where: { userId: session.userId, date: { gte: today } },
-          orderBy: { date: 'desc' },
-        });
-        return entry?.level ?? 'low';
-      }, 'low');
-
-      const upcomingAppointments = await safeQuery(async () => {
-        const appointments = await (prisma as any).appointment.findMany({
-          where: {
-            userId: session.userId,
-            dateTime: { gte: new Date() },
-          },
-          orderBy: { dateTime: 'asc' },
-          take: 5,
-        });
-        return appointments ?? [];
-      }, [] as any[]);
-
-      const medicationReminders = await safeQuery(async () => {
-        const reminders = await (prisma as any).medicationReminder.findMany({
-          where: {
-            userId: session.userId,
-            active: true,
-          },
-          orderBy: { nextDue: 'asc' },
-        });
-        return reminders ?? [];
-      }, [] as any[]);
-
-      const wearableConnected = await safeQuery(async () => {
-        const connection = await (prisma as any).wearableConnection.findFirst({
-          where: { userId: session.userId, connected: true },
-        });
-        return !!connection;
-      }, false);
-
-      const wearableLastSync = await safeQuery(async () => {
-        const connection = await (prisma as any).wearableConnection.findFirst({
-          where: { userId: session.userId, connected: true },
-          orderBy: { lastSyncAt: 'desc' },
-        });
-        return connection?.lastSyncAt?.toISOString() ?? null;
-      }, null as string | null);
+      const connected = connections.filter((c) => c.isConnected);
+      const wearableLastSync = connected.reduce<Date | null>(
+        (latest, c) =>
+          c.lastSyncAt && (!latest || c.lastSyncAt > latest) ? c.lastSyncAt : latest,
+        null
+      );
 
       return success({
         energyLevel,
         sleepHours,
         stepsToday,
-        stressLevel,
-        upcomingAppointments,
+        stressLevel: describeStress(stressScore),
+        upcomingAppointments: upcomingAppointments.slice(0, 5),
         medicationReminders,
-        wearableConnected,
-        wearableLastSync,
+        wearableConnected: connected.length > 0,
+        wearableLastSync: wearableLastSync?.toISOString() ?? null,
       });
-    } catch {
-      // Outer catch: return safe defaults so the dashboard page never crashes
-      return success({
-        energyLevel: 7,
-        sleepHours: 7.2,
-        stepsToday: 4320,
-        stressLevel: 'low',
-        upcomingAppointments: [],
-        medicationReminders: [],
-        wearableConnected: false,
-        wearableLastSync: null,
-      });
+    } catch (err) {
+      // A real failure is reported as a failure. It is not dressed up as data.
+      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
     }
   });
 }

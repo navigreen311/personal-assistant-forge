@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import * as vehicleService from '@/modules/household/services/vehicle-service';
 
 const addVehicleSchema = z.object({
@@ -14,12 +14,14 @@ const addVehicleSchema = z.object({
   nextServiceType: z.string().optional(),
   insuranceExpiry: z.string().transform(s => new Date(s)).optional(),
   registrationExpiry: z.string().transform(s => new Date(s)).optional(),
+  // Optional and still verified; see the tenancy pattern, section 1.
+  entityId: z.string().min(1).optional(),
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
-      const vehicles = await vehicleService.getVehicles(session.userId);
+      const vehicles = await vehicleService.getVehicles(entityId, session.userId);
       return success(vehicles);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
@@ -28,14 +30,15 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = addVehicleSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const vehicle = await vehicleService.addVehicle(session.userId, {
-        ...parsed.data,
+      const { entityId: _requested, ...draft } = parsed.data;
+      const vehicle = await vehicleService.addVehicle(entityId, session.userId, {
+        ...draft,
         userId: session.userId,
       });
       return success(vehicle, 201);

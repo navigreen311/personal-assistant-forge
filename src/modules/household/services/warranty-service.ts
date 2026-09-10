@@ -1,18 +1,22 @@
 import { addDays, isBefore, isAfter } from 'date-fns';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { WarrantyRecord, SubscriptionRecord } from '../types';
 
-function docToWarranty(doc: {
-  id: string;
-  entityId: string;
-  content: string | null;
-}): WarrantyRecord {
+function docToWarranty(
+  doc: {
+    id: string;
+    entityId: string;
+    content: string | null;
+  },
+  userId: string
+): WarrantyRecord {
   const data = doc.content ? JSON.parse(doc.content) : {};
   const now = new Date();
   const endDate = data.warrantyEndDate ? new Date(data.warrantyEndDate) : new Date();
   return {
     id: doc.id,
-    userId: doc.entityId,
+    userId,
     itemName: data.itemName ?? '',
     purchaseDate: data.purchaseDate ? new Date(data.purchaseDate) : new Date(),
     warrantyEndDate: endDate,
@@ -25,15 +29,18 @@ function docToWarranty(doc: {
   };
 }
 
-function docToSubscription(doc: {
-  id: string;
-  entityId: string;
-  content: string | null;
-}): SubscriptionRecord {
+function docToSubscription(
+  doc: {
+    id: string;
+    entityId: string;
+    content: string | null;
+  },
+  userId: string
+): SubscriptionRecord {
   const data = doc.content ? JSON.parse(doc.content) : {};
   return {
     id: doc.id,
-    userId: doc.entityId,
+    userId,
     name: data.name ?? '',
     costPerMonth: data.costPerMonth ?? 0,
     billingCycle: data.billingCycle ?? 'MONTHLY',
@@ -46,13 +53,14 @@ function docToSubscription(doc: {
 }
 
 export async function addWarranty(
+  entityId: VerifiedEntityId,
   userId: string,
   warranty: Omit<WarrantyRecord, 'id' | 'isExpiring' | 'isExpired'>
 ): Promise<WarrantyRecord> {
   const created = await prisma.document.create({
     data: {
       title: warranty.itemName,
-      entityId: userId,
+      entityId,
       type: 'WARRANTY',
       status: 'ACTIVE',
       content: JSON.stringify({
@@ -67,34 +75,41 @@ export async function addWarranty(
     },
   });
 
-  return docToWarranty(created);
+  return docToWarranty(created, userId);
 }
 
-export async function getWarranties(userId: string): Promise<WarrantyRecord[]> {
+export async function getWarranties(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<WarrantyRecord[]> {
   const docs = await prisma.document.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'WARRANTY',
       deletedAt: null,
     },
   });
 
-  return docs.map(docToWarranty);
+  return docs.map((d) => docToWarranty(d, userId));
 }
 
-export async function getExpiringWarranties(userId: string, days: number): Promise<WarrantyRecord[]> {
+export async function getExpiringWarranties(
+  entityId: VerifiedEntityId,
+  userId: string,
+  days: number
+): Promise<WarrantyRecord[]> {
   const now = new Date();
   const futureDate = addDays(now, days);
 
   const docs = await prisma.document.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'WARRANTY',
       deletedAt: null,
     },
   });
 
-  const warranties: WarrantyRecord[] = docs.map(docToWarranty);
+  const warranties: WarrantyRecord[] = docs.map((d) => docToWarranty(d, userId));
   return warranties
     .filter((w: WarrantyRecord) => {
       const endDate = new Date(w.warrantyEndDate);
@@ -104,13 +119,14 @@ export async function getExpiringWarranties(userId: string, days: number): Promi
 }
 
 export async function addSubscription(
+  entityId: VerifiedEntityId,
   userId: string,
   sub: Omit<SubscriptionRecord, 'id'>
 ): Promise<SubscriptionRecord> {
   const created = await prisma.document.create({
     data: {
       title: sub.name,
-      entityId: userId,
+      entityId,
       type: 'SUBSCRIPTION',
       status: 'ACTIVE',
       content: JSON.stringify({
@@ -126,23 +142,29 @@ export async function addSubscription(
     },
   });
 
-  return docToSubscription(created);
+  return docToSubscription(created, userId);
 }
 
-export async function getSubscriptions(userId: string): Promise<SubscriptionRecord[]> {
+export async function getSubscriptions(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<SubscriptionRecord[]> {
   const docs = await prisma.document.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'SUBSCRIPTION',
       deletedAt: null,
     },
   });
 
-  return docs.map(docToSubscription);
+  return docs.map((d) => docToSubscription(d, userId));
 }
 
-export async function getMonthlySubscriptionCost(userId: string): Promise<number> {
-  const subs = await getSubscriptions(userId);
+export async function getMonthlySubscriptionCost(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<number> {
+  const subs = await getSubscriptions(entityId, userId);
   return subs
     .filter(s => s.isActive)
     .reduce((total, s) => {
@@ -151,10 +173,14 @@ export async function getMonthlySubscriptionCost(userId: string): Promise<number
     }, 0);
 }
 
-export async function getUpcomingRenewals(userId: string, days: number): Promise<SubscriptionRecord[]> {
+export async function getUpcomingRenewals(
+  entityId: VerifiedEntityId,
+  userId: string,
+  days: number
+): Promise<SubscriptionRecord[]> {
   const now = new Date();
   const futureDate = addDays(now, days);
-  const subs = await getSubscriptions(userId);
+  const subs = await getSubscriptions(entityId, userId);
 
   return subs
     .filter(s => s.isActive)
