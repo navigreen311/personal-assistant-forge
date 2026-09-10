@@ -33,7 +33,9 @@ jest.mock('@/modules/crisis/services/playbook-service', () => ({
   }),
 }));
 
-const { generateText } = require('@/lib/ai');
+import { generateText as generateTextImpl } from '@/lib/ai';
+
+const generateText = jest.mocked(generateTextImpl);
 
 describe('EscalationService', () => {
   beforeEach(() => {

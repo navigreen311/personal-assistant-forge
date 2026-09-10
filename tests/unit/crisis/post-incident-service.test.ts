@@ -18,7 +18,9 @@ jest.mock('@/lib/ai', () => ({
   }),
 }));
 
-const { generateJSON } = require('@/lib/ai');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 // Track crisis store for detection-service mock
 const mockCrisisStore = new Map<string, CrisisEvent>();
@@ -30,7 +32,10 @@ jest.mock('@/modules/crisis/services/detection-service', () => ({
   }),
 }));
 
-const { getCrisisById, updateCrisis } = require('@/modules/crisis/services/detection-service');
+import { getCrisisById as getCrisisByIdImpl, updateCrisis as updateCrisisImpl } from '@/modules/crisis/services/detection-service';
+
+const getCrisisById = jest.mocked(getCrisisByIdImpl);
+const updateCrisis = jest.mocked(updateCrisisImpl);
 
 function createMockCrisis(overrides: Partial<CrisisEvent> = {}): CrisisEvent {
   const playbook: CrisisPlaybook = {

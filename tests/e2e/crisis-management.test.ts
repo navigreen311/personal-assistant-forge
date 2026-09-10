@@ -91,7 +91,10 @@ import { getEscalationChain, setEscalationChain, executeEscalation, acknowledgeE
 import type { CrisisDetectionSignal, EscalationChainConfig, DeadManProtocol } from '@/modules/crisis/types';
 import { verifiedEntityIdForTest } from '../helpers/factories';
 
-const { generateText, generateJSON } = require('@/lib/ai');
+import { generateText as generateTextImpl, generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateText = jest.mocked(generateTextImpl);
+const generateJSON = jest.mocked(generateJSONImpl);
 
 describe('Crisis Management E2E', () => {
   beforeEach(() => { jest.clearAllMocks(); });

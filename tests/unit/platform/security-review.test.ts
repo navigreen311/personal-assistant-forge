@@ -1,7 +1,24 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { MockedDelegates } from '../../support/prisma-mock';
+
+/** The columns the review service supplies when it writes a Document row. */
+type DocumentInput = {
+  title?: string;
+  entityId?: string;
+  type?: string;
+  status?: string;
+  content?: string;
+};
 
 // Mock prisma before importing any services
-const mockPrisma = {
+/**
+ * P-35: the delegate/method names in the literal below were unconstrained, and
+ * the `mockImplementation` args were `any`. `MockedDelegates` binds the names
+ * to the real client (see tests/support/prisma-mock.ts) and the arg types name
+ * the fields this fake actually reads, so the mock states an interface instead
+ * of asserting nothing.
+ */
+const mockPrisma: MockedDelegates<'document'> = {
   document: {
     create: jest.fn(),
     findMany: jest.fn().mockResolvedValue([]),
@@ -32,7 +49,7 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   // Make prisma.document.create return a proper document object
-  mockPrisma.document.create.mockImplementation(async ({ data }: any) => {
+  mockPrisma.document.create!.mockImplementation(async ({ data }: { data: DocumentInput }) => {
     const id = uuidv4();
     return {
       id,

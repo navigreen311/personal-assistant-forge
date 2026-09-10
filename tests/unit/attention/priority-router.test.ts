@@ -22,9 +22,34 @@ import {
   routingConfigStore,
 } from '@/modules/attention/services/priority-router';
 
-const { generateJSON } = require('@/lib/ai');
-const { consumeBudget } = require('@/modules/attention/services/attention-budget-service');
-const { isDNDActive, checkVIPBreakthrough } = require('@/modules/attention/services/dnd-service');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
+import { consumeBudget as consumeBudgetImpl } from '@/modules/attention/services/attention-budget-service';
+import type { AttentionBudget } from '@/modules/attention/types';
+
+const consumeBudget = jest.mocked(consumeBudgetImpl);
+import { isDNDActive as isDNDActiveImpl, checkVIPBreakthrough as checkVIPBreakthroughImpl } from '@/modules/attention/services/dnd-service';
+
+const isDNDActive = jest.mocked(isDNDActiveImpl);
+
+/**
+ * P-35: `consumeBudget` was mocked as `{ allowed, budget: UNUSED_BUDGET }` behind a
+ * `require()`, which made the return type `any`. Typed against the real
+ * signature, `{}` is not an `AttentionBudget`. The router destructures only
+ * `allowed` (priority-router.ts:36,63) and never reads `budget`, so this is a
+ * complete stand-in for a field nothing under test consumes -- the mock's
+ * claim about the interface is now true rather than merely unchecked.
+ */
+const UNUSED_BUDGET: AttentionBudget = {
+  userId: 'user-1',
+  dailyBudget: 100,
+  usedToday: 0,
+  remaining: 100,
+  resetAt: new Date('2026-01-01T00:00:00Z'),
+};
+
+const checkVIPBreakthrough = jest.mocked(checkVIPBreakthroughImpl);
 
 describe('PriorityRouter', () => {
   beforeEach(() => {
@@ -33,7 +58,7 @@ describe('PriorityRouter', () => {
     routingConfigStore.clear();
     isDNDActive.mockResolvedValue(false);
     checkVIPBreakthrough.mockResolvedValue(false);
-    consumeBudget.mockResolvedValue({ allowed: true, budget: {} });
+    consumeBudget.mockResolvedValue({ allowed: true, budget: UNUSED_BUDGET });
   });
 
   describe('routeNotification', () => {
@@ -47,7 +72,7 @@ describe('PriorityRouter', () => {
 
     it('should route P0 notifications to INTERRUPT when DND is off and budget allows', async () => {
       isDNDActive.mockResolvedValue(false);
-      consumeBudget.mockResolvedValue({ allowed: true, budget: {} });
+      consumeBudget.mockResolvedValue({ allowed: true, budget: UNUSED_BUDGET });
 
       const item = await routeNotification('user-1', baseNotification);
 
@@ -61,7 +86,7 @@ describe('PriorityRouter', () => {
 
     it('should route P0 notifications to NEXT_DIGEST when DND is off but budget exhausted', async () => {
       isDNDActive.mockResolvedValue(false);
-      consumeBudget.mockResolvedValue({ allowed: false, budget: {} });
+      consumeBudget.mockResolvedValue({ allowed: false, budget: UNUSED_BUDGET });
 
       const item = await routeNotification('user-1', baseNotification);
 
@@ -109,7 +134,7 @@ describe('PriorityRouter', () => {
 
     it('should use AI classification for ambiguous priority and route P0 result', async () => {
       generateJSON.mockResolvedValue({ priority: 'P0' });
-      consumeBudget.mockResolvedValue({ allowed: true, budget: {} });
+      consumeBudget.mockResolvedValue({ allowed: true, budget: UNUSED_BUDGET });
 
       const item = await routeNotification('user-1', {
         userId: 'user-1',
@@ -193,7 +218,7 @@ describe('PriorityRouter', () => {
 
     it('should route AI-classified P0 to NEXT_DIGEST when budget is exhausted', async () => {
       generateJSON.mockResolvedValue({ priority: 'P0' });
-      consumeBudget.mockResolvedValue({ allowed: false, budget: {} });
+      consumeBudget.mockResolvedValue({ allowed: false, budget: UNUSED_BUDGET });
 
       const item = await routeNotification('user-1', {
         userId: 'user-1',

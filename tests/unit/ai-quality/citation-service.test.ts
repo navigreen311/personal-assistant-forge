@@ -19,8 +19,13 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI verification: citation is valid.'),
 }));
 
-const { prisma } = require('@/lib/db');
-const { generateText } = require('@/lib/ai');
+import { prisma as prismaImpl } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+const prisma = asMockedPrisma(prismaImpl);
+import { generateText as generateTextImpl } from '@/lib/ai';
+
+const generateText = jest.mocked(generateTextImpl);
 
 describe('CitationService', () => {
   beforeEach(() => {

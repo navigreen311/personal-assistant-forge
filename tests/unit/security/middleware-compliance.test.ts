@@ -82,14 +82,23 @@ jest.mock('@/modules/security/services/audit-service', () => ({
   },
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { complianceService } = require('@/modules/security/services/compliance-service');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { consentService } = require('@/modules/security/services/consent-service');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { classificationService } = require('@/modules/security/services/classification-service');
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { redactionService } = require('@/modules/security/services/redaction-service');
+import { complianceService as complianceServiceImpl } from '@/modules/security/services/compliance-service';
+const complianceService = jest.mocked(complianceServiceImpl);
+import { consentService as consentServiceImpl } from '@/modules/security/services/consent-service';
+const consentService = jest.mocked(consentServiceImpl);
+import { classificationService as classificationServiceImpl } from '@/modules/security/services/classification-service';
+const classificationService = jest.mocked(classificationServiceImpl);
+import { redactionService as redactionServiceImpl } from '@/modules/security/services/redaction-service';
+const redactionService = jest.mocked(redactionServiceImpl);
+
+/**
+ * P-35: these calls carried `init as any`. The real incompatibility is one
+ * field -- the DOM `RequestInit` types `signal` as `AbortSignal | null |
+ * undefined` and Next narrows it to `AbortSignal | undefined` -- so `any` was
+ * discarding every other field's type to paper over `signal`. Naming Next's
+ * own init type checks `method`, `headers` and `body` again.
+ */
+type NextRequestInit = NonNullable<ConstructorParameters<typeof NextRequest>[1]>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,11 +115,12 @@ function createMockRequest(options: {
   if (options.body) {
     headers.set('content-type', 'application/json');
   }
-  return new NextRequest(url, {
+  const init: NextRequestInit = {
     method: options.method || 'GET',
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
-  } as any);
+  };
+  return new NextRequest(url, init);
 }
 
 /** Default mock handler that returns a JSON response */
@@ -291,9 +301,25 @@ describe('Compliance Middleware', () => {
         autoApplied: true,
       });
 
+      // P-35: this stub was `as any`-adjacent -- it omitted `originalLength`
+      // and gave `matches` a one-field object. `withClassificationEnforcement`
+      // reads only `redactedText` and `matchCount` (compliance.ts:86,101), so
+      // the rest is filled in to make the `RedactionResult` claim true rather
+      // than unchecked. Nothing the middleware reads changed.
       redactionService.redactContent.mockReturnValueOnce({
+        originalLength: 32,
         redactedText: JSON.stringify({ data: '[REDACTED]' }),
-        matches: [{ type: 'SSN' }],
+        matches: [
+          {
+            type: 'SSN',
+            category: 'PII',
+            value: '123-45-6789',
+            redactedValue: '[REDACTED]',
+            startIndex: 0,
+            endIndex: 11,
+            confidence: 1,
+          },
+        ],
         matchCount: 1,
         categories: ['PII'],
       });

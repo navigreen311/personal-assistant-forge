@@ -12,7 +12,16 @@
 
 // --- Infrastructure mocks ---
 
-const mockPrisma = {
+/**
+ * P-35: the delegate and method names in this literal were unconstrained and
+ * the store rows were `any`. `MockedDelegates` binds both to the real client
+ * (tests/support/prisma-mock.ts): `followUpReminder` and `cannedResponse` are
+ * checked to be delegates that exist, and each stubbed method to be a method
+ * that exists. Nothing about the row fixtures changed.
+ */
+const mockPrisma: MockedDelegates<
+  'message' | 'contact' | 'entity' | 'followUpReminder' | 'cannedResponse'
+> = {
   message: {
     findUnique: jest.fn(),
     findFirst: jest.fn(),
@@ -69,6 +78,7 @@ jest.mock('uuid', () => ({
 }));
 
 import { InboxService } from '@/modules/inbox/inbox.service';
+import type { MockedDelegates } from '../support/prisma-mock';
 import { TriageService } from '@/modules/inbox/triage.service';
 import { DraftService } from '@/modules/inbox/draft.service';
 import { generateJSON, generateText, chat } from '@/lib/ai';
@@ -129,8 +139,11 @@ describe('Inbox Management E2E Tests', () => {
   let draftService: DraftService;
 
   // In-memory stores for stateful Prisma mocking
-  let followUpStore: Record<string, unknown>[];
-  let cannedStore: Record<string, unknown>[];
+  /** A stored row: opaque columns, but it always has the id the fake looks up by. */
+  type StoreRow = Record<string, unknown> & { id: string };
+
+  let followUpStore: StoreRow[];
+  let cannedStore: StoreRow[];
   let followUpIdCounter: number;
   let cannedIdCounter: number;
 
@@ -150,23 +163,23 @@ describe('Inbox Management E2E Tests', () => {
     cannedIdCounter = 1;
 
     // Message writes now go through updateMany and read { count }.
-    mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
     // Default empty returns for list/message queries
-    mockPrisma.followUpReminder.findMany.mockImplementation(() => Promise.resolve(followUpStore));
-    mockPrisma.followUpReminder.findFirst.mockImplementation(() => Promise.resolve(null));
-    mockPrisma.followUpReminder.findFirst.mockImplementation((args: { where: { id: string } }) => {
-      return Promise.resolve(followUpStore.find((f: any) => f.id === args.where.id) ?? null);
+    mockPrisma.followUpReminder.findMany!.mockImplementation(() => Promise.resolve(followUpStore));
+    mockPrisma.followUpReminder.findFirst!.mockImplementation(() => Promise.resolve(null));
+    mockPrisma.followUpReminder.findFirst!.mockImplementation((args: { where: { id: string } }) => {
+      return Promise.resolve(followUpStore.find((f) => f.id === args.where.id) ?? null);
     });
-    mockPrisma.followUpReminder.create.mockImplementation((args: { data: any }) => {
-      const row = { id: `fu-${followUpIdCounter++}`, ...args.data, createdAt: new Date(), updatedAt: new Date() };
+    mockPrisma.followUpReminder.create!.mockImplementation((args: { data: Record<string, unknown> }) => {
+      const row: StoreRow = { ...args.data, id: `fu-${followUpIdCounter++}`, createdAt: new Date(), updatedAt: new Date() };
       followUpStore.push(row);
       return Promise.resolve(row);
     });
     // updateMany / deleteMany return a { count }, and the service reads
     // count === 0 as not-found -- the scope now rides in the WHERE clause.
-    mockPrisma.followUpReminder.updateMany.mockImplementation((args: { where: { id: string }; data: any }) => {
-      const idx = followUpStore.findIndex((f: any) => f.id === args.where.id);
+    mockPrisma.followUpReminder.updateMany!.mockImplementation((args: { where: { id: string }; data: Record<string, unknown> }) => {
+      const idx = followUpStore.findIndex((f) => f.id === args.where.id);
       if (idx >= 0) {
         followUpStore[idx] = { ...followUpStore[idx], ...args.data };
         return Promise.resolve({ count: 1 });
@@ -174,25 +187,25 @@ describe('Inbox Management E2E Tests', () => {
       return Promise.resolve({ count: 0 });
     });
 
-    mockPrisma.cannedResponse.findMany.mockImplementation(() => Promise.resolve(cannedStore));
-    mockPrisma.cannedResponse.findFirst.mockImplementation((args: { where: { id: string } }) => {
-      return Promise.resolve(cannedStore.find((c: any) => c.id === args.where.id) ?? null);
+    mockPrisma.cannedResponse.findMany!.mockImplementation(() => Promise.resolve(cannedStore));
+    mockPrisma.cannedResponse.findFirst!.mockImplementation((args: { where: { id: string } }) => {
+      return Promise.resolve(cannedStore.find((c) => c.id === args.where.id) ?? null);
     });
-    mockPrisma.cannedResponse.create.mockImplementation((args: { data: any }) => {
-      const row = { id: `cr-${cannedIdCounter++}`, ...args.data, createdAt: new Date(), updatedAt: new Date() };
+    mockPrisma.cannedResponse.create!.mockImplementation((args: { data: Record<string, unknown> }) => {
+      const row: StoreRow = { ...args.data, id: `cr-${cannedIdCounter++}`, createdAt: new Date(), updatedAt: new Date() };
       cannedStore.push(row);
       return Promise.resolve(row);
     });
-    mockPrisma.cannedResponse.updateMany.mockImplementation((args: { where: { id: string }; data: any }) => {
-      const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
+    mockPrisma.cannedResponse.updateMany!.mockImplementation((args: { where: { id: string }; data: Record<string, unknown> }) => {
+      const idx = cannedStore.findIndex((c) => c.id === args.where.id);
       if (idx >= 0) {
         cannedStore[idx] = { ...cannedStore[idx], ...args.data, updatedAt: new Date() };
         return Promise.resolve({ count: 1 });
       }
       return Promise.resolve({ count: 0 });
     });
-    mockPrisma.cannedResponse.deleteMany.mockImplementation((args: { where: { id: string } }) => {
-      const idx = cannedStore.findIndex((c: any) => c.id === args.where.id);
+    mockPrisma.cannedResponse.deleteMany!.mockImplementation((args: { where: { id: string } }) => {
+      const idx = cannedStore.findIndex((c) => c.id === args.where.id);
       if (idx >= 0) {
         cannedStore.splice(idx, 1);
         return Promise.resolve({ count: 1 });
@@ -211,10 +224,10 @@ describe('Inbox Management E2E Tests', () => {
         createMockMessage({ id: 'msg-2', triageScore: 3, intent: 'FYI', entity: createMockEntity(), contact: null }),
       ];
 
-      mockPrisma.message.findMany
+      mockPrisma.message.findMany!
         .mockResolvedValueOnce(messages)
         .mockResolvedValueOnce(messages);
-      mockPrisma.message.count.mockResolvedValue(2);
+      mockPrisma.message.count!.mockResolvedValue(2);
 
       const result = await inboxService.listInbox(SCOPE, {
         page: 1,
@@ -241,8 +254,8 @@ describe('Inbox Management E2E Tests', () => {
         createMockMessage({ id: 'thread-msg-2', threadId: 'thread-1' }),
       ];
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.message.findMany.mockResolvedValue(threadMessages);
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.message.findMany!.mockResolvedValue(threadMessages);
 
       const detail = await inboxService.getMessageDetail('detail-msg', SCOPE);
 
@@ -252,7 +265,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should mark a message as read and toggle star, scoped to the entity', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(
+      mockPrisma.message.findFirst!.mockResolvedValue(
         createMockMessage({ id: 'rw-msg' })
       );
 
@@ -272,8 +285,8 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should throw when marking a nonexistent message as read', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(null);
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 0 });
+      mockPrisma.message.findFirst!.mockResolvedValue(null);
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 0 });
 
       await expect(
         inboxService.markAsRead('bad-msg', true, SCOPE)
@@ -281,7 +294,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should archive a message, scoped to the entity', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(
+      mockPrisma.message.findFirst!.mockResolvedValue(
         createMockMessage({ id: 'archive-msg' })
       );
 
@@ -297,8 +310,8 @@ describe('Inbox Management E2E Tests', () => {
       const draftMsg = createMockMessage({ id: 'draft-msg', draftStatus: 'DRAFT' });
       const sentMsg = createMockMessage({ id: 'draft-msg', draftStatus: 'SENT' });
 
-      mockPrisma.message.findFirst.mockResolvedValue(draftMsg);
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(draftMsg);
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const sent = await inboxService.sendDraft('draft-msg', SCOPE);
 
@@ -310,7 +323,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should reject sending a non-draft message', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(
+      mockPrisma.message.findFirst!.mockResolvedValue(
         createMockMessage({ id: 'not-draft', draftStatus: null })
       );
 
@@ -331,10 +344,10 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Urgent: Contract Review',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(urgentMessage);
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(urgentMessage);
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.triageMessage('urgent-msg', SCOPE);
 
@@ -353,10 +366,10 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Invoice #12345',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(financialMessage);
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(financialMessage);
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.triageMessage('fin-msg', SCOPE);
 
@@ -382,10 +395,10 @@ describe('Inbox Management E2E Tests', () => {
         preferences: {},
       };
 
-      mockPrisma.message.findFirst.mockResolvedValue(vipMessage);
-      mockPrisma.contact.findFirst.mockResolvedValue(vipContact);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(vipMessage);
+      mockPrisma.contact.findFirst!.mockResolvedValue(vipContact);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.triageMessage('vip-msg', SCOPE);
 
@@ -399,10 +412,10 @@ describe('Inbox Management E2E Tests', () => {
         body: 'SSN: 123-45-6789. Date of birth: 03/15/1985. Please update the records.',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(piiMessage);
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(piiMessage);
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.triageMessage('pii-msg', SCOPE);
 
@@ -413,10 +426,10 @@ describe('Inbox Management E2E Tests', () => {
     it('should persist triage score and intent back to the message', async () => {
       const msg = createMockMessage({ id: 'persist-msg', body: 'Please help with this request.' });
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.triageMessage('persist-msg', SCOPE);
 
@@ -436,8 +449,8 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Manual Override Test',
       });
 
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
 
       const result = await triageService.updateTriageScore('manual-msg', 9, 'Escalated by manager', SCOPE);
 
@@ -459,8 +472,8 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Quarterly Report',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
 
       const draft = await draftService.generateDraft({
         messageId: 'draft-reply-msg',
@@ -483,8 +496,8 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Meeting Request',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
 
       const formalDraft = await draftService.generateDraft({
         messageId: 'multi-tone-msg',
@@ -523,8 +536,8 @@ describe('Inbox Management E2E Tests', () => {
       const msg = createMockMessage({ id: 'hipaa-msg', body: 'Patient records update.' });
       const hipaaEntity = createMockEntity({ complianceProfile: ['HIPAA'] });
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.entity.findUnique.mockResolvedValue(hipaaEntity);
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.entity.findUnique!.mockResolvedValue(hipaaEntity);
 
       const draft = await draftService.generateDraft({
         messageId: 'hipaa-msg',
@@ -552,7 +565,7 @@ describe('Inbox Management E2E Tests', () => {
   // =========================================================================
   describe('Follow-up creation and tracking', () => {
     it('should create a follow-up, list it, and complete it', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'fu-msg' }));
+      mockPrisma.message.findFirst!.mockResolvedValue(createMockMessage({ id: 'fu-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'fu-msg',
@@ -577,7 +590,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should snooze a follow-up to a new date', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'snooze-msg' }));
+      mockPrisma.message.findFirst!.mockResolvedValue(createMockMessage({ id: 'snooze-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'snooze-msg',
@@ -594,7 +607,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should cancel a follow-up', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(createMockMessage({ id: 'cancel-fu-msg' }));
+      mockPrisma.message.findFirst!.mockResolvedValue(createMockMessage({ id: 'cancel-fu-msg' }));
 
       const followUp = await inboxService.createFollowUp({
         messageId: 'cancel-fu-msg',
@@ -615,7 +628,7 @@ describe('Inbox Management E2E Tests', () => {
     });
 
     it('should throw when creating a follow-up for a nonexistent message', async () => {
-      mockPrisma.message.findFirst.mockResolvedValue(null);
+      mockPrisma.message.findFirst!.mockResolvedValue(null);
 
       await expect(
         inboxService.createFollowUp({
@@ -725,20 +738,20 @@ describe('Inbox Management E2E Tests', () => {
         createMockMessage({ id: 'bt-4', body: 'Could you please review the attached document?' }),
       ];
 
-      mockPrisma.message.findMany.mockResolvedValueOnce(
+      mockPrisma.message.findMany!.mockResolvedValueOnce(
         messages.map((m) => ({ id: m.id }))
       );
 
       let findUniqueCallIndex = 0;
-      mockPrisma.message.findFirst.mockImplementation(() => {
+      mockPrisma.message.findFirst!.mockImplementation(() => {
         const msg = messages[findUniqueCallIndex % messages.length];
         findUniqueCallIndex++;
         return Promise.resolve(msg);
       });
 
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const batchResult = await triageService.batchTriage({}, SCOPE);
 
@@ -764,15 +777,15 @@ describe('Inbox Management E2E Tests', () => {
       ];
 
       let callIdx = 0;
-      mockPrisma.message.findFirst.mockImplementation(() => {
+      mockPrisma.message.findFirst!.mockImplementation(() => {
         const msg = messages[callIdx % messages.length];
         callIdx++;
         return Promise.resolve(msg);
       });
 
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       const result = await triageService.batchTriage({
         messageIds: ['specific-1', 'specific-2'],
@@ -794,10 +807,10 @@ describe('Inbox Management E2E Tests', () => {
         subject: 'Contract Review Request',
       });
 
-      mockPrisma.message.findFirst.mockResolvedValue(msg);
-      mockPrisma.contact.findFirst.mockResolvedValue(null);
-      mockPrisma.entity.findUnique.mockResolvedValue(createMockEntity());
-      mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.message.findFirst!.mockResolvedValue(msg);
+      mockPrisma.contact.findFirst!.mockResolvedValue(null);
+      mockPrisma.entity.findUnique!.mockResolvedValue(createMockEntity());
+      mockPrisma.message.updateMany!.mockResolvedValue({ count: 1 });
 
       // Step 1: Triage
       const triageResult = await triageService.triageMessage('cross-msg', SCOPE);
@@ -844,7 +857,7 @@ describe('Inbox Management E2E Tests', () => {
         { id: 'stat-4', channel: 'SLACK', triageScore: 5, intent: 'INQUIRY', draftStatus: 'SENT' },
       ];
 
-      mockPrisma.message.findMany.mockResolvedValue(messages);
+      mockPrisma.message.findMany!.mockResolvedValue(messages);
 
       const stats = await inboxService.getInboxStats(SCOPE);
 

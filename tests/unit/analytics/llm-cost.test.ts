@@ -16,6 +16,7 @@ jest.mock('@/lib/ai', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
 import {
   getCostsByModule,
   getCostsByModel,
@@ -27,7 +28,10 @@ import {
   getCostDashboard,
 } from '@/modules/analytics/services/llm-cost-service';
 
-const mockPrisma = prisma as any;
+// P-35: was `prisma as any`, which deleted the only check available here --
+// that these delegates and methods exist on the real client. See
+// tests/support/prisma-mock.ts.
+const mockPrisma = asMockedPrisma(prisma);
 
 beforeEach(() => {
   jest.clearAllMocks();

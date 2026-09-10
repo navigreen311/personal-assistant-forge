@@ -86,7 +86,7 @@ describe('BufferService', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      const buffers = service.calculateBuffers(request, prevEvent as any);
+      const buffers = service.calculateBuffers(request, prevEvent);
       expect(buffers.before).toBeGreaterThanOrEqual(0);
     });
 

@@ -1,7 +1,38 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { MockedDelegates } from '../../support/prisma-mock';
+
+/** The columns the DLP service supplies when it writes a Rule row. */
+type RuleInput = {
+  name?: string;
+  scope?: string;
+  entityId?: string;
+  condition?: unknown;
+  action?: unknown;
+  isActive?: boolean;
+};
+
+/** The Rule row this fake hands back. */
+interface RuleRow {
+  id: string;
+  name: string;
+  scope: string;
+  entityId: string;
+  condition: unknown;
+  action: unknown;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 // Mock prisma before importing the service
-const mockPrisma = {
+/**
+ * P-35: the delegate/method names in the literal below were unconstrained, and
+ * the `mockImplementation` args were `any`. `MockedDelegates` binds the names
+ * to the real client (see tests/support/prisma-mock.ts) and the arg types name
+ * the fields this fake actually reads, so the mock states an interface instead
+ * of asserting nothing.
+ */
+const mockPrisma: MockedDelegates<'rule' | 'actionLog'> = {
   rule: {
     create: jest.fn(),
     findMany: jest.fn(),
@@ -23,24 +54,25 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   // Make prisma.rule.create return a proper rule object
-  mockPrisma.rule.create.mockImplementation(async ({ data }: any) => {
+  mockPrisma.rule.create!.mockImplementation(async ({ data }: { data: RuleInput }) => {
     const id = uuidv4();
-    return {
+    const row: RuleRow = {
       id,
-      name: data.name,
-      scope: data.scope,
-      entityId: data.entityId,
+      name: data.name ?? '',
+      scope: data.scope ?? '',
+      entityId: data.entityId ?? '',
       condition: data.condition,
       action: data.action,
-      isActive: data.isActive,
+      isActive: data.isActive ?? true,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
+    return row;
   });
 
   // Make prisma.rule.findMany return rules from the dlpStore
-  mockPrisma.rule.findMany.mockImplementation(async ({ where }: any) => {
-    const rules: any[] = [];
+  mockPrisma.rule.findMany!.mockImplementation(async ({ where }: { where?: { entityId?: string } }) => {
+    const rules: RuleRow[] = [];
     for (const [, rule] of dlpStore) {
       if (where?.entityId && rule.entityId !== where.entityId) continue;
       rules.push({

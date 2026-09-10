@@ -36,8 +36,17 @@ jest.mock('@/modules/security/services/audit-service', () => ({
   },
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { auditService } = require('@/modules/security/services/audit-service');
+import { auditService as auditServiceImpl } from '@/modules/security/services/audit-service';
+const auditService = jest.mocked(auditServiceImpl);
+
+/**
+ * P-35: these calls carried `init as any`. The real incompatibility is one
+ * field -- the DOM `RequestInit` types `signal` as `AbortSignal | null |
+ * undefined` and Next narrows it to `AbortSignal | undefined` -- so `any` was
+ * discarding every other field's type to paper over `signal`. Naming Next's
+ * own init type checks `method`, `headers` and `body` again.
+ */
+type NextRequestInit = NonNullable<ConstructorParameters<typeof NextRequest>[1]>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,11 +63,12 @@ function createMockRequest(options: {
   if (options.body) {
     headers.set('content-type', 'application/json');
   }
-  return new NextRequest(url, {
+  const init: NextRequestInit = {
     method: options.method || 'GET',
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
-  } as any);
+  };
+  return new NextRequest(url, init);
 }
 
 /** Simple 200 JSON handler */
