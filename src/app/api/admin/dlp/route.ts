@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
 import { getDLPRules, createDLPRule } from '@/modules/admin/services/dlp-service';
-import { withRole } from '@/shared/middleware/auth';
 
 // P-10/T-001. `withRole(['admin'])` alone proved the caller holds a role. Roles
 // in this system are GLOBAL (`AuthSession.role`), so an admin of tenant A passed
