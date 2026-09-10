@@ -63,11 +63,13 @@
  * hanging until Kubernetes or Compose SIGKILLs it.
  */
 
-import type { Worker } from 'bullmq';
+import type { Job, Worker } from 'bullmq';
 import { prisma } from '@/lib/db';
 import { createJobWorker } from '@/lib/queue/jobs/registry';
 import { createCronWorker } from '@/lib/queue/scheduler';
 import { createWorkflowWorker } from '@/lib/queue/workflow-worker';
+import { report, reportError } from '@/lib/observability/report';
+import { startHeartbeat, reportWorkerShutdown } from '@/lib/observability/worker-health';
 import { createCaptureWorker } from '@/modules/capture/services/capture-processor';
 
 /** How long a graceful shutdown may take before the process exits anyway. */
@@ -96,6 +98,72 @@ export function createAllWorkers(): NamedWorker[] {
   ];
 }
 
+/**
+ * P-28 (T-013/T-025) — attach reporting to one worker.
+ *
+ * Attached HERE and not inside the four `create*Worker` factories, deliberately.
+ * Each factory already has its own `console.error` handlers, and one of them
+ * lives under `src/modules/`; wiring in four places means four chances for the
+ * fifth queue somebody adds next month to be wired in none. This function runs
+ * over whatever `createAllWorkers()` returns, so a new queue is instrumented by
+ * being in that list — the same reason `tests/helpers/routes.ts` reads the route
+ * inventory off the filesystem instead of keeping a list.
+ *
+ * BullMQ's emitter allows multiple listeners, so the existing `console.error`
+ * handlers keep running and nothing about current behaviour changes.
+ */
+function observeWorker(name: string, worker: Worker): void {
+  // 'failed' fires on EVERY attempt, not only the last one. The distinction
+  // matters: a job that failed once and succeeded on retry is the retry policy
+  // working, and reporting it at the same severity as a job that exhausted its
+  // attempts is how a metric becomes noise. Only the terminal failure — the job
+  // that will never complete — is an error.
+  worker.on('failed', (job: Job | undefined, err: Error) => {
+    const attempts = job?.opts?.attempts ?? 1;
+    const made = job?.attemptsMade ?? 0;
+    const exhausted = made >= attempts;
+    reportError(err, {
+      kind: 'job_failed',
+      severity: exhausted ? 'error' : 'warning',
+      // Queue and job NAME only. A job id would give one counter row per job,
+      // which is the high-cardinality mistake documented in types.ts.
+      fingerprint: `job:${name}:${job?.name ?? 'unknown'}:${exhausted ? 'exhausted' : 'attempt'}`,
+      message: exhausted
+        ? `job exhausted ${attempts} attempts and will not complete`
+        : 'job attempt failed and will be retried',
+      context: { queue: name, jobName: job?.name ?? null, attemptsMade: made, attempts },
+    });
+  });
+
+  // A stalled job is one a worker took and stopped reporting on: the process
+  // died mid-job, or an event loop block outlasted the lock. It is the only
+  // signal that distinguishes "the worker is slow" from "the worker is gone
+  // and this job is being handed to someone else".
+  worker.on('stalled', (jobId: string) => {
+    report({
+      kind: 'job_stalled',
+      severity: 'error',
+      message: 'job stalled; its lock expired before the worker reported back',
+      fingerprint: `job:${name}:stalled`,
+      context: { queue: name, jobId },
+    });
+  });
+
+  // A Worker emits 'error' for connection-level problems. Unhandled, an
+  // EventEmitter 'error' terminates the process — which would make a Redis
+  // blip look like a crash loop rather than a reconnect.
+  worker.on('error', (err: Error) => {
+    console.error(`[worker:${name}] error:`, err.message);
+    reportError(err, {
+      kind: 'worker_error',
+      severity: 'warning',
+      fingerprint: `worker:${name}:error`,
+      message: 'worker connection error',
+      context: { queue: name },
+    });
+  });
+}
+
 async function main(): Promise<void> {
   const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
   console.log(`[worker] starting; redis=${redisUrl} concurrency=${CONCURRENCY}`);
@@ -103,14 +171,27 @@ async function main(): Promise<void> {
   const workers = createAllWorkers();
 
   for (const { name, worker } of workers) {
-    // A Worker emits 'error' for connection-level problems. Unhandled, an
-    // EventEmitter 'error' terminates the process — which would make a Redis
-    // blip look like a crash loop rather than a reconnect.
-    worker.on('error', (err: Error) => {
-      console.error(`[worker:${name}] error:`, err.message);
-    });
+    observeWorker(name, worker);
     console.log(`[worker] listening on queue "${name}"`);
   }
+
+  // P-28: publish liveness so /api/health can answer "is anything consuming
+  // the queues?". Before this, a worker container that OOMed looked identical
+  // from the web tier to one running perfectly: `enqueue` returns 200 either
+  // way. See src/lib/observability/worker-health.ts.
+  const heartbeat = startHeartbeat(workers.map((w) => w.name));
+
+  report({
+    kind: 'manual',
+    severity: 'warning',
+    message: 'worker process started',
+    fingerprint: 'lifecycle:worker-start',
+    context: {
+      queues: workers.map((w) => w.name).join(','),
+      concurrency: CONCURRENCY,
+      heartbeat: heartbeat !== null,
+    },
+  });
 
   let shuttingDown = false;
 
@@ -122,6 +203,11 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`[worker] ${signal} received; draining ${workers.length} workers`);
 
+    // P-28: recorded BEFORE draining, so the report exists even if the drain is
+    // what hangs. A shutdown reported only on success is a shutdown you never
+    // hear about in the one case you needed to.
+    reportWorkerShutdown(signal, exitCode);
+
     const forceExit = setTimeout(() => {
       console.error(`[worker] shutdown exceeded ${FORCE_EXIT_MS}ms; forcing exit`);
       process.exit(1);
@@ -130,6 +216,13 @@ async function main(): Promise<void> {
     forceExit.unref();
 
     try {
+      // Deregister first: a worker that is on its way down should stop being
+      // "expected" before it stops answering, or a rolling restart reports
+      // itself as an outage. An UNCLEAN death skips this line, leaves the
+      // registration in Redis, and is exactly what /api/health then reports as
+      // down — which is the case worth alerting on.
+      if (heartbeat) await heartbeat.stop();
+
       await Promise.all(
         workers.map(async ({ name, worker }) => {
           await worker.close();
@@ -153,13 +246,33 @@ async function main(): Promise<void> {
   // A rejection nobody handled has already left some job in an unknown state.
   // Exiting non-zero lets the orchestrator restart into a known one; staying up
   // means the next few hundred jobs run against whatever that state is.
+  // P-28: reporting is added to these two handlers rather than to new ones.
+  // Attaching a SECOND `uncaughtException` listener would be harmless, but
+  // attaching a first one is not — a process with such a listener no longer
+  // exits on an uncaught throw. These already exist and already own the
+  // shutdown decision, so adding a `reportError` call changes nothing about
+  // what happens next. `src/instrumentation.ts` cannot do the same for the web
+  // process and uses `uncaughtExceptionMonitor` instead; the reasoning is
+  // written out there.
   process.on('unhandledRejection', (reason) => {
     console.error('[worker] unhandled rejection:', reason);
+    reportError(reason, {
+      kind: 'worker_shutdown',
+      severity: 'fatal',
+      fingerprint: 'worker:unhandled-rejection',
+      message: 'unhandled rejection in worker process',
+    });
     void shutdown('unhandledRejection', 1);
   });
 
   process.on('uncaughtException', (err) => {
     console.error('[worker] uncaught exception:', err);
+    reportError(err, {
+      kind: 'worker_shutdown',
+      severity: 'fatal',
+      fingerprint: 'worker:uncaught-exception',
+      message: 'uncaught exception in worker process',
+    });
     void shutdown('uncaughtException', 1);
   });
 

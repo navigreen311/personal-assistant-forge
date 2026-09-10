@@ -533,7 +533,7 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     }
   });
 
-  it('reports the whole set — twenty-nine routes, not five', () => {
+  it('reports the whole set — thirty routes, not five', () => {
     const unscoped = unscopedAuthenticatedRoutes();
     const patterns = unscoped.map((r) => r.urlPattern);
 
@@ -559,7 +559,30 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     // not introduced by the repair; it was DISCLOSED by it. Dead code that
     // mentions the right variable is indistinguishable from live code that uses
     // it — to a grep, to this instrument, and to a human reading the file.
+    //
+    // IT EARNED ITS KEEP A SECOND TIME, IN P-28. Twenty-nine became thirty when
+    // `/api/admin/observability` landed, and this test is the reason that
+    // addition is being justified in writing rather than merged unnoticed.
+    //
+    // That route IS authenticated (`withRole(['owner','admin'])`) and it is
+    // deliberately NOT entity-scoped, which is why it appears here. What it
+    // returns is not any tenant's data: it is a property of the PROCESS —
+    // which Prisma queries are failing, which model is missing from the schema,
+    // whether the worker tier is alive. No entity owns "the client cannot find
+    // table X", so there is nothing for `withEntityScope` to check. Adding it
+    // would have produced a filter that looked like tenancy and filtered
+    // nothing, which is the exact shape of the ten bugs P-28 exists to detect.
+    //
+    // The residual exposure is real and is stated rather than hidden: any owner
+    // or admin of ANY entity sees platform-wide operational data. It is
+    // mitigated by scrubbing emails, uuids and long tokens out of every message
+    // at record time (`scrubMessage`), by never recording Prisma query
+    // arguments at all, and by the role gate itself. See docs/observability.md.
+    //
+    // If a later package decides platform telemetry should be owner-only, or
+    // partitioned per entity, this line is where that decision gets made.
     expect(patterns).toEqual([
+      '/api/admin/observability',
       '/api/attention/insights',
       '/api/attention/notifications',
       '/api/billing/model-route',

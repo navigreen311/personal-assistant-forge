@@ -49,7 +49,23 @@ export function softDeleteFilter(): { deletedAt: null } {
 
 // --- Transaction Wrapper ---
 
-export type PrismaTransactionClient = Prisma.TransactionClient;
+/**
+ * The client handed to an interactive `$transaction` callback.
+ *
+ * P-28: this was `Prisma.TransactionClient`, the static type of a transaction
+ * on a BARE client. `src/lib/db/index.ts` now exports a client with a query
+ * extension on it, and an extended client's transaction client is a different
+ * (wider) type, so the static alias no longer described the value that actually
+ * arrives -- `tsc` said so, which is the whole reason the extension was applied
+ * to the exported client rather than cast away.
+ *
+ * Deriving it from `prisma.$transaction` itself means it cannot drift again:
+ * add or remove an extension and this type follows.
+ */
+type InteractiveTransactionCallback = Parameters<typeof prisma.$transaction>[0];
+
+export type PrismaTransactionClient =
+  InteractiveTransactionCallback extends (client: infer C) => unknown ? C : never;
 
 const SERIALIZATION_ERROR_CODE = 'P2034';
 
