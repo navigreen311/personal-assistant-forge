@@ -1,9 +1,15 @@
 import type { DocumentType, BrandKit, Citation } from '@/shared/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 export type { DocumentType, BrandKit, Citation };
 
 export interface DocumentTemplate {
   id: string;
+  /**
+   * Owning entity. `undefined` marks a shared built-in template, which belongs
+   * to no tenant and is read-only. See template-service.ts.
+   */
+  entityId?: string;
   name: string;
   type: DocumentType;
   category: string;
@@ -28,7 +34,8 @@ export interface TemplateVariable {
 export interface DocumentGeneration {
   templateId: string;
   variables: Record<string, string>;
-  entityId: string;
+  /** Proven to belong to the caller before generation runs. */
+  entityId: VerifiedEntityId;
   brandKit?: BrandKit;
   outputFormat: 'DOCX' | 'PDF' | 'MARKDOWN' | 'HTML';
   citationsEnabled: boolean;

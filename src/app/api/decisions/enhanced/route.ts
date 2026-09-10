@@ -118,6 +118,16 @@ function computeConfidenceFromMatrix(matrix: MatrixData | null): number | null {
   return Math.min(1, Math.max(0, confidence));
 }
 
+/**
+ * A GENUINE CROSS-ENTITY VIEW (tenancy-pattern.md sec.5b).
+ *
+ * With no entityId this lists decisions across every entity the caller owns and
+ * labels each row with its entity name -- an executive rollup. withEntityScope
+ * resolves to exactly ONE entity, so using it here would silently narrow the
+ * view to the session active entity: a behaviour change no cross-tenant
+ * assertion would catch. It therefore keeps withAuth and proves the scope as a
+ * SET, and returns 403 for a named entity the caller does not own.
+ */
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {

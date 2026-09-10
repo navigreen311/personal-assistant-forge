@@ -1,9 +1,10 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { GraphNode, GraphEdge, KnowledgeGraph, GraphCluster } from '@/modules/knowledge/types';
 import { parseStoredData } from './capture-service';
 
-export async function buildGraph(entityId: string): Promise<KnowledgeGraph> {
+export async function buildGraph(entityId: VerifiedEntityId): Promise<KnowledgeGraph> {
   const entries = await prisma.knowledgeEntry.findMany({ where: { entityId } });
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -93,13 +94,18 @@ export async function buildGraph(entityId: string): Promise<KnowledgeGraph> {
 
 export async function findConnections(
   entryId: string,
+  entityId: VerifiedEntityId,
   depth: number
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-  const entry = await prisma.knowledgeEntry.findUnique({ where: { id: entryId } });
+  // Scoped at the first hop: a foreign entry is not found, so the traversal
+  // never starts. The graph itself is then built from the verified scope, not
+  // from the row's own entityId column.
+  const entry = await prisma.knowledgeEntry.findFirst({
+    where: { id: entryId, entityId },
+  });
   if (!entry) return { nodes: [], edges: [] };
 
-  const ke = entry as unknown as KnowledgeEntry;
-  const graph = await buildGraph(ke.entityId);
+  const graph = await buildGraph(entityId);
 
   // BFS traversal
   const visited = new Set<string>();
@@ -212,7 +218,7 @@ export function detectClusters(graph: KnowledgeGraph): GraphCluster[] {
   return clusters;
 }
 
-export async function getIsolatedNodes(entityId: string): Promise<GraphNode[]> {
+export async function getIsolatedNodes(entityId: VerifiedEntityId): Promise<GraphNode[]> {
   const graph = await buildGraph(entityId);
   return graph.nodes.filter((n) => n.connectionCount === 0);
 }

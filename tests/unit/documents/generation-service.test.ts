@@ -20,6 +20,9 @@ import {
 import { generateText, generateJSON } from '@/lib/ai';
 import type { BrandKit } from '@/shared/types/index';
 import type { DocumentGeneration } from '@/modules/documents/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 const mockGenerateText = generateText as jest.MockedFunction<typeof generateText>;
 const mockGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
@@ -102,7 +105,7 @@ describe('document-generation-service', () => {
           summary: 'Good quarter',
           keyPoints: 'Revenue up',
         },
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         outputFormat: 'PDF',
         citationsEnabled: false,
       };
@@ -138,7 +141,7 @@ describe('document-generation-service', () => {
           summary: 'Revenue grew 20%',
           keyPoints: 'Market share increased',
         },
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         outputFormat: 'PDF',
         citationsEnabled: true,
       };
@@ -159,7 +162,7 @@ describe('document-generation-service', () => {
       const request: DocumentGeneration = {
         templateId: 'non-existent-template',
         variables: {},
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         outputFormat: 'PDF',
         citationsEnabled: false,
       };
@@ -181,7 +184,7 @@ describe('document-generation-service', () => {
           subject: 'Update',
           body: 'Good progress.',
         },
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         brandKit: {
           primaryColor: '#123456',
           secondaryColor: '#654321',

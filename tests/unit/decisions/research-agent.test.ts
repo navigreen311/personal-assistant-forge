@@ -22,6 +22,10 @@ import {
   extractTopicKeywords,
 } from '@/modules/decisions/services/research-agent';
 import type { ResearchRequest } from '@/modules/decisions/types';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
+const ENTITY_E1 = verifiedEntityIdForTest('e1');
 
 const mockGenerateJSON = generateJSON as jest.Mock;
 const mockGenerateText = generateText as jest.Mock;
@@ -129,7 +133,7 @@ describe('Research Agent', () => {
 
       const request: ResearchRequest = {
         query: 'Market trends in AI',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
         sourceTypes: ['WEB', 'DOCUMENT'],
         maxSources: 5,
@@ -153,7 +157,7 @@ describe('Research Agent', () => {
 
       await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'QUICK',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -172,7 +176,7 @@ describe('Research Agent', () => {
 
       await conductResearch({
         query: 'blockchain in healthcare',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'DEEP',
         sourceTypes: ['WEB', 'KNOWLEDGE'],
         maxSources: 5,
@@ -188,7 +192,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'Market trends in AI',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
         sourceTypes: ['WEB', 'DOCUMENT'],
         maxSources: 5,
@@ -205,14 +209,14 @@ describe('Research Agent', () => {
 
       const quick = await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'QUICK',
         sourceTypes: ['WEB'],
         maxSources: 3,
       });
       const deep = await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'DEEP',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -226,7 +230,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'STANDARD',
         sourceTypes: ['WEB', 'DOCUMENT', 'KNOWLEDGE'],
         maxSources: 2,
@@ -244,21 +248,21 @@ describe('Research Agent', () => {
           id: 'kb-1',
           content: 'Our AI strategy focuses on natural language processing and computer vision.',
           tags: ['AI', 'strategy'],
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           source: 'Internal Strategy Doc',
         },
         {
           id: 'kb-2',
           content: 'Market analysis shows 30% growth in AI adoption across enterprise.',
           tags: ['market', 'AI'],
-          entityId: 'entity-1',
+          entityId: ENTITY_1,
           source: 'Market Report Q4',
         },
       ]);
 
       const report = await conductResearch({
         query: 'Market trends in AI',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
         sourceTypes: ['WEB', 'DOCUMENT'],
         maxSources: 5,
@@ -267,7 +271,7 @@ describe('Research Agent', () => {
       expect(mockKnowledgeEntryFindMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            entityId: 'entity-1',
+            entityId: ENTITY_1,
             OR: expect.any(Array),
           }),
           take: 5,
@@ -286,7 +290,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'Market trends in artificial intelligence',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
         sourceTypes: ['WEB', 'DOCUMENT'],
         maxSources: 5,
@@ -305,7 +309,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'Market trends in AI',
-        entityId: 'entity-1',
+        entityId: ENTITY_1,
         depth: 'STANDARD',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -321,7 +325,7 @@ describe('Research Agent', () => {
 
       await conductResearch({
         query: 'test query',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'QUICK',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -343,7 +347,7 @@ describe('Research Agent', () => {
 
       await conductResearch({
         query: 'test query',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'QUICK',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -366,7 +370,7 @@ describe('Research Agent', () => {
 
       const aiReport = await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'STANDARD',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -380,7 +384,7 @@ describe('Research Agent', () => {
 
       const kbReport = await conductResearch({
         query: 'test',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'STANDARD',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -398,7 +402,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'test research',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'STANDARD',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -417,7 +421,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'complex research topic',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'STANDARD',
         sourceTypes: ['WEB'],
         maxSources: 3,
@@ -436,7 +440,7 @@ describe('Research Agent', () => {
 
       const report = await conductResearch({
         query: 'blockchain scalability challenges',
-        entityId: 'e1',
+        entityId: ENTITY_E1,
         depth: 'DEEP',
         sourceTypes: ['WEB', 'DOCUMENT'],
         maxSources: 5,

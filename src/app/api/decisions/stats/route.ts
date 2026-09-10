@@ -3,6 +3,12 @@ import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 
+/**
+ * A GENUINE CROSS-ENTITY ROLLUP (tenancy-pattern.md sec.5b) -- with no entityId it
+ * counts across every entity the caller owns, which is what the decisions
+ * dashboard tile shows. Keeps withAuth and proves the scope as a SET rather
+ * than narrowing to the session active entity.
+ */
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {

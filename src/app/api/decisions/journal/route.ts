@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import {
   createEntry,
@@ -9,7 +9,7 @@ import {
 } from '@/modules/decisions/services/decision-journal';
 
 const CreateJournalSchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   decisionId: z.string().optional(),
   title: z.string().min(1).max(200),
   context: z.string().min(1),
@@ -21,17 +21,12 @@ const CreateJournalSchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = req.nextUrl;
-      const entityId = searchParams.get('entityId');
       const page = Math.max(1, Number(searchParams.get('page') ?? '1'));
       const pageSize = Math.min(100, Math.max(1, Number(searchParams.get('pageSize') ?? '20')));
       const upcomingDays = searchParams.get('upcomingDays');
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId query parameter is required', 400);
-      }
 
       if (upcomingDays) {
         const days = Number(upcomingDays);
@@ -42,7 +37,6 @@ export async function GET(request: NextRequest) {
         return success(entries);
       }
 
-      // List all journal entries for entity with pagination
       const where = { entityId, type: 'REPORT' as const };
       const [docs, total] = await Promise.all([
         prisma.document.findMany({
@@ -75,7 +69,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
       const parsed = CreateJournalSchema.safeParse(body);
@@ -86,10 +80,13 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // entityId LAST, deliberately: it overwrites the caller's own value.
+      const { entityId: _requested, ...draft } = parsed.data;
       const entry = await createEntry({
-        ...parsed.data,
-        reviewDate: new Date(parsed.data.reviewDate),
+        ...draft,
+        reviewDate: new Date(draft.reviewDate),
         status: 'PENDING_REVIEW',
+        entityId,
       });
 
       return success(entry, 201);

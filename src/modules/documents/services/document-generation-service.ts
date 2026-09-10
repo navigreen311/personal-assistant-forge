@@ -5,7 +5,9 @@ import type { DocumentGeneration } from '../types';
 import { getTemplate } from './template-service';
 
 export async function generateDocument(request: DocumentGeneration): Promise<Document> {
-  const template = await getTemplate(request.templateId);
+  // The scope is passed through to the template lookup: a template belonging to
+  // another tenant is not found, so it cannot be rendered from here either.
+  const template = await getTemplate(request.templateId, request.entityId);
   if (!template) throw new Error(`Template ${request.templateId} not found`);
 
   let content = renderTemplate(template.content, request.variables);

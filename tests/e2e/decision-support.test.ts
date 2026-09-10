@@ -12,8 +12,21 @@
 
 // --- Infrastructure mocks ---
 
+// tenancy-pattern.md sec.8 trap 1: reads are now findFirst (scope in the WHERE) and
+// writes updateMany, aliased here onto the delegates this suite already stubs.
 const mockPrisma = {
-  document: { create: jest.fn(), findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn(), count: jest.fn() },
+  document: {
+    create: jest.fn(),
+    findUnique: jest.fn(),
+    findFirst: (...a: unknown[]) => mockPrisma.document.findUnique(...a),
+    findMany: jest.fn(),
+    update: jest.fn(),
+    updateMany: async (...a: unknown[]) => {
+      await mockPrisma.document.update(...a);
+      return { count: 1 };
+    },
+    count: jest.fn(),
+  },
 };
 
 jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
@@ -27,8 +40,14 @@ import { conductResearch, evaluateSourceCredibility, analyzeDocument } from '@/m
 import { generateJSON, generateText } from '@/lib/ai';
 import type { DecisionRequest, MatrixCriterion, MatrixScore, FailureScenario, PreMortemRequest, ResearchRequest } from '@/modules/decisions/types';
 
+import { verifiedEntityIdForTest } from '../helpers/factories';
+
 const mockGenerateJSON = generateJSON as jest.Mock;
 const mockGenerateText = generateText as jest.Mock;
+
+/** The scopes this suite runs under. */
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
+const ENTITY_E1 = verifiedEntityIdForTest('e1');
 
 describe('Decision Support E2E', () => {
   beforeEach(() => { jest.clearAllMocks(); });
@@ -45,7 +64,7 @@ describe('Decision Support E2E', () => {
 
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({ id: 'doc-1', title: 'European Expansion', createdAt: new Date(), updatedAt: new Date() });
 
-      const brief = await createDecisionBrief({ entityId: 'entity-1', title: 'European Expansion', description: 'Expand?', context: 'Growing EU demand', stakeholders: ['CEO'], constraints: ['Budget: $50k'], blastRadius: 'HIGH' });
+      const brief = await createDecisionBrief({ title: 'European Expansion', description: 'Expand?', context: 'Growing EU demand', stakeholders: ['CEO'], constraints: ['Budget: $50k'], blastRadius: 'HIGH' }, ENTITY_1);
       expect(brief.options).toHaveLength(3);
       expect(brief.blindSpots.length).toBeGreaterThan(0);
     });
@@ -53,7 +72,7 @@ describe('Decision Support E2E', () => {
     it('should fall back gracefully when AI fails', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('API error'));
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({ id: 'doc-fb', title: 'Fallback', createdAt: new Date(), updatedAt: new Date() });
-      const brief = await createDecisionBrief({ entityId: 'entity-1', title: 'Fallback', description: 'Test', context: 'C', stakeholders: [], constraints: [], blastRadius: 'LOW' });
+      const brief = await createDecisionBrief({ title: 'Fallback', description: 'Test', context: 'C', stakeholders: [], constraints: [], blastRadius: 'LOW' }, ENTITY_1);
       expect(brief.options.length).toBeGreaterThanOrEqual(3);
     });
   });
@@ -138,15 +157,21 @@ describe('Decision Support E2E', () => {
     it('should review an entry with actual outcomes', async () => {
       const now = new Date();
       const content = { entityId: 'e1', context: 'C', optionsConsidered: ['A'], chosenOption: 'A', rationale: 'R', expectedOutcomes: ['G'], reviewDate: now.toISOString(), status: 'PENDING_REVIEW' };
-      (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue({ id: 'j1', title: 'D', content: JSON.stringify(content), createdAt: now, updatedAt: now });
-      (mockPrisma.document.update as jest.Mock).mockResolvedValue({ id: 'j1', title: 'D', content: JSON.stringify({ ...content, actualOutcomes: ['Worked'], status: 'REVIEWED_CORRECT', lessonsLearned: 'Trust data' }), createdAt: now, updatedAt: now });
-      const result = await reviewEntry('j1', ['Worked'], 'REVIEWED_CORRECT', 'Trust data');
+      // reviewEntry writes with updateMany (scope in the WHERE) and re-reads the
+      // row, so the read has to observe the write.
+      let written = JSON.stringify(content);
+      (mockPrisma.document.findUnique as jest.Mock).mockImplementation(async () => ({ id: 'j1', title: 'D', type: 'REPORT', content: written, createdAt: now, updatedAt: now }));
+      (mockPrisma.document.update as jest.Mock).mockImplementation(async ({ data }: { data: { content: string } }) => {
+        written = data.content;
+        return { id: 'j1', title: 'D', content: written, createdAt: now, updatedAt: now };
+      });
+      const result = await reviewEntry('j1', ENTITY_E1, ['Worked'], 'REVIEWED_CORRECT', 'Trust data');
       expect(result.status).toBe('REVIEWED_CORRECT');
     });
 
     it('should throw for non-existent entry', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
-      await expect(reviewEntry('nope', ['x'], 'REVIEWED_CORRECT', 'l')).rejects.toThrow('not found');
+      await expect(reviewEntry('nope', ENTITY_E1, ['x'], 'REVIEWED_CORRECT', 'l')).rejects.toThrow('not found');
     });
 
     it('should return upcoming reviews within N days', async () => {
@@ -157,7 +182,7 @@ describe('Decision Support E2E', () => {
         { id: 'j1', title: 'Soon', content: JSON.stringify({ entityId: 'e1', reviewDate: soon.toISOString(), status: 'PENDING_REVIEW', context: '', optionsConsidered: [], chosenOption: '', rationale: '', expectedOutcomes: [] }), createdAt: now, updatedAt: now },
         { id: 'j2', title: 'Later', content: JSON.stringify({ entityId: 'e1', reviewDate: later.toISOString(), status: 'PENDING_REVIEW', context: '', optionsConsidered: [], chosenOption: '', rationale: '', expectedOutcomes: [] }), createdAt: now, updatedAt: now },
       ]);
-      const results = await getUpcomingReviews('e1', 30);
+      const results = await getUpcomingReviews(ENTITY_E1, 30);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe('j1');
     });
@@ -166,7 +191,7 @@ describe('Decision Support E2E', () => {
       const now = new Date();
       const mkDoc = (id: string, st: string) => ({ id, title: id, content: JSON.stringify({ entityId: 'e1', status: st, reviewDate: now.toISOString(), context: '', optionsConsidered: [], chosenOption: '', rationale: '', expectedOutcomes: [] }), createdAt: now, updatedAt: now });
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([mkDoc('j1', 'REVIEWED_CORRECT'), mkDoc('j2', 'REVIEWED_CORRECT'), mkDoc('j3', 'REVIEWED_INCORRECT'), mkDoc('j4', 'REVIEWED_MIXED'), mkDoc('j5', 'PENDING_REVIEW')]);
-      const r = await getDecisionAccuracy('e1');
+      const r = await getDecisionAccuracy(ENTITY_E1);
       expect(r.total).toBe(4);
       expect(r.accuracy).toBe(0.5);
     });
@@ -176,21 +201,21 @@ describe('Decision Support E2E', () => {
     it('should conduct research with AI findings', async () => {
       mockGenerateJSON.mockResolvedValue({ sources: [{ type: 'WEB', title: 'AI Market', excerpt: 'Growing', url: 'https://example.com' }], findings: [{ claim: 'Growing 25% YoY', evidence: 'Reports', confidence: 0.8, sourceIndices: [0] }], gaps: ['Competitor data'] });
       mockGenerateText.mockResolvedValue('AI market growing.');
-      const report = await conductResearch({ query: 'Market trends in AI', entityId: 'e1', depth: 'STANDARD', sourceTypes: ['WEB'], maxSources: 5 });
+      const report = await conductResearch({ query: 'Market trends in AI', entityId: ENTITY_E1, depth: 'STANDARD', sourceTypes: ['WEB'], maxSources: 5 });
       expect(report.findings.length).toBeGreaterThan(0);
     });
 
     it('should fall back on AI failure', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('API error'));
-      const report = await conductResearch({ query: 'Market trends in AI', entityId: 'e1', depth: 'STANDARD', sourceTypes: ['WEB'], maxSources: 5 });
+      const report = await conductResearch({ query: 'Market trends in AI', entityId: ENTITY_E1, depth: 'STANDARD', sourceTypes: ['WEB'], maxSources: 5 });
       expect(report.findings.length).toBeGreaterThan(0);
       expect(report.summary).toContain('Market trends in AI');
     });
 
     it('should have higher confidence for DEEP vs QUICK', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('fail'));
-      const quick = await conductResearch({ query: 'test', entityId: 'e1', depth: 'QUICK', sourceTypes: ['WEB'], maxSources: 3 });
-      const deep = await conductResearch({ query: 'test', entityId: 'e1', depth: 'DEEP', sourceTypes: ['WEB'], maxSources: 3 });
+      const quick = await conductResearch({ query: 'test', entityId: ENTITY_E1, depth: 'QUICK', sourceTypes: ['WEB'], maxSources: 3 });
+      const deep = await conductResearch({ query: 'test', entityId: ENTITY_E1, depth: 'DEEP', sourceTypes: ['WEB'], maxSources: 3 });
       expect(deep.confidenceScore).toBeGreaterThan(quick.confidenceScore);
     });
 

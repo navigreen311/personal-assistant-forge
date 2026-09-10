@@ -3,6 +3,12 @@ import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
 
+/**
+ * A GENUINE CROSS-ENTITY ROLLUP (tenancy-pattern.md sec.5b): with no entityId this
+ * counts documents across every entity the caller owns, which is what the
+ * documents dashboard shows. It therefore keeps withAuth and proves the scope
+ * as a SET, rather than narrowing to the session's active entity.
+ */
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {
@@ -19,6 +25,12 @@ export async function GET(request: NextRequest) {
         where: entityWhere,
         select: { id: true },
       });
+
+      // A caller naming an entity they do not own gets an explicit 403 rather
+      // than a silently zeroed rollup.
+      if (entityId && entities.length === 0) {
+        return error('FORBIDDEN', 'You do not have access to this entity', 403);
+      }
 
       const entityIds = entities.map((e) => e.id);
 

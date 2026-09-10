@@ -1,4 +1,4 @@
-import { calculateRelevance, highlightExcerpt, suggestRelatedQueries, search, embedText, cosineSimilarity, semanticSearch } from '@/modules/knowledge/services/search-service';
+import { calculateRelevance, highlightExcerpt, suggestRelatedQueries, search, embedText, cosineSimilarity, termSimilaritySearch } from '@/modules/knowledge/services/search-service';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { SearchResult } from '@/modules/knowledge/types';
 
@@ -18,8 +18,12 @@ jest.mock('@/lib/ai', () => ({
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
 const mockGenerateJSON = generateJSON as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string; body?: string } = {}): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -157,7 +161,7 @@ describe('search-service', () => {
         makeEntry({ id: '2', title: 'General programming tips', body: 'Some tips about coding', tags: ['tips'], updatedAt: now }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: 'react' });
+      const result = await search({ query: 'react' }, ENTITY_1);
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.results.length).toBeGreaterThan(0);
     });
@@ -170,7 +174,7 @@ describe('search-service', () => {
         makeEntry({ id: '1', title: 'React hooks deep dive', body: 'React hooks are powerful', tags: ['react', 'hooks'], updatedAt: now }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: 'react' });
+      const result = await search({ query: 'react' }, ENTITY_1);
       expect(result.results.length).toBeGreaterThan(0);
       // Results should still be sorted by relevance
       for (let i = 1; i < result.results.length; i++) {
@@ -184,7 +188,7 @@ describe('search-service', () => {
         makeEntry({ id: '2' }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: '' });
+      const result = await search({ query: '' }, ENTITY_1);
       expect(result.results.length).toBe(2);
     });
 
@@ -196,7 +200,7 @@ describe('search-service', () => {
       );
       mockFindMany.mockResolvedValue(entries);
 
-      const result = await search({ entityId: 'entity-1', query: 'react', page: 1, pageSize: 3 });
+      const result = await search({ query: 'react', page: 1, pageSize: 3 }, ENTITY_1);
       expect(result.results.length).toBe(3);
       expect(result.total).toBe(10);
       expect(result.page).toBe(1);
@@ -211,7 +215,7 @@ describe('search-service', () => {
         makeEntry({ id: '1', title: 'React hooks', body: 'React hooks content', tags: ['react'] }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: 'react' });
+      const result = await search({ query: 'react' }, ENTITY_1);
       expect(result.results.length).toBe(1);
     });
 
@@ -221,7 +225,7 @@ describe('search-service', () => {
         makeEntry({ id: '2', title: 'Cooking recipes', body: 'How to cook pasta', tags: ['cooking'] }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: 'react hooks patterns', mode: 'semantic' });
+      const result = await search({ query: 'react hooks patterns', mode: 'semantic' }, ENTITY_1);
       // Semantic mode should return results with similarity scores
       expect(result.results.length).toBeGreaterThan(0);
       // React entry should score higher than cooking
@@ -237,7 +241,7 @@ describe('search-service', () => {
         makeEntry({ id: '2', title: 'Cooking recipes', body: 'How to cook pasta', tags: ['cooking'] }),
       ]);
 
-      const result = await search({ entityId: 'entity-1', query: 'react hooks', mode: 'hybrid' });
+      const result = await search({ query: 'react hooks', mode: 'hybrid' }, ENTITY_1);
       expect(result.results.length).toBeGreaterThan(0);
     });
 
@@ -251,7 +255,7 @@ describe('search-service', () => {
         ]);
       mockGenerateJSON.mockRejectedValue(new Error('fail'));
 
-      const result = await search({ entityId: 'entity-1', query: 'react', mode: 'semantic' });
+      const result = await search({ query: 'react', mode: 'semantic' }, ENTITY_1);
       // Should have fallen back to fulltext
       expect(result.results.length).toBeGreaterThanOrEqual(0);
     });
@@ -354,10 +358,26 @@ describe('search-service', () => {
       expect(cosineSimilarity(a, b)).toBeCloseTo(cosineSimilarity(b, a), 10);
     });
 
-    it('should return 0 for different-length vectors', () => {
+    /**
+     * CORRECTED TEST -- it previously asserted the defect (T-017).
+     *
+     * The old assertion was `expect(cosineSimilarity(a, b)).toBe(0)` for two
+     * non-empty vectors of different lengths. Zero is a legitimate similarity
+     * value meaning "unrelated", so returning it for two vectors that cannot be
+     * compared at all made a programming error indistinguishable from a real
+     * result: search results silently vanished, nothing logged, this test
+     * green. It throws now.
+     */
+    it('throws for non-empty vectors of different lengths, rather than scoring them 0', () => {
       const a = [0.5, 0.3];
       const b = [0.2, 0.9, 0.4];
-      expect(cosineSimilarity(a, b)).toBe(0);
+      expect(() => cosineSimilarity(a, b)).toThrow(RangeError);
+      expect(() => cosineSimilarity(a, b)).toThrow(/incompatible spaces/);
+    });
+
+    it('still scores an empty vector 0, because "no usable tokens" is a real input', () => {
+      expect(cosineSimilarity([], [0.2, 0.9, 0.4])).toBe(0);
+      expect(cosineSimilarity([0.2, 0.9], [])).toBe(0);
     });
 
     it('should handle zero vectors', () => {
@@ -387,26 +407,26 @@ describe('search-service', () => {
     });
   });
 
-  describe('semanticSearch (embedding-based)', () => {
+  describe('termSimilaritySearch (hashed term-frequency, T-017)', () => {
     it('should return empty array for empty query', async () => {
-      const results = await semanticSearch('user-1', '', { limit: 10 });
+      const results = await termSimilaritySearch(ENTITY_1, '', { limit: 10 });
       expect(results).toEqual([]);
     });
 
     it('should return empty array when no entries exist', async () => {
       mockFindMany.mockResolvedValue([]);
-      const results = await semanticSearch('user-1', 'react hooks');
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks');
       expect(results).toEqual([]);
     });
 
     it('should return results sorted by similarity descending', async () => {
       mockFindMany.mockResolvedValue([
-        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks are powerful patterns for state management', tags: ['react', 'hooks'], entityId: 'user-1' }),
-        makeEntry({ id: '2', title: 'Cooking pasta', body: 'How to cook delicious pasta at home', tags: ['cooking'], entityId: 'user-1' }),
-        makeEntry({ id: '3', title: 'React component patterns', body: 'Advanced react patterns and hooks usage', tags: ['react', 'patterns'], entityId: 'user-1' }),
+        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks are powerful patterns for state management', tags: ['react', 'hooks'], entityId: 'entity-1' }),
+        makeEntry({ id: '2', title: 'Cooking pasta', body: 'How to cook delicious pasta at home', tags: ['cooking'], entityId: 'entity-1' }),
+        makeEntry({ id: '3', title: 'React component patterns', body: 'Advanced react patterns and hooks usage', tags: ['react', 'patterns'], entityId: 'entity-1' }),
       ]);
 
-      const results = await semanticSearch('user-1', 'react hooks patterns') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks patterns') as Array<{ entry: any; similarity: number }>;
       expect(results.length).toBeGreaterThan(0);
 
       // Results should be sorted by similarity descending
@@ -417,12 +437,12 @@ describe('search-service', () => {
 
     it('should filter results below threshold', async () => {
       mockFindMany.mockResolvedValue([
-        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks for managing state', tags: ['react'], entityId: 'user-1' }),
-        makeEntry({ id: '2', title: 'Cooking pasta', body: 'How to cook delicious pasta at home with herbs', tags: ['cooking', 'food'], entityId: 'user-1' }),
+        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks for managing state', tags: ['react'], entityId: 'entity-1' }),
+        makeEntry({ id: '2', title: 'Cooking pasta', body: 'How to cook delicious pasta at home with herbs', tags: ['cooking', 'food'], entityId: 'entity-1' }),
       ]);
 
       // Use high threshold to filter most results
-      const results = await semanticSearch('user-1', 'react hooks', { threshold: 0.9 }) as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks', { threshold: 0.9 }) as Array<{ entry: any; similarity: number }>;
       // All returned results should be above threshold
       for (const r of results) {
         expect(r.similarity).toBeGreaterThanOrEqual(0.9);
@@ -431,20 +451,20 @@ describe('search-service', () => {
 
     it('should respect limit parameter', async () => {
       const entries = Array.from({ length: 10 }, (_, i) =>
-        makeEntry({ id: `entry-${i}`, title: `React topic ${i}`, body: `React content about topic ${i}`, tags: ['react'], entityId: 'user-1' })
+        makeEntry({ id: `entry-${i}`, title: `React topic ${i}`, body: `React content about topic ${i}`, tags: ['react'], entityId: 'entity-1' })
       );
       mockFindMany.mockResolvedValue(entries);
 
-      const results = await semanticSearch('user-1', 'react topic content', { limit: 3 });
+      const results = await termSimilaritySearch(ENTITY_1, 'react topic content', { limit: 3 });
       expect((results as Array<unknown>).length).toBeLessThanOrEqual(3);
     });
 
     it('should return results with entry and similarity fields', async () => {
       mockFindMany.mockResolvedValue([
-        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks are patterns', tags: ['react'], entityId: 'user-1' }),
+        makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks are patterns', tags: ['react'], entityId: 'entity-1' }),
       ]);
 
-      const results = await semanticSearch('user-1', 'react hooks') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks') as Array<{ entry: any; similarity: number }>;
       if (results.length > 0) {
         expect(results[0]).toHaveProperty('entry');
         expect(results[0]).toHaveProperty('similarity');
@@ -459,11 +479,11 @@ describe('search-service', () => {
 
     it('should use default threshold of 0.1 when not specified', async () => {
       mockFindMany.mockResolvedValue([
-        makeEntry({ id: '1', title: 'React hooks', body: 'React hooks content', tags: ['react'], entityId: 'user-1' }),
-        makeEntry({ id: '2', title: 'Something completely unrelated xyz', body: 'Nothing matching at all zzz qqq', tags: ['other'], entityId: 'user-1' }),
+        makeEntry({ id: '1', title: 'React hooks', body: 'React hooks content', tags: ['react'], entityId: 'entity-1' }),
+        makeEntry({ id: '2', title: 'Something completely unrelated xyz', body: 'Nothing matching at all zzz qqq', tags: ['other'], entityId: 'entity-1' }),
       ]);
 
-      const results = await semanticSearch('user-1', 'react hooks') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks') as Array<{ entry: any; similarity: number }>;
       // All returned results should be above default threshold of 0.1
       for (const r of results) {
         expect(r.similarity).toBeGreaterThanOrEqual(0.1);
@@ -472,18 +492,18 @@ describe('search-service', () => {
 
     it('should handle database errors gracefully', async () => {
       mockFindMany.mockRejectedValue(new Error('Database connection failed'));
-      const results = await semanticSearch('user-1', 'react hooks');
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks');
       expect(results).toEqual([]);
     });
 
     it('should use embedText and cosineSimilarity for matching', async () => {
       // Create entries with clearly overlapping and non-overlapping vocabulary
       mockFindMany.mockResolvedValue([
-        makeEntry({ id: '1', title: 'JavaScript frameworks', body: 'JavaScript frameworks like React and Vue', tags: [], entityId: 'user-1' }),
-        makeEntry({ id: '2', title: 'Biology cells', body: 'Biology cells mitochondria nucleus', tags: [], entityId: 'user-1' }),
+        makeEntry({ id: '1', title: 'JavaScript frameworks', body: 'JavaScript frameworks like React and Vue', tags: [], entityId: 'entity-1' }),
+        makeEntry({ id: '2', title: 'Biology cells', body: 'Biology cells mitochondria nucleus', tags: [], entityId: 'entity-1' }),
       ]);
 
-      const results = await semanticSearch('user-1', 'JavaScript React frameworks', { threshold: 0.01 }) as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'JavaScript React frameworks', { threshold: 0.01 }) as Array<{ entry: any; similarity: number }>;
 
       // JavaScript entry should have higher similarity than biology entry
       if (results.length >= 2) {
@@ -495,11 +515,17 @@ describe('search-service', () => {
       }
     });
 
-    it('should query prisma with entityId parameter', async () => {
+    /**
+     * T-017: the parameter used to be named `userId` while being used verbatim
+     * as `where: { entityId: userId }`. The name lied about which id space it
+     * was in, on the one parameter that decides whose data is read. This test
+     * pins that the scope reaching Prisma is the entity it was given.
+     */
+    it('queries prisma with the entity in scope, and nothing else', async () => {
       mockFindMany.mockResolvedValue([]);
-      await semanticSearch('test-user-123', 'search query');
+      await termSimilaritySearch(verifiedEntityIdForTest('entity-123'), 'search query');
       expect(mockFindMany).toHaveBeenCalledWith({
-        where: { entityId: 'test-user-123' },
+        where: { entityId: 'entity-123' },
       });
     });
   });

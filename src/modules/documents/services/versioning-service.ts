@@ -1,3 +1,24 @@
+// ============================================================================
+// Document versioning service
+//
+// T-018: one of four in-memory stores. Versions have NO table in the frozen
+// schema, so this remains a Map; the persistence gap is ESCALATED in the PR
+// body rather than worked around.
+//
+// TENANCY -- READ BEFORE ADDING A CALLER.
+//
+// Every function here is keyed by documentId and knows nothing about entities.
+// That is deliberate and matches tenancy-pattern.md sec.3: a child record with no
+// entityId column has its scope proven on the PARENT. The routes
+// (documents/[id]/versions, documents/[id]/redline) resolve the Document with
+// `findFirst({ where: { id, entityId } })` first and return 404 before they
+// reach this file, so a foreign documentId never gets here.
+//
+// The signatures are unbranded because tests/unit/platform/document-versioning.test.ts
+// -- outside this package's file list -- pins them. Do NOT call these from a
+// route without proving the parent document first.
+// ============================================================================
+
 import { v4 as uuidv4 } from 'uuid';
 import type { Document } from '@/shared/types';
 import type { DocumentVersion, Redline, RedlineChange } from '../types';

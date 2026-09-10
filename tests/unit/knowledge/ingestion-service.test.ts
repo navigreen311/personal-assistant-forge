@@ -9,8 +9,11 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 const mockCreate = prisma.knowledgeEntry.create as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 describe('ingestion-service', () => {
   beforeEach(() => {
@@ -138,13 +141,16 @@ describe('ingestion-service', () => {
         };
       });
 
-      const result = await ingestDocument({
-        entityId: 'entity-1',
-        filename: 'test.txt',
-        mimeType: 'text/plain',
-        content: 'Paragraph one content here.\n\nParagraph two content here.\n\nParagraph three content here.',
-        source: 'upload',
-      });
+      const result = await ingestDocument(
+        {
+          filename: 'test.txt',
+          mimeType: 'text/plain',
+          content:
+            'Paragraph one content here.\n\nParagraph two content here.\n\nParagraph three content here.',
+          source: 'upload',
+        },
+        ENTITY_1
+      );
 
       expect(result.entries.length).toBeGreaterThan(0);
       expect(result.summary).toBeTruthy();
@@ -164,13 +170,15 @@ describe('ingestion-service', () => {
         updatedAt: new Date(),
       });
 
-      const result = await ingestDocument({
-        entityId: 'entity-1',
-        filename: 'test.txt',
-        mimeType: 'text/plain',
-        content: 'one two three four five',
-        source: 'upload',
-      });
+      const result = await ingestDocument(
+        {
+          filename: 'test.txt',
+          mimeType: 'text/plain',
+          content: 'one two three four five',
+          source: 'upload',
+        },
+        ENTITY_1
+      );
 
       expect(result.wordCount).toBe(5);
     });

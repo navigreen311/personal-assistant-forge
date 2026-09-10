@@ -1,22 +1,28 @@
 import { calculateNextReview, addLearningItem, updateProgress, getDueForReview, recordReview } from '@/modules/knowledge/services/learning-tracker';
 
+// tenancy-pattern.md sec.8 trap 1: reads are now findFirst (scope in the WHERE)
+// and writes updateMany (a unique WHERE cannot carry the entity), so the mock
+// declares those delegates rather than findUnique/update.
 jest.mock('@/lib/db', () => ({
   prisma: {
     knowledgeEntry: {
       create: jest.fn(),
-      findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
-      update: jest.fn(),
+      updateMany: jest.fn(),
     },
   },
 }));
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 const mockCreate = prisma.knowledgeEntry.create as jest.Mock;
-const mockFindUnique = prisma.knowledgeEntry.findUnique as jest.Mock;
+const mockFindFirst = prisma.knowledgeEntry.findFirst as jest.Mock;
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
-const mockUpdate = prisma.knowledgeEntry.update as jest.Mock;
+const mockUpdateMany = prisma.knowledgeEntry.updateMany as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 function makeLearningEntry(overrides: Record<string, unknown> = {}) {
   const data = {
@@ -114,53 +120,78 @@ describe('learning-tracker', () => {
     it('should create a learning entry with reviewCount 0', async () => {
       mockCreate.mockResolvedValue(makeLearningEntry());
 
-      const item = await addLearningItem({
-        entityId: 'entity-1',
-        title: 'Test Book',
-        type: 'BOOK',
-        status: 'QUEUED',
-        progress: 0,
-        notes: [],
-        keyTakeaways: [],
-        tags: ['learning'],
-      });
+      const item = await addLearningItem(
+        {
+          title: 'Test Book',
+          type: 'BOOK',
+          status: 'QUEUED',
+          progress: 0,
+          notes: [],
+          keyTakeaways: [],
+          tags: ['learning'],
+        },
+        ENTITY_1
+      );
 
       expect(item.reviewCount).toBe(0);
       expect(mockCreate).toHaveBeenCalledTimes(1);
       const callData = mockCreate.mock.calls[0][0].data;
       expect(callData.source).toBe('learning://book');
+      // The scope is written, not anything the caller supplied.
+      expect(callData.entityId).toBe('entity-1');
     });
   });
 
   describe('updateProgress', () => {
-    it('should auto-complete when progress reaches 100', async () => {
-      const entry = makeLearningEntry({ id: 'learn-1', progress: 50, status: 'IN_PROGRESS' });
-      mockFindUnique.mockResolvedValue(entry);
-      mockUpdate.mockImplementation(async ({ data }: { data: { content: string } }) => ({
-        ...entry,
-        content: data.content,
-      }));
+    /** Wire findFirst/updateMany so the second read observes the write. */
+    function wire(entry: ReturnType<typeof makeLearningEntry>) {
+      let written = entry.content;
+      mockFindFirst.mockImplementation(async () => ({ ...entry, content: written }));
+      mockUpdateMany.mockImplementation(async ({ data }: { data: { content: string } }) => {
+        written = data.content;
+        return { count: 1 };
+      });
+    }
 
-      const item = await updateProgress('learn-1', 100);
+    it('should auto-complete when progress reaches 100', async () => {
+      wire(makeLearningEntry({ id: 'learn-1', progress: 50, status: 'IN_PROGRESS' }));
+
+      const item = await updateProgress('learn-1', ENTITY_1, 100);
       expect(item.status).toBe('COMPLETED');
       expect(item.progress).toBe(100);
     });
 
     it('should transition QUEUED to IN_PROGRESS when progress > 0', async () => {
-      const entry = makeLearningEntry({ id: 'learn-1', progress: 0, status: 'QUEUED' });
-      mockFindUnique.mockResolvedValue(entry);
-      mockUpdate.mockImplementation(async ({ data }: { data: { content: string } }) => ({
-        ...entry,
-        content: data.content,
-      }));
+      wire(makeLearningEntry({ id: 'learn-1', progress: 0, status: 'QUEUED' }));
 
-      const item = await updateProgress('learn-1', 25);
+      const item = await updateProgress('learn-1', ENTITY_1, 25);
       expect(item.status).toBe('IN_PROGRESS');
     });
 
     it('should throw for non-existent item', async () => {
-      mockFindUnique.mockResolvedValue(null);
-      await expect(updateProgress('nonexistent', 50)).rejects.toThrow();
+      mockFindFirst.mockResolvedValue(null);
+      await expect(updateProgress('nonexistent', ENTITY_1, 50)).rejects.toThrow();
+    });
+
+    it("refuses an item outside the caller's entity, and writes nothing", async () => {
+      // The scope is in the WHERE, so a foreign row simply is not found.
+      mockFindFirst.mockResolvedValue(null);
+
+      await expect(
+        updateProgress('learn-1', verifiedEntityIdForTest('entity-2'), 100)
+      ).rejects.toThrow();
+      expect(mockUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it('puts the scope in the update WHERE clause, not only in the read', async () => {
+      wire(makeLearningEntry({ id: 'learn-1' }));
+
+      await updateProgress('learn-1', ENTITY_1, 10);
+
+      expect(mockUpdateMany.mock.calls[0][0].where).toEqual({
+        id: 'learn-1',
+        entityId: 'entity-1',
+      });
     });
   });
 
@@ -174,7 +205,7 @@ describe('learning-tracker', () => {
         makeLearningEntry({ id: 'learn-2', nextReviewDate: futureDate }),
       ]);
 
-      const due = await getDueForReview('entity-1');
+      const due = await getDueForReview(ENTITY_1);
       const ids = due.map((i) => i.id);
       expect(ids).toContain('learn-1');
       expect(ids).not.toContain('learn-2');
@@ -182,7 +213,7 @@ describe('learning-tracker', () => {
 
     it('should return empty for no items due', async () => {
       mockFindMany.mockResolvedValue([]);
-      const due = await getDueForReview('entity-1');
+      const due = await getDueForReview(ENTITY_1);
       expect(due).toEqual([]);
     });
   });
@@ -190,23 +221,27 @@ describe('learning-tracker', () => {
   describe('recordReview', () => {
     it('should update reviewCount and schedule', async () => {
       const entry = makeLearningEntry({ id: 'learn-1', reviewCount: 0, easeFactor: 2.5 });
-      mockFindUnique.mockResolvedValue(entry);
-      mockUpdate.mockResolvedValue(entry);
+      mockFindFirst.mockResolvedValue(entry);
+      mockUpdateMany.mockResolvedValue({ count: 1 });
 
-      const schedule = await recordReview('learn-1', 5);
+      const schedule = await recordReview('learn-1', ENTITY_1, 5);
 
       expect(schedule.itemId).toBe('learn-1');
       expect(schedule.interval).toBe(1);
       expect(schedule.easeFactor).toBeCloseTo(2.6, 1);
-      expect(mockUpdate).toHaveBeenCalledTimes(1);
+      expect(mockUpdateMany).toHaveBeenCalledTimes(1);
 
-      const updateContent = JSON.parse(mockUpdate.mock.calls[0][0].data.content);
+      const updateContent = JSON.parse(mockUpdateMany.mock.calls[0][0].data.content);
       expect(updateContent.reviewCount).toBe(1);
+      expect(mockUpdateMany.mock.calls[0][0].where).toEqual({
+        id: 'learn-1',
+        entityId: 'entity-1',
+      });
     });
 
     it('should throw for non-existent item', async () => {
-      mockFindUnique.mockResolvedValue(null);
-      await expect(recordReview('nonexistent', 5)).rejects.toThrow();
+      mockFindFirst.mockResolvedValue(null);
+      await expect(recordReview('nonexistent', ENTITY_1, 5)).rejects.toThrow();
     });
   });
 });

@@ -1,8 +1,39 @@
+// ============================================================================
+// Document template service
+//
+// T-018: one of four in-memory stores. Unlike brand kits and e-sign requests,
+// templates have NO table in the frozen schema, so this remains a Map and the
+// persistence gap is ESCALATED rather than papered over -- see the PR body.
+//
+// What IS fixed here is the tenancy hole, which did not need a table:
+//
+//   * The store was global. A template created by tenant A was listed by, and
+//     usable by, every other tenant.
+//   * updateTemplate() could rewrite a BUILT-IN template ('tpl-invoice', say)
+//     for every tenant in the process. A passing unit test asserted exactly
+//     that as correct behaviour; it encoded the defect and has been corrected.
+//
+// Built-in templates now have no owner and are read-only. A template created
+// through the API is stamped with the caller's VerifiedEntityId and is visible
+// only to that entity.
+// ============================================================================
+
 import { v4 as uuidv4 } from 'uuid';
 import type { DocumentType } from '@/shared/types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { DocumentTemplate } from '../types';
 
 const templateStore = new Map<string, DocumentTemplate>();
+
+/** A built-in template belongs to no tenant and may not be modified. */
+function isBuiltIn(tpl: DocumentTemplate): boolean {
+  return tpl.entityId === undefined;
+}
+
+/** Visible to this entity: the shared built-ins plus that entity's own. */
+function inScope(tpl: DocumentTemplate, entityId: VerifiedEntityId): boolean {
+  return isBuiltIn(tpl) || tpl.entityId === entityId;
+}
 
 export function getDefaultTemplates(): DocumentTemplate[] {
   const now = new Date();
@@ -25,27 +56,43 @@ for (const tpl of getDefaultTemplates()) {
   templateStore.set(tpl.id, tpl);
 }
 
-export async function getTemplates(type?: DocumentType, category?: string): Promise<DocumentTemplate[]> {
+export async function getTemplates(
+  entityId: VerifiedEntityId,
+  type?: DocumentType,
+  category?: string
+): Promise<DocumentTemplate[]> {
   const results: DocumentTemplate[] = [];
   for (const tpl of templateStore.values()) {
+    // Scope applied last and unconditionally, so no filter combination widens it.
     if (type && tpl.type !== type) continue;
     if (category && tpl.category !== category) continue;
+    if (!inScope(tpl, entityId)) continue;
     results.push(tpl);
   }
   return results;
 }
 
-export async function getTemplate(templateId: string): Promise<DocumentTemplate | null> {
-  return templateStore.get(templateId) || null;
+export async function getTemplate(
+  templateId: string,
+  entityId: VerifiedEntityId
+): Promise<DocumentTemplate | null> {
+  const tpl = templateStore.get(templateId);
+  // A foreign template is reported as absent, not as forbidden: an id probe
+  // learns nothing about another tenant's templates.
+  if (!tpl || !inScope(tpl, entityId)) return null;
+  return tpl;
 }
 
 export async function createTemplate(
-  template: Omit<DocumentTemplate, 'id' | 'version' | 'createdAt' | 'updatedAt'>
+  template: Omit<DocumentTemplate, 'id' | 'entityId' | 'version' | 'createdAt' | 'updatedAt'>,
+  entityId: VerifiedEntityId
 ): Promise<DocumentTemplate> {
   const now = new Date();
   const newTemplate: DocumentTemplate = {
     ...template,
+    // entityId LAST: it overwrites anything the caller supplied.
     id: uuidv4(),
+    entityId,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -56,15 +103,22 @@ export async function createTemplate(
 
 export async function updateTemplate(
   templateId: string,
-  updates: Partial<DocumentTemplate>
+  entityId: VerifiedEntityId,
+  updates: Partial<Omit<DocumentTemplate, 'entityId'>>
 ): Promise<DocumentTemplate> {
   const template = templateStore.get(templateId);
-  if (!template) throw new Error(`Template ${templateId} not found`);
+
+  // Out of scope, or a shared built-in: both are "not found". Built-ins are
+  // read-only because they are shared by every tenant in the process.
+  if (!template || !inScope(template, entityId) || isBuiltIn(template)) {
+    throw new Error(`Template ${templateId} not found`);
+  }
 
   const updated: DocumentTemplate = {
     ...template,
     ...updates,
     id: templateId,
+    entityId: template.entityId,
     version: template.version + 1,
     updatedAt: new Date(),
   };

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 import type { LinkSuggestion } from '@/modules/knowledge/types';
 import { parseStoredData } from './capture-service';
@@ -50,15 +51,22 @@ function getSharedKeywords(source: KnowledgeEntry, target: KnowledgeEntry): stri
   return [...sourceKw].filter((k) => targetKw.has(k)).slice(0, 10);
 }
 
-export async function suggestLinks(entryId: string): Promise<LinkSuggestion[]> {
-  const sourceEntry = await prisma.knowledgeEntry.findUnique({ where: { id: entryId } });
+export async function suggestLinks(
+  entryId: string,
+  entityId: VerifiedEntityId
+): Promise<LinkSuggestion[]> {
+  const sourceEntry = await prisma.knowledgeEntry.findFirst({
+    where: { id: entryId, entityId },
+  });
   if (!sourceEntry) return [];
 
   const source = sourceEntry as unknown as KnowledgeEntry;
 
   const candidates = await prisma.knowledgeEntry.findMany({
     where: {
-      entityId: source.entityId,
+      // The verified scope, not the source row's own column: a graph walk must
+      // be scoped at EVERY hop (tenancy-pattern.md sec.3).
+      entityId,
       id: { not: entryId },
     },
   });
@@ -93,46 +101,70 @@ export async function suggestLinks(entryId: string): Promise<LinkSuggestion[]> {
   return suggestions.sort((a, b) => b.confidence - a.confidence);
 }
 
-export async function applyLink(sourceId: string, targetId: string): Promise<void> {
-  const source = await prisma.knowledgeEntry.findUnique({ where: { id: sourceId } });
+/**
+ * Link two entries, bidirectionally.
+ *
+ * BOTH hops are scoped. The link is bidirectional, so before this an
+ * authenticated caller could name another tenant's entry as `targetId` and the
+ * WRITE-BACK half would edit that tenant's row -- a cross-tenant write reached
+ * through a graph edge rather than through a request field.
+ */
+export async function applyLink(
+  sourceId: string,
+  targetId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const source = await prisma.knowledgeEntry.findFirst({
+    where: { id: sourceId, entityId },
+  });
   if (!source) throw new Error(`Entry ${sourceId} not found`);
+
+  const target = await prisma.knowledgeEntry.findFirst({
+    where: { id: targetId, entityId },
+  });
+  if (!target) throw new Error(`Entry ${targetId} not found`);
 
   const linked = (source as unknown as KnowledgeEntry).linkedEntities;
   if (!linked.includes(targetId)) {
-    await prisma.knowledgeEntry.update({
-      where: { id: sourceId },
+    await prisma.knowledgeEntry.updateMany({
+      where: { id: sourceId, entityId },
       data: { linkedEntities: [...linked, targetId] },
     });
   }
 
-  // Bidirectional link
-  const target = await prisma.knowledgeEntry.findUnique({ where: { id: targetId } });
-  if (target) {
-    const targetLinked = (target as unknown as KnowledgeEntry).linkedEntities;
-    if (!targetLinked.includes(sourceId)) {
-      await prisma.knowledgeEntry.update({
-        where: { id: targetId },
-        data: { linkedEntities: [...targetLinked, sourceId] },
-      });
-    }
+  // Bidirectional link -- the target was proven in scope above.
+  const targetLinked = (target as unknown as KnowledgeEntry).linkedEntities;
+  if (!targetLinked.includes(sourceId)) {
+    await prisma.knowledgeEntry.updateMany({
+      where: { id: targetId, entityId },
+      data: { linkedEntities: [...targetLinked, sourceId] },
+    });
   }
 }
 
-export async function removeLink(sourceId: string, targetId: string): Promise<void> {
-  const source = await prisma.knowledgeEntry.findUnique({ where: { id: sourceId } });
+export async function removeLink(
+  sourceId: string,
+  targetId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  const source = await prisma.knowledgeEntry.findFirst({
+    where: { id: sourceId, entityId },
+  });
   if (!source) throw new Error(`Entry ${sourceId} not found`);
 
   const linked = (source as unknown as KnowledgeEntry).linkedEntities;
-  await prisma.knowledgeEntry.update({
-    where: { id: sourceId },
+  await prisma.knowledgeEntry.updateMany({
+    where: { id: sourceId, entityId },
     data: { linkedEntities: linked.filter((id) => id !== targetId) },
   });
 
-  const target = await prisma.knowledgeEntry.findUnique({ where: { id: targetId } });
+  const target = await prisma.knowledgeEntry.findFirst({
+    where: { id: targetId, entityId },
+  });
   if (target) {
     const targetLinked = (target as unknown as KnowledgeEntry).linkedEntities;
-    await prisma.knowledgeEntry.update({
-      where: { id: targetId },
+    await prisma.knowledgeEntry.updateMany({
+      where: { id: targetId, entityId },
       data: { linkedEntities: targetLinked.filter((id) => id !== sourceId) },
     });
   }

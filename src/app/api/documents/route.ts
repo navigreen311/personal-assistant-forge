@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope } from '@/shared/middleware/auth';
 
 const documentTypeEnum = z.enum([
   'BRIEF', 'MEMO', 'SOP', 'MINUTES', 'INVOICE', 'SOW', 'PROPOSAL', 'CONTRACT', 'REPORT', 'DECK',
@@ -23,13 +23,27 @@ const listDocumentsSchema = z.object({
 
 const createDocumentSchema = z.object({
   title: z.string().min(1, 'title is required'),
-  entityId: z.string().min(1, 'entityId is required'),
+  // Optional: omitted means the session's active entity. Do not make the
+  // client name its own tenant -- that habit is the bug this closes.
+  entityId: z.string().min(1).optional(),
   type: documentTypeEnum,
   content: z.string().optional(),
   templateId: z.string().optional(),
   status: documentStatusEnum.default('DRAFT'),
 });
 
+/**
+ * GET is a GENUINE CROSS-ENTITY LIST (tenancy-pattern.md sec.5b).
+ *
+ * With no `entityId` it has always meant "every document I own, across all my
+ * entities", and the documents index page depends on that. Switching it to
+ * withEntityScope would silently narrow it to the session's active entity --
+ * a behaviour change invisible to every cross-tenant assertion. So it keeps
+ * withAuth and proves the scope as a SET: the entities owned by this user.
+ *
+ * The one behaviour change: a caller naming an entity they do not own now gets
+ * an explicit 403 instead of a silently empty page.
+ */
 export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {
@@ -44,24 +58,21 @@ export async function GET(request: NextRequest) {
 
       const { entityId, type, status, search, sort, sortOrder, page, pageSize } = parsed.data;
 
-      // Get all entity IDs belonging to the authenticated user
       const userEntities = await prisma.entity.findMany({
         where: { userId: session.userId },
         select: { id: true },
       });
       const userEntityIds = userEntities.map((e) => e.id);
 
+      if (entityId && !userEntityIds.includes(entityId)) {
+        return error('FORBIDDEN', 'You do not have access to this entity', 403);
+      }
+
       if (userEntityIds.length === 0) {
         return paginated([], 0, page, pageSize);
       }
 
-      // Build where clause ensuring entities belong to user
-      const where: Record<string, unknown> = {
-        entityId: entityId
-          ? { in: userEntityIds.includes(entityId) ? [entityId] : [] }
-          : { in: userEntityIds },
-        deletedAt: null,
-      };
+      const where: Record<string, unknown> = {};
 
       if (search) {
         where.title = { contains: search, mode: 'insensitive' };
@@ -69,6 +80,11 @@ export async function GET(request: NextRequest) {
 
       if (type) where.type = type;
       if (status) where.status = status;
+
+      // Scope applied LAST and unconditionally, so no filter combination above
+      // can widen it.
+      where.deletedAt = null;
+      where.entityId = entityId ? entityId : { in: userEntityIds };
 
       const [documents, total] = await Promise.all([
         prisma.document.findMany({
@@ -91,7 +107,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const body = await req.json();
 
@@ -104,23 +120,11 @@ export async function POST(request: NextRequest) {
 
       const data = parsed.data;
 
-      // Verify entity belongs to user
-      const entity = await prisma.entity.findUnique({
-        where: { id: data.entityId },
-      });
-
-      if (!entity) {
-        return error('NOT_FOUND', `Entity not found: ${data.entityId}`, 404);
-      }
-
-      if (entity.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this entity', 403);
-      }
-
       const document = await prisma.document.create({
         data: {
           title: data.title,
-          entityId: data.entityId,
+          // entityId comes from the verified scope, never from `data`.
+          entityId,
           type: data.type,
           content: data.content,
           templateId: data.templateId,

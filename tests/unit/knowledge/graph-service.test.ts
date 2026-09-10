@@ -2,19 +2,28 @@ import { buildGraph, findConnections, detectClusters, getIsolatedNodes } from '@
 import type { KnowledgeEntry } from '@/shared/types';
 import type { KnowledgeGraph } from '@/modules/knowledge/types';
 
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    knowledgeEntry: {
-      findMany: jest.fn(),
-      findUnique: jest.fn(),
+// tenancy-pattern.md sec.8 trap 1: findConnections now scopes its first hop with
+// findFirst, so it is aliased onto the same jest.fn as findUnique.
+jest.mock('@/lib/db', () => {
+  const findUnique = jest.fn();
+  return {
+    prisma: {
+      knowledgeEntry: {
+        findMany: jest.fn(),
+        findUnique,
+        findFirst: (...a: unknown[]) => findUnique(...a),
+      },
     },
-  },
-}));
+  };
+});
 
 import { prisma } from '@/lib/db';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 
 const mockFindMany = prisma.knowledgeEntry.findMany as jest.Mock;
 const mockFindUnique = prisma.knowledgeEntry.findUnique as jest.Mock;
+
+const ENTITY_1 = verifiedEntityIdForTest('entity-1');
 
 function makeEntry(overrides: Partial<KnowledgeEntry> & { title?: string }): KnowledgeEntry {
   const title = overrides.title || 'Test Title';
@@ -42,7 +51,7 @@ describe('graph-service', () => {
         makeEntry({ id: 'e2', tags: ['react'] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
 
       // 2 knowledge nodes + 2 unique tag nodes
       expect(graph.nodes.length).toBe(4);
@@ -56,7 +65,7 @@ describe('graph-service', () => {
         makeEntry({ id: 'e2', linkedEntities: ['e1'], tags: [] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       const relatedEdges = graph.edges.filter((e) => e.relationship === 'related_to');
       expect(relatedEdges.length).toBeGreaterThan(0);
     });
@@ -66,7 +75,7 @@ describe('graph-service', () => {
         makeEntry({ id: 'e1', tags: ['react'] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       const tagEdges = graph.edges.filter((e) => e.relationship === 'tagged_with');
       expect(tagEdges.length).toBe(1);
     });
@@ -77,7 +86,7 @@ describe('graph-service', () => {
         makeEntry({ id: 'e2', tags: [] }),
       ]);
 
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.stats.totalNodes).toBe(3); // 2 entries + 1 tag
       expect(graph.stats.totalEdges).toBe(1); // 1 tagged_with
       expect(graph.stats.isolatedNodes).toBe(1); // e2 has no connections
@@ -85,7 +94,7 @@ describe('graph-service', () => {
 
     it('should handle empty entries', async () => {
       mockFindMany.mockResolvedValue([]);
-      const graph = await buildGraph('entity-1');
+      const graph = await buildGraph(ENTITY_1);
       expect(graph.nodes).toEqual([]);
       expect(graph.edges).toEqual([]);
     });
@@ -102,7 +111,7 @@ describe('graph-service', () => {
       mockFindUnique.mockResolvedValue(entries[0]);
       mockFindMany.mockResolvedValue(entries);
 
-      const { nodes, edges } = await findConnections('e1', 1);
+      const { nodes, edges } = await findConnections('e1', ENTITY_1, 1);
       const nodeIds = nodes.map((n) => n.id);
       expect(nodeIds).toContain('e1');
       // Should find connected nodes through tags and links
@@ -119,15 +128,15 @@ describe('graph-service', () => {
       mockFindUnique.mockResolvedValue(entries[0]);
       mockFindMany.mockResolvedValue(entries);
 
-      const { nodes: depth1 } = await findConnections('e1', 1);
-      const { nodes: depth2 } = await findConnections('e1', 2);
+      const { nodes: depth1 } = await findConnections('e1', ENTITY_1, 1);
+      const { nodes: depth2 } = await findConnections('e1', ENTITY_1, 2);
 
       expect(depth2.length).toBeGreaterThanOrEqual(depth1.length);
     });
 
     it('should return empty for non-existent entry', async () => {
       mockFindUnique.mockResolvedValue(null);
-      const { nodes, edges } = await findConnections('nonexistent', 1);
+      const { nodes, edges } = await findConnections('nonexistent', ENTITY_1, 1);
       expect(nodes).toEqual([]);
       expect(edges).toEqual([]);
     });
@@ -192,7 +201,7 @@ describe('graph-service', () => {
         makeEntry({ id: 'e2', tags: [] }),
       ]);
 
-      const isolated = await getIsolatedNodes('entity-1');
+      const isolated = await getIsolatedNodes(ENTITY_1);
       const isolatedIds = isolated.map((n) => n.id);
       expect(isolatedIds).toContain('e2');
       expect(isolatedIds).not.toContain('e1');

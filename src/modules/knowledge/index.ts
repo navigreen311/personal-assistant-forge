@@ -37,7 +37,8 @@ export {
   highlightExcerpt,
   suggestRelatedQueries,
   search,
-  semanticSearch,
+  termSimilaritySearch,
+  aiRerankedSearch,
 } from './services/search-service';
 export {
   createSOP,

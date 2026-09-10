@@ -1,6 +1,43 @@
-// Embedding-based semantic search with full-text fallback
+// ============================================================================
+// Knowledge search: keyword scoring, hashed term-frequency similarity, and
+// optional AI re-ranking.
+//
+// T-017 -- WHAT THIS FILE IS, HONESTLY.
+//
+// The header used to read "Embedding-based semantic search". It is not. There
+// is no embedding model, no vector store, and no index. `embedText()` below is
+// the hashing trick: it tokenises, hashes each token into one of 256 buckets,
+// takes log(1 + tf), and L2-normalises. Two documents about the same subject in
+// different words score near zero, because nothing here knows that two
+// different tokens can mean the same thing -- which is the entire point of a
+// semantic search. It is a cheap lexical similarity with collisions, and it is
+// named accurately now.
+//
+// It is still useful (it is fast, needs no model, and beats nothing at all),
+// so it stays; what has changed is that it no longer claims to be something
+// else, and the silent failure below is gone.
+//
+// WHAT WAS SILENTLY BROKEN: cosineSimilarity() returned 0 for any two vectors
+// of different lengths. Zero is a legitimate similarity value, so a caller
+// mixing vector spaces got "these are unrelated" rather than an error --
+// results quietly missing, nothing in a log, no test failing. It now throws.
+// See the comment on that function.
+//
+// WHAT A REAL SEMANTIC SEARCH WOULD NEED, and why it is not in this PR:
+// a real embedding model (an API call per entry, plus a cache), somewhere to
+// PUT the vectors, and an index to search them. The frozen schema has no model
+// for a vector -- no pgvector column, no embeddings table, not even a Json blob
+// on KnowledgeEntry to hang one off. Adding one is a migration, and a migration
+// is an automatic hand-back for this package. Bolting a per-request embedding
+// call onto the existing full-scan loop would be worse than what is here: it
+// would be slower, cost money per search, and STILL have no index. So the
+// scope judgement is: fix the silent failure, tell the truth in the name and
+// the docs, and escalate the vector store as a schema decision.
+// ============================================================================
+
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 import type {
   SearchRequest,
@@ -41,10 +78,16 @@ function hashToken(token: string): number {
 }
 
 /**
- * Generate a TF-IDF-like embedding vector for the given text.
- * Tokenizes text into words, hashes each token to a fixed-dimension bucket (0-255),
- * builds a frequency vector, and normalizes it to unit length.
- * Returns a fixed-length number[] representing the embedding.
+ * A hashed term-frequency vector for `text`. NOT an embedding.
+ *
+ * Tokenises, hashes each token into one of EMBED_DIMENSIONS buckets, applies
+ * log(1 + tf), and L2-normalises. Purely lexical: it has no notion that two
+ * different words can mean the same thing, and distinct tokens that hash to the
+ * same bucket are indistinguishable afterwards.
+ *
+ * Always returns either exactly EMBED_DIMENSIONS numbers, or an empty array for
+ * text with no usable tokens. Callers may rely on that: two non-empty results
+ * from this function are always the same length and always comparable.
  */
 export function embedText(text: string): number[] {
   if (!text || !text.trim()) return [];
@@ -87,32 +130,41 @@ export function embedText(text: string): number[] {
 }
 
 /**
- * Compute cosine similarity between two vectors.
- * Handles vectors of different lengths by using shared vocabulary approach.
- * Returns a value between -1 and 1 (typically 0-1 for TF vectors).
+ * Cosine similarity between two vectors of the same length.
+ *
+ * An empty vector means "no usable tokens", which is a real, expected input
+ * (embedText returns [] for e.g. pure punctuation), so it scores 0.
+ *
+ * T-017: two NON-EMPTY vectors of DIFFERENT lengths used to score 0 as well.
+ * That is not a similarity, it is a bug report -- the two vectors are in
+ * incompatible spaces and no comparison is meaningful. Returning 0 made that
+ * indistinguishable from a genuine "these are unrelated", so a caller mixing
+ * vector spaces saw results silently disappear rather than an error. It throws
+ * now. Within this module it cannot fire: embedText always returns
+ * EMBED_DIMENSIONS numbers or none at all.
  */
 export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length === 0 || b.length === 0) return 0;
 
-  // If vectors are the same length, compute directly
-  if (a.length === b.length) {
-    let dotProduct = 0;
-    let magnitudeA = 0;
-    let magnitudeB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      magnitudeA += a[i] * a[i];
-      magnitudeB += b[i] * b[i];
-    }
-
-    const magnitude = Math.sqrt(magnitudeA) * Math.sqrt(magnitudeB);
-    return magnitude === 0 ? 0 : dotProduct / magnitude;
+  if (a.length !== b.length) {
+    throw new RangeError(
+      `cosineSimilarity: vectors are in incompatible spaces (${a.length} vs ${b.length}). ` +
+        'A similarity of 0 would be indistinguishable from "unrelated"; see T-017.'
+    );
   }
 
-  // For different-length vectors (from TF-IDF with different vocabs),
-  // return 0 since they're in incompatible vector spaces
-  return 0;
+  let dotProduct = 0;
+  let magnitudeA = 0;
+  let magnitudeB = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    magnitudeA += a[i] * a[i];
+    magnitudeB += b[i] * b[i];
+  }
+
+  const magnitude = Math.sqrt(magnitudeA) * Math.sqrt(magnitudeB);
+  return magnitude === 0 ? 0 : dotProduct / magnitude;
 }
 
 
@@ -268,8 +320,15 @@ Return a single expanded query string that includes the original terms plus 2-4 
   }
 }
 
+/**
+ * The filter bag is parsed wholesale off the query string, so per
+ * tenancy-pattern.md sec.2 the scope must NOT be a field on it: it is its own
+ * leading argument, and `entityId` is Omit-ed from the request type so a
+ * caller cannot supply their own.
+ */
 export async function search(
-  request: SearchRequest & { mode?: 'fulltext' | 'semantic' | 'hybrid' }
+  request: Omit<SearchRequest, 'entityId'> & { mode?: 'fulltext' | 'semantic' | 'hybrid' },
+  entityId: VerifiedEntityId
 ): Promise<SearchResponse> {
   const page = request.page || 1;
   const pageSize = request.pageSize || 20;
@@ -278,7 +337,7 @@ export async function search(
   // For semantic or hybrid mode, delegate to embedding-based search
   if (mode === 'semantic') {
     try {
-      const semanticResult = await semanticSearch(request.entityId, request.query, {
+      const semanticResult = await termSimilaritySearch(entityId, request.query, {
         limit: pageSize,
         threshold: 0.1,
       });
@@ -313,7 +372,7 @@ export async function search(
       };
     } catch {
       // Fall back to fulltext on error
-      return search({ ...request, mode: 'fulltext' });
+      return search({ ...request, mode: 'fulltext' }, entityId);
     }
   }
 
@@ -321,8 +380,8 @@ export async function search(
     try {
       // Run both fulltext and semantic in parallel
       const [fulltextResponse, semanticResults] = await Promise.all([
-        search({ ...request, mode: 'fulltext' }),
-        semanticSearch(request.entityId, request.query, {
+        search({ ...request, mode: 'fulltext' }, entityId),
+        termSimilaritySearch(entityId, request.query, {
           limit: (request.pageSize || 20) * 2,
           threshold: 0.1,
         }),
@@ -369,7 +428,7 @@ export async function search(
       };
     } catch {
       // Fall back to fulltext on error
-      return search({ ...request, mode: 'fulltext' });
+      return search({ ...request, mode: 'fulltext' }, entityId);
     }
   }
 
@@ -380,7 +439,7 @@ export async function search(
     : request.query;
 
   const entries = await prisma.knowledgeEntry.findMany({
-    where: { entityId: request.entityId },
+    where: { entityId },
   });
 
   const scored: SearchResult[] = [];
@@ -426,7 +485,7 @@ export async function search(
   };
 }
 
-// --- Embedding-based semantic search ---
+// --- Hashed term-frequency similarity search ---
 
 export interface SemanticSearchResult {
   entry: KnowledgeEntry;
@@ -434,36 +493,21 @@ export interface SemanticSearchResult {
 }
 
 /**
- * Perform embedding-based semantic search over a user's knowledge entries.
- * Generates TF-IDF embeddings for query and entries via embedText(),
- * computes cosine similarity, filters by threshold (default 0.1),
- * and returns top N results sorted by similarity descending.
+ * Rank an entity's knowledge entries by hashed term-frequency similarity.
+ *
+ * T-017 note on the name: this is what used to be called `semanticSearch(userId,
+ * ...)`. It was neither. It is lexical, not semantic (see the file header), and
+ * its first parameter was named `userId` while being used verbatim as
+ * `where: { entityId: userId }` -- so the name told a reader the wrong thing
+ * about which id space it was in, on the one parameter that decides which
+ * tenant's data is read. It is now `entityId`, and it is a VerifiedEntityId, so
+ * a raw value off a request will not compile here.
  */
-export async function semanticSearch(
-  userId: string,
+export async function termSimilaritySearch(
+  entityId: VerifiedEntityId,
   query: string,
   options?: { limit?: number; threshold?: number }
-): Promise<Array<{ entry: KnowledgeEntry; similarity: number }>>;
-
-/**
- * AI-powered re-ranking of keyword search results (legacy signature).
- */
-export async function semanticSearch(
-  request: SearchRequest
-): Promise<SearchResponse>;
-
-export async function semanticSearch(
-  userIdOrRequest: string | SearchRequest,
-  query?: string,
-  options?: { limit?: number; threshold?: number }
-): Promise<Array<{ entry: KnowledgeEntry; similarity: number }> | SearchResponse> {
-  // Legacy signature: semanticSearch(request: SearchRequest)
-  if (typeof userIdOrRequest !== 'string') {
-    return semanticSearchLegacy(userIdOrRequest);
-  }
-
-  // New signature: semanticSearch(userId, query, options)
-  const userId = userIdOrRequest;
+): Promise<Array<{ entry: KnowledgeEntry; similarity: number }>> {
   const searchQuery = query || '';
   const limit = options?.limit ?? 10;
   const threshold = options?.threshold ?? 0.1;
@@ -471,13 +515,11 @@ export async function semanticSearch(
   if (!searchQuery.trim()) return [];
 
   try {
-    // Generate embedding for the query
     const queryEmbedding = embedText(searchQuery);
     if (queryEmbedding.length === 0) return [];
 
-    // Fetch all knowledge entries for the user
     const entries = await prisma.knowledgeEntry.findMany({
-      where: { entityId: userId },
+      where: { entityId },
     });
 
     if (entries.length === 0) return [];
@@ -488,13 +530,11 @@ export async function semanticSearch(
       const ke = entry as unknown as KnowledgeEntry;
       const stored = parseStoredData(ke.content);
 
-      // Generate embedding from title + content
       const entryText = [stored.title, stored.body].join(' ');
       const entryEmbedding = embedText(entryText);
 
       if (entryEmbedding.length === 0) continue;
 
-      // Compute cosine similarity between query and entry embeddings
       const similarity = cosineSimilarity(queryEmbedding, entryEmbedding);
 
       if (similarity >= threshold) {
@@ -517,11 +557,17 @@ export async function semanticSearch(
 }
 
 /**
- * Legacy semanticSearch: keyword search + AI re-ranking.
+ * Keyword search followed by AI re-ranking.
+ *
+ * This is the only path here that is genuinely semantic, because the model
+ * doing the re-ranking is. It can only reorder what the keyword pass already
+ * found, so it improves precision and never recall.
  */
-async function semanticSearchLegacy(request: SearchRequest): Promise<SearchResponse> {
-  // 1. Run existing keyword search
-  const keywordResults = await search(request);
+export async function aiRerankedSearch(
+  request: Omit<SearchRequest, 'entityId'>,
+  entityId: VerifiedEntityId
+): Promise<SearchResponse> {
+  const keywordResults = await search(request, entityId);
 
   // If no query or no results, return keyword results as-is
   if (!request.query.trim() || keywordResults.results.length === 0) {
