@@ -13,11 +13,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { executeRunbook } from '@/modules/execution/services/runbook-service';
 
@@ -49,16 +45,18 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withRunbookScope(request, id, async (_req, session, entityId) => {
-    try {
-      const execution = await executeRunbook(id, session.userId, entityId);
-      return success(execution, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withRunbookScope(request, id, async (_req, session, entityId) => {
+      try {
+        const execution = await executeRunbook(id, session.userId, entityId);
+        return success(execution, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('EXECUTION_ERROR', message, 500);
       }
-      return error('EXECUTION_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

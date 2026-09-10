@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import * as itineraryService from '@/modules/travel/services/itinerary-service';
 import { prisma } from '@/lib/db';
@@ -83,62 +83,64 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withItineraryScope(request, id, async (req, _session, entityId) => {
-    try {
-      const itinerary = await itineraryService.getItinerary(entityId, id);
-      if (!itinerary) return error('NOT_FOUND', 'Itinerary not found', 404);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withItineraryScope(request, id, async (req, _session, entityId) => {
+      try {
+        const itinerary = await itineraryService.getItinerary(entityId, id);
+        if (!itinerary) return error('NOT_FOUND', 'Itinerary not found', 404);
 
-      const body = await req.json();
-      const parsed = updateItinerarySchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+        const body = await req.json();
+        const parsed = updateItinerarySchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const updates = parsed.data;
+        const updates = parsed.data;
 
-      // Update itinerary-level metadata on all associated CalendarEvents
-      const events = await prisma.calendarEvent.findMany({
-        where: {
-          entityId,
-          prepPacket: {
-            path: ['itineraryId'],
-            equals: id,
-          },
-        },
-      });
-
-      for (const event of events) {
-        const existingMeta = event.prepPacket as Record<string, unknown>;
-        const metaUpdates: Record<string, unknown> = {};
-        if (updates.name !== undefined) metaUpdates.itineraryName = updates.name;
-        if (updates.status !== undefined) metaUpdates.itineraryStatus = updates.status;
-        if (updates.notes !== undefined) metaUpdates.itineraryNotes = updates.notes;
-
-        if (Object.keys(metaUpdates).length > 0) {
-          const merged = { ...existingMeta, ...metaUpdates };
-          // updateMany, not update: update takes a unique WHERE and cannot carry
-          // the entity.
-          await prisma.calendarEvent.updateMany({
-            where: { id: event.id, entityId },
-            data: {
-              prepPacket: merged as Parameters<typeof prisma.calendarEvent.update>[0]['data']['prepPacket'],
+        // Update itinerary-level metadata on all associated CalendarEvents
+        const events = await prisma.calendarEvent.findMany({
+          where: {
+            entityId,
+            prepPacket: {
+              path: ['itineraryId'],
+              equals: id,
             },
-          });
-        }
-      }
+          },
+        });
 
-      // Update individual legs if provided
-      if (updates.legs) {
-        for (const legUpdate of updates.legs) {
-          const { id: legId, ...legFields } = legUpdate;
-          await itineraryService.updateLeg(entityId, id, legId, legFields);
-        }
-      }
+        for (const event of events) {
+          const existingMeta = event.prepPacket as Record<string, unknown>;
+          const metaUpdates: Record<string, unknown> = {};
+          if (updates.name !== undefined) metaUpdates.itineraryName = updates.name;
+          if (updates.status !== undefined) metaUpdates.itineraryStatus = updates.status;
+          if (updates.notes !== undefined) metaUpdates.itineraryNotes = updates.notes;
 
-      const updated = await itineraryService.getItinerary(entityId, id);
-      return success(updated);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+          if (Object.keys(metaUpdates).length > 0) {
+            const merged = { ...existingMeta, ...metaUpdates };
+            // updateMany, not update: update takes a unique WHERE and cannot carry
+            // the entity.
+            await prisma.calendarEvent.updateMany({
+              where: { id: event.id, entityId },
+              data: {
+                prepPacket: merged as Parameters<typeof prisma.calendarEvent.update>[0]['data']['prepPacket'],
+              },
+            });
+          }
+        }
+
+        // Update individual legs if provided
+        if (updates.legs) {
+          for (const legUpdate of updates.legs) {
+            const { id: legId, ...legFields } = legUpdate;
+            await itineraryService.updateLeg(entityId, id, legId, legFields);
+          }
+        }
+
+        const updated = await itineraryService.getItinerary(entityId, id);
+        return success(updated);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }
 
 export async function DELETE(
@@ -146,26 +148,28 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withItineraryScope(request, id, async (_req, _session, entityId) => {
-    try {
-      const itinerary = await itineraryService.getItinerary(entityId, id);
-      if (!itinerary) return error('NOT_FOUND', 'Itinerary not found', 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withItineraryScope(request, id, async (_req, _session, entityId) => {
+      try {
+        const itinerary = await itineraryService.getItinerary(entityId, id);
+        if (!itinerary) return error('NOT_FOUND', 'Itinerary not found', 404);
 
-      // deleteMany with the scope in the WHERE, so a foreign row cannot be
-      // reached even if an id were guessed.
-      const removed = await prisma.calendarEvent.deleteMany({
-        where: {
-          entityId,
-          prepPacket: {
-            path: ['itineraryId'],
-            equals: id,
+        // deleteMany with the scope in the WHERE, so a foreign row cannot be
+        // reached even if an id were guessed.
+        const removed = await prisma.calendarEvent.deleteMany({
+          where: {
+            entityId,
+            prepPacket: {
+              path: ['itineraryId'],
+              equals: id,
+            },
           },
-        },
-      });
+        });
 
-      return success({ id, deleted: true, events: removed.count });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        return success({ id, deleted: true, events: removed.count });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

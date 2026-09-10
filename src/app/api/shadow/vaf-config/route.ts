@@ -12,7 +12,7 @@
  */
 
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { getVafConfig, updateVafConfig } from '@/lib/shadow/vaf-config';
 import type { AuthSession } from '@/lib/auth/types';
@@ -49,5 +49,5 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function PATCH(req: NextRequest): Promise<Response> {
-  return withAuth(req, handlePatch);
+  return withRole(req, ['owner', 'admin'], handlePatch);
 }

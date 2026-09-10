@@ -18,11 +18,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { getRuleById, updateRule, deleteRule } from '@/engines/policy/rule-crud';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 const UpdateRuleSchema = z.object({
@@ -104,38 +100,40 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withRuleScope(
-    request,
-    id,
-    { allowPlatformRule: false },
-    async (req, _session, entityId) => {
-      try {
-        const body = await req.json();
-        const parsed = UpdateRuleSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withRuleScope(
+      request,
+      id,
+      { allowPlatformRule: false },
+      async (req, _session, entityId) => {
+        try {
+          const body = await req.json();
+          const parsed = UpdateRuleSchema.safeParse(body);
 
-        if (!parsed.success) {
-          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-            issues: parsed.error.issues,
+          if (!parsed.success) {
+            return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+              issues: parsed.error.issues,
+            });
+          }
+
+          const existing = await getRuleById(id);
+          if (!existing) {
+            return error('NOT_FOUND', `Rule ${id} not found`, 404);
+          }
+
+          // The rule stays where it was proved to be. A caller cannot move a rule
+          // into another tenant, or out of its own, by naming an entityId.
+          const { entityId: _requested, ...updates } = parsed.data;
+          const updated = await updateRule(id, {
+            ...updates,
+            entityId: entityId ?? undefined,
           });
+          return success(updated);
+        } catch (err) {
+          return error('INTERNAL_ERROR', (err as Error).message, 500);
         }
-
-        const existing = await getRuleById(id);
-        if (!existing) {
-          return error('NOT_FOUND', `Rule ${id} not found`, 404);
-        }
-
-        // The rule stays where it was proved to be. A caller cannot move a rule
-        // into another tenant, or out of its own, by naming an entityId.
-        const { entityId: _requested, ...updates } = parsed.data;
-        const updated = await updateRule(id, {
-          ...updates,
-          entityId: entityId ?? undefined,
-        });
-        return success(updated);
-      } catch (err) {
-        return error('INTERNAL_ERROR', (err as Error).message, 500);
       }
-    }
+    )
   );
 }
 
@@ -144,18 +142,20 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withRuleScope(request, id, { allowPlatformRule: false }, async () => {
-    try {
-      const existing = await getRuleById(id);
+  return withRole(request, ['owner', 'admin'], () =>
+    withRuleScope(request, id, { allowPlatformRule: false }, async () => {
+      try {
+        const existing = await getRuleById(id);
 
-      if (!existing) {
-        return error('NOT_FOUND', `Rule ${id} not found`, 404);
+        if (!existing) {
+          return error('NOT_FOUND', `Rule ${id} not found`, 404);
+        }
+
+        await deleteRule(id);
+        return success({ deleted: true });
+      } catch (err) {
+        return error('INTERNAL_ERROR', (err as Error).message, 500);
       }
-
-      await deleteRule(id);
-      return success({ deleted: true });
-    } catch (err) {
-      return error('INTERNAL_ERROR', (err as Error).message, 500);
-    }
-  });
+    })
+  );
 }

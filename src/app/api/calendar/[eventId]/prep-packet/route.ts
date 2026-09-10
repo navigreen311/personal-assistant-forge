@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import { PrepPacketService } from '@/modules/calendar/prep.service';
 import { prepPacketSchema } from '@/modules/calendar/calendar.validation';
@@ -74,26 +74,28 @@ export async function POST(
 ) {
   const { eventId } = await params;
 
-  return withEventScope(request, eventId, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEventScope(request, eventId, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = prepPacketSchema.safeParse({ ...body, eventId });
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid prep packet request', 400, {
-          issues: parsed.error.issues,
-        });
+        const parsed = prepPacketSchema.safeParse({ ...body, eventId });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid prep packet request', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // `entityId` spread LAST: the body's own value is overwritten. It used to
+        // be the WHERE clause of three separate lookups -- contacts, messages and
+        // tasks -- under no ownership check at all.
+        const { entityId: _requested, ...draft } = parsed.data;
+
+        const packet = await prepService.generatePrepPacket({ ...draft, entityId });
+        return success(packet, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to generate prep packet', 500);
       }
-
-      // `entityId` spread LAST: the body's own value is overwritten. It used to
-      // be the WHERE clause of three separate lookups -- contacts, messages and
-      // tasks -- under no ownership check at all.
-      const { entityId: _requested, ...draft } = parsed.data;
-
-      const packet = await prepService.generatePrepPacket({ ...draft, entityId });
-      return success(packet, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to generate prep packet', 500);
-    }
-  });
+    })
+  );
 }

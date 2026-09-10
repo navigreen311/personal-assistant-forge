@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
@@ -75,65 +75,67 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  return withBriefScope(request, id, async (req, _session, entityId) => {
-    try {
-      const doc = await prisma.document.findFirst({ where: { id, entityId, type: 'BRIEF' } });
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withBriefScope(request, id, async (req, _session, entityId) => {
+      try {
+        const doc = await prisma.document.findFirst({ where: { id, entityId, type: 'BRIEF' } });
 
-      if (!doc) {
-        return error('NOT_FOUND', 'Decision brief not found', 404);
-      }
+        if (!doc) {
+          return error('NOT_FOUND', 'Decision brief not found', 404);
+        }
 
-      const body = await req.json();
-      const parsed = UpdateDecisionSchema.safeParse(body);
+        const body = await req.json();
+        const parsed = UpdateDecisionSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const updates = parsed.data;
+        const existingContent = doc.content ? JSON.parse(doc.content) : {};
+
+        const updatedContent = {
+          ...existingContent,
+          request: {
+            ...existingContent.request,
+            ...(updates.description !== undefined && { description: updates.description }),
+            ...(updates.context !== undefined && { context: updates.context }),
+            ...(updates.deadline !== undefined && { deadline: updates.deadline }),
+            ...(updates.stakeholders !== undefined && { stakeholders: updates.stakeholders }),
+            ...(updates.constraints !== undefined && { constraints: updates.constraints }),
+            ...(updates.blastRadius !== undefined && { blastRadius: updates.blastRadius }),
+          },
+        };
+
+        // updateMany, not update: a unique WHERE cannot carry the entity.
+        const result = await prisma.document.updateMany({
+          where: { id, entityId, type: 'BRIEF' },
+          data: {
+            ...(updates.title !== undefined && { title: updates.title }),
+            ...(updates.status !== undefined && { status: updates.status }),
+            content: JSON.stringify(updatedContent),
+          },
         });
+
+        if (result.count === 0) {
+          return error('NOT_FOUND', 'Decision brief not found', 404);
+        }
+
+        const updated = await prisma.document.findFirst({ where: { id, entityId } });
+
+        return success({
+          id: updated!.id,
+          title: updated!.title,
+          status: updated!.status,
+          updatedAt: updated!.updatedAt,
+        });
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to update decision brief', 500);
       }
-
-      const updates = parsed.data;
-      const existingContent = doc.content ? JSON.parse(doc.content) : {};
-
-      const updatedContent = {
-        ...existingContent,
-        request: {
-          ...existingContent.request,
-          ...(updates.description !== undefined && { description: updates.description }),
-          ...(updates.context !== undefined && { context: updates.context }),
-          ...(updates.deadline !== undefined && { deadline: updates.deadline }),
-          ...(updates.stakeholders !== undefined && { stakeholders: updates.stakeholders }),
-          ...(updates.constraints !== undefined && { constraints: updates.constraints }),
-          ...(updates.blastRadius !== undefined && { blastRadius: updates.blastRadius }),
-        },
-      };
-
-      // updateMany, not update: a unique WHERE cannot carry the entity.
-      const result = await prisma.document.updateMany({
-        where: { id, entityId, type: 'BRIEF' },
-        data: {
-          ...(updates.title !== undefined && { title: updates.title }),
-          ...(updates.status !== undefined && { status: updates.status }),
-          content: JSON.stringify(updatedContent),
-        },
-      });
-
-      if (result.count === 0) {
-        return error('NOT_FOUND', 'Decision brief not found', 404);
-      }
-
-      const updated = await prisma.document.findFirst({ where: { id, entityId } });
-
-      return success({
-        id: updated!.id,
-        title: updated!.title,
-        status: updated!.status,
-        updatedAt: updated!.updatedAt,
-      });
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to update decision brief', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -142,20 +144,22 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  return withBriefScope(request, id, async (_req, _session, entityId) => {
-    try {
-      const result = await prisma.document.updateMany({
-        where: { id, entityId, type: 'BRIEF' },
-        data: { status: 'ARCHIVED' },
-      });
+  return withRole(request, ['owner', 'admin'], () =>
+    withBriefScope(request, id, async (_req, _session, entityId) => {
+      try {
+        const result = await prisma.document.updateMany({
+          where: { id, entityId, type: 'BRIEF' },
+          data: { status: 'ARCHIVED' },
+        });
 
-      if (result.count === 0) {
-        return error('NOT_FOUND', 'Decision brief not found', 404);
+        if (result.count === 0) {
+          return error('NOT_FOUND', 'Decision brief not found', 404);
+        }
+
+        return success({ id, archived: true });
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to archive decision brief', 500);
       }
-
-      return success({ id, archived: true });
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to archive decision brief', 500);
-    }
-  });
+    })
+  );
 }

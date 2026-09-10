@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedAuth, withAuditedRole } from '@/modules/security/audit-wiring';
 import { configure, getStatus } from '@/modules/crisis/services/dead-man-switch-service';
 
 /** Demo dead-man-switch protocols. */
@@ -185,8 +185,7 @@ const updateConfigSchema = z.object({
  * confirmed. A refusal a user can see beats a success they cannot verify.
  */
 export async function PUT(request: NextRequest) {
-  return withAuditedAuth(
-    request,
+  return withAuditedRole(request, ['owner', 'admin'],
     { resource: 'crisis.config', sensitivityLevel: 'CONFIDENTIAL' },
     async (req, session) => {
       try {

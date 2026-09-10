@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
@@ -62,25 +62,27 @@ export async function POST(
 ) {
   const { id: decisionId } = await params;
 
-  return withDecisionScope(request, decisionId, async (req) => {
-    try {
-      const body = await req.json();
-      const parsed = MatrixRequestSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withDecisionScope(request, decisionId, async (req) => {
+      try {
+        const body = await req.json();
+        const parsed = MatrixRequestSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
 
-      const result = createMatrix(decisionId, parsed.data.criteria, parsed.data.scores);
-      return success(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to run decision matrix';
-      if (message.includes('Weights sum to') || message.includes('negative weight')) {
-        return error('VALIDATION_ERROR', message, 400);
+        const result = createMatrix(decisionId, parsed.data.criteria, parsed.data.scores);
+        return success(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to run decision matrix';
+        if (message.includes('Weights sum to') || message.includes('negative weight')) {
+          return error('VALIDATION_ERROR', message, 400);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 import { createCannedResponseSchema } from '@/modules/inbox/inbox.validation';
@@ -29,28 +29,30 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createCannedResponseSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createCannedResponseSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid canned response', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid canned response', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const { entityId: _requested, ...input } = parsed.data;
+
+        const response = await inboxService.createCannedResponse(
+          input,
+          entityId,
+          session.userId
+        );
+        return success(response, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      const { entityId: _requested, ...input } = parsed.data;
-
-      const response = await inboxService.createCannedResponse(
-        input,
-        entityId,
-        session.userId
-      );
-      return success(response, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

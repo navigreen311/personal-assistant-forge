@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createPersona, listPersonas } from '@/modules/voiceforge/services/persona-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const PersonaSchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -53,23 +53,25 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = PersonaSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = PersonaSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // entityId LAST, deliberately: it overwrites the caller's own value.
+        const { entityId: _requested, ...draft } = parsed.data;
+        const persona = await createPersona({ ...draft, entityId });
+        return success(persona, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-
-      // entityId LAST, deliberately: it overwrites the caller's own value.
-      const { entityId: _requested, ...draft } = parsed.data;
-      const persona = await createPersona({ ...draft, entityId });
-      return success(persona, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

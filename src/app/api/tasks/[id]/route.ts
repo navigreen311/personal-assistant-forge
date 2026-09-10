@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { getTask, updateTask, deleteTask } from '@/modules/tasks/services/task-crud';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -97,32 +97,34 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  return withTaskScope(request, id, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = UpdateTaskSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withTaskScope(request, id, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = UpdateTaskSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const updates: Record<string, unknown> = { ...parsed.data };
+        if (parsed.data.dueDate !== undefined) {
+          updates.dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : undefined;
+        }
+
+        const task = await updateTask(
+          id,
+          updates as Parameters<typeof updateTask>[1],
+          entityId,
+          session.userId
+        );
+        return success(task);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to update task';
+        return error('UPDATE_FAILED', message, 500);
       }
-
-      const updates: Record<string, unknown> = { ...parsed.data };
-      if (parsed.data.dueDate !== undefined) {
-        updates.dueDate = parsed.data.dueDate ? new Date(parsed.data.dueDate) : undefined;
-      }
-
-      const task = await updateTask(
-        id,
-        updates as Parameters<typeof updateTask>[1],
-        entityId,
-        session.userId
-      );
-      return success(task);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update task';
-      return error('UPDATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -131,13 +133,15 @@ export async function DELETE(
 ) {
   const { id } = await params;
 
-  return withTaskScope(request, id, async (_req, _session, entityId) => {
-    try {
-      await deleteTask(id, entityId);
-      return success({ cancelled: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to delete task';
-      return error('DELETE_FAILED', message, 500);
-    }
-  });
+  return withRole(request, ['owner', 'admin'], () =>
+    withTaskScope(request, id, async (_req, _session, entityId) => {
+      try {
+        await deleteTask(id, entityId);
+        return success({ cancelled: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to delete task';
+        return error('DELETE_FAILED', message, 500);
+      }
+    })
+  );
 }

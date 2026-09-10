@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { gdprService } from '@/modules/shadow/compliance/gdpr-export';
 import { prisma } from '@/lib/db';
 
@@ -13,7 +14,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { id: sessionId } = await params;
 

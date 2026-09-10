@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { routeRequest } from '@/engines/cost/model-router';
 
 const RequestSchema = z.object({
@@ -10,7 +11,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withRole(request, ['owner', 'admin'], async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RequestSchema.safeParse(body);

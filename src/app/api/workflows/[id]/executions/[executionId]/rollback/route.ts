@@ -8,11 +8,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { rollbackExecution } from '@/modules/workflows/services/execution-logger';
 
@@ -49,21 +45,23 @@ export async function POST(
   { params }: { params: Promise<{ id: string; executionId: string }> }
 ) {
   const { executionId } = await params;
-  return withExecutionScope(request, executionId, async (_req, _session, entityId) => {
-    try {
-      const result = await rollbackExecution(executionId, entityId);
+  return withRole(request, ['owner', 'admin'], () =>
+    withExecutionScope(request, executionId, async (_req, _session, entityId) => {
+      try {
+        const result = await rollbackExecution(executionId, entityId);
 
-      return success({
-        rolledBack: result.rolledBack.map((s) => s.nodeId),
-        failed: result.failed.map((s) => s.nodeId),
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to rollback execution';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        return success({
+          rolledBack: result.rolledBack.map((s) => s.nodeId),
+          failed: result.failed.map((s) => s.nodeId),
+        });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to rollback execution';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('ROLLBACK_FAILED', message, 500);
       }
-      return error('ROLLBACK_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

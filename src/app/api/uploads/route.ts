@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withRole, withEntityScope } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { processUpload } from '@/lib/integrations/storage/uploads';
 import { createDocument } from '@/lib/integrations/storage/documents';
@@ -21,7 +21,7 @@ import { createDocument } from '@/lib/integrations/storage/documents';
 // the form once, then hand the id to `withEntityScope` as the explicit
 // argument -- the same shape tenancy-pattern.md §4 uses for `[id]` routes.
 export async function POST(req: NextRequest): Promise<Response> {
-  return withAuth(req, async (authedReq) => {
+  return withRole(req, ['owner', 'admin', 'member'], async (authedReq) => {
     let formData: FormData;
     try {
       formData = await authedReq.formData();

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { captureService } from '@/modules/capture/services/capture-service';
 
 // P-13 -- SINGLE-RECORD, addressed by a body field rather than a path param.
@@ -14,7 +15,7 @@ const ProcessCaptureSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = ProcessCaptureSchema.safeParse(body);

@@ -7,7 +7,8 @@
 // ============================================================================
 
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { VAFSpeakerID } from '@/lib/vaf/speaker-id-client';
@@ -76,5 +77,5 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  return withAuth(req, handlePost);
+  return withRole(req, ['owner', 'admin'], handlePost);
 }

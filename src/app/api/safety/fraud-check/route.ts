@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
 // src/modules/security/audit-wiring.ts for why that is a named choice.
   return withAuditedRole(
     request,
-    ['admin'],
+    ['owner', 'admin'],
     { resource: 'safety.fraud-check', sensitivityLevel: 'CONFIDENTIAL' },
     async (req, _session) => {
     try {

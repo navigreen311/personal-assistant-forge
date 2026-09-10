@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import {
   createEntry,
@@ -69,29 +69,31 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateJournalSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateJournalSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // entityId LAST, deliberately: it overwrites the caller's own value.
+        const { entityId: _requested, ...draft } = parsed.data;
+        const entry = await createEntry({
+          ...draft,
+          reviewDate: new Date(draft.reviewDate),
+          status: 'PENDING_REVIEW',
+          entityId,
         });
+
+        return success(entry, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to create journal entry', 500);
       }
-
-      // entityId LAST, deliberately: it overwrites the caller's own value.
-      const { entityId: _requested, ...draft } = parsed.data;
-      const entry = await createEntry({
-        ...draft,
-        reviewDate: new Date(draft.reviewDate),
-        status: 'PENDING_REVIEW',
-        entityId,
-      });
-
-      return success(entry, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to create journal entry', 500);
-    }
-  });
+    })
+  );
 }

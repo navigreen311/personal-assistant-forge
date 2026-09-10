@@ -20,7 +20,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { createTask, listTasks } from '@/modules/tasks/services/task-crud';
 import type { TaskStatus, Priority } from '@/shared/types';
 import type { TaskQueryFilters, TaskSortOptions } from '@/modules/tasks/types';
@@ -42,35 +42,37 @@ const CreateTaskSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateTaskSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateTaskSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        // `entityId` is spread LAST and deliberately. `parsed.data.entityId` is a
+        // plain string off the wire; `entityId` is the VerifiedEntityId
+        // withEntityScope proved the caller owns. Put them the other way round
+        // and createTask stops compiling -- which is the whole point.
+        const { entityId: _requested, ...draft } = parsed.data;
+        const task = await createTask(
+          {
+            ...draft,
+            dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : undefined,
+            entityId,
+          },
+          session.userId
+        );
+
+        return success(task, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create task';
+        return error('CREATE_FAILED', message, 500);
       }
-
-      // `entityId` is spread LAST and deliberately. `parsed.data.entityId` is a
-      // plain string off the wire; `entityId` is the VerifiedEntityId
-      // withEntityScope proved the caller owns. Put them the other way round
-      // and createTask stops compiling -- which is the whole point.
-      const { entityId: _requested, ...draft } = parsed.data;
-      const task = await createTask(
-        {
-          ...draft,
-          dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : undefined,
-          entityId,
-        },
-        session.userId
-      );
-
-      return success(task, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create task';
-      return error('CREATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function GET(request: NextRequest) {

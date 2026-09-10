@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 
 export async function GET(request: NextRequest) {
   return withAuth(request, async () => {
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async () => {
+  return withRole(request, ['owner', 'admin'], async () => {
     const body = await request.json();
     return success({ ...body, updated: true });
   });

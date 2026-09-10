@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { registerPlugin, getPlugins, submitForReview, approvePlugin, revokePlugin } from '@/modules/developer/services/plugin-service';
 
@@ -44,39 +44,41 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
 
-      if (body.action && body.pluginId) {
-        const parsed = pluginActionSchema.safeParse(body);
+        if (body.action && body.pluginId) {
+          const parsed = pluginActionSchema.safeParse(body);
+          if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+
+          let result;
+          switch (parsed.data.action) {
+            case 'submit':
+              result = await submitForReview(parsed.data.pluginId, entityId);
+              break;
+            case 'approve':
+              result = await approvePlugin(parsed.data.pluginId, entityId);
+              break;
+            case 'revoke':
+              result = await revokePlugin(parsed.data.pluginId, parsed.data.reason || 'Revoked', entityId);
+              break;
+          }
+          return success(result);
+        }
+
+        const parsed = registerPluginSchema.safeParse(body);
         if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-        let result;
-        switch (parsed.data.action) {
-          case 'submit':
-            result = await submitForReview(parsed.data.pluginId, entityId);
-            break;
-          case 'approve':
-            result = await approvePlugin(parsed.data.pluginId, entityId);
-            break;
-          case 'revoke':
-            result = await revokePlugin(parsed.data.pluginId, parsed.data.reason || 'Revoked', entityId);
-            break;
-        }
-        return success(result);
+        // `entityId` last, deliberately: it overwrites the caller's own value.
+        const plugin = await registerPlugin(parsed.data, entityId);
+        return success(plugin, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        if (message.includes('not found')) return error('NOT_FOUND', message, 404);
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      const parsed = registerPluginSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
-
-      // `entityId` last, deliberately: it overwrites the caller's own value.
-      const plugin = await registerPlugin(parsed.data, entityId);
-      return success(plugin, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      if (message.includes('not found')) return error('NOT_FOUND', message, 404);
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -2,11 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 
@@ -85,78 +81,82 @@ export async function GET(request: NextRequest, context: RouteContext) {
 export async function PUT(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withContactScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateContactSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withContactScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateContactSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const existing = await prisma.contact.findFirst({ where: { id, entityId } });
+        if (!existing) {
+          return error('NOT_FOUND', `Contact not found: ${id}`, 404);
+        }
+
+        const data = parsed.data;
+        const updateData: Record<string, unknown> = {};
+
+        if (data.name !== undefined) updateData.name = data.name;
+        if (data.email !== undefined) updateData.email = data.email;
+        if (data.phone !== undefined) updateData.phone = data.phone;
+        if (data.channels !== undefined) updateData.channels = data.channels;
+        if (data.tags !== undefined) updateData.tags = data.tags;
+        if (data.preferences !== undefined) {
+          const existingPrefs = (existing.preferences as Record<string, unknown>) ?? {};
+          updateData.preferences = { ...existingPrefs, ...data.preferences };
+        }
+
+        // updateMany, because a unique WHERE cannot also carry the entity.
+        const written = await prisma.contact.updateMany({
+          where: { id, entityId },
+          data: updateData,
         });
+        if (written.count === 0) {
+          return error('NOT_FOUND', `Contact not found: ${id}`, 404);
+        }
+
+        const updated = await prisma.contact.findFirst({ where: { id, entityId } });
+        return success(updated);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update contact', 500);
       }
-
-      const existing = await prisma.contact.findFirst({ where: { id, entityId } });
-      if (!existing) {
-        return error('NOT_FOUND', `Contact not found: ${id}`, 404);
-      }
-
-      const data = parsed.data;
-      const updateData: Record<string, unknown> = {};
-
-      if (data.name !== undefined) updateData.name = data.name;
-      if (data.email !== undefined) updateData.email = data.email;
-      if (data.phone !== undefined) updateData.phone = data.phone;
-      if (data.channels !== undefined) updateData.channels = data.channels;
-      if (data.tags !== undefined) updateData.tags = data.tags;
-      if (data.preferences !== undefined) {
-        const existingPrefs = (existing.preferences as Record<string, unknown>) ?? {};
-        updateData.preferences = { ...existingPrefs, ...data.preferences };
-      }
-
-      // updateMany, because a unique WHERE cannot also carry the entity.
-      const written = await prisma.contact.updateMany({
-        where: { id, entityId },
-        data: updateData,
-      });
-      if (written.count === 0) {
-        return error('NOT_FOUND', `Contact not found: ${id}`, 404);
-      }
-
-      const updated = await prisma.contact.findFirst({ where: { id, entityId } });
-      return success(updated);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update contact', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withContactScope(request, id, async (_req, _session, entityId) => {
-    try {
-      const existing = await prisma.contact.findFirst({ where: { id, entityId } });
-      if (!existing) {
-        return error('NOT_FOUND', `Contact not found: ${id}`, 404);
-      }
+  return withRole(request, ['owner', 'admin'], () =>
+    withContactScope(request, id, async (_req, _session, entityId) => {
+      try {
+        const existing = await prisma.contact.findFirst({ where: { id, entityId } });
+        if (!existing) {
+          return error('NOT_FOUND', `Contact not found: ${id}`, 404);
+        }
 
-      // Soft-delete: mark doNotContact and add a deleted tag
-      const existingPrefs = (existing.preferences as Record<string, unknown>) ?? {};
-      const written = await prisma.contact.updateMany({
-        where: { id, entityId },
-        data: {
-          preferences: { ...existingPrefs, doNotContact: true },
-          tags: [...(existing.tags ?? []), '_deleted'],
-        },
-      });
-      if (written.count === 0) {
-        return error('NOT_FOUND', `Contact not found: ${id}`, 404);
-      }
+        // Soft-delete: mark doNotContact and add a deleted tag
+        const existingPrefs = (existing.preferences as Record<string, unknown>) ?? {};
+        const written = await prisma.contact.updateMany({
+          where: { id, entityId },
+          data: {
+            preferences: { ...existingPrefs, doNotContact: true },
+            tags: [...(existing.tags ?? []), '_deleted'],
+          },
+        });
+        if (written.count === 0) {
+          return error('NOT_FOUND', `Contact not found: ${id}`, 404);
+        }
 
-      return success({ deleted: true });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete contact', 500);
-    }
-  });
+        return success({ deleted: true });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete contact', 500);
+      }
+    })
+  );
 }

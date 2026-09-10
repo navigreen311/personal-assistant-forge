@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { prisma } from '@/lib/db';
 import { sessionManager } from '@/modules/shadow/interfaces/session-manager';
 
@@ -12,7 +13,7 @@ const StartSessionSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = StartSessionSchema.safeParse(body);

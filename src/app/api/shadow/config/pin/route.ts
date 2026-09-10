@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import type { AuthSession } from '@/lib/auth/types';
@@ -135,9 +136,9 @@ async function handleDelete(_req: NextRequest, session: AuthSession): Promise<Re
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest): Promise<Response> {
-  return withAuth(req, handlePost);
+  return withRole(req, ['owner', 'admin'], handlePost);
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  return withAuth(req, handleDelete);
+  return withRole(req, ['owner', 'admin'], handleDelete);
 }

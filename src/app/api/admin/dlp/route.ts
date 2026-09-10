@@ -24,7 +24,7 @@ const createDLPRuleSchema = z.object({
 const AUDIT = { resource: 'admin.dlp', sensitivityLevel: 'CONFIDENTIAL' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const rules = await getDLPRules(entityId);
       return success(rules);
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createDLPRuleSchema.safeParse(body);

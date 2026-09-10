@@ -14,7 +14,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   listRunbooks,
   createRunbook,
@@ -88,30 +88,32 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = createRunbookSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
+        const parsed = createRunbookSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
+
+        const { entityId: _requested, createdBy: _claimed, ...draft } = parsed.data;
+
+        const runbook = await createRunbook(
+          { ...draft, createdBy: session.userId },
+          entityId
         );
+        return success(runbook, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return error('INTERNAL_ERROR', message, 500);
       }
-
-      const { entityId: _requested, createdBy: _claimed, ...draft } = parsed.data;
-
-      const runbook = await createRunbook(
-        { ...draft, createdBy: session.userId },
-        entityId
-      );
-      return success(runbook, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

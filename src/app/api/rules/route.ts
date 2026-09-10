@@ -17,7 +17,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
 import { createRule, listRules } from '@/engines/policy/rule-crud';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const CreateRuleSchema = z.object({
   name: z.string().min(1),
@@ -61,25 +61,27 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateRuleSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateRuleSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        // entityId LAST, deliberately: it overwrites the caller's own value. A
+        // platform-wide rule (entityId null) is not something an API caller can
+        // create -- one tenant must not be able to write policy for another.
+        const rule = await createRule({ ...draft, entityId });
+        return success(rule, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', (err as Error).message, 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      // entityId LAST, deliberately: it overwrites the caller's own value. A
-      // platform-wide rule (entityId null) is not something an API caller can
-      // create -- one tenant must not be able to write policy for another.
-      const rule = await createRule({ ...draft, entityId });
-      return success(rule, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', (err as Error).message, 500);
-    }
-  });
+    })
+  );
 }

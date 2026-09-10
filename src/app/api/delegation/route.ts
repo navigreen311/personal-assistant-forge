@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuditedAuth } from '@/modules/security/audit-wiring';
+import { withAuditedAuth, withAuditedRole } from '@/modules/security/audit-wiring';
 import { success, error } from '@/shared/utils/api-response';
 import { delegateTask, getDelegatedTasks } from '@/modules/delegation/services/delegation-service';
 import { buildContextPack } from '@/modules/delegation/services/delegation-service';
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedAuth(request, AUDIT, async (req, session) => {
+  return withAuditedRole(request, ['owner', 'admin'], AUDIT, async (req, session) => {
     try {
       const body = await req.json();
       const parsed = createDelegationSchema.safeParse(body);

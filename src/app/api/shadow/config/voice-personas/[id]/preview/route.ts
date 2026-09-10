@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { success, error } from '@/shared/utils/api-response';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -46,5 +47,5 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
   const { id } = await params;
-  return withAuth(req, (_req, session) => handlePost(_req, session, id));
+  return withRole(req, ['owner', 'admin'], (_req, session) => handlePost(_req, session, id));
 }

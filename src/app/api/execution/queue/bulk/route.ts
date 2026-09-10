@@ -13,7 +13,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   bulkApprove,
   bulkReject,
@@ -40,47 +40,49 @@ const bulkActionSchema = z.discriminatedUnion('action', [
 // --- Handler ---
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    if (session.role !== 'admin' && session.role !== 'owner') {
-      return error('FORBIDDEN', 'Insufficient permissions', 403);
-    }
-
-    try {
-      const body: unknown = await req.json();
-
-      const parsed = bulkActionSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      if (session.role !== 'admin' && session.role !== 'owner') {
+        return error('FORBIDDEN', 'Insufficient permissions', 403);
       }
 
-      const payload = parsed.data;
+      try {
+        const body: unknown = await req.json();
 
-      switch (payload.action) {
-        case 'APPROVE': {
-          const result = await bulkApprove(
-            payload.actionIds,
-            session.userId,
-            entityId
+        const parsed = bulkActionSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
           );
-          return success(result);
         }
-        case 'REJECT': {
-          const result = await bulkReject(
-            payload.actionIds,
-            payload.reason,
-            entityId
-          );
-          return success(result);
+
+        const payload = parsed.data;
+
+        switch (payload.action) {
+          case 'APPROVE': {
+            const result = await bulkApprove(
+              payload.actionIds,
+              session.userId,
+              entityId
+            );
+            return success(result);
+          }
+          case 'REJECT': {
+            const result = await bulkReject(
+              payload.actionIds,
+              payload.reason,
+              entityId
+            );
+            return success(result);
+          }
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        return error('INTERNAL_ERROR', message, 500);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

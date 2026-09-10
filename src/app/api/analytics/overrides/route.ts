@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { recordOverride } from '@/modules/ai-quality/services/override-tracking-service';
 
 const bodySchema = z.object({
@@ -20,7 +21,7 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = bodySchema.safeParse(body);

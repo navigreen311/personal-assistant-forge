@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { getSOP, updateSOP } from '@/modules/knowledge/services/sop-service';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -78,23 +78,25 @@ export async function PUT(
 ) {
   const { id } = await params;
 
-  return withSOPScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateSOPSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withSOPScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateSOPSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
 
-      const sop = await updateSOP(id, entityId, parsed.data);
-      return success(sop);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update SOP';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        const sop = await updateSOP(id, entityId, parsed.data);
+        return success(sop);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to update SOP';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }

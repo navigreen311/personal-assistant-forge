@@ -20,7 +20,7 @@ const configureSSOSchema = z.object({
 const AUDIT = { resource: 'admin.sso', sensitivityLevel: 'RESTRICTED' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const config = await getSSOConfig(entityId);
       return success(config);
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = configureSSOSchema.safeParse(body);

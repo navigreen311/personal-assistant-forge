@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, type VerifiedEntityId } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import { getProject, updateProject } from '@/modules/tasks/services/project-crud';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -107,56 +107,60 @@ export async function GET(request: NextRequest, context: RouteContext) {
 export async function PUT(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withProjectScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withProjectScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = updateProjectSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        const parsed = updateProjectSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const updated = await updateProject(
+          id,
+          {
+            ...parsed.data,
+            milestones: parsed.data.milestones?.map((m) => ({
+              ...m,
+              dueDate: new Date(m.dueDate),
+            })),
+          },
+          entityId
+        );
+
+        const entity = await prisma.entity.findUnique({
+          where: { id: entityId },
+          select: { id: true, name: true },
         });
+
+        return success({ ...updated, entity });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update project', 500);
       }
-
-      const updated = await updateProject(
-        id,
-        {
-          ...parsed.data,
-          milestones: parsed.data.milestones?.map((m) => ({
-            ...m,
-            dueDate: new Date(m.dueDate),
-          })),
-        },
-        entityId
-      );
-
-      const entity = await prisma.entity.findUnique({
-        where: { id: entityId },
-        select: { id: true, name: true },
-      });
-
-      return success({ ...updated, entity });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update project', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withProjectScope(request, id, async (_req, _session, entityId) => {
-    try {
-      // A hard delete, as before -- but `deleteMany` rather than `delete`,
-      // because `delete` takes a unique WHERE and cannot carry the entity.
-      // A zero count is "not in this entity", indistinguishable from absent.
-      const result = await prisma.project.deleteMany({ where: { id, entityId } });
-      if (result.count === 0) {
-        return error('NOT_FOUND', `Project not found: ${id}`, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withProjectScope(request, id, async (_req, _session, entityId) => {
+      try {
+        // A hard delete, as before -- but `deleteMany` rather than `delete`,
+        // because `delete` takes a unique WHERE and cannot carry the entity.
+        // A zero count is "not in this entity", indistinguishable from absent.
+        const result = await prisma.project.deleteMany({ where: { id, entityId } });
+        if (result.count === 0) {
+          return error('NOT_FOUND', `Project not found: ${id}`, 404);
+        }
+        return success({ deleted: true });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete project', 500);
       }
-      return success({ deleted: true });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete project', 500);
-    }
-  });
+    })
+  );
 }

@@ -22,7 +22,7 @@ const RecordSchema = z.object({
 const AUDIT = { resource: 'safety.throttle', sensitivityLevel: 'CONFIDENTIAL' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRole(request, ['admin'], AUDIT, async (req, _session) => {
+  return withAuditedRole(request, ['owner', 'admin'], AUDIT, async (req, _session) => {
     try {
       const { searchParams } = new URL(req.url);
       const userId = searchParams.get('userId');
@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRole(request, ['admin'], AUDIT, async (req, _session) => {
+  return withAuditedRole(request, ['owner', 'admin'], AUDIT, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = RecordSchema.safeParse(body);

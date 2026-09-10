@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { generateDocument } from '@/modules/documents/services/document-generation-service';
 
@@ -20,18 +20,20 @@ const generateSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = generateSchema.safeParse(body);
-      if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = generateSchema.safeParse(body);
+        if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      // entityId LAST: it overwrites whatever the caller asked for.
-      const { entityId: _requested, ...draft } = parsed.data;
-      const doc = await generateDocument({ ...draft, entityId });
-      return success(doc, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+        // entityId LAST: it overwrites whatever the caller asked for.
+        const { entityId: _requested, ...draft } = parsed.data;
+        const doc = await generateDocument({ ...draft, entityId });
+        return success(doc, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
+      }
+    })
+  );
 }

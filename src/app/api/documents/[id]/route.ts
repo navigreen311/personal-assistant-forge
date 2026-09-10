@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -83,66 +83,70 @@ export async function GET(request: NextRequest, context: RouteContext) {
 export async function PUT(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withDocumentScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withDocumentScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = updateDocumentSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
+        const parsed = updateDocumentSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const data = parsed.data;
+        const updateData: Record<string, unknown> = {};
+
+        if (data.title !== undefined) updateData.title = data.title;
+        if (data.content !== undefined) updateData.content = data.content;
+        if (data.status !== undefined) updateData.status = data.status;
+        if (data.citations !== undefined) updateData.citations = data.citations;
+
+        // updateMany, not update: a unique WHERE cannot carry the entity.
+        const result = await prisma.document.updateMany({
+          where: { id, entityId, deletedAt: null },
+          data: updateData,
         });
+
+        if (result.count === 0) {
+          return error('NOT_FOUND', `Document not found: ${id}`, 404);
+        }
+
+        const updated = await prisma.document.findFirst({
+          where: { id, entityId },
+          include: {
+            entity: { select: { id: true, name: true } },
+          },
+        });
+
+        return success(updated);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update document', 500);
       }
-
-      const data = parsed.data;
-      const updateData: Record<string, unknown> = {};
-
-      if (data.title !== undefined) updateData.title = data.title;
-      if (data.content !== undefined) updateData.content = data.content;
-      if (data.status !== undefined) updateData.status = data.status;
-      if (data.citations !== undefined) updateData.citations = data.citations;
-
-      // updateMany, not update: a unique WHERE cannot carry the entity.
-      const result = await prisma.document.updateMany({
-        where: { id, entityId, deletedAt: null },
-        data: updateData,
-      });
-
-      if (result.count === 0) {
-        return error('NOT_FOUND', `Document not found: ${id}`, 404);
-      }
-
-      const updated = await prisma.document.findFirst({
-        where: { id, entityId },
-        include: {
-          entity: { select: { id: true, name: true } },
-        },
-      });
-
-      return success(updated);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to update document', 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
 
-  return withDocumentScope(request, id, async (_req, _session, entityId) => {
-    try {
-      const result = await prisma.document.updateMany({
-        where: { id, entityId, deletedAt: null },
-        data: { deletedAt: new Date() },
-      });
+  return withRole(request, ['owner', 'admin'], () =>
+    withDocumentScope(request, id, async (_req, _session, entityId) => {
+      try {
+        const result = await prisma.document.updateMany({
+          where: { id, entityId, deletedAt: null },
+          data: { deletedAt: new Date() },
+        });
 
-      if (result.count === 0) {
-        return error('NOT_FOUND', `Document not found: ${id}`, 404);
+        if (result.count === 0) {
+          return error('NOT_FOUND', `Document not found: ${id}`, 404);
+        }
+
+        return success({ deleted: true });
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete document', 500);
       }
-
-      return success({ deleted: true });
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to delete document', 500);
-    }
-  });
+    })
+  );
 }

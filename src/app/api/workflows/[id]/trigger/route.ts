@@ -15,11 +15,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { executeWorkflow } from '@/modules/workflows/services/workflow-executor';
 
@@ -55,31 +51,33 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withWorkflowScope(request, id, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = triggerSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withWorkflowScope(request, id, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = triggerSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const execution = await executeWorkflow(
+          id,
+          session.userId,
+          'MANUAL',
+          entityId,
+          parsed.data.variables
+        );
+
+        return success(execution, 201);
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to trigger workflow';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('TRIGGER_FAILED', message, 500);
       }
-
-      const execution = await executeWorkflow(
-        id,
-        session.userId,
-        'MANUAL',
-        entityId,
-        parsed.data.variables
-      );
-
-      return success(execution, 201);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to trigger workflow';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
-      }
-      return error('TRIGGER_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

@@ -11,7 +11,7 @@ import { getReputationDashboard } from '@/engines/trust-safety/reputation-servic
 export async function GET(request: NextRequest) {
   return withAuditedRoleEntityScope(
     request,
-    ['admin'],
+    ['owner', 'admin'],
     { resource: 'safety.reputation', sensitivityLevel: 'CONFIDENTIAL' },
     async (req, session, entityId) => {
       try {

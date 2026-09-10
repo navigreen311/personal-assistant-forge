@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { getBudget, setBudget } from '@/engines/cost/budget-service';
 
 const SetBudgetSchema = z.object({
@@ -27,27 +27,29 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = SetBudgetSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = SetBudgetSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid request body', 400, {
-          issues: parsed.error.issues,
-        });
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid request body', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        // The verified id, never the one off the wire.
+        const budget = await setBudget(
+          entityId,
+          parsed.data.monthlyCapUsd,
+          parsed.data.alertThresholds,
+          parsed.data.overageBehavior
+        );
+        return success(budget, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to set budget', 500);
       }
-
-      // The verified id, never the one off the wire.
-      const budget = await setBudget(
-        entityId,
-        parsed.data.monthlyCapUsd,
-        parsed.data.alertThresholds,
-        parsed.data.overageBehavior
-      );
-      return success(budget, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to set budget', 500);
-    }
-  });
+    })
+  );
 }

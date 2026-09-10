@@ -4,7 +4,7 @@ import { success, error, paginated } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { capture } from '@/modules/knowledge/services/capture-service';
 import { knowledgeEntryToCaptured } from '@/modules/knowledge/services/capture-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { KnowledgeEntry } from '@/shared/types';
 
 const captureSchema = z.object({
@@ -58,20 +58,22 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = captureSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = captureSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const entry = await capture(draft, entityId);
+        return success(entry, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to capture knowledge entry', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const entry = await capture(draft, entityId);
-      return success(entry, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to capture knowledge entry', 500);
-    }
-  });
+    })
+  );
 }

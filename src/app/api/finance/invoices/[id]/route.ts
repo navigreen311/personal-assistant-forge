@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { getInvoice, updateInvoiceStatus } from '@/modules/finance/services/invoice-service';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
@@ -68,21 +68,23 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withInvoiceScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = updateSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withInvoiceScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = updateSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
 
-      const invoice = await updateInvoiceStatus(id, entityId, parsed.data.status);
-      if (!invoice) {
-        return error('NOT_FOUND', `Invoice ${id} not found`, 404);
+        const invoice = await updateInvoiceStatus(id, entityId, parsed.data.status);
+        if (!invoice) {
+          return error('NOT_FOUND', `Invoice ${id} not found`, 404);
+        }
+        return success(invoice);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-      return success(invoice);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

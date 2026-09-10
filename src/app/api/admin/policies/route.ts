@@ -16,7 +16,7 @@ const createPolicySchema = z.object({
 const AUDIT = { resource: 'admin.policies', sensitivityLevel: 'CONFIDENTIAL' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const type = req.nextUrl.searchParams.get('type') || undefined;
       const policies = await getPolicies(entityId, type);
@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createPolicySchema.safeParse(body);

@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { createSOP, listSOPs } from '@/modules/knowledge/services/sop-service';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const sopStepSchema = z.object({
   order: z.number(),
@@ -43,25 +43,27 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createSOPSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createSOPSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { entityId: _requested, ...draft } = parsed.data;
+        const data = {
+          ...draft,
+          lastUsed: draft.lastUsed ? new Date(draft.lastUsed) : undefined,
+        };
+
+        const sop = await createSOP(data, entityId);
+        return success(sop, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to create SOP', 500);
       }
-
-      const { entityId: _requested, ...draft } = parsed.data;
-      const data = {
-        ...draft,
-        lastUsed: draft.lastUsed ? new Date(draft.lastUsed) : undefined,
-      };
-
-      const sop = await createSOP(data, entityId);
-      return success(sop, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to create SOP', 500);
-    }
-  });
+    })
+  );
 }

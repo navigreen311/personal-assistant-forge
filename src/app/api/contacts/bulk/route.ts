@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 
 const bulkActionSchema = z.object({
   contactIds: z.array(z.string().min(1)).min(1, 'At least one contactId is required'),
@@ -23,7 +24,7 @@ const changeEntityDataSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = bulkActionSchema.safeParse(body);

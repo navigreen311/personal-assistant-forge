@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 import { prisma } from '@/lib/db';
 import { sessionManager } from '@/modules/shadow/interfaces/session-manager';
 import type { AgentResponse, SessionChannel } from '@/modules/shadow/interfaces/types';
@@ -74,7 +75,7 @@ async function processWithAgent(params: {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, authSession) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, authSession) => {
     try {
       const body = await req.json();
       const parsed = ChatMessageSchema.safeParse(body);

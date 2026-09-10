@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedEntityScope } from '@/modules/security/audit-wiring';
+import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
+
 import { fireDeadManSwitch } from '@/modules/crisis/services/dead-man-switch-service';
 
 /**
@@ -21,8 +22,7 @@ import { fireDeadManSwitch } from '@/modules/crisis/services/dead-man-switch-ser
  * `session.userId`, which no caller can influence.
  */
 export async function POST(request: NextRequest) {
-  return withAuditedEntityScope(
-    request,
+  return withAuditedRoleEntityScope(request, ['owner', 'admin', 'member'],
     { resource: 'crisis.dead-man-switch', sensitivityLevel: 'RESTRICTED' },
     async (req, session, entityId) => {
       try {

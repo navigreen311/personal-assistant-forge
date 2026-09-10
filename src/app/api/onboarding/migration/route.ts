@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import {
   getAvailableSources,
@@ -58,5 +58,5 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  return withAuth(req, handlePost);
+  return withRole(req, ['owner', 'admin'], handlePost);
 }

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuditedAuth, withAuditedEntityScope } from '@/modules/security/audit-wiring';
+import { withAuditedAuth, withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
+
 import * as detectionService from '@/modules/crisis/services/detection-service';
 
 // entityId optional: a client that omits it gets its session's active entity.
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedEntityScope(request, AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin', 'member'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createCrisisSchema.safeParse(body);

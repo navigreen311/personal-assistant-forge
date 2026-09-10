@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
 import { suggestLinks, applyLink } from '@/modules/knowledge/services/auto-linker';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
@@ -59,26 +59,28 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  return withEntryScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = applyLinkSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntryScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = applyLinkSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
-      }
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
 
-      // applyLink is bidirectional and writes to BOTH rows, so the target is
-      // scoped too. Before this, naming another tenant's entry as targetId
-      // edited that tenant's row.
-      await applyLink(id, parsed.data.targetId, entityId);
-      return success({ linked: true }, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to apply link';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        // applyLink is bidirectional and writes to BOTH rows, so the target is
+        // scoped too. Before this, naming another tenant's entry as targetId
+        // edited that tenant's row.
+        await applyLink(id, parsed.data.targetId, entityId);
+        return success({ linked: true }, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to apply link';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', 'Failed to apply link', 500);
       }
-      return error('INTERNAL_ERROR', 'Failed to apply link', 500);
-    }
-  });
+    })
+  );
 }

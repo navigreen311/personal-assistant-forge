@@ -10,7 +10,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { createWorkflow, listWorkflows } from '@/modules/workflows/services/workflow-crud';
 import type { WorkflowGraph, TriggerNodeConfig } from '@/modules/workflows/types';
 
@@ -26,33 +26,35 @@ const createWorkflowSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createWorkflowSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createWorkflowSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const workflow = await createWorkflow(
+          {
+            name: parsed.data.name,
+            graph: parsed.data.graph as unknown as WorkflowGraph,
+            triggers: parsed.data.triggers as unknown as TriggerNodeConfig[],
+          },
+          entityId
+        );
+
+        return success(workflow, 201);
+      } catch (err) {
+        return error(
+          'CREATE_FAILED',
+          err instanceof Error ? err.message : 'Failed to create workflow',
+          500
+        );
       }
-
-      const workflow = await createWorkflow(
-        {
-          name: parsed.data.name,
-          graph: parsed.data.graph as unknown as WorkflowGraph,
-          triggers: parsed.data.triggers as unknown as TriggerNodeConfig[],
-        },
-        entityId
-      );
-
-      return success(workflow, 201);
-    } catch (err) {
-      return error(
-        'CREATE_FAILED',
-        err instanceof Error ? err.message : 'Failed to create workflow',
-        500
-      );
-    }
-  });
+    })
+  );
 }
 
 export async function GET(request: NextRequest) {

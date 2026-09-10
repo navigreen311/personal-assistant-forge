@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { applyDecay } from '@/engines/memory/decay-service';
-import { withAuth } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
+
 
 const DecaySchema = z.object({
   config: z
@@ -18,7 +19,7 @@ const DecaySchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = DecaySchema.safeParse(body);

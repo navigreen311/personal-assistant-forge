@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import { createProject } from '@/modules/tasks/services/project-crud';
 
 const listProjectsSchema = z.object({
@@ -148,41 +148,43 @@ async function listProjectsForEntities(
  * hand-rolled copies are eleven chances to drift.
  */
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, session, entityId) => {
-    try {
-      const body = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, session, entityId) => {
+      try {
+        const body = await req.json();
 
-      const parsed = createProjectSchema.safeParse(body);
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', 'Invalid project data', 400, {
-          issues: parsed.error.issues,
+        const parsed = createProjectSchema.safeParse(body);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', 'Invalid project data', 400, {
+            issues: parsed.error.issues,
+          });
+        }
+
+        const data = parsed.data;
+
+        const project = await createProject(
+          {
+            name: data.name,
+            entityId,
+            description: data.description,
+            // The wire format carries `dueDate` as an ISO string; Milestone
+            // wants a Date. Before P-04 this object went straight to Prisma as
+            // untyped JSON, so the mismatch was invisible.
+            milestones: data.milestones.map((m) => ({ ...m, dueDate: new Date(m.dueDate) })),
+            status: data.status,
+          },
+          session.userId
+        );
+
+        const entity = await prisma.entity.findUnique({
+          where: { id: entityId },
+          select: { id: true, name: true },
         });
+
+        return success({ ...project, entity }, 201);
+      } catch (err) {
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create project', 500);
       }
-
-      const data = parsed.data;
-
-      const project = await createProject(
-        {
-          name: data.name,
-          entityId,
-          description: data.description,
-          // The wire format carries `dueDate` as an ISO string; Milestone
-          // wants a Date. Before P-04 this object went straight to Prisma as
-          // untyped JSON, so the mismatch was invisible.
-          milestones: data.milestones.map((m) => ({ ...m, dueDate: new Date(m.dueDate) })),
-          status: data.status,
-        },
-        session.userId
-      );
-
-      const entity = await prisma.entity.findUnique({
-        where: { id: entityId },
-        select: { id: true, name: true },
-      });
-
-      return success({ ...project, entity }, 201);
-    } catch (err) {
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Failed to create project', 500);
-    }
-  });
+    })
+  );
 }

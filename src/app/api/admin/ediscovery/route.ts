@@ -21,7 +21,7 @@ const requestExportSchema = z.object({
 const AUDIT = { resource: 'admin.ediscovery', sensitivityLevel: 'RESTRICTED' as const };
 
 export async function GET(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const exports = await listExports(entityId);
       return success(exports);
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuditedRoleEntityScope(request, ['admin'], AUDIT, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(request, ['owner', 'admin'], AUDIT, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = requestExportSchema.safeParse(body);

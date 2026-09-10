@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   createRecurringConfig,
   getRecurringConfigs,
@@ -51,69 +51,75 @@ export async function GET(request: NextRequest) {
  * copy this pattern into a module of your own.
  */
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = CreateRecurringSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = CreateRecurringSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const config = await createRecurringConfig(
+          {
+            ...parsed.data,
+            nextDue: new Date(parsed.data.nextDue),
+          },
+          entityId
+        );
+
+        return success(config, 201);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create recurring config';
+        return error('CREATE_FAILED', message, 500);
       }
-
-      const config = await createRecurringConfig(
-        {
-          ...parsed.data,
-          nextDue: new Date(parsed.data.nextDue),
-        },
-        entityId
-      );
-
-      return success(config, 201);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to create recurring config';
-      return error('CREATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function PUT(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = UpdateRecurringSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = UpdateRecurringSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const config = await adjustCadence(parsed.data.configId, entityId);
+        return success(config);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to update recurring config';
+        return error('UPDATE_FAILED', message, 500);
       }
-
-      const config = await adjustCadence(parsed.data.configId, entityId);
-      return success(config);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to update recurring config';
-      return error('UPDATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      // DELETE with a JSON body: withEntityScope does not read the body for
-      // GET or DELETE, so the scope for this method comes from `?entityId=` or
-      // the session's active entity. `configId` still travels in the body,
-      // which is how this endpoint was already shaped.
-      const body = await req.json();
-      const parsed = UpdateRecurringSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        // DELETE with a JSON body: withEntityScope does not read the body for
+        // GET or DELETE, so the scope for this method comes from `?entityId=` or
+        // the session's active entity. `configId` still travels in the body,
+        // which is how this endpoint was already shaped.
+        const body = await req.json();
+        const parsed = UpdateRecurringSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        await deactivateRecurring(parsed.data.configId, entityId);
+        return success({ deactivated: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to deactivate recurring config';
+        return error('DEACTIVATE_FAILED', message, 500);
       }
-
-      await deactivateRecurring(parsed.data.configId, entityId);
-      return success({ deactivated: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to deactivate recurring config';
-      return error('DEACTIVATE_FAILED', message, 500);
-    }
-  });
+    })
+  );
 }

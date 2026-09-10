@@ -5,7 +5,7 @@ import {
   updateBudget,
   deleteBudget,
 } from '@/modules/finance/services/budget-service';
-import { withAuth, withEntityScope } from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { prisma } from '@/lib/db';
@@ -67,21 +67,23 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withBudgetScope(
-    request,
-    () => prisma.budget.findUnique({ where: { id }, select: { entityId: true } }),
-    async (req, _session, entityId) => {
-      try {
-        const body = await req.json();
-        const budget = await updateBudget(id, entityId, body);
-        if (!budget) {
-          return error('NOT_FOUND', 'Budget not found', 404);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withBudgetScope(
+      request,
+      () => prisma.budget.findUnique({ where: { id }, select: { entityId: true } }),
+      async (req, _session, entityId) => {
+        try {
+          const body = await req.json();
+          const budget = await updateBudget(id, entityId, body);
+          if (!budget) {
+            return error('NOT_FOUND', 'Budget not found', 404);
+          }
+          return success(budget);
+        } catch (err) {
+          return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
         }
-        return success(budget);
-      } catch (err) {
-        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-    }
+    )
   );
 }
 
@@ -90,19 +92,21 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withBudgetScope(
-    request,
-    () => prisma.budget.findUnique({ where: { id }, select: { entityId: true } }),
-    async (_req, _session, entityId) => {
-      try {
-        const budget = await deleteBudget(id, entityId);
-        if (!budget) {
-          return error('NOT_FOUND', 'Budget not found', 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withBudgetScope(
+      request,
+      () => prisma.budget.findUnique({ where: { id }, select: { entityId: true } }),
+      async (_req, _session, entityId) => {
+        try {
+          const budget = await deleteBudget(id, entityId);
+          if (!budget) {
+            return error('NOT_FOUND', 'Budget not found', 404);
+          }
+          return success({ deleted: true });
+        } catch (err) {
+          return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
         }
-        return success({ deleted: true });
-      } catch (err) {
-        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-    }
+    )
   );
 }

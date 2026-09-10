@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
-import { withEntityScope } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 const createCollectionSchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -62,58 +62,60 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withEntityScope(request, async (req, _session, entityId) => {
-    try {
-      const body = await req.json();
-      const parsed = createCollectionSchema.safeParse(body);
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withEntityScope(request, async (req, _session, entityId) => {
+      try {
+        const body = await req.json();
+        const parsed = createCollectionSchema.safeParse(body);
 
-      if (!parsed.success) {
-        return error('VALIDATION_ERROR', parsed.error.message, 400);
+        if (!parsed.success) {
+          return error('VALIDATION_ERROR', parsed.error.message, 400);
+        }
+
+        const { name, description, entryIds } = parsed.data;
+
+        // A collection is a list of entry ids. Ids the caller does not own are
+        // dropped rather than stored, so a collection can never become a handle
+        // on another tenant's entries.
+        const requested = entryIds || [];
+        const owned = requested.length
+          ? (
+              await prisma.knowledgeEntry.findMany({
+                where: { id: { in: requested }, entityId },
+                select: { id: true },
+              })
+            ).map((e) => e.id)
+          : [];
+
+        const entry = await prisma.knowledgeEntry.create({
+          data: {
+            entityId,
+            source: 'collection',
+            content: JSON.stringify({
+              name,
+              description: description || '',
+              entryIds: owned,
+            }),
+            tags: ['collection'],
+            linkedEntities: [],
+          },
+        });
+
+        const collection: KnowledgeCollection = {
+          id: entry.id,
+          name,
+          description: description || '',
+          entityId: entry.entityId,
+          entryIds: owned,
+          entryCount: owned.length,
+          createdAt: entry.createdAt.toISOString(),
+          updatedAt: entry.updatedAt.toISOString(),
+        };
+
+        return success(collection, 201);
+      } catch (_err) {
+        return error('INTERNAL_ERROR', 'Failed to create collection', 500);
       }
-
-      const { name, description, entryIds } = parsed.data;
-
-      // A collection is a list of entry ids. Ids the caller does not own are
-      // dropped rather than stored, so a collection can never become a handle
-      // on another tenant's entries.
-      const requested = entryIds || [];
-      const owned = requested.length
-        ? (
-            await prisma.knowledgeEntry.findMany({
-              where: { id: { in: requested }, entityId },
-              select: { id: true },
-            })
-          ).map((e) => e.id)
-        : [];
-
-      const entry = await prisma.knowledgeEntry.create({
-        data: {
-          entityId,
-          source: 'collection',
-          content: JSON.stringify({
-            name,
-            description: description || '',
-            entryIds: owned,
-          }),
-          tags: ['collection'],
-          linkedEntities: [],
-        },
-      });
-
-      const collection: KnowledgeCollection = {
-        id: entry.id,
-        name,
-        description: description || '',
-        entityId: entry.entityId,
-        entryIds: owned,
-        entryCount: owned.length,
-        createdAt: entry.createdAt.toISOString(),
-        updatedAt: entry.updatedAt.toISOString(),
-      };
-
-      return success(collection, 201);
-    } catch (_err) {
-      return error('INTERNAL_ERROR', 'Failed to create collection', 500);
-    }
-  });
+    })
+  );
 }

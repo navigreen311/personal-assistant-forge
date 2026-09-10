@@ -74,9 +74,14 @@ describe('GET /api/jobs', () => {
     const req = createRequest('/api/jobs');
     await GET(req);
 
+    // P-15: was ['admin']. `admin` is a role NOBODY can hold -- src/lib/auth/config.ts
+    // stamps every JWT with role 'owner', there is no other assignment path and
+    // no User.role column -- so this assertion was encoding a gate that refused
+    // 100% of real callers. It passed the whole time because it asserts the
+    // ARGUMENT rather than the OUTCOME.
     expect(mockWithRole).toHaveBeenCalledWith(
       req,
-      ['admin'],
+      ['owner', 'admin'],
       expect.any(Function)
     );
   });
@@ -145,9 +150,14 @@ describe('POST /api/jobs', () => {
 
     await POST(req);
 
+    // P-15: was ['admin']. `admin` is a role NOBODY can hold -- src/lib/auth/config.ts
+    // stamps every JWT with role 'owner', there is no other assignment path and
+    // no User.role column -- so this assertion was encoding a gate that refused
+    // 100% of real callers. It passed the whole time because it asserts the
+    // ARGUMENT rather than the OUTCOME.
     expect(mockWithRole).toHaveBeenCalledWith(
       req,
-      ['admin'],
+      ['owner', 'admin'],
       expect.any(Function)
     );
   });

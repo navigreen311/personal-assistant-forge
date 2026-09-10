@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { routingService } from '@/modules/capture/services/routing-service';
 
 // P-13 -- CROSS-ENTITY, USER-SCOPED. A routing rule is a preference of the
@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = CreateRuleSchema.safeParse(body);
@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = UpdateRuleSchema.safeParse(body);
@@ -102,7 +102,7 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin'], async (req, session) => {
     try {
       const body = await req.json();
       const parsed = DeleteRuleSchema.safeParse(body);

@@ -14,11 +14,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { success, error } from '@/shared/utils/api-response';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import {
   getRunbook,
@@ -99,30 +95,32 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withRunbookScope(request, id, async (req, _session, entityId) => {
-    try {
-      const body: unknown = await req.json();
+  return withRole(request, ['owner', 'admin', 'member'], () =>
+    withRunbookScope(request, id, async (req, _session, entityId) => {
+      try {
+        const body: unknown = await req.json();
 
-      const parsed = updateRunbookSchema.safeParse(body);
-      if (!parsed.success) {
-        return error(
-          'VALIDATION_ERROR',
-          'Invalid request body',
-          400,
-          { issues: parsed.error.flatten().fieldErrors }
-        );
-      }
+        const parsed = updateRunbookSchema.safeParse(body);
+        if (!parsed.success) {
+          return error(
+            'VALIDATION_ERROR',
+            'Invalid request body',
+            400,
+            { issues: parsed.error.flatten().fieldErrors }
+          );
+        }
 
-      const runbook = await updateRunbook(id, parsed.data, entityId);
-      return success(runbook);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+        const runbook = await updateRunbook(id, parsed.data, entityId);
+        return success(runbook);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+    })
+  );
 }
 
 export async function DELETE(
@@ -130,20 +128,22 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withRunbookScope(request, id, async (_req, session, entityId) => {
-    if (session.role !== 'admin' && session.role !== 'owner') {
-      return error('FORBIDDEN', 'Insufficient permissions', 403);
-    }
-
-    try {
-      await deleteRunbook(id, entityId);
-      return success({ deleted: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Internal server error';
-      if (message.includes('not found')) {
-        return error('NOT_FOUND', message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withRunbookScope(request, id, async (_req, session, entityId) => {
+      if (session.role !== 'admin' && session.role !== 'owner') {
+        return error('FORBIDDEN', 'Insufficient permissions', 403);
       }
-      return error('INTERNAL_ERROR', message, 500);
-    }
-  });
+
+      try {
+        await deleteRunbook(id, entityId);
+        return success({ deleted: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Internal server error';
+        if (message.includes('not found')) {
+          return error('NOT_FOUND', message, 404);
+        }
+        return error('INTERNAL_ERROR', message, 500);
+      }
+    })
+  );
 }

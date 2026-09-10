@@ -2,11 +2,7 @@ import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import { getNumber, releaseNumber } from '@/modules/voiceforge/services/number-manager';
-import {
-  withAuth,
-  withEntityScope,
-  type VerifiedEntityId,
-} from '@/shared/middleware/auth';
+import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 
 /** Section 4 -- the entity is a property of the row. Duplicated per file, section 3d. */
@@ -56,15 +52,17 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  return withNumberScope(request, id, async (_req, _session, entityId) => {
-    try {
-      await releaseNumber(id, entityId);
-      return success({ released: true });
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('not found')) {
-        return error('NOT_FOUND', err.message, 404);
+  return withRole(request, ['owner', 'admin'], () =>
+    withNumberScope(request, id, async (_req, _session, entityId) => {
+      try {
+        await releaseNumber(id, entityId);
+        return success({ released: true });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('not found')) {
+          return error('NOT_FOUND', err.message, 404);
+        }
+        return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
-      return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
-    }
-  });
+    })
+  );
 }

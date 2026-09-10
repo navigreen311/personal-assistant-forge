@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import {
   updateGoalProgress,
@@ -40,7 +40,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (req, session) => {
+  return withRole(request, ['owner', 'admin', 'member'], async (req, session) => {
     try {
       const { id } = await params;
       const body = await req.json();
@@ -72,7 +72,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  return withAuth(request, async (_req, session) => {
+  return withRole(request, ['owner', 'admin'], async (_req, session) => {
     try {
       const { id } = await params;
 
