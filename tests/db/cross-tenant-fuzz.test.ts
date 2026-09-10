@@ -533,14 +533,35 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     }
   });
 
-  it('reports the whole set — twenty-seven routes, not five', () => {
+  it('reports the whole set — twenty-nine routes, not five', () => {
     const unscoped = unscopedAuthenticatedRoutes();
     const patterns = unscoped.map((r) => r.urlPattern);
 
     // The number is recorded rather than bounded loosely: a route added on the
     // old pattern must fail this test, and so must a route repaired without
     // updating the record. Both are things a reviewer should see.
+    //
+    // IT ALREADY EARNED ITS KEEP, AND NOT IN THE DIRECTION EXPECTED. This list
+    // was recorded at twenty-seven against the pre-P-19 tree. Merging P-19 made
+    // it fail with two additions, `/api/attention/insights` and
+    // `/api/attention/notifications` — and neither route's tenancy changed.
+    //
+    // Both were always tenant-blind. Both LOOKED scoped, to this classifier and
+    // to any reviewer, because between them they named `session.userId` six
+    // times in `where:` clauses — on `(prisma as any).notification` and
+    // `(prisma as any).focusSession`, delegates that do not exist on this
+    // schema, inside swallowed catches. Those queries threw on every request
+    // this route has ever served. `readsSession` was true and the route was
+    // excluded on the strength of code that never ran.
+    //
+    // P-19 deleted the dead queries, the handlers stopped referencing the
+    // session at all, and the hole they were hiding became visible. The bug was
+    // not introduced by the repair; it was DISCLOSED by it. Dead code that
+    // mentions the right variable is indistinguishable from live code that uses
+    // it — to a grep, to this instrument, and to a human reading the file.
     expect(patterns).toEqual([
+      '/api/attention/insights',
+      '/api/attention/notifications',
       '/api/billing/model-route',
       '/api/crisis/detect',
       '/api/dashboard',
@@ -570,7 +591,7 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/travel/visa',
     ]);
 
-    // Eight of the twenty-seven are under /api/shadow/, backed by
+    // Eight of the twenty-nine are under /api/shadow/, backed by
     // src/modules/shadow/ — the directory no tenancy package owned. That is not
     // a coincidence, and it is the finding behind the finding: the five routes
     // that actually leak are all in the same eight.
