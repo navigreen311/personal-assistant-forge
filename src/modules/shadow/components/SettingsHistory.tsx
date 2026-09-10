@@ -20,6 +20,35 @@ export interface SessionEntry {
   outcomes?: Array<{ type: string; description: string }>;
 }
 
+/**
+ * A session row as GET /api/shadow/conversations returns it.
+ *
+ * P-19: the mapper below took `s: any`. Every field is optional here because
+ * the mapper already supplies a fallback for each one, and it reads two
+ * alternative names for four of them (`startedAt`/`date`,
+ * `totalDurationSeconds`/`durationSeconds`, `currentChannel`/`channel`,
+ * `aiSummary`/`summary`) -- which is the shape of an endpoint contract nobody
+ * wrote down. Writing it down is the point.
+ */
+interface SessionRow {
+  id: string;
+  startedAt?: string;
+  date?: string;
+  totalDurationSeconds?: number;
+  durationSeconds?: number;
+  currentChannel?: string;
+  channel?: string;
+  messageCount?: number;
+  aiSummary?: string;
+  summary?: string;
+  messages?: SessionEntry['messages'];
+  actions?: SessionEntry['actions'];
+  audioUrl?: string;
+  entityName?: string;
+  actionsCount?: number;
+  outcomes?: SessionEntry['outcomes'];
+}
+
 export interface HistoryStats {
   totalSessions: number;
   voicePercent: number;
@@ -96,8 +125,7 @@ export default function SettingsHistory({ userId }: SettingsHistoryProps) {
         const json = await res.json();
         if (json.success && json.data) {
           const sessionsData: SessionEntry[] = (json.data.sessions ?? json.data ?? []).map(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (s: any) => ({
+            (s: SessionRow) => ({
               id: s.id,
               date: s.startedAt ?? s.date ?? new Date().toISOString(),
               duration: formatDuration(s.totalDurationSeconds ?? s.durationSeconds ?? 0),

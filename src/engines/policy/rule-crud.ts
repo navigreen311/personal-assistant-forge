@@ -1,4 +1,7 @@
 import { prisma } from '@/lib/db';
+// P-19: `mapPrismaRule` took `raw: any`. This is the generated row type,
+// aliased because the name collides with the domain `Rule` it maps to.
+import type { Rule as PrismaRule } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import type { Rule } from '@/shared/types';
 import type { RuleScope } from './types';
@@ -105,17 +108,19 @@ export async function duplicateRule(
   return mapPrismaRule(rule);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapPrismaRule(raw: any): Rule {
+function mapPrismaRule(raw: PrismaRule): Rule {
   return {
     id: raw.id,
     name: raw.name,
-    scope: raw.scope,
+    // `scope` and `createdBy` are plain String columns -- the schema does not
+    // constrain them to these unions, so the cast is where an out-of-range value
+    // would slip through. Visible here, rather than invisible behind `raw: any`.
+    scope: raw.scope as Rule['scope'],
     entityId: raw.entityId ?? undefined,
     condition: raw.condition as Record<string, unknown>,
     action: raw.action as Record<string, unknown>,
     precedence: raw.precedence,
-    createdBy: raw.createdBy,
+    createdBy: raw.createdBy as Rule['createdBy'],
     version: raw.version,
     isActive: raw.isActive,
     createdAt: raw.createdAt,

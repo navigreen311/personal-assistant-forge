@@ -39,9 +39,53 @@ export type SentryTransaction = {
   startChild: (op: { op: string; description?: string }) => SentryTransaction;
 };
 
+/*
+ * P-19: the five `any`s in this file were behind inline eslint-disables.
+ * `@sentry/nextjs` is genuinely untyped here -- it is not a dependency in
+ * package.json; it is `require`d inside a try/catch and every call degrades to
+ * a no-op when it is absent. So there are no vendor types to import.
+ *
+ * "No types available" is not the same as "no type can be written". These
+ * interfaces cover exactly the surface this module touches, and nothing more.
+ * They are a claim about how we use the SDK, checkable against these call
+ * sites, which is what `any` gave up.
+ */
+
+interface SentryScope {
+  setTag(key: string, value: unknown): void;
+  setExtra(key: string, value: unknown): void;
+  setUser(user: unknown): void;
+  setLevel(level: string): void;
+  setFingerprint(fingerprint: string[]): void;
+}
+
+interface SentrySpan {
+  end(): void;
+  setStatus(status: { code: number; message: string }): void;
+  setAttribute(key: string, value: string): void;
+}
+
+/** Only the part of a Sentry event `beforeSend` below actually scrubs. */
+interface SentryEvent {
+  request?: { headers?: Record<string, unknown> };
+}
+
+interface SentryModule {
+  init(options: Record<string, unknown>): void;
+  withScope<T>(callback: (scope: SentryScope) => T): T;
+  captureException(error: unknown): unknown;
+  captureMessage(message: string, level?: string): unknown;
+  setUser(user: unknown): void;
+  addBreadcrumb(breadcrumb: Record<string, unknown>): void;
+  setTag(key: string, value: unknown): void;
+  setExtra(key: string, value: unknown): void;
+  startSpan<T>(options: { name: string; op?: string }, callback: (span: SentrySpan | undefined) => T): T;
+  startInactiveSpan(options: { name: string; op?: string }): SentrySpan | undefined;
+  flush(timeout?: number): Promise<boolean>;
+}
+
 // Lazy-loaded Sentry module reference
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _sentry: any = null;
+let _sentry: SentryModule | null = null;
 let _initAttempted = false;
 let _isEnabled = false;
 
@@ -74,10 +118,8 @@ function ensureInitialized(): boolean {
         tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.2 : 1.0,
         debug: process.env.NODE_ENV === 'development',
         enabled: true,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        integrations: (defaults: any) => defaults,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        beforeSend(event: any) {
+        integrations: (defaults: unknown) => defaults,
+        beforeSend(event: SentryEvent) {
           // Scrub sensitive data from event
           if (event.request?.headers) {
             delete event.request.headers['authorization'];
@@ -109,8 +151,7 @@ export function captureException(
 ): string | undefined {
   if (!ensureInitialized() || !_sentry) return undefined;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return _sentry.withScope((scope: any) => {
+  return _sentry.withScope((scope) => {
     if (context?.tags) {
       Object.entries(context.tags).forEach(([key, value]) => {
         scope.setTag(key, value);
@@ -205,8 +246,7 @@ export function startTransaction(
   try {
     return _sentry.startSpan(
       { name, op },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (span: any) => {
+      (span) => {
         const transaction: SentryTransaction = {
           finish: () => span?.end(),
           setStatus: (status: string) => span?.setStatus({ code: status === 'ok' ? 1 : 2, message: status }),

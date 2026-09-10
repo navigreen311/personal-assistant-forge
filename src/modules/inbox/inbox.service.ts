@@ -1,4 +1,13 @@
 import { prisma } from '@/lib/db';
+// P-19: the four `map*Row` helpers below took `row: any` behind an inline
+// eslint-disable. These are the generated Prisma row types -- aliased because
+// three of the four names collide with the domain types this module exports.
+import type {
+  FollowUpReminder as FollowUpReminderRow,
+  CannedResponse as CannedResponseRow,
+  Message as MessageRow,
+  Contact as ContactRow,
+} from '@prisma/client';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Message, MessageChannel, Contact, Commitment, ContactPreferences } from '@/shared/types';
 import type {
@@ -80,8 +89,7 @@ function decodeFollowUpPriority(priority: string): { status: FollowUpReminder['s
   return { status, entityId };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapFollowUpRow(row: any): FollowUpReminder {
+function mapFollowUpRow(row: FollowUpReminderRow): FollowUpReminder {
   const { status, entityId } = decodeFollowUpPriority(row.priority);
   return {
     id: row.id,
@@ -127,8 +135,7 @@ function decodeCannedResponseMeta(shortcut: string | null): CannedResponseMeta {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapCannedResponseRow(row: any): CannedResponse {
+function mapCannedResponseRow(row: CannedResponseRow): CannedResponse {
   const meta = decodeCannedResponseMeta(row.shortcut);
   return {
     id: row.id,
@@ -147,8 +154,7 @@ function mapCannedResponseRow(row: any): CannedResponse {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapMessageRow(row: any): Message {
+function mapMessageRow(row: MessageRow): Message {
   return {
     id: row.id,
     channel: row.channel as MessageChannel,
@@ -162,14 +168,16 @@ function mapMessageRow(row: any): Message {
     intent: row.intent ?? undefined,
     sensitivity: row.sensitivity as Message['sensitivity'],
     draftStatus: row.draftStatus as Message['draftStatus'],
-    attachments: (row.attachments ?? []) as Message['attachments'],
+    // Json columns. `as unknown as` because Prisma types these as JsonValue and
+    // nothing validates their contents on the way in -- an honest, visible cast
+    // at one boundary, rather than `row: any` making the whole mapper unchecked.
+    attachments: (row.attachments ?? []) as unknown as Message['attachments'],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapContactRow(row: any): Contact {
+function mapContactRow(row: ContactRow): Contact {
   return {
     id: row.id,
     entityId: row.entityId,
@@ -179,8 +187,9 @@ function mapContactRow(row: any): Contact {
     channels: (row.channels ?? []) as Contact['channels'],
     relationshipScore: row.relationshipScore,
     lastTouch: row.lastTouch,
-    commitments: (row.commitments ?? []) as Commitment[],
-    preferences: (row.preferences ?? {}) as ContactPreferences,
+    // Json columns -- see the note in mapMessageRow.
+    commitments: (row.commitments ?? []) as unknown as Commitment[],
+    preferences: (row.preferences ?? {}) as unknown as ContactPreferences,
     tags: row.tags ?? [],
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -277,11 +286,9 @@ export class InboxService {
         })
       : [];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const items: InboxItem[] = messages.map((msg: any) => {
+    const items: InboxItem[] = messages.map((msg) => {
       const followUpRow = pendingFollowUps.find(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (f: any) => f.messageId === msg.id && decodeFollowUpPriority(f.priority).status === 'PENDING'
+        (f) => f.messageId === msg.id && decodeFollowUpPriority(f.priority).status === 'PENDING'
       );
       const followUp = followUpRow ? mapFollowUpRow(followUpRow) : undefined;
 
@@ -356,11 +363,12 @@ export class InboxService {
 
     return {
       message: mapMessageRow(msg),
-      senderName: (msg as unknown as Record<string, Record<string, unknown>>).contact?.name as string ?? msg.senderId,
-      senderContact: (msg as unknown as Record<string, unknown>).contact
-        ? mapContactRow((msg as unknown as Record<string, unknown>).contact)
-        : undefined,
-      entityName: (msg as unknown as Record<string, Record<string, unknown>>).entity?.name as string ?? msg.entityId,
+      // The query above is `include: { entity: true, contact: true }`, so Prisma
+      // already types both relations. The `as unknown as Record<string, unknown>`
+      // ladder that stood here existed only because the row was `any` upstream.
+      senderName: msg.contact?.name ?? msg.senderId,
+      senderContact: msg.contact ? mapContactRow(msg.contact) : undefined,
+      entityName: msg.entity?.name ?? msg.entityId,
       threadMessages,
       triageResult,
       isRead,
@@ -375,8 +383,7 @@ export class InboxService {
       orderBy: { createdAt: 'asc' },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return messages.map((msg: any) => mapMessageRow(msg));
+    return messages.map((msg) => mapMessageRow(msg));
   }
 
   async markAsRead(
@@ -465,13 +472,10 @@ export class InboxService {
     });
 
     const total = messages.length;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const unread = messages.filter((m: any) => !(m.read ?? false)).length;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const urgent = messages.filter((m: any) => m.triageScore >= 8).length;
+    const unread = messages.filter((m) => !(m.read ?? false)).length;
+    const urgent = messages.filter((m) => m.triageScore >= 8).length;
     const needsResponse = messages.filter(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (m: any) =>
+      (m) =>
         (m.intent === 'REQUEST' || m.intent === 'INQUIRY') &&
         m.draftStatus !== 'SENT'
     ).length;
@@ -481,8 +485,7 @@ export class InboxService {
       'EMAIL', 'SMS', 'SLACK', 'TEAMS', 'DISCORD', 'WHATSAPP', 'TELEGRAM', 'VOICE', 'MANUAL',
     ];
     for (const ch of channels) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      byChannel[ch] = messages.filter((m: any) => m.channel === ch).length;
+      byChannel[ch] = messages.filter((m) => m.channel === ch).length;
     }
 
     const byCategory = {} as Record<MessageCategory, number>;
@@ -495,8 +498,7 @@ export class InboxService {
 
     const avgTriageScore =
       total > 0
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ? messages.reduce((sum: number, m: any) => sum + m.triageScore, 0) / total
+        ? messages.reduce((sum, m) => sum + m.triageScore, 0) / total
         : 0;
 
     return {
