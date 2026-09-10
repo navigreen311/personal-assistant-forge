@@ -5,7 +5,41 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { classifyAction } from './action-classifier';
+
+// ============================================================================
+// P-34 — READING AND ROLLING BACK A RECEIPT ARE ENTITY-SCOPED OPERATIONS
+// ============================================================================
+//
+// Three of the five routes P-20's fuzz recorded as returning another tenant's
+// rows are backed by this file, and one of them is a WRITE:
+//
+//   GET  /api/shadow/receipts        `listReceipts`, with `entityId` read off
+//                                    the caller's own query string.
+//   GET  /api/shadow/receipts/[id]   `getReceipt(id)`, unscoped.
+//   POST /api/shadow/receipts/[id]/rollback
+//                                    `rollbackAction(id, session.userId)`,
+//                                    unscoped -- so an authenticated owner or
+//                                    admin of ANY entity could UNDO another
+//                                    tenant's consented action, and the failure
+//                                    message quoted the action it refused to
+//                                    touch ("Action \"X\" is not reversible"),
+//                                    so even the refusal disclosed the record.
+//
+// A consent receipt is the record of a decision a person authorised a voice
+// agent to take. Reading someone else's is not cosmetic and reversing one is
+// not recoverable. So the entity is a required, branded `VerifiedEntityId`
+// argument on all three: a route that has not been through `withEntityScope`
+// cannot call them, and the failure is `tsc` rather than review.
+//
+// NULL-ENTITY RECEIPTS. `ShadowConsentReceipt.entityId` is nullable, and
+// `core.ts` writes `context.activeEntity?.id ?? null`, so receipts taken with
+// no entity in scope exist. Under this scoping they are addressable from NO
+// tenant rather than from every tenant. That is the safe direction and it is
+// deliberate: a receipt attributable to no entity cannot be shown to one
+// without guessing which, and guessing is what this file is being fixed for.
+// ============================================================================
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,7 +66,6 @@ export interface CreateReceiptParams {
 
 export interface ListReceiptsParams {
   sessionId?: string;
-  entityId?: string;
   actionType?: string;
   limit?: number;
   offset?: number;
@@ -113,14 +146,15 @@ export class ConsentReceiptService {
    * List consent receipts with optional filters and pagination.
    */
   async listReceipts(
-    params: ListReceiptsParams
+    entityId: VerifiedEntityId,
+    params: ListReceiptsParams = {}
   ): Promise<{ receipts: ConsentReceiptRecord[]; total: number }> {
-    const { sessionId, entityId, actionType, limit = 50, offset = 0 } = params;
+    const { sessionId, actionType, limit = 50, offset = 0 } = params;
 
-    // Build where clause dynamically
-    const where: Record<string, unknown> = {};
+    // `entityId` is the argument, never a filter the caller may omit. The
+    // remaining fields still narrow, and cannot widen.
+    const where: Record<string, unknown> = { entityId };
     if (sessionId) where.sessionId = sessionId;
-    if (entityId) where.entityId = entityId;
     if (actionType) where.actionType = actionType;
 
     const [receipts, total] = await Promise.all([
@@ -143,9 +177,12 @@ export class ConsentReceiptService {
    * Get a single consent receipt by ID.
    * Returns null if not found.
    */
-  async getReceipt(id: string): Promise<ConsentReceiptRecord | null> {
-    const receipt = await prisma.shadowConsentReceipt.findUnique({
-      where: { id },
+  async getReceipt(
+    id: string,
+    entityId: VerifiedEntityId
+  ): Promise<ConsentReceiptRecord | null> {
+    const receipt = await prisma.shadowConsentReceipt.findFirst({
+      where: { id, entityId },
     });
 
     return receipt as ConsentReceiptRecord | null;
@@ -159,10 +196,11 @@ export class ConsentReceiptService {
    */
   async rollbackAction(
     receiptId: string,
-    rolledBackBy: string
+    rolledBackBy: string,
+    entityId: VerifiedEntityId
   ): Promise<RollbackResult> {
-    const receipt = await prisma.shadowConsentReceipt.findUnique({
-      where: { id: receiptId },
+    const receipt = await prisma.shadowConsentReceipt.findFirst({
+      where: { id: receiptId, entityId },
     });
 
     if (!receipt) {

@@ -1,9 +1,40 @@
 // Shadow Voice Agent — Tool Router
-// Defines 25+ tools that map to existing PAF APIs. Each tool has a name,
-// description, input_schema (JSON Schema), and an execute function that calls Prisma directly.
+// Defines 31 tools that map to existing PAF APIs. Each tool has a name,
+// description, input_schema (JSON Schema), and an execute function.
+//
+// ============================================================================
+// THIS FILE HAS NO DATABASE CLIENT, ON PURPOSE (P-34)
+// ============================================================================
+//
+// `import { prisma } from '@/lib/db'` used to be line 5. Eleven tools took an
+// id straight out of `input` -- the tool_use block of an LLM response -- and
+// queried on it with no entity filter, so a prompt injection naming another
+// tenant's cuid reached Postgres unfiltered. Two of the eleven were writes.
+//
+// Every query now goes through `ShadowEntityScope` in `./entity-scope.ts`,
+// which holds a `VerifiedEntityId` in a private field and merges it into the
+// `where` itself. `registerScoped` below resolves and verifies that entity
+// before a tool body runs, so a scoped tool cannot start without one and cannot
+// query outside it.
+//
+// `eslint.config.mjs` forbids importing `@/lib/db` from this file, and
+// `npx eslint src` gates CI -- so a tool added next month gets the scope by
+// default rather than by discipline. The reasoning, the refusal semantics and
+// the Decision-01 citation are all in the header of `./entity-scope.ts`.
+// ============================================================================
 
-import { prisma } from '@/lib/db';
+import { executeWorkflowForEntityOwner } from '@/modules/workflows/services/workflow-executor';
 import type { ToolDefinition, ToolResult, AgentContext } from '../types';
+import {
+  NO_ACTIVE_ENTITY,
+  notInScope,
+  readId,
+  resolveToolScope,
+  findOwnedEntityById,
+  findOwnedEntityByName,
+  listEntitiesForUser,
+  type ShadowEntityScope,
+} from './entity-scope';
 
 // ─── Tool Definition Registry ───────────────────────────────────────────────
 
@@ -12,6 +43,38 @@ interface InternalToolDef extends ToolDefinition {
     input: Record<string, unknown>,
     context: AgentContext,
   ) => Promise<unknown>;
+}
+
+/**
+ * A tool whose work is confined to one entity.
+ *
+ * The third argument is the difference: it is the only database handle in this
+ * module, and `registerScoped` is the only thing that can produce one.
+ */
+interface ScopedToolDef extends ToolDefinition {
+  execute: (
+    input: Record<string, unknown>,
+    context: AgentContext,
+    scope: ShadowEntityScope,
+  ) => Promise<unknown>;
+}
+
+/** Numeric tool inputs are LLM-generated; a missing or silly limit gets `fallback`. */
+function readLimit(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
+    return fallback;
+  }
+  return Math.min(Math.floor(value), 100);
+}
+
+/** String arrays off an LLM input, with anything non-string dropped. */
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string');
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 export class ToolRouter {
@@ -84,6 +147,28 @@ export class ToolRouter {
     this.tools.set(tool.name, tool);
   }
 
+  /**
+   * Register a tool that may only act inside the active entity.
+   *
+   * The entity is resolved from the context and re-proved against the database
+   * (`resolveToolScope` -> `verifyEntityForUser`) BEFORE the tool body runs. A
+   * body that never receives a scope never runs, so there is no path on which a
+   * scoped tool executes with no entity, and no boilerplate for a tool author
+   * to forget.
+   */
+  private registerScoped(tool: ScopedToolDef): void {
+    this.register({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+      execute: async (input, context) => {
+        const scope = await resolveToolScope(context);
+        if (!scope) return NO_ACTIVE_ENTITY;
+        return tool.execute(input, context, scope);
+      },
+    });
+  }
+
   private registerAllTools(): void {
     this.registerNavigationTools();
     this.registerTaskTools();
@@ -135,7 +220,7 @@ export class ToolRouter {
   // ─── Dashboard Tools ──────────────────────────────────────────────────
 
   private registerDashboardTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'get_dashboard_stats',
       description: 'Get overview stats for the current entity: task counts by status, unread messages, upcoming events, and financial summary.',
       input_schema: {
@@ -143,36 +228,9 @@ export class ToolRouter {
         properties: {},
         required: [],
       },
-      execute: async (_input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) {
-          return { error: 'No active entity. Please switch to an entity first.' };
-        }
-
-        const [taskCounts, unreadCount, upcomingEvents, financeSummary] = await Promise.all([
-          prisma.task.groupBy({
-            by: ['status'],
-            where: { entityId, deletedAt: null },
-            _count: { id: true },
-          }),
-          prisma.message.count({
-            where: { entityId, read: false, deletedAt: null },
-          }),
-          prisma.calendarEvent.findMany({
-            where: {
-              entityId,
-              startTime: { gte: new Date() },
-            },
-            orderBy: { startTime: 'asc' },
-            take: 5,
-            select: { id: true, title: true, startTime: true, endTime: true },
-          }),
-          prisma.financialRecord.aggregate({
-            where: { entityId, status: 'PENDING' },
-            _sum: { amount: true },
-            _count: { id: true },
-          }),
-        ]);
+      execute: async (_input, _context, scope) => {
+        const { taskCounts, unreadCount, upcomingEvents, financeSummary } =
+          await scope.dashboardStats();
 
         return {
           tasks: taskCounts.reduce(
@@ -201,7 +259,7 @@ export class ToolRouter {
   // ─── Task Tools ───────────────────────────────────────────────────────
 
   private registerTaskTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_tasks',
       description: 'List tasks for the active entity with optional filters for status, priority, and assignee.',
       input_schema: {
@@ -214,30 +272,19 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId, deletedAt: null };
-        if (input.status) where.status = input.status;
-        if (input.priority) where.priority = input.priority;
-        if (input.projectId) where.projectId = input.projectId;
-
-        const tasks = await prisma.task.findMany({
-          where,
-          orderBy: [{ priority: 'asc' }, { dueDate: 'asc' }],
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, title: true, status: true, priority: true,
-            dueDate: true, projectId: true, tags: true,
-          },
+      execute: async (input, _context, scope) => {
+        const tasks = await scope.listTasks({
+          status: readString(input.status),
+          priority: readString(input.priority),
+          projectId: readString(input.projectId),
+          limit: readLimit(input.limit, 10),
         });
 
         return { tasks, count: tasks.length };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'create_task',
       description: 'Create a new task in the active entity.',
       input_schema: {
@@ -252,29 +299,28 @@ export class ToolRouter {
         },
         required: ['title'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, context, scope) => {
+        const title = readString(input.title);
+        if (!title) return { error: 'title is required' };
 
-        const task = await prisma.task.create({
-          data: {
-            title: input.title as string,
-            description: (input.description as string) ?? null,
-            entityId,
-            priority: (input.priority as string) ?? 'P1',
-            status: 'TODO',
-            dueDate: input.dueDate ? new Date(input.dueDate as string) : null,
-            projectId: (input.projectId as string) ?? null,
-            tags: (input.tags as string[]) ?? [],
-            assigneeId: context.user.id,
-          },
+        const task = await scope.createTask({
+          title,
+          description: readString(input.description) ?? null,
+          priority: readString(input.priority) ?? 'P1',
+          dueDate: input.dueDate ? new Date(input.dueDate as string) : null,
+          projectId: readId(input.projectId),
+          tags: readStringArray(input.tags),
+          assigneeId: context.user.id,
         });
+
+        // Null means the `projectId` the model supplied is not in this entity.
+        if (!task) return notInScope('Project');
 
         return { created: true, taskId: task.id, title: task.title };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'update_task',
       description: 'Update an existing task by ID.',
       input_schema: {
@@ -289,7 +335,10 @@ export class ToolRouter {
         },
         required: ['taskId'],
       },
-      execute: async (input) => {
+      execute: async (input, _context, scope) => {
+        const taskId = readId(input.taskId);
+        if (!taskId) return notInScope('Task');
+
         const data: Record<string, unknown> = {};
         if (input.title) data.title = input.title;
         if (input.status) data.status = input.status;
@@ -297,16 +346,14 @@ export class ToolRouter {
         if (input.dueDate) data.dueDate = new Date(input.dueDate as string);
         if (input.description) data.description = input.description;
 
-        const task = await prisma.task.update({
-          where: { id: input.taskId as string },
-          data,
-        });
+        const task = await scope.updateTask(taskId, data);
+        if (!task) return notInScope('Task');
 
         return { updated: true, taskId: task.id, title: task.title, status: task.status };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'complete_task',
       description: 'Mark a task as complete.',
       input_schema: {
@@ -316,11 +363,13 @@ export class ToolRouter {
         },
         required: ['taskId'],
       },
-      execute: async (input) => {
-        const task = await prisma.task.update({
-          where: { id: input.taskId as string },
-          data: { status: 'DONE' },
-        });
+      execute: async (input, _context, scope) => {
+        const taskId = readId(input.taskId);
+        if (!taskId) return notInScope('Task');
+
+        const task = await scope.updateTask(taskId, { status: 'DONE' });
+        if (!task) return notInScope('Task');
+
         return { completed: true, taskId: task.id, title: task.title };
       },
     });
@@ -329,7 +378,7 @@ export class ToolRouter {
   // ─── Inbox / Email Tools ──────────────────────────────────────────────
 
   private registerInboxTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_inbox',
       description: 'List inbox messages for the active entity with optional filters.',
       input_schema: {
@@ -342,23 +391,12 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId, deletedAt: null };
-        if (input.unreadOnly) where.read = false;
-        if (input.starred) where.starred = true;
-        if (input.channel) where.channel = input.channel;
-
-        const messages = await prisma.message.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, channel: true, subject: true, body: true,
-            triageScore: true, read: true, starred: true, createdAt: true,
-          },
+      execute: async (input, _context, scope) => {
+        const messages = await scope.listMessages({
+          unreadOnly: input.unreadOnly === true,
+          starred: input.starred === true,
+          channel: readString(input.channel),
+          limit: readLimit(input.limit, 10),
         });
 
         return {
@@ -372,7 +410,7 @@ export class ToolRouter {
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'classify_email',
       description: 'Classify/triage an email message by updating its triage score and intent.',
       input_schema: {
@@ -384,19 +422,21 @@ export class ToolRouter {
         },
         required: ['messageId', 'triageScore'],
       },
-      execute: async (input) => {
-        const message = await prisma.message.update({
-          where: { id: input.messageId as string },
-          data: {
-            triageScore: input.triageScore as number,
-            intent: (input.intent as string) ?? null,
-          },
+      execute: async (input, _context, scope) => {
+        const messageId = readId(input.messageId);
+        if (!messageId) return notInScope('Message');
+
+        const message = await scope.updateMessage(messageId, {
+          triageScore: input.triageScore as number,
+          intent: readString(input.intent) ?? null,
         });
+        if (!message) return notInScope('Message');
+
         return { classified: true, messageId: message.id, triageScore: message.triageScore };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'draft_email',
       description: 'Create a draft email message.',
       input_schema: {
@@ -409,29 +449,49 @@ export class ToolRouter {
         },
         required: ['recipientId', 'subject', 'body'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      // ---------------------------------------------------------------------
+      // `recipientId` is a Contact id off LLM input -- `Message.recipientId`
+      // carries no foreign key, so an injected id was simply stored, attaching
+      // another tenant's contact to this entity's message. `relationship-
+      // intelligence.ts` reads `OR: [{ senderId }, { recipientId }]` by contact
+      // id, so the row was then readable from the other side.
+      //
+      // KNOWN, PRE-EXISTING, NOT FIXED HERE: `Message.senderId` IS foreign-key
+      // constrained, to `Contact.id` (baseline migration, line 1466), and this
+      // tool writes `context.user.id` into it -- a User id. So the insert below
+      // has never once succeeded, in this tool or in
+      // `broadcast-manager.ts:101`, which writes an ENTITY id into the same
+      // column. Every reader treats the value as a free string
+      // (`msg.contact?.name ?? msg.senderId` in inbox.service and dashboard),
+      // so the code and the constraint disagree and the constraint is the odd
+      // one out. `prisma/schema.prisma` is frozen for this package; recorded in
+      // PARALLEL_BUILD_ESCALATION_P34.md. It is left exactly as found rather
+      // than guessed at, and the scoping above runs BEFORE it, so the tenancy
+      // refusal is reached whether or not the write would work.
+      // ---------------------------------------------------------------------
+      execute: async (input, context, scope) => {
+        const recipientId = readId(input.recipientId);
+        const subject = readString(input.subject);
+        const body = readString(input.body);
+        if (!recipientId || !subject || !body) {
+          return { error: 'recipientId, subject, and body are required' };
+        }
+        if (!(await scope.findContactId(recipientId))) return notInScope('Contact');
 
-        const draft = await prisma.message.create({
-          data: {
-            channel: 'email',
-            senderId: context.user.id,
-            recipientId: input.recipientId as string,
-            entityId,
-            subject: input.subject as string,
-            body: input.body as string,
-            threadId: (input.threadId as string) ?? null,
-            draftStatus: 'DRAFT',
-            sensitivity: 'INTERNAL',
-          },
+        const draft = await scope.createMessage({
+          senderId: context.user.id,
+          recipientId,
+          subject,
+          body,
+          threadId: readId(input.threadId),
+          draftStatus: 'DRAFT',
         });
 
         return { drafted: true, messageId: draft.id, subject: draft.subject };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'send_email',
       description: 'Send an email message (either an existing draft or compose a new one).',
       input_schema: {
@@ -444,32 +504,35 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        if (input.messageId) {
-          const message = await prisma.message.update({
-            where: { id: input.messageId as string },
-            data: { draftStatus: 'SENT' },
+      execute: async (input, context, scope) => {
+        if (input.messageId !== undefined) {
+          const messageId = readId(input.messageId);
+          if (!messageId) return notInScope('Message');
+
+          const message = await scope.updateMessage(messageId, {
+            draftStatus: 'SENT',
           });
+          if (!message) return notInScope('Message');
+
           return { sent: true, messageId: message.id };
         }
 
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-        if (!input.recipientId || !input.subject || !input.body) {
+        const recipientId = readId(input.recipientId);
+        const subject = readString(input.subject);
+        const body = readString(input.body);
+        if (!recipientId || !subject || !body) {
           return { error: 'recipientId, subject, and body are required for new emails' };
         }
+        // Same contact scoping, and the same `senderId` caveat, as `draft_email`.
+        if (!(await scope.findContactId(recipientId))) return notInScope('Contact');
 
-        const message = await prisma.message.create({
-          data: {
-            channel: 'email',
-            senderId: context.user.id,
-            recipientId: input.recipientId as string,
-            entityId,
-            subject: input.subject as string,
-            body: input.body as string,
-            draftStatus: 'SENT',
-            sensitivity: 'INTERNAL',
-          },
+        const message = await scope.createMessage({
+          senderId: context.user.id,
+          recipientId,
+          subject,
+          body,
+          threadId: null,
+          draftStatus: 'SENT',
         });
 
         return { sent: true, messageId: message.id };
@@ -480,7 +543,7 @@ export class ToolRouter {
   // ─── Calendar Tools ───────────────────────────────────────────────────
 
   private registerCalendarTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_calendar_events',
       description: 'List upcoming calendar events for the active entity.',
       input_schema: {
@@ -492,28 +555,11 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId };
-        if (input.startDate || input.endDate) {
-          const startFilter: Record<string, Date> = {};
-          if (input.startDate) startFilter.gte = new Date(input.startDate as string);
-          if (input.endDate) startFilter.lte = new Date(input.endDate as string);
-          where.startTime = startFilter;
-        } else {
-          where.startTime = { gte: new Date() };
-        }
-
-        const events = await prisma.calendarEvent.findMany({
-          where,
-          orderBy: { startTime: 'asc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, title: true, startTime: true, endTime: true,
-            participantIds: true, recurrence: true,
-          },
+      execute: async (input, _context, scope) => {
+        const events = await scope.listCalendarEvents({
+          startDate: readString(input.startDate),
+          endDate: readString(input.endDate),
+          limit: readLimit(input.limit, 10),
         });
 
         return {
@@ -530,7 +576,7 @@ export class ToolRouter {
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'create_calendar_event',
       description: 'Create a new calendar event.',
       input_schema: {
@@ -543,25 +589,26 @@ export class ToolRouter {
         },
         required: ['title', 'startTime', 'endTime'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, _context, scope) => {
+        const title = readString(input.title);
+        const startTime = readString(input.startTime);
+        const endTime = readString(input.endTime);
+        if (!title || !startTime || !endTime) {
+          return { error: 'title, startTime and endTime are required' };
+        }
 
-        const event = await prisma.calendarEvent.create({
-          data: {
-            title: input.title as string,
-            entityId,
-            startTime: new Date(input.startTime as string),
-            endTime: new Date(input.endTime as string),
-            participantIds: (input.participantIds as string[]) ?? [],
-          },
+        const event = await scope.createCalendarEvent({
+          title,
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          participantIds: readStringArray(input.participantIds),
         });
 
         return { created: true, eventId: event.id, title: event.title };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'modify_calendar_event',
       description: 'Update an existing calendar event.',
       input_schema: {
@@ -574,16 +621,17 @@ export class ToolRouter {
         },
         required: ['eventId'],
       },
-      execute: async (input) => {
+      execute: async (input, _context, scope) => {
+        const eventId = readId(input.eventId);
+        if (!eventId) return notInScope('Calendar event');
+
         const data: Record<string, unknown> = {};
         if (input.title) data.title = input.title;
         if (input.startTime) data.startTime = new Date(input.startTime as string);
         if (input.endTime) data.endTime = new Date(input.endTime as string);
 
-        const event = await prisma.calendarEvent.update({
-          where: { id: input.eventId as string },
-          data,
-        });
+        const event = await scope.updateCalendarEvent(eventId, data);
+        if (!event) return notInScope('Calendar event');
 
         return { updated: true, eventId: event.id, title: event.title };
       },
@@ -593,7 +641,7 @@ export class ToolRouter {
   // ─── Contact Tools ────────────────────────────────────────────────────
 
   private registerContactTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_contacts',
       description: 'List contacts for the active entity with optional search.',
       input_schema: {
@@ -605,36 +653,18 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId, deletedAt: null };
-        if (input.search) {
-          where.OR = [
-            { name: { contains: input.search as string, mode: 'insensitive' } },
-            { email: { contains: input.search as string, mode: 'insensitive' } },
-          ];
-        }
-        if (input.tags && (input.tags as string[]).length > 0) {
-          where.tags = { hasSome: input.tags as string[] };
-        }
-
-        const contacts = await prisma.contact.findMany({
-          where,
-          orderBy: { name: 'asc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, name: true, email: true, phone: true,
-            relationshipScore: true, tags: true, lastTouch: true,
-          },
+      execute: async (input, _context, scope) => {
+        const contacts = await scope.listContacts({
+          search: readString(input.search),
+          tags: readStringArray(input.tags),
+          limit: readLimit(input.limit, 10),
         });
 
         return { contacts, count: contacts.length };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'get_contact',
       description: 'Get detailed information about a specific contact.',
       input_schema: {
@@ -644,22 +674,18 @@ export class ToolRouter {
         },
         required: ['contactId'],
       },
-      execute: async (input) => {
-        const contact = await prisma.contact.findUnique({
-          where: { id: input.contactId as string },
-          select: {
-            id: true, name: true, email: true, phone: true,
-            channels: true, relationshipScore: true, lastTouch: true,
-            commitments: true, preferences: true, tags: true,
-          },
-        });
+      execute: async (input, _context, scope) => {
+        const contactId = readId(input.contactId);
+        if (!contactId) return notInScope('Contact');
 
-        if (!contact) return { error: 'Contact not found' };
+        const contact = await scope.getContact(contactId);
+        if (!contact) return notInScope('Contact');
+
         return { contact };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'create_contact',
       description: 'Create a new contact in the active entity.',
       input_schema: {
@@ -672,18 +698,15 @@ export class ToolRouter {
         },
         required: ['name'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, _context, scope) => {
+        const name = readString(input.name);
+        if (!name) return { error: 'name is required' };
 
-        const contact = await prisma.contact.create({
-          data: {
-            entityId,
-            name: input.name as string,
-            email: (input.email as string) ?? null,
-            phone: (input.phone as string) ?? null,
-            tags: (input.tags as string[]) ?? [],
-          },
+        const contact = await scope.createContact({
+          name,
+          email: readString(input.email) ?? null,
+          phone: readString(input.phone) ?? null,
+          tags: readStringArray(input.tags),
         });
 
         return { created: true, contactId: contact.id, name: contact.name };
@@ -694,7 +717,7 @@ export class ToolRouter {
   // ─── Finance Tools ────────────────────────────────────────────────────
 
   private registerFinanceTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_invoices',
       description: 'List financial records/invoices for the active entity.',
       input_schema: {
@@ -706,29 +729,18 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId };
-        if (input.status) where.status = input.status;
-        if (input.type) where.type = input.type;
-
-        const records = await prisma.financialRecord.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, type: true, amount: true, currency: true,
-            status: true, dueDate: true, category: true, vendor: true, description: true,
-          },
+      execute: async (input, _context, scope) => {
+        const records = await scope.listFinancialRecords({
+          status: readString(input.status),
+          type: readString(input.type),
+          limit: readLimit(input.limit, 10),
         });
 
         return { records, count: records.length };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'create_invoice',
       description: 'Create a new invoice/financial record.',
       input_schema: {
@@ -744,29 +756,28 @@ export class ToolRouter {
         },
         required: ['type', 'amount', 'category'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, _context, scope) => {
+        const type = readString(input.type);
+        const category = readString(input.category);
+        if (!type || !category || typeof input.amount !== 'number') {
+          return { error: 'type, amount and category are required' };
+        }
 
-        const record = await prisma.financialRecord.create({
-          data: {
-            entityId,
-            type: input.type as string,
-            amount: input.amount as number,
-            currency: (input.currency as string) ?? 'USD',
-            category: input.category as string,
-            vendor: (input.vendor as string) ?? null,
-            description: (input.description as string) ?? null,
-            dueDate: input.dueDate ? new Date(input.dueDate as string) : null,
-            status: 'PENDING',
-          },
+        const record = await scope.createFinancialRecord({
+          type,
+          amount: input.amount,
+          currency: readString(input.currency) ?? 'USD',
+          category,
+          vendor: readString(input.vendor) ?? null,
+          description: readString(input.description) ?? null,
+          dueDate: input.dueDate ? new Date(input.dueDate as string) : null,
         });
 
         return { created: true, recordId: record.id, amount: record.amount };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'send_invoice_reminder',
       description: 'Mark an invoice for reminder/follow-up by updating its status.',
       input_schema: {
@@ -776,29 +787,27 @@ export class ToolRouter {
         },
         required: ['invoiceId'],
       },
-      execute: async (input) => {
-        const record = await prisma.financialRecord.findUnique({
-          where: { id: input.invoiceId as string },
-        });
-        if (!record) return { error: 'Invoice not found' };
+      execute: async (input, _context, scope) => {
+        const invoiceId = readId(input.invoiceId);
+        if (!invoiceId) return notInScope('Invoice');
+
+        const record = await scope.getFinancialRecord(invoiceId);
+        if (!record) return notInScope('Invoice');
 
         // Log the reminder action
-        await prisma.actionLog.create({
-          data: {
-            actor: 'SHADOW',
-            actionType: 'INVOICE_REMINDER_SENT',
-            target: record.id,
-            reason: `Reminder sent for ${record.type} of ${record.amount} ${record.currency}`,
-            blastRadius: 'LOW',
-            reversible: false,
-          },
+        await scope.logAction({
+          actionType: 'INVOICE_REMINDER_SENT',
+          target: record.id,
+          reason: `Reminder sent for ${record.type} of ${record.amount} ${record.currency}`,
+          blastRadius: 'LOW',
+          reversible: false,
         });
 
         return { reminderSent: true, invoiceId: record.id, amount: record.amount };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'get_finance_summary',
       description: 'Get a financial summary for the active entity.',
       input_schema: {
@@ -806,27 +815,8 @@ export class ToolRouter {
         properties: {},
         required: [],
       },
-      execute: async (_input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const [income, expenses, pending] = await Promise.all([
-          prisma.financialRecord.aggregate({
-            where: { entityId, type: 'invoice', status: 'PAID' },
-            _sum: { amount: true },
-            _count: { id: true },
-          }),
-          prisma.financialRecord.aggregate({
-            where: { entityId, type: 'expense' },
-            _sum: { amount: true },
-            _count: { id: true },
-          }),
-          prisma.financialRecord.aggregate({
-            where: { entityId, status: 'PENDING' },
-            _sum: { amount: true },
-            _count: { id: true },
-          }),
-        ]);
+      execute: async (_input, _context, scope) => {
+        const { income, expenses, pending } = await scope.financeSummary();
 
         return {
           totalIncome: income._sum.amount ?? 0,
@@ -840,7 +830,7 @@ export class ToolRouter {
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'list_expenses',
       description: 'List expense records for the active entity.',
       input_schema: {
@@ -851,21 +841,10 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId, type: 'expense' };
-        if (input.category) where.category = input.category;
-
-        const expenses = await prisma.financialRecord.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, amount: true, currency: true, category: true,
-            vendor: true, description: true, createdAt: true,
-          },
+      execute: async (input, _context, scope) => {
+        const expenses = await scope.listExpenses({
+          category: readString(input.category),
+          limit: readLimit(input.limit, 10),
         });
 
         return { expenses, count: expenses.length };
@@ -876,7 +855,7 @@ export class ToolRouter {
   // ─── Knowledge Base Tools ─────────────────────────────────────────────
 
   private registerKnowledgeTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'search_knowledge_base',
       description: 'Search the knowledge base for relevant entries.',
       input_schema: {
@@ -888,25 +867,14 @@ export class ToolRouter {
         },
         required: ['query'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, _context, scope) => {
+        const query = readString(input.query);
+        if (query === undefined) return { error: 'query is required' };
 
-        const where: Record<string, unknown> = {
-          entityId,
-          content: { contains: input.query as string, mode: 'insensitive' },
-        };
-        if (input.tags && (input.tags as string[]).length > 0) {
-          where.tags = { hasSome: input.tags as string[] };
-        }
-
-        const entries = await prisma.knowledgeEntry.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-          take: (input.limit as number) ?? 5,
-          select: {
-            id: true, content: true, tags: true, source: true, createdAt: true,
-          },
+        const entries = await scope.searchKnowledge({
+          query,
+          tags: readStringArray(input.tags),
+          limit: readLimit(input.limit, 5),
         });
 
         return {
@@ -921,7 +889,7 @@ export class ToolRouter {
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'add_knowledge_entry',
       description: 'Add a new entry to the knowledge base.',
       input_schema: {
@@ -933,17 +901,15 @@ export class ToolRouter {
         },
         required: ['content', 'source'],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      execute: async (input, _context, scope) => {
+        const content = readString(input.content);
+        const source = readString(input.source);
+        if (!content || !source) return { error: 'content and source are required' };
 
-        const entry = await prisma.knowledgeEntry.create({
-          data: {
-            entityId,
-            content: input.content as string,
-            tags: (input.tags as string[]) ?? [],
-            source: input.source as string,
-          },
+        const entry = await scope.createKnowledgeEntry({
+          content,
+          tags: readStringArray(input.tags),
+          source,
         });
 
         return { created: true, entryId: entry.id };
@@ -954,7 +920,7 @@ export class ToolRouter {
   // ─── Workflow Tools ───────────────────────────────────────────────────
 
   private registerWorkflowTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'trigger_workflow',
       description: 'Trigger an automation workflow by ID.',
       input_schema: {
@@ -965,50 +931,77 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
+      // ---------------------------------------------------------------------
+      // P-34. THREE BUGS IN TWELVE LINES, all of them here.
+      //
+      //   1. The entity was resolved and then ignored: the `workflowId` branch
+      //      called `findUnique({ where: { id } })` while the `workflowName`
+      //      branch three lines below filtered on `entityId`. One tool, two
+      //      answers about tenancy -- and the correct one was already written.
+      //
+      //   2. IT EXECUTED NOTHING. It stamped `lastRun`, returned
+      //      `{ triggered: true }`, and never called the executor. P-31 built
+      //      the real path; nothing here reached it.
+      //
+      //   3. The ActionLog row said WORKFLOW_TRIGGERED for work that did not
+      //      happen. That is worse than the missing execution: an audit trail
+      //      that records phantom actions is not a weaker audit trail, it is a
+      //      misleading one, and it is the exact defect P-31 found in the step
+      //      worker ("wrote an ActionLog row saying EXECUTED and execute
+      //      nothing").
+      //
+      // All three are fixed by routing through
+      // `executeWorkflowForEntityOwner`, which is the coordinator's sanctioned
+      // server-side entry point: it re-checks `{ id, entityId }` itself, runs
+      // the halt gate, creates the WorkflowExecutionRecord, walks the graph and
+      // updates `lastRun`/`successRate` from the real result. The `lastRun`
+      // write here is therefore deleted rather than moved -- it was the
+      // executor's job and doing it twice was how the phantom looked real.
+      //
+      // The audit row is now written AFTER the run, records the executionId and
+      // the terminal status, and is not written at all when the run throws.
+      // ---------------------------------------------------------------------
+      execute: async (input, context, scope) => {
+        const workflowId = readId(input.workflowId);
+        const workflowName = readString(input.workflowName);
 
-        let workflow;
-        if (input.workflowId) {
-          workflow = await prisma.workflow.findUnique({
-            where: { id: input.workflowId as string },
-          });
-        } else if (input.workflowName) {
-          workflow = await prisma.workflow.findFirst({
-            where: {
-              entityId,
-              name: { contains: input.workflowName as string, mode: 'insensitive' },
-              status: 'ACTIVE',
-            },
-          });
-        }
+        const workflow = workflowId
+          ? await scope.findWorkflowById(workflowId)
+          : workflowName
+            ? await scope.findActiveWorkflowByName(workflowName)
+            : null;
 
-        if (!workflow) return { error: 'Workflow not found' };
+        if (!workflow) return notInScope('Workflow');
 
-        // Mark as triggered
-        await prisma.workflow.update({
-          where: { id: workflow.id },
-          data: { lastRun: new Date() },
+        const execution = await executeWorkflowForEntityOwner(
+          workflow.id,
+          context.user.id,
+          'SHADOW_VOICE',
+          scope.entityId,
+        );
+
+        await scope.logAction({
+          actorId: context.user.id,
+          actionType: 'WORKFLOW_TRIGGERED',
+          target: workflow.id,
+          reason: `Workflow "${workflow.name}" run by Shadow: execution ${execution.id} ${execution.status}`,
+          blastRadius: 'MEDIUM',
+          reversible: false,
         });
 
-        await prisma.actionLog.create({
-          data: {
-            actor: 'SHADOW',
-            actorId: context.user.id,
-            actionType: 'WORKFLOW_TRIGGERED',
-            target: workflow.id,
-            reason: `Workflow "${workflow.name}" triggered by Shadow`,
-            blastRadius: 'MEDIUM',
-            reversible: false,
-          },
-        });
-
-        return { triggered: true, workflowId: workflow.id, name: workflow.name };
+        return {
+          triggered: true,
+          workflowId: workflow.id,
+          name: workflow.name,
+          executionId: execution.id,
+          status: execution.status,
+          stepsRun: execution.stepResults.length,
+          error: execution.error ?? null,
+        };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'get_workflow_status',
       description: 'Get the current status of a workflow.',
       input_schema: {
@@ -1018,19 +1011,20 @@ export class ToolRouter {
         },
         required: ['workflowId'],
       },
-      execute: async (input) => {
-        const workflow = await prisma.workflow.findUnique({
-          where: { id: input.workflowId as string },
-          select: {
-            id: true, name: true, status: true, lastRun: true,
-            successRate: true, steps: true,
-          },
-        });
+      execute: async (input, _context, scope) => {
+        const workflowId = readId(input.workflowId);
+        if (!workflowId) return notInScope('Workflow');
 
-        if (!workflow) return { error: 'Workflow not found' };
+        const workflow = await scope.findWorkflowById(workflowId);
+        if (!workflow) return notInScope('Workflow');
+
         return {
-          ...workflow,
+          id: workflow.id,
+          name: workflow.name,
+          status: workflow.status,
           lastRun: workflow.lastRun?.toISOString() ?? null,
+          successRate: workflow.successRate,
+          steps: workflow.steps,
         };
       },
     });
@@ -1050,25 +1044,40 @@ export class ToolRouter {
         },
         required: [],
       },
+      // ---------------------------------------------------------------------
+      // NOT `registerScoped`: the subject of this tool is the set of entities
+      // the USER owns, so binding it to one of them would be wrong. It is
+      // scoped to `context.user.id` instead, which is the only other tenancy
+      // axis in this module.
+      //
+      // The `entityId` branch was the eleventh unscoped site and the only
+      // cross-USER one: `findUnique({ where: { id } })` returning `name` and
+      // `type`. One injected cuid and Shadow read out a stranger's company
+      // name. `findOwnedEntityById` filters on `userId`, so a foreign id is now
+      // indistinguishable from a nonexistent one.
+      //
+      // NOTE FOR WHOEVER WIRES THIS UP: it still does not switch anything.
+      // `AgentContext` is built once per message in `buildContext` and this
+      // returns a value the model reads; `core.ts` uses the result only to
+      // write "Switched to entity: X" into a consent receipt. The name is a
+      // promise the code does not keep. It is left as found because making it
+      // real means moving `ShadowVoiceSession.activeEntityId` mid-turn and
+      // rebuilding the context, which is a behaviour change this package has no
+      // test surface for -- but it is recorded here and in the P-34 PR body so
+      // it is not discovered a third time.
+      // ---------------------------------------------------------------------
       execute: async (input, context) => {
-        if (input.entityId) {
-          const entity = await prisma.entity.findUnique({
-            where: { id: input.entityId as string },
-            select: { id: true, name: true, type: true },
-          });
+        const entityId = readId(input.entityId);
+        if (entityId) {
+          const entity = await findOwnedEntityById(context.user.id, entityId);
           if (!entity) return { error: 'Entity not found' };
           return { switched: true, entityId: entity.id, name: entity.name, type: entity.type };
         }
 
-        if (input.entityName) {
-          const entity = await prisma.entity.findFirst({
-            where: {
-              userId: context.user.id,
-              name: { contains: input.entityName as string, mode: 'insensitive' },
-            },
-            select: { id: true, name: true, type: true },
-          });
-          if (!entity) return { error: `No entity found matching "${input.entityName}"` };
+        const entityName = readString(input.entityName);
+        if (entityName) {
+          const entity = await findOwnedEntityByName(context.user.id, entityName);
+          if (!entity) return { error: `No entity found matching "${entityName}"` };
           return { switched: true, entityId: entity.id, name: entity.name, type: entity.type };
         }
 
@@ -1085,12 +1094,7 @@ export class ToolRouter {
         required: [],
       },
       execute: async (_input, context) => {
-        const entities = await prisma.entity.findMany({
-          where: { userId: context.user.id },
-          select: { id: true, name: true, type: true, createdAt: true },
-          orderBy: { name: 'asc' },
-        });
-
+        const entities = await listEntitiesForUser(context.user.id);
         return { entities, count: entities.length };
       },
     });
@@ -1099,7 +1103,7 @@ export class ToolRouter {
   // ─── Project Tools ────────────────────────────────────────────────────
 
   private registerProjectTools(): void {
-    this.register({
+    this.registerScoped({
       name: 'list_projects',
       description: 'List projects for the active entity.',
       input_schema: {
@@ -1110,28 +1114,17 @@ export class ToolRouter {
         },
         required: [],
       },
-      execute: async (input, context) => {
-        const entityId = context.activeEntity?.id;
-        if (!entityId) return { error: 'No active entity' };
-
-        const where: Record<string, unknown> = { entityId };
-        if (input.status) where.status = input.status;
-
-        const projects = await prisma.project.findMany({
-          where,
-          orderBy: { createdAt: 'desc' },
-          take: (input.limit as number) ?? 10,
-          select: {
-            id: true, name: true, description: true, status: true,
-            health: true, createdAt: true,
-          },
+      execute: async (input, _context, scope) => {
+        const projects = await scope.listProjects({
+          status: readString(input.status),
+          limit: readLimit(input.limit, 10),
         });
 
         return { projects, count: projects.length };
       },
     });
 
-    this.register({
+    this.registerScoped({
       name: 'get_project_status',
       description: 'Get detailed status of a project including task breakdown.',
       input_schema: {
@@ -1141,22 +1134,14 @@ export class ToolRouter {
         },
         required: ['projectId'],
       },
-      execute: async (input) => {
-        const project = await prisma.project.findUnique({
-          where: { id: input.projectId as string },
-          select: {
-            id: true, name: true, description: true, status: true,
-            health: true, milestones: true,
-          },
-        });
+      execute: async (input, _context, scope) => {
+        const projectId = readId(input.projectId);
+        if (!projectId) return notInScope('Project');
 
-        if (!project) return { error: 'Project not found' };
+        const project = await scope.getProject(projectId);
+        if (!project) return notInScope('Project');
 
-        const taskCounts = await prisma.task.groupBy({
-          by: ['status'],
-          where: { projectId: project.id, deletedAt: null },
-          _count: { id: true },
-        });
+        const taskCounts = await scope.projectTaskCounts(project.id);
 
         return {
           project,

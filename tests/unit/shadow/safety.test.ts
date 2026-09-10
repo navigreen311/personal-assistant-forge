@@ -20,6 +20,15 @@ import type { FraudDetectorParams } from '@/modules/shadow/safety/fraud-detector
 
 import { ShadowAuthManager } from '@/modules/shadow/safety/auth-manager';
 import { ConsentReceiptService } from '@/modules/shadow/safety/consent-receipt';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * P-34. The consent-receipt service now takes a `VerifiedEntityId` on every
+ * read and on the rollback, so a caller that has not been through
+ * `withEntityScope` is a compile error rather than a leak. `verifiedEntityIdForTest`
+ * is the ONE sanctioned place tests manufacture the brand (tests/helpers/factories.ts).
+ */
+const SCOPED_ENTITY = verifiedEntityIdForTest('entity-1');
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -126,6 +135,10 @@ jest.mock('@/lib/db', () => ({
     shadowConsentReceipt: {
       create: jest.fn(),
       findMany: jest.fn(),
+      // P-34: `findUnique` cannot carry a non-unique `entityId`, so the scoped
+      // reads use `findFirst`. Both are mocked, and `findUnique` is asserted
+      // UNUSED below -- a regression to the unscoped lookup fails the test.
+      findFirst: jest.fn(),
       findUnique: jest.fn(),
       count: jest.fn(),
       update: jest.fn(),
@@ -153,6 +166,7 @@ const mockPrisma = prisma as unknown as {
   shadowConsentReceipt: {
     create: jest.Mock;
     findMany: jest.Mock;
+    findFirst: jest.Mock;
     findUnique: jest.Mock;
     count: jest.Mock;
     update: jest.Mock;
@@ -1096,7 +1110,7 @@ describe('ConsentReceiptService', () => {
       mockPrisma.shadowConsentReceipt.findMany.mockResolvedValue(mockReceipts);
       mockPrisma.shadowConsentReceipt.count.mockResolvedValue(2);
 
-      const result = await service.listReceipts({
+      const result = await service.listReceipts(SCOPED_ENTITY, {
         sessionId: 'session-1',
         limit: 10,
         offset: 0,
@@ -1110,11 +1124,14 @@ describe('ConsentReceiptService', () => {
       mockPrisma.shadowConsentReceipt.findMany.mockResolvedValue([]);
       mockPrisma.shadowConsentReceipt.count.mockResolvedValue(0);
 
-      await service.listReceipts({
-        entityId: 'entity-1',
+      await service.listReceipts(SCOPED_ENTITY, {
         actionType: 'send_email',
       });
 
+      // P-34. `entityId` is no longer one of the optional filters -- it is the
+      // required first argument, and it lands in the `where` whether the caller
+      // asked for it or not. Before, a caller that omitted it listed EVERY
+      // tenant's consent receipts, which is what `GET /api/shadow/receipts` did.
       expect(mockPrisma.shadowConsentReceipt.findMany).toHaveBeenCalledWith({
         where: {
           entityId: 'entity-1',
@@ -1130,10 +1147,11 @@ describe('ConsentReceiptService', () => {
       mockPrisma.shadowConsentReceipt.findMany.mockResolvedValue([]);
       mockPrisma.shadowConsentReceipt.count.mockResolvedValue(0);
 
-      await service.listReceipts({});
+      await service.listReceipts(SCOPED_ENTITY);
 
       expect(mockPrisma.shadowConsentReceipt.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: { entityId: 'entity-1' },
           take: 50,
           skip: 0,
         })
@@ -1149,24 +1167,30 @@ describe('ConsentReceiptService', () => {
         executedAt: new Date(),
       };
 
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue(mockReceipt);
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue(mockReceipt);
 
-      const result = await service.getReceipt('receipt-1');
+      const result = await service.getReceipt('receipt-1', SCOPED_ENTITY);
       expect(result).not.toBeNull();
       expect(result!.id).toBe('receipt-1');
+      // The lookup carries the entity, so a receipt in another tenant is
+      // indistinguishable from one that does not exist.
+      expect(mockPrisma.shadowConsentReceipt.findFirst).toHaveBeenCalledWith({
+        where: { id: 'receipt-1', entityId: 'entity-1' },
+      });
+      expect(mockPrisma.shadowConsentReceipt.findUnique).not.toHaveBeenCalled();
     });
 
     it('returns null for non-existent receipt', async () => {
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue(null);
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue(null);
 
-      const result = await service.getReceipt('non-existent');
+      const result = await service.getReceipt('non-existent', SCOPED_ENTITY);
       expect(result).toBeNull();
     });
   });
 
   describe('rollbackAction', () => {
     it('successfully rolls back a reversible action', async () => {
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue({
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue({
         id: 'receipt-1',
         actionType: 'create_task',
         reversible: true,
@@ -1177,13 +1201,18 @@ describe('ConsentReceiptService', () => {
 
       mockPrisma.shadowConsentReceipt.update.mockResolvedValue({});
 
-      const result = await service.rollbackAction('receipt-1', 'user-1');
+      const result = await service.rollbackAction('receipt-1', 'user-1', SCOPED_ENTITY);
+      // The receipt was found INSIDE the entity. Before P-34 an owner or admin
+      // of any entity could reverse another tenant's consented action by id.
+      expect(mockPrisma.shadowConsentReceipt.findFirst).toHaveBeenCalledWith({
+        where: { id: 'receipt-1', entityId: 'entity-1' },
+      });
       expect(result.success).toBe(true);
       expect(result.message).toContain('rolled back successfully');
     });
 
     it('refuses to rollback a non-reversible action', async () => {
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue({
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue({
         id: 'receipt-2',
         actionType: 'send_email',
         reversible: false,
@@ -1192,13 +1221,13 @@ describe('ConsentReceiptService', () => {
         rollbackPath: null,
       });
 
-      const result = await service.rollbackAction('receipt-2', 'user-1');
+      const result = await service.rollbackAction('receipt-2', 'user-1', SCOPED_ENTITY);
       expect(result.success).toBe(false);
       expect(result.message).toContain('not reversible');
     });
 
     it('refuses to rollback an already rolled-back action', async () => {
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue({
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue({
         id: 'receipt-3',
         actionType: 'create_task',
         reversible: true,
@@ -1206,15 +1235,15 @@ describe('ConsentReceiptService', () => {
         rolledBackBy: 'user-2',
       });
 
-      const result = await service.rollbackAction('receipt-3', 'user-1');
+      const result = await service.rollbackAction('receipt-3', 'user-1', SCOPED_ENTITY);
       expect(result.success).toBe(false);
       expect(result.message).toContain('already rolled back');
     });
 
     it('returns failure for non-existent receipt', async () => {
-      mockPrisma.shadowConsentReceipt.findUnique.mockResolvedValue(null);
+      mockPrisma.shadowConsentReceipt.findFirst.mockResolvedValue(null);
 
-      const result = await service.rollbackAction('non-existent', 'user-1');
+      const result = await service.rollbackAction('non-existent', 'user-1', SCOPED_ENTITY);
       expect(result.success).toBe(false);
       expect(result.message).toContain('not found');
     });

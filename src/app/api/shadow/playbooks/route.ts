@@ -1,11 +1,16 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withRole } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
+import type { UserRole } from '@/lib/auth/types';
 import { callPlaybookService } from '@/modules/shadow/compliance/call-playbook';
 
+const CREATE_ROLES: UserRole[] = ['owner', 'admin', 'member'];
+
 const CreatePlaybookSchema = z.object({
-  entityId: z.string().min(1),
+  // Still accepted, still validated, and no longer load-bearing: P-34 takes the
+  // entity from `withEntityScope`, which has proved it against the session.
+  entityId: z.string().min(1).optional(),
   name: z.string().min(1).max(255),
   description: z.string().optional().default(''),
   type: z.string().optional().default('general'),
@@ -27,15 +32,12 @@ const CreatePlaybookSchema = z.object({
  * List all playbooks for an entity.
  */
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  // P-34. Was `withAuth` + `?entityId=` -> `listPlaybooks(entityId)`: one of the
+  // five route/method pairs P-20's fuzz recorded as answering tenant A with
+  // tenant B's rows. `withEntityScope` resolves the same candidate in the same
+  // order and then applies Decision 1 to it.
+  return withEntityScope(request, async (_req, _session, entityId) => {
     try {
-      const entityId =
-        req.nextUrl.searchParams.get('entityId') ?? session.activeEntityId;
-
-      if (!entityId) {
-        return error('VALIDATION_ERROR', 'entityId is required', 400);
-      }
-
       const playbooks = await callPlaybookService.listPlaybooks(entityId);
       return success(playbooks);
     } catch (err) {
@@ -50,7 +52,11 @@ export async function GET(request: NextRequest) {
  * Create a new playbook.
  */
 export async function POST(request: NextRequest) {
-  return withRole(request, ['owner', 'admin', 'member'], async (req) => {
+  return withEntityScope(request, async (req, session, entityId) => {
+    if (!CREATE_ROLES.includes(session.role)) {
+      return error('FORBIDDEN', 'Insufficient permissions', 403);
+    }
+
     try {
       const body = await req.json();
       const parsed = CreatePlaybookSchema.safeParse(body);
@@ -59,7 +65,7 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const playbook = await callPlaybookService.createPlaybook(parsed.data);
+      const playbook = await callPlaybookService.createPlaybook(parsed.data, entityId);
       return success(playbook, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create playbook';

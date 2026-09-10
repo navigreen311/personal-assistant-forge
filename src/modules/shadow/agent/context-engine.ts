@@ -2,6 +2,7 @@
 // Assembles rich context for the agent from DB state, session history, and environment.
 
 import { prisma } from '@/lib/db';
+import { verifyEntityForUser } from '@/shared/middleware/auth';
 import type { AgentContext } from '../types';
 import { getShadowConfig } from '@/lib/shadow/config';
 
@@ -22,7 +23,7 @@ export async function buildContext(params: {
   // Run all queries in parallel for speed
   const [user, entity, recentMessages, recentActions, shadowConfig] = await Promise.all([
     fetchUser(params.userId),
-    params.activeEntityId ? fetchEntity(params.activeEntityId) : null,
+    fetchOwnedEntity(params.activeEntityId, params.userId),
     fetchRecentMessages(params.sessionId),
     fetchRecentActions(params.userId),
     getShadowConfig(params.userId).catch(() => undefined),
@@ -81,9 +82,37 @@ async function fetchUser(userId: string) {
   });
 }
 
-async function fetchEntity(entityId: string) {
+/**
+ * The active entity, if the user actually owns it.
+ *
+ * P-34. This was `findUnique({ where: { id: entityId } })` with no ownership
+ * check of any kind, and `activeEntityId` reaches it from
+ * `ShadowVoiceSession.activeEntityId` -- a column `POST /api/shadow/session/start`
+ * filled from the request body without checking it either. So naming another
+ * tenant's entity when starting a session put that entity's NAME, TYPE and
+ * COMPLIANCE PROFILE into the Shadow system prompt
+ * (`core.ts` -> `buildSystemPrompt`, "Active Entity: ... Compliance profiles:
+ * ..."), and every entity-scoped tool then read and wrote that tenant's rows.
+ *
+ * `verifyEntityForUser` is the P-00b amendment for exactly this case -- trusted
+ * server-side code that already knows whose work it is doing -- and it is the
+ * same ownership check `withEntityScope` performs for routes. An entity that
+ * does not verify yields `undefined` here, which is the same state as "the user
+ * has not chosen an entity": the prompt says nothing about it and every scoped
+ * tool refuses with `NO_ACTIVE_ENTITY`.
+ *
+ * The tool layer verifies AGAIN per call (`resolveToolScope`), because this
+ * function is not the only way an `AgentContext` can be built. See the header
+ * of `./entity-scope.ts`.
+ */
+async function fetchOwnedEntity(entityId: string | undefined, userId: string) {
+  if (!entityId) return null;
+
+  const verified = await verifyEntityForUser(entityId, userId);
+  if (!verified) return null;
+
   return prisma.entity.findUnique({
-    where: { id: entityId },
+    where: { id: verified },
     select: {
       id: true,
       name: true,

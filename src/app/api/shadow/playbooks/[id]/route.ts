@@ -1,9 +1,16 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withRole } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
+import type { UserRole } from '@/lib/auth/types';
 
 import { callPlaybookService } from '@/modules/shadow/compliance/call-playbook';
+
+// P-34. `withEntityScope` performs the authentication `withRole` used to, so
+// the role gate is kept explicitly inside the handler and still runs before any
+// playbook is read.
+const WRITE_ROLES: UserRole[] = ['owner', 'admin', 'member'];
+const DELETE_ROLES: UserRole[] = ['owner', 'admin'];
 
 const UpdatePlaybookSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -30,7 +37,15 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withRole(request, ['owner', 'admin', 'member'], async (req) => {
+  // P-34. `updatePlaybook(id, data)` was unscoped: one of the five route/method
+  // pairs P-20's fuzz recorded as reaching another tenant's rows, and a WRITE.
+  // A playbook's `neverDisclose` list is what Shadow may not say out loud on a
+  // call, so editing another tenant's is editing their disclosure policy.
+  return withEntityScope(request, async (req, session, entityId) => {
+    if (!WRITE_ROLES.includes(session.role)) {
+      return error('FORBIDDEN', 'Insufficient permissions', 403);
+    }
+
     try {
       const { id } = await params;
       const body = await req.json();
@@ -40,7 +55,7 @@ export async function PUT(
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const playbook = await callPlaybookService.updatePlaybook(id, parsed.data);
+      const playbook = await callPlaybookService.updatePlaybook(id, parsed.data, entityId);
       return success(playbook);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update playbook';
@@ -60,10 +75,14 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  return withRole(request, ['owner', 'admin'], async () => {
+  return withEntityScope(request, async (_req, session, entityId) => {
+    if (!DELETE_ROLES.includes(session.role)) {
+      return error('FORBIDDEN', 'Insufficient permissions', 403);
+    }
+
     try {
       const { id } = await params;
-      await callPlaybookService.deletePlaybook(id);
+      await callPlaybookService.deletePlaybook(id, entityId);
       return success({ deleted: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete playbook';

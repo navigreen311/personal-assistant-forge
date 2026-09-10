@@ -25,6 +25,13 @@ const mockAggregate = jest.fn();
 const mockUpdateMany = jest.fn();
 const mockUpsert = jest.fn();
 const mockActionLogCreate = jest.fn();
+// P-34. `prisma.entity.findFirst` has its own mock because it is no longer
+// just another lookup: it is the OWNERSHIP CHECK. `verifyEntityForUser` (the
+// P-00b amendment in the frozen src/shared/middleware/auth.ts) runs it on every
+// scoped tool call, and ShadowEntityScope cannot be minted without it. Sharing
+// `mockFindFirst` would mean a test that stubs a task lookup silently decides
+// whether the entity check passes, which is how a tenancy test proves nothing.
+const mockEntityFindFirst = jest.fn();
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -33,10 +40,11 @@ jest.mock('@/lib/db', () => ({
     },
     entity: {
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
-      findFirst: (...args: unknown[]) => mockFindFirst(...args),
+      findFirst: (...args: unknown[]) => mockEntityFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
     },
     task: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
       create: (...args: unknown[]) => mockCreate(...args),
@@ -46,22 +54,26 @@ jest.mock('@/lib/db', () => ({
       updateMany: (...args: unknown[]) => mockUpdateMany(...args),
     },
     message: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       create: (...args: unknown[]) => mockCreate(...args),
       update: (...args: unknown[]) => mockUpdate(...args),
       count: (...args: unknown[]) => mockCount(...args),
     },
     calendarEvent: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       create: (...args: unknown[]) => mockCreate(...args),
       update: (...args: unknown[]) => mockUpdate(...args),
     },
     contact: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
       create: (...args: unknown[]) => mockCreate(...args),
     },
     financialRecord: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
       create: (...args: unknown[]) => mockCreate(...args),
@@ -77,6 +89,7 @@ jest.mock('@/lib/db', () => ({
       update: (...args: unknown[]) => mockUpdate(...args),
     },
     project: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
     },
@@ -492,6 +505,11 @@ describe('ToolRouter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // P-34. The default is "the context's entity really is this user's", which
+    // is what every pre-existing assertion in this block assumed implicitly and
+    // what `verifyEntityForUser` now checks explicitly. Tests below that care
+    // about the refusal override it.
+    mockEntityFindFirst.mockResolvedValue({ id: 'entity-1' });
     router = new ToolRouter();
   });
 
@@ -681,6 +699,9 @@ describe('ToolRouter', () => {
     });
 
     it('should complete a task', async () => {
+      // P-34. `complete_task` now resolves the row inside the entity first, so
+      // the scoped lookup has to find it before the update happens.
+      mockFindFirst.mockResolvedValue({ id: 'task-1' });
       mockUpdate.mockResolvedValue({
         id: 'task-1',
         title: 'Done Task',
@@ -696,6 +717,105 @@ describe('ToolRouter', () => {
       expect(result.success).toBe(true);
       const data = result.data as Record<string, unknown>;
       expect(data.completed).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P-34 — the scope gate, at the seam
+  //
+  // These are structural, not behavioural: Prisma is mocked here, so they prove
+  // WHICH QUERY IS ISSUED and WHAT IS RETURNED WHEN IT MISSES, not that
+  // Postgres refuses. The behavioural proof — two real tenants, two real
+  // sessions, one real database, with a positive control on every refusal — is
+  // `tests/db/shadow-tool-tenancy.test.ts`. Both are needed: this block is what
+  // fails fast if the seam is bypassed, that one is what fails if the seam does
+  // not actually hold.
+  // -------------------------------------------------------------------------
+  describe('entity scope (P-34)', () => {
+    it('refuses every scoped tool when the context entity is not the user\'s', async () => {
+      // The context still NAMES an entity — this is the shape of the bug:
+      // `POST /api/shadow/session/start` let a caller put any entity id on the
+      // voice session, and `buildContext` fetched it without an ownership
+      // check. The ownership query returning null is the refusal.
+      mockEntityFindFirst.mockResolvedValue(null);
+
+      for (const tool of ['list_tasks', 'get_dashboard_stats', 'complete_task']) {
+        const result = await router.executeTool(tool, { taskId: 't' }, makeContext());
+        expect(result.success).toBe(true);
+        expect((result.data as Record<string, unknown>).error).toContain(
+          'No active entity',
+        );
+      }
+
+      // And nothing was read: the gate is before the work, not after it.
+      expect(mockFindMany).not.toHaveBeenCalled();
+      expect(mockGroupBy).not.toHaveBeenCalled();
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it('scopes an id taken from tool input to the active entity', async () => {
+      mockFindFirst.mockResolvedValue(null);
+
+      const result = await router.executeTool(
+        'complete_task',
+        { taskId: 'task-belonging-to-another-entity' },
+        makeContext(),
+      );
+
+      // The lookup carried the entity. Before P-34 this was
+      // `task.update({ where: { id: input.taskId } })` with no `where.entityId`
+      // at all, so this assertion is the whole package in one line.
+      expect(mockFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'task-belonging-to-another-entity', entityId: 'entity-1' },
+        }),
+      );
+      // Nothing was written, and the model is told only "not found".
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect((result.data as Record<string, unknown>).error).toBe(
+        'Task not found in the active entity.',
+      );
+    });
+
+    it('answers a foreign id and a nonexistent id with the same string', async () => {
+      // The refusal must not be an existence oracle: `input` is LLM-generated,
+      // so the party naming the id may be an injected instruction rather than
+      // the account holder. Both misses return the identical value.
+      mockFindFirst.mockResolvedValue(null);
+      const foreign = await router.executeTool(
+        'get_contact',
+        { contactId: 'contact-in-another-entity' },
+        makeContext(),
+      );
+      const missing = await router.executeTool(
+        'get_contact',
+        { contactId: 'no-such-contact-anywhere' },
+        makeContext(),
+      );
+
+      expect(foreign.data).toEqual(missing.data);
+      expect(foreign.data).toEqual({ error: 'Contact not found in the active entity.' });
+    });
+
+    it('scopes switch_entity to the user, not to nothing at all', async () => {
+      // This was `entity.findUnique({ where: { id } })` — a cross-USER
+      // disclosure of another account's entity name and type, reachable by an
+      // injected cuid.
+      mockEntityFindFirst.mockResolvedValue(null);
+
+      const result = await router.executeTool(
+        'switch_entity',
+        { entityId: 'someone-elses-entity' },
+        makeContext(),
+      );
+
+      expect(mockEntityFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'someone-elses-entity', userId: 'user-1' },
+        }),
+      );
+      expect(mockFindUnique).not.toHaveBeenCalled();
+      expect((result.data as Record<string, unknown>).error).toBe('Entity not found');
     });
   });
 });
