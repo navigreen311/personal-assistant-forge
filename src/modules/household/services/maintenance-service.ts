@@ -1,6 +1,7 @@
 import { addMonths, addDays, isBefore, addYears } from 'date-fns';
 import { generateJSON } from '@/lib/ai';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { MaintenanceTask } from '../types';
 
 function calculateNextDueDate(frequency: MaintenanceTask['frequency'], fromDate: Date): Date | null {
@@ -14,20 +15,23 @@ function calculateNextDueDate(frequency: MaintenanceTask['frequency'], fromDate:
   }
 }
 
-function taskToMaintenance(task: {
-  id: string;
-  title: string;
-  description: string | null;
-  entityId: string;
-  status: string;
-  dueDate: Date | null;
-  createdFrom: unknown;
-  tags: string[];
-}): MaintenanceTask {
+function taskToMaintenance(
+  task: {
+    id: string;
+    title: string;
+    description: string | null;
+    entityId: string;
+    status: string;
+    dueDate: Date | null;
+    createdFrom: unknown;
+    tags: string[];
+  },
+  userId: string
+): MaintenanceTask {
   const meta = (task.createdFrom ?? {}) as Record<string, unknown>;
   return {
     id: task.id,
-    userId: task.entityId,
+    userId,
     category: (meta.category as MaintenanceTask['category']) ?? 'GENERAL',
     title: task.title,
     description: task.description ?? undefined,
@@ -43,6 +47,7 @@ function taskToMaintenance(task: {
 }
 
 export async function createTask(
+  entityId: VerifiedEntityId,
   userId: string,
   task: Omit<MaintenanceTask, 'id' | 'status'>
 ): Promise<MaintenanceTask> {
@@ -53,7 +58,7 @@ export async function createTask(
     data: {
       title: task.title,
       description: task.description ?? null,
-      entityId: userId,
+      entityId,
       priority: 'P1',
       status: 'TODO',
       dueDate: new Date(task.nextDueDate),
@@ -72,22 +77,26 @@ export async function createTask(
     },
   });
 
-  return taskToMaintenance(created);
+  return taskToMaintenance(created, userId);
 }
 
-export async function getUpcomingTasks(userId: string, days: number): Promise<MaintenanceTask[]> {
+export async function getUpcomingTasks(
+  entityId: VerifiedEntityId,
+  userId: string,
+  days: number
+): Promise<MaintenanceTask[]> {
   const now = new Date();
   const futureDate = addDays(now, days);
 
   const tasks = await prisma.task.findMany({
     where: {
-      entityId: userId,
+      entityId,
       tags: { has: 'maintenance' },
       deletedAt: null,
     },
   });
 
-  const mapped: MaintenanceTask[] = tasks.map(taskToMaintenance);
+  const mapped: MaintenanceTask[] = tasks.map((t) => taskToMaintenance(t, userId));
   return mapped.filter(
     (t: MaintenanceTask) =>
       t.status !== 'COMPLETED' &&
@@ -97,32 +106,43 @@ export async function getUpcomingTasks(userId: string, days: number): Promise<Ma
   );
 }
 
-export async function getOverdueTasks(userId: string): Promise<MaintenanceTask[]> {
+export async function getOverdueTasks(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<MaintenanceTask[]> {
   const now = new Date();
 
   const tasks = await prisma.task.findMany({
     where: {
-      entityId: userId,
+      entityId,
       tags: { has: 'maintenance' },
       deletedAt: null,
     },
   });
 
-  const mapped: MaintenanceTask[] = tasks.map(taskToMaintenance);
+  const mapped: MaintenanceTask[] = tasks.map((t) => taskToMaintenance(t, userId));
   return mapped
     .filter((t: MaintenanceTask) => isBefore(new Date(t.nextDueDate), now) && t.status !== 'COMPLETED' && t.status !== 'SKIPPED')
     .map((t: MaintenanceTask) => ({ ...t, status: 'OVERDUE' as const }));
 }
 
-export async function completeTask(taskId: string): Promise<MaintenanceTask> {
-  const existing = await prisma.task.findUnique({ where: { id: taskId } });
+export async function completeTask(
+  entityId: VerifiedEntityId,
+  userId: string,
+  taskId: string
+): Promise<MaintenanceTask> {
+  // findFirst with the scope in the WHERE, not findUnique-then-compare: another
+  // tenant's task is simply not found, so there is no check to forget.
+  const existing = await prisma.task.findFirst({ where: { id: taskId, entityId } });
   if (!existing) throw new Error(`Task ${taskId} not found`);
 
   const meta = (existing.createdFrom ?? {}) as Record<string, unknown>;
   const now = new Date();
 
-  const updated = await prisma.task.update({
-    where: { id: taskId },
+  // updateMany, not update: update takes a unique WHERE and cannot carry the
+  // entity, so a caller who knew an id could complete any tenant's task.
+  const changed = await prisma.task.updateMany({
+    where: { id: taskId, entityId },
     data: {
       status: 'DONE',
       createdFrom: {
@@ -132,6 +152,9 @@ export async function completeTask(taskId: string): Promise<MaintenanceTask> {
       },
     },
   });
+  if (changed.count === 0) throw new Error(`Task ${taskId} not found`);
+
+  const updated = await prisma.task.findFirstOrThrow({ where: { id: taskId, entityId } });
 
   const frequency = (meta.frequency as MaintenanceTask['frequency']) ?? 'ONE_TIME';
   const nextDue = calculateNextDueDate(frequency, now);
@@ -141,7 +164,7 @@ export async function completeTask(taskId: string): Promise<MaintenanceTask> {
       data: {
         title: existing.title,
         description: existing.description,
-        entityId: existing.entityId,
+        entityId,
         priority: existing.priority,
         status: 'TODO',
         dueDate: nextDue,
@@ -156,23 +179,30 @@ export async function completeTask(taskId: string): Promise<MaintenanceTask> {
     });
   }
 
-  return taskToMaintenance(updated);
+  return taskToMaintenance(updated, userId);
 }
 
-export async function getSeasonalSchedule(userId: string, season: string): Promise<MaintenanceTask[]> {
+export async function getSeasonalSchedule(
+  entityId: VerifiedEntityId,
+  userId: string,
+  season: string
+): Promise<MaintenanceTask[]> {
   const tasks = await prisma.task.findMany({
     where: {
-      entityId: userId,
+      entityId,
       tags: { has: 'maintenance' },
       deletedAt: null,
     },
   });
 
-  const mapped: MaintenanceTask[] = tasks.map(taskToMaintenance);
+  const mapped: MaintenanceTask[] = tasks.map((t) => taskToMaintenance(t, userId));
   return mapped.filter((t: MaintenanceTask) => t.season === season || t.season === 'ANY');
 }
 
-export async function generateAnnualSchedule(userId: string): Promise<MaintenanceTask[]> {
+export async function generateAnnualSchedule(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<MaintenanceTask[]> {
   const now = new Date();
   const year = now.getFullYear();
   const templates: Omit<MaintenanceTask, 'id' | 'status'>[] = [
@@ -251,7 +281,7 @@ Only include tasks that should be rescheduled. Omit tasks that are already optim
 
   const tasks: MaintenanceTask[] = [];
   for (const template of optimizedTemplates) {
-    const task = await createTask(userId, template);
+    const task = await createTask(entityId, userId, template);
     tasks.push(task);
   }
 

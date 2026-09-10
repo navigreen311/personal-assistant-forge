@@ -97,7 +97,7 @@ describe('CaptureService', () => {
         rawContent: 'Process me',
       });
 
-      const processed = await service.processCapture(capture.id);
+      const processed = await service.processCapture(capture.id, 'user-1');
       expect(processed.status).toBe('ROUTED');
     });
 
@@ -113,7 +113,7 @@ describe('CaptureService', () => {
         rawContent: 'Route me',
       });
 
-      await service.processCapture(capture.id);
+      await service.processCapture(capture.id, 'user-1');
       expect(routingService.routeAndStore).toHaveBeenCalled();
     });
 
@@ -125,7 +125,7 @@ describe('CaptureService', () => {
         rawContent: 'Track latency',
       });
 
-      await service.processCapture(capture.id);
+      await service.processCapture(capture.id, 'user-1');
 
       const metrics = await service.getCaptureMetrics('user-1');
       expect(metrics.length).toBe(1);
@@ -133,7 +133,7 @@ describe('CaptureService', () => {
     });
 
     it('should handle processing errors gracefully', async () => {
-      await expect(service.processCapture('non-existent-id')).rejects.toThrow();
+      await expect(service.processCapture('non-existent-id', 'user-1')).rejects.toThrow();
     });
   });
 
@@ -189,14 +189,14 @@ describe('CaptureService', () => {
         rawContent: 'Archive me',
       });
 
-      await service.archiveCapture(capture.id);
+      await service.archiveCapture(capture.id, 'user-1');
 
-      const archived = await service.getCaptureById(capture.id);
+      const archived = await service.getCaptureById(capture.id, 'user-1');
       expect(archived?.status).toBe('ARCHIVED');
     });
 
     it('should throw for non-existent capture', async () => {
-      await expect(service.archiveCapture('fake-id')).rejects.toThrow();
+      await expect(service.archiveCapture('fake-id', 'user-1')).rejects.toThrow();
     });
   });
 
@@ -222,7 +222,7 @@ describe('CaptureService', () => {
         rawContent: 'I need to follow up with the vendor by Friday',
       });
 
-      const result = await service.classifyCaptureWithAI(capture.id);
+      const result = await service.classifyCaptureWithAI(capture.id, 'user-1');
 
       expect(generateJSON).toHaveBeenCalled();
       expect(result.category).toBe('TASK');
@@ -239,7 +239,7 @@ describe('CaptureService', () => {
         rawContent: 'Some content',
       });
 
-      const result = await service.classifyCaptureWithAI(capture.id);
+      const result = await service.classifyCaptureWithAI(capture.id, 'user-1');
 
       expect(result.category).toBe('NOTE');
       expect(result.confidence).toBe(0.3);

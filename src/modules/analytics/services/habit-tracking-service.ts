@@ -2,18 +2,32 @@ import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 import type { HabitEntry } from '@prisma/client';
 import type { HabitDefinition, HabitCorrelation } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { calculateProductivityScore } from './productivity-scoring';
 
 // --- Prisma-backed habit CRUD (replaces in-memory Map) ---
+//
+// P-13: `HabitEntry.entityId` is a REQUIRED foreign key to `Entity`. Every
+// function below used to be handed a *userId* and put it in that column
+// (`createHabit` wrote `entityId: userId`; `getHabits` filtered
+// `where: { entityId: userId }`). Two consequences, both real:
+//
+//   1. Against a real Postgres the insert violates the FK, so habits could not
+//      be created at all -- invisible to a suite that mocks Prisma.
+//   2. The id in that column was caller-supplied and never proven, so the
+//      lookups were not a tenancy check even where they happened to match.
+//
+// Habits are entity-scoped. Every entry point now takes a VerifiedEntityId and
+// puts it in the WHERE clause, so a foreign row is simply not found.
 
 export async function createHabit(
-  userId: string,
+  entityId: VerifiedEntityId,
   name: string,
   frequency: string
 ): Promise<HabitDefinition> {
   const entry = await prisma.habitEntry.create({
     data: {
-      entityId: userId,
+      entityId,
       name,
       frequency: frequency.toLowerCase(),
       targetPerPeriod: 1,
@@ -29,10 +43,13 @@ export async function createHabit(
 
 export async function recordCompletion(
   habitId: string,
+  entityId: VerifiedEntityId,
   date: string,
   completed: boolean
 ): Promise<HabitDefinition> {
-  const entry = await prisma.habitEntry.findUnique({ where: { id: habitId } });
+  // Scope in the WHERE clause, not a check afterwards: another tenant's habit
+  // is simply not found.
+  const entry = await prisma.habitEntry.findFirst({ where: { id: habitId, entityId } });
   if (!entry) throw new Error(`Habit not found: ${habitId}`);
 
   const completedDates = (entry.completedDates as string[]) ?? [];
@@ -61,8 +78,10 @@ export async function recordCompletion(
   const streak = calculateStreak(history);
   const longestStreak = Math.max(streak, entry.longestStreak);
 
-  const updated = await prisma.habitEntry.update({
-    where: { id: habitId },
+  // `update` takes a unique WHERE and cannot carry the entity, so scope the
+  // write with updateMany and re-read through the scoped finder.
+  await prisma.habitEntry.updateMany({
+    where: { id: habitId, entityId },
     data: {
       completedDates: newCompletedDates,
       streak,
@@ -70,14 +89,17 @@ export async function recordCompletion(
     },
   });
 
+  const updated = await prisma.habitEntry.findFirst({ where: { id: habitId, entityId } });
+  if (!updated) throw new Error(`Habit not found: ${habitId}`);
+
   return toHabitDefinition(updated);
 }
 
 export async function getHabits(
-  userId: string,
+  entityId: VerifiedEntityId,
   includeInactive?: boolean
 ): Promise<HabitDefinition[]> {
-  const where: Record<string, unknown> = { entityId: userId };
+  const where: Record<string, unknown> = { entityId };
   if (!includeInactive) {
     where.isActive = true;
   }
@@ -86,12 +108,15 @@ export async function getHabits(
   return entries.map(toHabitDefinition);
 }
 
-export async function getHabit(habitId: string): Promise<HabitDefinition | null> {
-  const entry = await prisma.habitEntry.findUnique({ where: { id: habitId } });
+export async function getHabit(
+  habitId: string,
+  entityId: VerifiedEntityId
+): Promise<HabitDefinition | null> {
+  const entry = await prisma.habitEntry.findFirst({ where: { id: habitId, entityId } });
   return entry ? toHabitDefinition(entry) : null;
 }
 
-export async function getStreaks(entityId: string): Promise<
+export async function getStreaks(entityId: VerifiedEntityId): Promise<
   {
     id: string;
     name: string;
@@ -142,15 +167,19 @@ export async function getStreaks(entityId: string): Promise<
   });
 }
 
-export async function deleteHabit(habitId: string): Promise<void> {
-  await prisma.habitEntry.update({
-    where: { id: habitId },
+export async function deleteHabit(
+  habitId: string,
+  entityId: VerifiedEntityId
+): Promise<void> {
+  await prisma.habitEntry.updateMany({
+    where: { id: habitId, entityId },
     data: { isActive: false },
   });
 }
 
 export async function updateHabit(
   habitId: string,
+  entityId: VerifiedEntityId,
   updates: {
     name?: string;
     description?: string;
@@ -164,10 +193,14 @@ export async function updateHabit(
   if (updates.frequency !== undefined) data.frequency = updates.frequency.toLowerCase();
   if (updates.targetPerPeriod !== undefined) data.targetPerPeriod = updates.targetPerPeriod;
 
-  const updated = await prisma.habitEntry.update({
-    where: { id: habitId },
+  const count = await prisma.habitEntry.updateMany({
+    where: { id: habitId, entityId },
     data,
   });
+  if (count.count === 0) throw new Error(`Habit not found: ${habitId}`);
+
+  const updated = await prisma.habitEntry.findFirst({ where: { id: habitId, entityId } });
+  if (!updated) throw new Error(`Habit not found: ${habitId}`);
 
   return toHabitDefinition(updated);
 }
@@ -175,9 +208,10 @@ export async function updateHabit(
 // --- Correlation analysis (AI-powered) ---
 
 export async function calculateCorrelations(
-  habitId: string
+  habitId: string,
+  entityId: VerifiedEntityId
 ): Promise<HabitCorrelation[]> {
-  const entry = await prisma.habitEntry.findUnique({ where: { id: habitId } });
+  const entry = await prisma.habitEntry.findFirst({ where: { id: habitId, entityId } });
   if (!entry) throw new Error(`Habit not found: ${habitId}`);
 
   const completedDates = (entry.completedDates as string[]) ?? [];
@@ -189,9 +223,18 @@ export async function calculateCorrelations(
   const productivityScores: number[] = [];
   const habitValues: number[] = [];
 
+  // `calculateProductivityScore` takes a USER id (it fans out over that user's
+  // entities). This used to pass `entry.entityId`, which matched no user and so
+  // scored against an empty entity set. Resolve the entity's owner instead.
+  const owner = await prisma.entity.findUnique({
+    where: { id: entry.entityId },
+    select: { userId: true },
+  });
+  if (!owner) return [];
+
   for (const date of completedDates) {
     try {
-      const score = await calculateProductivityScore(entry.entityId, date);
+      const score = await calculateProductivityScore(owner.userId, date);
       productivityScores.push(score.overallScore);
       habitValues.push(1);
     } catch {

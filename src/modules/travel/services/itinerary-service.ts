@@ -1,7 +1,22 @@
 import { v4 as uuidv4 } from 'uuid';
 import { generateJSON } from '@/lib/ai';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Itinerary, ItineraryLeg } from '../types';
+
+/**
+ * An itinerary is not a table. It is a set of `CalendarEvent` rows that share an
+ * `itineraryId` inside their `prepPacket` JSON. `CalendarEvent` has an indexed
+ * `entityId`, so that column -- not the JSON -- is the tenancy scope, and every
+ * query below carries it.
+ *
+ * Before this change, every function here took only an `itineraryId`.
+ * `getItinerary`, `updateLeg`, `addLeg` and `removeLeg` had no scope at all, and
+ * the `[id]` routes above them discarded the session as `_session`. Any
+ * authenticated user who knew (or guessed) an itinerary id could read another
+ * tenant's travel plans -- flight numbers, hotels, confirmation numbers -- edit
+ * them, or delete the underlying calendar events.
+ */
 
 export function calculateTotalCost(itinerary: Itinerary): number {
   return itinerary.legs.reduce((sum, leg) => sum + leg.costUsd, 0);
@@ -96,6 +111,7 @@ function eventsToItinerary(
 }
 
 export async function createItinerary(
+  entityId: VerifiedEntityId,
   userId: string,
   name: string,
   legs: Omit<ItineraryLeg, 'id'>[]
@@ -103,9 +119,10 @@ export async function createItinerary(
   const itineraryId = uuidv4();
   const now = new Date();
 
-  // We need an entityId for CalendarEvent — query the user's first entity
-  const entity = await prisma.entity.findFirst({ where: { userId } });
-  const entityId = entity?.id ?? userId;
+  // The entity arrives verified. This used to be
+  // `prisma.entity.findFirst({ where: { userId } })` with `?? userId` as the
+  // fallback, which wrote CalendarEvent rows whose entityId was a User id --
+  // a foreign key to nothing -- whenever the user had no entity yet.
 
   const orderedLegs: ItineraryLeg[] = legs.map((leg, index) => ({
     ...leg,
@@ -156,9 +173,13 @@ export async function createItinerary(
   };
 }
 
-export async function getItinerary(itineraryId: string): Promise<Itinerary | null> {
+export async function getItinerary(
+  entityId: VerifiedEntityId,
+  itineraryId: string
+): Promise<Itinerary | null> {
   const events = await prisma.calendarEvent.findMany({
     where: {
+      entityId,
       prepPacket: {
         path: ['itineraryId'],
         equals: itineraryId,
@@ -170,14 +191,23 @@ export async function getItinerary(itineraryId: string): Promise<Itinerary | nul
   return eventsToItinerary(events);
 }
 
-export async function listItineraries(userId: string, status?: string): Promise<Itinerary[]> {
+/**
+ * Every itinerary belonging to ONE entity.
+ *
+ * Deliberately single-entity (tenancy pattern section 5b). It used to match on
+ * `prepPacket.userId`, which spanned whatever entities that user's itineraries
+ * happened to sit on; it now scopes to the entity in scope. Travel plans in this
+ * product belong to an entity -- a business trip is the business's, a holiday is
+ * the personal entity's -- so a single-entity list is what the feature means. A
+ * caller who wants another entity's itineraries passes `?entityId=`, which is
+ * verified before it reaches here.
+ */
+export async function listItineraries(
+  entityId: VerifiedEntityId,
+  status?: string
+): Promise<Itinerary[]> {
   const events = await prisma.calendarEvent.findMany({
-    where: {
-      prepPacket: {
-        path: ['userId'],
-        equals: userId,
-      },
-    },
+    where: { entityId },
     orderBy: { startTime: 'asc' },
   });
 
@@ -205,6 +235,7 @@ export async function listItineraries(userId: string, status?: string): Promise<
 }
 
 export async function updateLeg(
+  entityId: VerifiedEntityId,
   itineraryId: string,
   legId: string,
   updates: Partial<ItineraryLeg>
@@ -212,6 +243,7 @@ export async function updateLeg(
   // Find the CalendarEvent for this leg
   const events = await prisma.calendarEvent.findMany({
     where: {
+      entityId,
       prepPacket: {
         path: ['itineraryId'],
         equals: itineraryId,
@@ -228,8 +260,9 @@ export async function updateLeg(
 
   const existingMeta = targetEvent.prepPacket as Record<string, unknown>;
 
-  await prisma.calendarEvent.update({
-    where: { id: targetEvent.id },
+  // updateMany, not update: update takes a unique WHERE and cannot carry the entity.
+  await prisma.calendarEvent.updateMany({
+    where: { id: targetEvent.id, entityId },
     data: {
       startTime: updates.departureTime ? new Date(updates.departureTime) : undefined,
       endTime: updates.arrivalTime ? new Date(updates.arrivalTime) : undefined,
@@ -251,17 +284,19 @@ export async function updateLeg(
     },
   });
 
-  const itinerary = await getItinerary(itineraryId);
+  const itinerary = await getItinerary(entityId, itineraryId);
   if (!itinerary) throw new Error(`Itinerary ${itineraryId} not found after update`);
   return itinerary;
 }
 
 export async function addLeg(
+  entityId: VerifiedEntityId,
   itineraryId: string,
   leg: Omit<ItineraryLeg, 'id'>
 ): Promise<Itinerary> {
   const events = await prisma.calendarEvent.findMany({
     where: {
+      entityId,
       prepPacket: {
         path: ['itineraryId'],
         equals: itineraryId,
@@ -272,7 +307,6 @@ export async function addLeg(
   if (events.length === 0) throw new Error(`Itinerary ${itineraryId} not found`);
 
   const firstMeta = events[0].prepPacket as Record<string, unknown>;
-  const entityId = events[0].entityId;
   const itineraryName = firstMeta.itineraryName as string;
   const userId = firstMeta.userId as string;
   const newLegId = uuidv4();
@@ -305,17 +339,19 @@ export async function addLeg(
     },
   });
 
-  const itinerary = await getItinerary(itineraryId);
+  const itinerary = await getItinerary(entityId, itineraryId);
   if (!itinerary) throw new Error(`Itinerary ${itineraryId} not found after add`);
   return itinerary;
 }
 
 export async function removeLeg(
+  entityId: VerifiedEntityId,
   itineraryId: string,
   legId: string
 ): Promise<Itinerary> {
   const events = await prisma.calendarEvent.findMany({
     where: {
+      entityId,
       prepPacket: {
         path: ['itineraryId'],
         equals: itineraryId,
@@ -330,7 +366,8 @@ export async function removeLeg(
 
   if (!targetEvent) throw new Error(`Itinerary ${itineraryId} or leg ${legId} not found`);
 
-  await prisma.calendarEvent.delete({ where: { id: targetEvent.id } });
+  // deleteMany, not delete: delete takes a unique WHERE and cannot carry the entity.
+  await prisma.calendarEvent.deleteMany({ where: { id: targetEvent.id, entityId } });
 
   // Re-order remaining legs
   const remaining = events.filter((e: { id: string }) => e.id !== targetEvent.id);
@@ -342,15 +379,15 @@ export async function removeLeg(
 
   for (let i = 0; i < remaining.length; i++) {
     const existingMeta = remaining[i].prepPacket as Record<string, unknown>;
-    await prisma.calendarEvent.update({
-      where: { id: remaining[i].id },
+    await prisma.calendarEvent.updateMany({
+      where: { id: remaining[i].id, entityId },
       data: {
         prepPacket: { ...existingMeta, legOrder: i + 1 },
       },
     });
   }
 
-  const itinerary = await getItinerary(itineraryId);
+  const itinerary = await getItinerary(entityId, itineraryId);
   if (!itinerary) throw new Error(`Itinerary ${itineraryId} not found after remove`);
   return itinerary;
 }

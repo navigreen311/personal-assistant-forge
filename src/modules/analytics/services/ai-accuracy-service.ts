@@ -1,11 +1,12 @@
 import { prisma } from '@/lib/db';
 import type { ActionLog, Message, Task, Workflow } from '@prisma/client';
 import type { AIAccuracyMetrics } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Existing accuracy metrics (Phase 2) ---
 
 export async function calculateAccuracyMetrics(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<AIAccuracyMetrics> {
   const { startDate, endDate } = parsePeriod(period);
@@ -84,7 +85,7 @@ export async function calculateAccuracyMetrics(
 }
 
 export async function getAccuracyTrend(
-  entityId: string,
+  entityId: VerifiedEntityId,
   periods: number
 ): Promise<AIAccuracyMetrics[]> {
   const results: AIAccuracyMetrics[] = [];
@@ -107,7 +108,7 @@ export async function getAccuracyTrend(
 // --- Prediction tracking (Phase 3) ---
 
 export async function trackPrediction(
-  entityId: string,
+  entityId: VerifiedEntityId,
   prediction: {
     module: string;
     predictionType: string;
@@ -170,7 +171,7 @@ export async function recordOutcome(
 }
 
 export async function getAccuracyByModule(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<{ module: string; accuracy: number; total: number }[]> {
   const where: Record<string, unknown> = {
@@ -209,7 +210,7 @@ export async function getAccuracyByModule(
 }
 
 export async function getOverallAccuracy(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<{ accuracy: number; total: number }> {
   const byModule = await getAccuracyByModule(entityId, dateRange);
@@ -226,7 +227,7 @@ export async function getOverallAccuracy(
 }
 
 export async function getAccuracyTrendByPredictions(
-  entityId: string,
+  entityId: VerifiedEntityId,
   periodDays: number
 ): Promise<{ period: string; accuracy: number; total: number }[]> {
   const now = new Date();

@@ -29,6 +29,21 @@ import {
   getOptimalSchedule,
 } from '@/modules/health/services/energy-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
 
@@ -41,7 +56,7 @@ describe('energy-service', () => {
 
   describe('forecastEnergy', () => {
     it('produces 24-hour energy forecast', async () => {
-      const result = await forecastEnergy('user-1', '2026-02-15');
+      const result = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       expect(result.hourlyEnergy).toHaveLength(24);
       expect(result.hourlyEnergy[0]).toEqual({
@@ -57,21 +72,21 @@ describe('energy-service', () => {
       // Good sleep data
       (mockPrisma.healthMetric.findMany as jest.Mock)
         .mockResolvedValueOnce([ // sleep query
-          { id: 'hm-1', entityId: 'user-1', type: 'sleep', value: 8.0, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
-          { id: 'hm-2', entityId: 'user-1', type: 'sleep', value: 7.5, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
+          { id: 'hm-1', entityId: 'entity-1', type: 'sleep', value: 8.0, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
+          { id: 'hm-2', entityId: 'entity-1', type: 'sleep', value: 7.5, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
         ])
         .mockResolvedValueOnce([]); // energy history query
 
-      const goodSleepResult = await forecastEnergy('user-1', '2026-02-15');
+      const goodSleepResult = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       // Poor sleep data
       (mockPrisma.healthMetric.findMany as jest.Mock)
         .mockResolvedValueOnce([ // sleep query
-          { id: 'hm-3', entityId: 'user-1', type: 'sleep', value: 4.0, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
+          { id: 'hm-3', entityId: 'entity-1', type: 'sleep', value: 4.0, unit: 'hours', source: 'manual', metadata: null, recordedAt: new Date(), createdAt: new Date() },
         ])
         .mockResolvedValueOnce([]); // energy history query
 
-      const poorSleepResult = await forecastEnergy('user-1', '2026-02-15');
+      const poorSleepResult = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       // Peak energy should be higher with good sleep
       const goodPeakEnergy = Math.max(...goodSleepResult.hourlyEnergy.map(h => h.energyLevel));
@@ -87,7 +102,7 @@ describe('energy-service', () => {
         troughHours: [14],
       });
 
-      const result = await forecastEnergy('user-1', '2026-02-15');
+      const result = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       expect(mockGenerateJSON).toHaveBeenCalled();
       expect(result.recommendation).toBe('Focus on deep work in the morning.');
@@ -96,19 +111,19 @@ describe('energy-service', () => {
     it('falls back to rule-based recommendation when AI fails', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await forecastEnergy('user-1', '2026-02-15');
+      const result = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       expect(result.recommendation).toBeTruthy();
       expect(typeof result.recommendation).toBe('string');
     });
 
     it('energy levels are deterministic (no Math.random)', async () => {
-      const result1 = await forecastEnergy('user-1', '2026-02-15');
+      const result1 = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       // Reset mock to return same data
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result2 = await forecastEnergy('user-1', '2026-02-15');
+      const result2 = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       // Energy levels should be identical for same inputs
       for (let i = 0; i < 24; i++) {
@@ -117,11 +132,11 @@ describe('energy-service', () => {
     });
 
     it('produces different results for different dates', async () => {
-      const result1 = await forecastEnergy('user-1', '2026-02-15');
+      const result1 = await forecastEnergy(entity('1'), 'user-1', '2026-02-15');
 
       (mockPrisma.healthMetric.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result2 = await forecastEnergy('user-1', '2026-02-16');
+      const result2 = await forecastEnergy(entity('1'), 'user-1', '2026-02-16');
 
       // At least some hours should differ due to date-based perturbation
       const anyDifferent = result1.hourlyEnergy.some(
@@ -135,7 +150,7 @@ describe('energy-service', () => {
     it('categorizes hours into deep work, meetings, breaks', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await getOptimalSchedule('user-1', '2026-02-15');
+      const result = await getOptimalSchedule(entity('1'), 'user-1', '2026-02-15');
 
       expect(result).toHaveProperty('deepWorkSlots');
       expect(result).toHaveProperty('meetingSlots');
@@ -154,7 +169,7 @@ describe('energy-service', () => {
           breakSlots: ['13:00'],
         });
 
-      const result = await getOptimalSchedule('user-1', '2026-02-15');
+      const result = await getOptimalSchedule(entity('1'), 'user-1', '2026-02-15');
 
       expect(result.deepWorkSlots).toContain('10:00');
       expect(result.meetingSlots).toContain('14:00');
@@ -163,7 +178,7 @@ describe('energy-service', () => {
     it('falls back to rule-based slots when AI fails', async () => {
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await getOptimalSchedule('user-1', '2026-02-15');
+      const result = await getOptimalSchedule(entity('1'), 'user-1', '2026-02-15');
 
       // All time strings should be in HH:00 format
       const allSlots = [...result.deepWorkSlots, ...result.meetingSlots, ...result.breakSlots];

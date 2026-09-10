@@ -1,6 +1,7 @@
 import { subDays, format } from 'date-fns';
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { SleepData, SleepOptimization } from '../types';
 
 // === Sleep Score Calculation ===
@@ -59,10 +60,13 @@ function mapDbToSleepData(record: {
 
 // === Public API ===
 
-export async function getSleepHistory(userId: string, days: number): Promise<SleepData[]> {
+export async function getSleepHistory(
+  entityId: VerifiedEntityId,
+  days: number
+): Promise<SleepData[]> {
   const records = await prisma.healthMetric.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'sleep',
       recordedAt: { gte: subDays(new Date(), days) },
     },
@@ -72,8 +76,11 @@ export async function getSleepHistory(userId: string, days: number): Promise<Sle
   return records.map(mapDbToSleepData);
 }
 
-export async function analyzeSleepPatterns(userId: string): Promise<SleepOptimization> {
-  const data = await getSleepHistory(userId, 30);
+export async function analyzeSleepPatterns(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<SleepOptimization> {
+  const data = await getSleepHistory(entityId, 30);
 
   if (data.length === 0) {
     return {
@@ -165,14 +172,17 @@ Return a JSON object with:
   };
 }
 
-export async function getSleepScore(userId: string, date: string): Promise<number> {
+export async function getSleepScore(
+  entityId: VerifiedEntityId,
+  date: string
+): Promise<number> {
   const targetDate = new Date(date);
   const nextDay = new Date(date);
   nextDay.setDate(nextDay.getDate() + 1);
 
   const record = await prisma.healthMetric.findFirst({
     where: {
-      entityId: userId,
+      entityId,
       type: 'sleep',
       recordedAt: {
         gte: targetDate,

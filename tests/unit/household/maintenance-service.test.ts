@@ -5,8 +5,14 @@ jest.mock('@/lib/db', () => ({
     task: {
       create: jest.fn(),
       findMany: jest.fn(),
+      // findUnique aliased onto findFirst/findFirstOrThrow: the service moved to
+      // scoped finders, and a mock with no findFirst returns undefined silently
+      // rather than failing (tenancy pattern, trap 1).
       findUnique: jest.fn(),
+      findFirst: (...a: unknown[]) => mockTaskFindUnique(...a),
+      findFirstOrThrow: (...a: unknown[]) => mockTaskReread(...a),
       update: jest.fn(),
+      updateMany: (...a: unknown[]) => mockTaskUpdateMany(...a),
     },
   },
 }));
@@ -14,6 +20,10 @@ jest.mock('@/lib/db', () => ({
 jest.mock('@/lib/ai', () => ({
   generateJSON: jest.fn(),
 }));
+
+const mockTaskFindUnique = jest.fn();
+const mockTaskUpdateMany = jest.fn();
+const mockTaskReread = jest.fn();
 
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
@@ -26,12 +36,43 @@ import {
   generateAnnualSchedule,
 } from '@/modules/household/services/maintenance-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
 
 describe('maintenance-service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+
+    // `findFirst` answers from the same fixture `findUnique` used to.
+    mockTaskFindUnique.mockImplementation((...a: unknown[]) =>
+      (mockPrisma.task.findUnique as jest.Mock)(...a)
+    );
+    // `updateMany` performs the stubbed `update` and reports `count` from
+    // whether the row was there -- which is how the service now distinguishes
+    // "not found" from "not yours".
+    let lastTaskWrite: unknown = null;
+    mockTaskUpdateMany.mockImplementation(async (...a: unknown[]) => {
+      const before = await (mockPrisma.task.findUnique as jest.Mock)(...a);
+      if (!before) return { count: 0 };
+      lastTaskWrite = await (mockPrisma.task.update as jest.Mock)(...a);
+      return { count: 1 };
+    });
+    mockTaskReread.mockImplementation(async () => lastTaskWrite);
   });
 
   describe('createTask', () => {
@@ -51,7 +92,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'TODO',
         dueDate: futureDate,
         tags: ['maintenance'],
@@ -68,13 +109,13 @@ describe('maintenance-service', () => {
         },
       });
 
-      const result = await createTask('user-1', taskInput);
+      const result = await createTask(entity('1'), 'user-1', taskInput);
 
       expect(mockPrisma.task.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           tags: ['maintenance'],
           title: 'Replace HVAC filter',
-          entityId: 'user-1',
+          entityId: 'entity-1',
         }),
       });
       expect(result.id).toBe('task-1');
@@ -87,7 +128,7 @@ describe('maintenance-service', () => {
         id: 'task-2',
         title: 'Clean gutters',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'TODO',
         dueDate: futureDate,
         tags: ['maintenance'],
@@ -102,7 +143,7 @@ describe('maintenance-service', () => {
         },
       });
 
-      await createTask('user-1', {
+      await createTask(entity('1'), 'user-1', {
         userId: 'user-1',
         category: 'GENERAL',
         title: 'Clean gutters',
@@ -128,7 +169,7 @@ describe('maintenance-service', () => {
         id: 'task-3',
         title: 'Overdue task',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'TODO',
         dueDate: pastDate,
         tags: ['maintenance'],
@@ -141,7 +182,7 @@ describe('maintenance-service', () => {
         },
       });
 
-      const result = await createTask('user-1', {
+      const result = await createTask(entity('1'), 'user-1', {
         userId: 'user-1',
         category: 'GENERAL',
         title: 'Overdue task',
@@ -160,11 +201,11 @@ describe('maintenance-service', () => {
     it('should query tasks with maintenance tag', async () => {
       (mockPrisma.task.findMany as jest.Mock).mockResolvedValue([]);
 
-      await getUpcomingTasks('user-1', 30);
+      await getUpcomingTasks(entity('1'), 'user-1', 30);
 
       expect(mockPrisma.task.findMany).toHaveBeenCalledWith({
         where: {
-          entityId: 'user-1',
+          entityId: 'entity-1',
           tags: { has: 'maintenance' },
           deletedAt: null,
         },
@@ -180,7 +221,7 @@ describe('maintenance-service', () => {
           id: 'task-1',
           title: 'Within range',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: futureDate,
           tags: ['maintenance'],
@@ -195,7 +236,7 @@ describe('maintenance-service', () => {
           id: 'task-2',
           title: 'Out of range',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: farFuture,
           tags: ['maintenance'],
@@ -208,7 +249,7 @@ describe('maintenance-service', () => {
         },
       ]);
 
-      const result = await getUpcomingTasks('user-1', 30);
+      const result = await getUpcomingTasks(entity('1'), 'user-1', 30);
 
       expect(result).toHaveLength(1);
       expect(result[0].title).toBe('Within range');
@@ -221,7 +262,7 @@ describe('maintenance-service', () => {
           id: 'task-1',
           title: 'HVAC filter',
           description: 'Replace the filter',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: futureDate,
           tags: ['maintenance'],
@@ -236,7 +277,7 @@ describe('maintenance-service', () => {
         },
       ]);
 
-      const result = await getUpcomingTasks('user-1', 30);
+      const result = await getUpcomingTasks(entity('1'), 'user-1', 30);
 
       expect(result[0]).toEqual(
         expect.objectContaining({
@@ -259,7 +300,7 @@ describe('maintenance-service', () => {
           id: 'task-1',
           title: 'Overdue',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: pastDate,
           tags: ['maintenance'],
@@ -272,7 +313,7 @@ describe('maintenance-service', () => {
         },
       ]);
 
-      const result = await getOverdueTasks('user-1');
+      const result = await getOverdueTasks(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].status).toBe('OVERDUE');
@@ -286,7 +327,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         priority: 'P1',
         status: 'TODO',
         dueDate: now,
@@ -303,7 +344,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'DONE',
         dueDate: now,
         tags: ['maintenance'],
@@ -320,18 +361,22 @@ describe('maintenance-service', () => {
         id: 'task-2',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'TODO',
         tags: ['maintenance'],
         createdFrom: { maintenanceStatus: 'UPCOMING' },
       });
 
-      const result = await completeTask('task-1');
+      const result = await completeTask(entity('1'), 'user-1', 'task-1');
 
       expect(result.status).toBe('COMPLETED');
+      // This assertion used to read `where: { id: 'task-1' }` -- no entity at
+      // all -- so it would have passed against a service that let any caller
+      // who knew an id complete any tenant's task. The scope is now part of
+      // what is asserted.
       expect(mockPrisma.task.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'task-1' },
+          where: { id: 'task-1', entityId: 'entity-1' },
           data: expect.objectContaining({
             status: 'DONE',
           }),
@@ -345,7 +390,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         priority: 'P1',
         status: 'TODO',
         dueDate: now,
@@ -362,7 +407,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'DONE',
         dueDate: now,
         tags: ['maintenance'],
@@ -373,13 +418,13 @@ describe('maintenance-service', () => {
         id: 'task-next',
         title: 'Replace HVAC filter',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'TODO',
         tags: ['maintenance'],
         createdFrom: { maintenanceStatus: 'UPCOMING' },
       });
 
-      await completeTask('task-1');
+      await completeTask(entity('1'), 'user-1', 'task-1');
 
       expect(mockPrisma.task.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -397,7 +442,7 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'One time fix',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         priority: 'P1',
         status: 'TODO',
         dueDate: now,
@@ -413,14 +458,14 @@ describe('maintenance-service', () => {
         id: 'task-1',
         title: 'One time fix',
         description: null,
-        entityId: 'user-1',
+        entityId: 'entity-1',
         status: 'DONE',
         dueDate: now,
         tags: ['maintenance'],
         createdFrom: { maintenanceStatus: 'COMPLETED' },
       });
 
-      await completeTask('task-1');
+      await completeTask(entity('1'), 'user-1', 'task-1');
 
       expect(mockPrisma.task.create).not.toHaveBeenCalled();
     });
@@ -428,7 +473,7 @@ describe('maintenance-service', () => {
     it('should throw if task not found', async () => {
       (mockPrisma.task.findUnique as jest.Mock).mockResolvedValue(null);
 
-      await expect(completeTask('nonexistent')).rejects.toThrow('Task nonexistent not found');
+      await expect(completeTask(entity('1'), 'user-1', 'nonexistent')).rejects.toThrow('Task nonexistent not found');
     });
   });
 
@@ -440,7 +485,7 @@ describe('maintenance-service', () => {
           id: 'task-1',
           title: 'Spring task',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: futureDate,
           tags: ['maintenance'],
@@ -450,7 +495,7 @@ describe('maintenance-service', () => {
           id: 'task-2',
           title: 'Any season task',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: futureDate,
           tags: ['maintenance'],
@@ -460,7 +505,7 @@ describe('maintenance-service', () => {
           id: 'task-3',
           title: 'Fall task',
           description: null,
-          entityId: 'user-1',
+          entityId: 'entity-1',
           status: 'TODO',
           dueDate: futureDate,
           tags: ['maintenance'],
@@ -468,7 +513,7 @@ describe('maintenance-service', () => {
         },
       ]);
 
-      const result = await getSeasonalSchedule('user-1', 'SPRING');
+      const result = await getSeasonalSchedule(entity('1'), 'user-1', 'SPRING');
 
       expect(result).toHaveLength(2);
       expect(result.map(t => t.title)).toContain('Spring task');
@@ -493,7 +538,7 @@ describe('maintenance-service', () => {
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await generateAnnualSchedule('user-1');
+      const result = await generateAnnualSchedule(entity('1'), 'user-1');
 
       expect(result.length).toBeGreaterThanOrEqual(20);
       expect(mockPrisma.task.create).toHaveBeenCalledTimes(result.length);
@@ -515,7 +560,7 @@ describe('maintenance-service', () => {
 
       mockGenerateJSON.mockResolvedValue({ optimizations: [] });
 
-      await generateAnnualSchedule('user-1');
+      await generateAnnualSchedule(entity('1'), 'user-1');
 
       expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
     });
@@ -536,7 +581,7 @@ describe('maintenance-service', () => {
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await generateAnnualSchedule('user-1');
+      const result = await generateAnnualSchedule(entity('1'), 'user-1');
 
       // Should still create all template tasks
       expect(result.length).toBeGreaterThanOrEqual(20);

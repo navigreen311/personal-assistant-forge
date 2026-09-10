@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import { detectBias } from '@/modules/ai-quality/services/bias-detection-service';
 
 // Mock prisma
@@ -54,7 +55,7 @@ describe('detectBias (AI-powered)', () => {
   });
 
   it('should call generateJSON with distribution data', async () => {
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(generateJSON).toHaveBeenCalledTimes(1);
     const prompt = generateJSON.mock.calls[0][0] as string;
     expect(prompt).toContain('entity_bias');
@@ -64,7 +65,7 @@ describe('detectBias (AI-powered)', () => {
   });
 
   it('should return bias scores per dimension', async () => {
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(report.dimensions).toHaveLength(4);
     expect(report.dimensions[0].name).toBe('entity_bias');
     expect(report.dimensions[1].name).toBe('contact_bias');
@@ -77,7 +78,7 @@ describe('detectBias (AI-powered)', () => {
   });
 
   it('should include overall bias score', async () => {
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(report.overallBiasScore).toBeGreaterThanOrEqual(0);
     expect(report.overallBiasScore).toBeLessThanOrEqual(1);
     expect(report.entityId).toBe('entity1');
@@ -85,14 +86,14 @@ describe('detectBias (AI-powered)', () => {
   });
 
   it('should use AI-generated descriptions for dimensions', async () => {
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(report.dimensions[0].description).toBe('AI: Entity bias is low and consistent.');
   });
 
   it('should handle AI failure gracefully', async () => {
     generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(report.dimensions).toHaveLength(4);
     // Should fall back to static descriptions
     for (const dim of report.dimensions) {
@@ -119,7 +120,7 @@ describe('detectBias (AI-powered)', () => {
       .mockResolvedValueOnce(100)  // entity2 total
       .mockResolvedValueOnce(10);  // entity2 done
 
-    const report = await detectBias('entity1', '2026-02');
+    const report = await detectBias(verifiedEntityIdForTest('entity1'), '2026-02');
     expect(report.alerts.length).toBeGreaterThanOrEqual(1);
     expect(report.alerts[0]).toContain('entity_bias');
   });

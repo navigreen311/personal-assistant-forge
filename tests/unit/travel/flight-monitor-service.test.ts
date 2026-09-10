@@ -37,6 +37,19 @@ jest.mock('../../../src/modules/travel/services/itinerary-service', () => ({
 import { checkFlightStatus, getActiveAlerts, generateDisruptionResponse } from '../../../src/modules/travel/services/flight-monitor-service';
 import type { FlightAlert, Itinerary, ItineraryLeg } from '../../../src/modules/travel/types';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column. The scope is now a `VerifiedEntityId`, which a
+ * plain string is not assignable to, so a call site handing a service an
+ * unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const makeLeg = (overrides: Partial<ItineraryLeg> = {}): ItineraryLeg => ({
   id: 'leg-1',
   order: 1,
@@ -73,7 +86,7 @@ describe('checkFlightStatus', () => {
   it('should return empty alerts when no itinerary found', async () => {
     mockGetItinerary.mockResolvedValue(null);
 
-    const alerts = await checkFlightStatus('nonexistent');
+    const alerts = await checkFlightStatus(entity('1'), 'nonexistent');
     expect(alerts).toEqual([]);
   });
 
@@ -88,7 +101,7 @@ describe('checkFlightStatus', () => {
     ]);
     mockNotificationCreate.mockResolvedValue({});
 
-    const alerts = await checkFlightStatus('itin-1');
+    const alerts = await checkFlightStatus(entity('1'), 'itin-1');
 
     expect(alerts).toHaveLength(1);
     expect(alerts[0].alertType).toBe('DELAY');
@@ -116,7 +129,7 @@ describe('checkFlightStatus', () => {
     ]);
     mockNotificationCreate.mockResolvedValue({});
 
-    const alerts = await checkFlightStatus('itin-1');
+    const alerts = await checkFlightStatus(entity('1'), 'itin-1');
 
     expect(alerts).toHaveLength(1);
     expect(alerts[0].alertType).toBe('CANCELLATION');
@@ -143,7 +156,7 @@ describe('checkFlightStatus', () => {
       },
     ]);
 
-    const alerts = await checkFlightStatus('itin-1');
+    const alerts = await checkFlightStatus(entity('1'), 'itin-1');
 
     expect(alerts).toHaveLength(0);
     expect(mockNotificationCreate).not.toHaveBeenCalled();
@@ -224,7 +237,11 @@ describe('generateDisruptionResponse', () => {
     const response = await generateDisruptionResponse(alert, itinerary);
 
     expect(mockGenerateText).toHaveBeenCalledTimes(1);
-    expect(response.reason).toBe('The cheaper option saves money while having a reasonable departure time.');
+    expect(response.isSimulated).toBe(true);
+    expect(response.reason).toContain('simulated placeholders');
+    expect(response.reason).toContain(
+      'The cheaper option saves money while having a reasonable departure time.'
+    );
   });
 
   it('should return alternatives with cost comparison', async () => {
@@ -263,6 +280,10 @@ describe('generateDisruptionResponse', () => {
 
     const response = await generateDisruptionResponse(alert, itinerary);
 
-    expect(response.reason).toBe('Recommended based on lower cost and reasonable timing');
+    // The reason now leads with the simulation notice; the fallback text still
+    // follows it.
+    expect(response.isSimulated).toBe(true);
+    expect(response.reason).toContain('simulated placeholders');
+    expect(response.reason).toContain('Recommended based on lower cost and reasonable timing');
   });
 });

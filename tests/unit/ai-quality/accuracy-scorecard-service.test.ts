@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   generateScorecard,
   getScorecardHistory,
@@ -71,7 +72,7 @@ describe('AccuracyScorecardService', () => {
       (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.triageAccuracy).toBe(100);
       expect(result.draftApprovalRate).toBe(100);
@@ -91,7 +92,7 @@ describe('AccuracyScorecardService', () => {
       (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // 3 out of 4 are not ROLLED_BACK = 75%
       expect(result.triageAccuracy).toBe(75);
@@ -108,7 +109,7 @@ describe('AccuracyScorecardService', () => {
       (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // 2 out of 4 approved/sent = 50%
       expect(result.draftApprovalRate).toBe(50);
@@ -126,7 +127,7 @@ describe('AccuracyScorecardService', () => {
       ]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // Task 1: DONE and updatedAt < dueDate => not missed
       // Task 2: status !== DONE => missed
@@ -144,7 +145,7 @@ describe('AccuracyScorecardService', () => {
         { successRate: 70 },
       ]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // Average: (90+80+70)/3 = 80
       expect(result.automationSuccessRate).toBe(80);
@@ -162,7 +163,7 @@ describe('AccuracyScorecardService', () => {
         { successRate: 100 },
       ]);
 
-      const result = await generateScorecard('entity-1', '2026-02');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // triageAccuracy=100, draftApprovalRate=100, missedDeadlineRate=0, automationSuccessRate=100
       // overall = (100+100+100+100)/4 = 100 => A
@@ -177,7 +178,7 @@ describe('AccuracyScorecardService', () => {
       (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await generateScorecard('entity-1', '2026-02-W7');
+      const result = await generateScorecard(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
       expect(result.period).toBe('2026-02-W7');
       expect(prisma.actionLog.findMany).toHaveBeenCalledTimes(1);
@@ -191,7 +192,7 @@ describe('AccuracyScorecardService', () => {
       (prisma.task.findMany as jest.Mock).mockResolvedValue([]);
       (prisma.workflow.findMany as jest.Mock).mockResolvedValue([]);
 
-      const results = await getScorecardHistory('entity-1', 3);
+      const results = await getScorecardHistory(verifiedEntityIdForTest('entity-1'), 3);
 
       expect(results).toHaveLength(3);
       for (const scorecard of results) {
@@ -201,7 +202,7 @@ describe('AccuracyScorecardService', () => {
     });
 
     it('should return an empty array when 0 periods are requested', async () => {
-      const results = await getScorecardHistory('entity-1', 0);
+      const results = await getScorecardHistory(verifiedEntityIdForTest('entity-1'), 0);
       expect(results).toHaveLength(0);
     });
   });

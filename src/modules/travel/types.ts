@@ -60,6 +60,12 @@ export interface DisruptionResponse {
   originalLeg: ItineraryLeg;
   alternatives: ItineraryLeg[];
   recommendation: ItineraryLeg;
+  /**
+   * True whenever `alternatives` were generated locally rather than fetched from
+   * a booking provider. No provider is integrated, so this is currently always
+   * true -- see flight-monitor-service.generateDisruptionResponse.
+   */
+  isSimulated: boolean;
   reason: string;
   additionalCost: number;
 }

@@ -2,13 +2,14 @@ import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 import type { UsageRecord } from '@prisma/client';
 import type { LLMCostDashboard } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DEFAULT_BUDGET_CAP = 500; // $500/month default
 
 // --- Core cost dashboard (Phase 2, now uses UsageRecord) ---
 
 export async function getCostDashboard(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<LLMCostDashboard> {
   const { startDate, endDate } = parsePeriodRange(period);
@@ -78,7 +79,7 @@ export async function getCostDashboard(
   };
 }
 
-export async function getCostAlerts(entityId: string): Promise<string[]> {
+export async function getCostAlerts(entityId: VerifiedEntityId): Promise<string[]> {
   const now = new Date();
   const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const dashboard = await getCostDashboard(entityId, period);
@@ -88,7 +89,7 @@ export async function getCostAlerts(entityId: string): Promise<string[]> {
 // --- Phase 3: UsageRecord aggregation functions ---
 
 export async function getCostsByModule(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<
   {
@@ -134,7 +135,7 @@ export async function getCostsByModule(
 }
 
 export async function getCostsByModel(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<
   {
@@ -180,7 +181,7 @@ export async function getCostsByModel(
 }
 
 export async function getCostsByPeriod(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: 'day' | 'week' | 'month',
   dateRange?: { start: Date; end: Date }
 ): Promise<{ period: string; cost: number; tokens: number }[]> {
@@ -220,7 +221,7 @@ export async function getCostsByPeriod(
 }
 
 export async function getTotalCost(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<number> {
   const where: Record<string, unknown> = { entityId };
@@ -237,7 +238,7 @@ export async function getTotalCost(
 }
 
 export async function getCostTrend(
-  entityId: string,
+  entityId: VerifiedEntityId,
   periods: number
 ): Promise<{ period: string; cost: number; changePercent: number }[]> {
   const now = new Date();
@@ -268,7 +269,7 @@ export async function getCostTrend(
 }
 
 export async function getCostForecast(
-  entityId: string,
+  entityId: VerifiedEntityId,
   forecastDays: number
 ): Promise<{ forecastedCost: number; confidence: number; basedOnDays: number }> {
   // Get last 30 days of cost data for projection
@@ -309,7 +310,7 @@ export async function getCostForecast(
 }
 
 export async function getTokenUsageSummary(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<{
   totalInputTokens: number;

@@ -1,10 +1,30 @@
+/**
+ * These stand in for `document.findFirst`/`findFirstOrThrow`/`updateMany`.
+ *
+ * `jest.mock` factories are hoisted above imports, so the aliases inside the
+ * factory must close over module-level `jest.fn()`s declared here. Each is wired
+ * to the corresponding `findUnique`/`update` mock below in `beforeEach`, so a
+ * test that sets `findUnique.mockResolvedValue(...)` still drives the scoped
+ * finder the service now calls.
+ */
+const mockDocumentFindUnique = jest.fn();
+const mockDocumentUpdateMany = jest.fn();
+const mockDocumentReread = jest.fn();
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     document: {
       create: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
+      // The service moved from findUnique/update to scoped finders and
+      // updateMany. A mock with no findFirst returns undefined and the test
+      // passes for the wrong reason -- tenancy pattern, trap 1. Alias them onto
+      // the same jest.fn so existing mockResolvedValue setups keep working.
+      findFirst: (...a: unknown[]) => mockDocumentFindUnique(...a),
+      findFirstOrThrow: (...a: unknown[]) => mockDocumentReread(...a),
       update: jest.fn(),
+      updateMany: (...a: unknown[]) => mockDocumentUpdateMany(...a),
     },
   },
 }));
@@ -23,19 +43,54 @@ import {
   groupByStore,
 } from '@/modules/household/services/shopping-service';
 
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+/**
+ * The entity that owns the rows under test -- deliberately NOT a user id.
+ *
+ * These services used to take a parameter named `userId` and write it straight
+ * into the `entityId` column, and this file asserted a user id in the
+ * `entityId` column,
+ * which encoded that confusion as the expected behaviour. The scope is now a
+ * `VerifiedEntityId`, which a plain string is not assignable to, so a call site
+ * handing a service an unverified value no longer compiles.
+ */
+const entity = (n: string) => verifiedEntityIdForTest(`entity-${n}`);
+
+
 const mockPrisma = prisma as jest.Mocked<typeof prisma>;
 const mockGenerateJSON = generateJSON as jest.Mock;
 
 describe('shopping-service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+
+  // Route the scoped finders at the same fixtures the unscoped ones use, and
+  // make updateMany report a row changed so the service's `count === 0` guard
+  // reads as "found".
+  // `findFirst` answers from the same fixture `findUnique` used to, so a test
+  // that stubs `findUnique` still drives the scoped read the service now does.
+  mockDocumentFindUnique.mockImplementation((...a: unknown[]) =>
+    (mockPrisma.document.findUnique as jest.Mock)(...a)
+  );
+  // `updateMany` performs the stubbed `update` and reports `count` from whether
+  // the row was there, which is how the service distinguishes not-found.
+  let lastDocumentWrite: unknown = null;
+  mockDocumentUpdateMany.mockImplementation(async (...a: unknown[]) => {
+    const before = await (mockPrisma.document.findUnique as jest.Mock)(...a);
+    if (!before) return { count: 0 };
+    lastDocumentWrite = await (mockPrisma.document.update as jest.Mock)(...a);
+    return { count: 1 };
+  });
+  // The service re-reads the row after writing; hand back what the write produced.
+  mockDocumentReread.mockImplementation(async () => lastDocumentWrite);
   });
 
   describe('addItem', () => {
     it('should create Document with type SHOPPING_LIST', async () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'item-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         type: 'SHOPPING_LIST',
         content: JSON.stringify({
           name: 'Milk',
@@ -51,7 +106,7 @@ describe('shopping-service', () => {
         }),
       });
 
-      const result = await addItem('user-1', {
+      const result = await addItem(entity('1'), 'user-1', {
         userId: 'user-1',
         name: 'Milk',
         category: 'Dairy',
@@ -67,7 +122,7 @@ describe('shopping-service', () => {
         data: expect.objectContaining({
           type: 'SHOPPING_LIST',
           title: 'Milk',
-          entityId: 'user-1',
+          entityId: 'entity-1',
         }),
       });
       expect(result.name).toBe('Milk');
@@ -77,7 +132,7 @@ describe('shopping-service', () => {
     it('should store item data in content JSON', async () => {
       (mockPrisma.document.create as jest.Mock).mockResolvedValue({
         id: 'item-2',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({
           name: 'Bread',
           category: 'Bakery',
@@ -88,7 +143,7 @@ describe('shopping-service', () => {
         }),
       });
 
-      await addItem('user-1', {
+      await addItem(entity('1'), 'user-1', {
         userId: 'user-1',
         name: 'Bread',
         category: 'Bakery',
@@ -109,17 +164,17 @@ describe('shopping-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'item-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: false, isRecurring: false, addedAt: new Date().toISOString() }),
         },
         {
           id: 'item-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Eggs', category: 'Dairy', quantity: 1, isPurchased: true, isRecurring: false, addedAt: new Date().toISOString() }),
         },
       ]);
 
-      const result = await getList('user-1');
+      const result = await getList(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('Milk');
@@ -129,17 +184,17 @@ describe('shopping-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'item-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: false, isRecurring: false, addedAt: new Date().toISOString() }),
         },
         {
           id: 'item-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Eggs', category: 'Dairy', quantity: 1, isPurchased: true, isRecurring: false, addedAt: new Date().toISOString() }),
         },
       ]);
 
-      const result = await getList('user-1', true);
+      const result = await getList(entity('1'), 'user-1', true);
 
       expect(result).toHaveLength(2);
     });
@@ -149,17 +204,17 @@ describe('shopping-service', () => {
     it('should update content to mark item as purchased', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue({
         id: 'item-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({ name: 'Milk', isPurchased: false, isRecurring: false, addedAt: new Date().toISOString() }),
       });
 
       (mockPrisma.document.update as jest.Mock).mockResolvedValue({
         id: 'item-1',
-        entityId: 'user-1',
+        entityId: 'entity-1',
         content: JSON.stringify({ name: 'Milk', isPurchased: true, isRecurring: false, addedAt: new Date().toISOString() }),
       });
 
-      const result = await markPurchased('item-1');
+      const result = await markPurchased(entity('1'), 'user-1', 'item-1');
 
       expect(result.isPurchased).toBe(true);
       const updateCall = (mockPrisma.document.update as jest.Mock).mock.calls[0][0];
@@ -170,7 +225,7 @@ describe('shopping-service', () => {
     it('should throw if item not found', async () => {
       (mockPrisma.document.findUnique as jest.Mock).mockResolvedValue(null);
 
-      await expect(markPurchased('bad-id')).rejects.toThrow('Shopping item bad-id not found');
+      await expect(markPurchased(entity('1'), 'user-1', 'bad-id')).rejects.toThrow('Shopping item bad-id not found');
     });
   });
 
@@ -179,14 +234,14 @@ describe('shopping-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'item-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: true, isRecurring: true, addedAt: new Date().toISOString() }),
         },
       ]);
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await getSmartSuggestions('user-1');
+      const result = await getSmartSuggestions(entity('1'), 'user-1');
 
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('Milk');
@@ -197,14 +252,14 @@ describe('shopping-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'item-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: false, isRecurring: false, addedAt: new Date().toISOString() }),
         },
       ]);
 
       mockGenerateJSON.mockResolvedValue({ items: [] });
 
-      await getSmartSuggestions('user-1');
+      await getSmartSuggestions(entity('1'), 'user-1');
 
       expect(mockGenerateJSON).toHaveBeenCalledTimes(1);
     });
@@ -213,19 +268,19 @@ describe('shopping-service', () => {
       (mockPrisma.document.findMany as jest.Mock).mockResolvedValue([
         {
           id: 'item-1',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: false, isRecurring: true, addedAt: new Date().toISOString() }),
         },
         {
           id: 'item-2',
-          entityId: 'user-1',
+          entityId: 'entity-1',
           content: JSON.stringify({ name: 'Milk', category: 'Dairy', quantity: 1, isPurchased: true, isRecurring: true, addedAt: new Date().toISOString() }),
         },
       ]);
 
       mockGenerateJSON.mockRejectedValue(new Error('AI unavailable'));
 
-      const result = await getSmartSuggestions('user-1');
+      const result = await getSmartSuggestions(entity('1'), 'user-1');
 
       // Milk is still on active list, so shouldn't be suggested
       expect(result).toHaveLength(0);

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import * as warrantyService from '@/modules/household/services/warranty-service';
 
 const createSchema = z.object({
@@ -13,12 +13,14 @@ const createSchema = z.object({
   isActive: z.boolean().default(true),
   autoRenew: z.boolean().default(false),
   cancellationUrl: z.string().optional(),
+  // Optional and still verified; see the tenancy pattern, section 1.
+  entityId: z.string().min(1).optional(),
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (_req, session) => {
+  return withEntityScope(request, async (_req, session, entityId) => {
     try {
-      const subscriptions = await warrantyService.getSubscriptions(session.userId);
+      const subscriptions = await warrantyService.getSubscriptions(entityId, session.userId);
       return success(subscriptions);
     } catch (err) {
       return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
@@ -27,14 +29,15 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withEntityScope(request, async (req, session, entityId) => {
     try {
       const body = await req.json();
       const parsed = createSchema.safeParse(body);
       if (!parsed.success) return error('VALIDATION_ERROR', parsed.error.message, 400);
 
-      const subscription = await warrantyService.addSubscription(session.userId, {
-        ...parsed.data,
+      const { entityId: _requested, ...draft } = parsed.data;
+      const subscription = await warrantyService.addSubscription(entityId, session.userId, {
+        ...draft,
         userId: session.userId,
       });
       return success(subscription, 201);

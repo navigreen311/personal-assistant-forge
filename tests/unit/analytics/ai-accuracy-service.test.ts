@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 jest.mock('@/lib/db', () => ({
   prisma: {
     actionLog: {
@@ -47,7 +48,7 @@ describe('calculateAccuracyMetrics', () => {
     mockPrisma.task.findMany.mockResolvedValue([]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     expect(result.triageAccuracy).toBe(100);
     expect(result.draftApprovalRate).toBe(100);
@@ -68,7 +69,7 @@ describe('calculateAccuracyMetrics', () => {
     mockPrisma.task.findMany.mockResolvedValue([]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     // 3 out of 4 correct = 75%
     expect(result.triageAccuracy).toBe(75);
@@ -85,7 +86,7 @@ describe('calculateAccuracyMetrics', () => {
     mockPrisma.task.findMany.mockResolvedValue([]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     // 2 approved/sent out of 4 drafts = 50%
     expect(result.draftApprovalRate).toBe(50);
@@ -102,7 +103,7 @@ describe('calculateAccuracyMetrics', () => {
     ]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     // 2 out of 3 on time = 67%
     expect(result.predictionAccuracy).toBe(67);
@@ -118,7 +119,7 @@ describe('calculateAccuracyMetrics', () => {
       { status: 'ACTIVE', successRate: 70 },
     ]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     // Average of 90, 80, 70 = 80
     expect(result.automationSuccess).toBe(80);
@@ -146,7 +147,7 @@ describe('calculateAccuracyMetrics', () => {
       { status: 'ACTIVE', successRate: 60 },
     ]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02-W7');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02-W7');
 
     // (75 + 50 + 100 + 60) / 4 = 71.25 -> 71
     expect(result.overallScore).toBe(71);
@@ -158,7 +159,7 @@ describe('calculateAccuracyMetrics', () => {
     mockPrisma.task.findMany.mockResolvedValue([]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await calculateAccuracyMetrics('entity-1', '2026-02');
+    const result = await calculateAccuracyMetrics(verifiedEntityIdForTest('entity-1'), '2026-02');
 
     expect(result.period).toBe('2026-02');
     // Should still call prisma with date range
@@ -178,7 +179,7 @@ describe('trackPrediction', () => {
       timestamp: new Date('2026-02-15'),
     };
 
-    const result = await trackPrediction('entity-1', prediction);
+    const result = await trackPrediction(verifiedEntityIdForTest('entity-1'), prediction);
 
     expect(result.id).toBe('pred-1');
     expect(mockPrisma.actionLog.create).toHaveBeenCalledWith({
@@ -296,7 +297,7 @@ describe('getAccuracyByModule', () => {
       { reason: JSON.stringify({ module: 'calendar', accurate: false }) },
     ]);
 
-    const result = await getAccuracyByModule('entity-1');
+    const result = await getAccuracyByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toHaveLength(2);
     const inbox = result.find((r) => r.module === 'inbox');
@@ -315,7 +316,7 @@ describe('getAccuracyByModule', () => {
       end: new Date('2026-02-28'),
     };
 
-    await getAccuracyByModule('entity-1', dateRange);
+    await getAccuracyByModule(verifiedEntityIdForTest('entity-1'), dateRange);
 
     expect(mockPrisma.actionLog.findMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
@@ -332,7 +333,7 @@ describe('getAccuracyByModule', () => {
       { reason: JSON.stringify({ module: 'inbox', accurate: true }) },
     ]);
 
-    const result = await getAccuracyByModule('entity-1');
+    const result = await getAccuracyByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toHaveLength(1);
     expect(result[0].module).toBe('inbox');
@@ -341,7 +342,7 @@ describe('getAccuracyByModule', () => {
   it('should return empty array when no predictions exist', async () => {
     mockPrisma.actionLog.findMany.mockResolvedValue([]);
 
-    const result = await getAccuracyByModule('entity-1');
+    const result = await getAccuracyByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toEqual([]);
   });
@@ -351,7 +352,7 @@ describe('getAccuracyByModule', () => {
       { reason: JSON.stringify({ accurate: true }) },
     ]);
 
-    const result = await getAccuracyByModule('entity-1');
+    const result = await getAccuracyByModule(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toHaveLength(1);
     expect(result[0].module).toBe('unknown');
@@ -367,7 +368,7 @@ describe('getOverallAccuracy', () => {
       { reason: JSON.stringify({ module: 'calendar', accurate: true }) },
     ]);
 
-    const result = await getOverallAccuracy('entity-1');
+    const result = await getOverallAccuracy(verifiedEntityIdForTest('entity-1'));
 
     // inbox: 1/2 = 50%, calendar: 2/2 = 100%
     // total correct = round(50/100 * 2) + round(100/100 * 2) = 1 + 2 = 3
@@ -379,7 +380,7 @@ describe('getOverallAccuracy', () => {
   it('should return 0% accuracy and 0 total when no data exists', async () => {
     mockPrisma.actionLog.findMany.mockResolvedValue([]);
 
-    const result = await getOverallAccuracy('entity-1');
+    const result = await getOverallAccuracy(verifiedEntityIdForTest('entity-1'));
 
     expect(result.accuracy).toBe(0);
     expect(result.total).toBe(0);
@@ -394,7 +395,7 @@ describe('getAccuracyTrend', () => {
     mockPrisma.task.findMany.mockResolvedValue([]);
     mockPrisma.workflow.findMany.mockResolvedValue([]);
 
-    const result = await getAccuracyTrend('entity-1', 3);
+    const result = await getAccuracyTrend(verifiedEntityIdForTest('entity-1'), 3);
 
     expect(result).toHaveLength(3);
     for (const metrics of result) {
@@ -408,7 +409,7 @@ describe('getAccuracyTrendByPredictions', () => {
   it('should return 4 rolling periods of prediction accuracy', async () => {
     mockPrisma.actionLog.findMany.mockResolvedValue([]);
 
-    const result = await getAccuracyTrendByPredictions('entity-1', 7);
+    const result = await getAccuracyTrendByPredictions(verifiedEntityIdForTest('entity-1'), 7);
 
     expect(result).toHaveLength(4);
     for (const entry of result) {
@@ -421,7 +422,7 @@ describe('getAccuracyTrendByPredictions', () => {
   it('should include period dates as ISO date strings', async () => {
     mockPrisma.actionLog.findMany.mockResolvedValue([]);
 
-    const result = await getAccuracyTrendByPredictions('entity-1', 7);
+    const result = await getAccuracyTrendByPredictions(verifiedEntityIdForTest('entity-1'), 7);
 
     for (const entry of result) {
       expect(entry.period).toMatch(/^\d{4}-\d{2}-\d{2}$/);

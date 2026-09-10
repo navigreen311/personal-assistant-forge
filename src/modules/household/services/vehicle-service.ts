@@ -1,16 +1,20 @@
 import { addDays, isBefore, isAfter } from 'date-fns';
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { VehicleRecord } from '../types';
 
-function docToVehicle(doc: {
-  id: string;
-  entityId: string;
-  content: string | null;
-}): VehicleRecord {
+function docToVehicle(
+  doc: {
+    id: string;
+    entityId: string;
+    content: string | null;
+  },
+  userId: string
+): VehicleRecord {
   const data = doc.content ? JSON.parse(doc.content) : {};
   return {
     id: doc.id,
-    userId: doc.entityId,
+    userId,
     make: data.make ?? '',
     model: data.model ?? '',
     year: data.year ?? 0,
@@ -46,39 +50,45 @@ function vehicleToContent(vehicle: Omit<VehicleRecord, 'id'>): string {
 }
 
 export async function addVehicle(
+  entityId: VerifiedEntityId,
   userId: string,
   vehicle: Omit<VehicleRecord, 'id' | 'maintenanceHistory'>
 ): Promise<VehicleRecord> {
   const created = await prisma.document.create({
     data: {
       title: `${vehicle.make} ${vehicle.model} ${vehicle.year}`,
-      entityId: userId,
+      entityId,
       type: 'VEHICLE',
       status: 'ACTIVE',
       content: vehicleToContent({ ...vehicle, maintenanceHistory: [] }),
     },
   });
 
-  return docToVehicle(created);
+  return docToVehicle(created, userId);
 }
 
-export async function getVehicles(userId: string): Promise<VehicleRecord[]> {
+export async function getVehicles(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<VehicleRecord[]> {
   const docs = await prisma.document.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'VEHICLE',
       deletedAt: null,
     },
   });
 
-  return docs.map(docToVehicle);
+  return docs.map((d) => docToVehicle(d, userId));
 }
 
 export async function logMaintenance(
+  entityId: VerifiedEntityId,
+  userId: string,
   vehicleId: string,
   entry: { date: Date; type: string; cost: number; mileage: number; provider: string }
 ): Promise<VehicleRecord> {
-  const existing = await prisma.document.findUnique({ where: { id: vehicleId } });
+  const existing = await prisma.document.findFirst({ where: { id: vehicleId, entityId } });
   if (!existing) throw new Error(`Vehicle ${vehicleId} not found`);
 
   const data = existing.content ? JSON.parse(existing.content) : {};
@@ -94,20 +104,26 @@ export async function logMaintenance(
   data.maintenanceHistory = history;
   data.mileage = entry.mileage;
 
-  const updated = await prisma.document.update({
-    where: { id: vehicleId },
+  const changed = await prisma.document.updateMany({
+    where: { id: vehicleId, entityId },
     data: {
       content: JSON.stringify(data),
     },
   });
+  if (changed.count === 0) throw new Error(`Vehicle ${vehicleId} not found`);
 
-  return docToVehicle(updated);
+  const updated = await prisma.document.findFirstOrThrow({ where: { id: vehicleId, entityId } });
+
+  return docToVehicle(updated, userId);
 }
 
-export async function getUpcomingService(userId: string): Promise<VehicleRecord[]> {
+export async function getUpcomingService(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<VehicleRecord[]> {
   const now = new Date();
   const thirtyDays = addDays(now, 30);
-  const vehicles = await getVehicles(userId);
+  const vehicles = await getVehicles(entityId, userId);
 
   return vehicles.filter(v => {
     if (!v.nextServiceDate) return false;
@@ -117,11 +133,12 @@ export async function getUpcomingService(userId: string): Promise<VehicleRecord[
 }
 
 export async function checkExpiringDocuments(
+  entityId: VerifiedEntityId,
   userId: string
 ): Promise<{ vehicleId: string; type: string; expiryDate: Date }[]> {
   const now = new Date();
   const thirtyDays = addDays(now, 30);
-  const vehicles = await getVehicles(userId);
+  const vehicles = await getVehicles(entityId, userId);
   const expiring: { vehicleId: string; type: string; expiryDate: Date }[] = [];
 
   for (const vehicle of vehicles) {

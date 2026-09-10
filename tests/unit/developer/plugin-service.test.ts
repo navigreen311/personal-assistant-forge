@@ -1,11 +1,19 @@
+const mockFindUnique = jest.fn();
+const mockDelete = jest.fn();
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     document: {
       create: jest.fn(),
       findMany: jest.fn(),
-      findUnique: jest.fn(),
+      findUnique: mockFindUnique,
+      // P-13, tenancy-pattern.md 8 trap 1: the service now scopes by owner, so
+      // it reads with findFirst and deletes with deleteMany. Alias both onto the
+      // jest.fn the existing assertions already inspect.
+      findFirst: (...args: unknown[]) => mockFindUnique(...args),
       update: jest.fn(),
-      delete: jest.fn(),
+      delete: mockDelete,
+      deleteMany: (...args: unknown[]) => mockDelete(...args),
     },
   },
 }));
@@ -230,6 +238,8 @@ describe('Plugin Service', () => {
 
       await unregisterPlugin('plugin-1');
       expect(mockDocument.delete).toHaveBeenCalledWith({ where: { id: 'plugin-1' } });
+      // (deleteMany is aliased onto the same mock, so this assertion still
+      // describes the single write the service performs.)
     });
 
     it('should throw if plugin not found', async () => {

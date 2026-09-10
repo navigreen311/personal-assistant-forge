@@ -33,8 +33,25 @@ jest.mock('@/lib/db', () => ({
         goalStore.set(record.id as string, record);
         return Promise.resolve(record);
       }),
+      // P-13, tenancy-pattern.md 8 trap 1: the service now scopes by owner, so
+      // it reads with findFirst and writes with updateMany. Both are backed by
+      // the same goalStore, and both honour the `userId` now present in the
+      // WHERE clause -- so a mismatched owner returns null / count 0 here too.
       findUnique: jest.fn().mockImplementation(({ where }: { where: { id: string } }) => {
         return Promise.resolve(goalStore.get(where.id) || null);
+      }),
+      findFirst: jest.fn().mockImplementation(({ where }: { where: { id: string; userId?: string } }) => {
+        const record = goalStore.get(where.id);
+        if (!record) return Promise.resolve(null);
+        if (where.userId !== undefined && record.userId !== where.userId) return Promise.resolve(null);
+        return Promise.resolve(record);
+      }),
+      updateMany: jest.fn().mockImplementation(({ where, data }: { where: { id: string; userId?: string }; data: Record<string, unknown> }) => {
+        const existing = goalStore.get(where.id);
+        if (!existing) return Promise.resolve({ count: 0 });
+        if (where.userId !== undefined && existing.userId !== where.userId) return Promise.resolve({ count: 0 });
+        goalStore.set(where.id, { ...existing, ...data, updatedAt: new Date() });
+        return Promise.resolve({ count: 1 });
       }),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn().mockImplementation(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
@@ -81,6 +98,19 @@ beforeEach(() => {
   prisma.goalEntry.findUnique.mockImplementation(({ where }: { where: { id: string } }) => {
     return Promise.resolve(goalStore.get(where.id) || null);
   });
+  prisma.goalEntry.findFirst.mockImplementation(({ where }: { where: { id: string; userId?: string } }) => {
+    const record = goalStore.get(where.id);
+    if (!record) return Promise.resolve(null);
+    if (where.userId !== undefined && record.userId !== where.userId) return Promise.resolve(null);
+    return Promise.resolve(record);
+  });
+  prisma.goalEntry.updateMany.mockImplementation(({ where, data }: { where: { id: string; userId?: string }; data: Record<string, unknown> }) => {
+    const existing = goalStore.get(where.id);
+    if (!existing) return Promise.resolve({ count: 0 });
+    if (where.userId !== undefined && existing.userId !== where.userId) return Promise.resolve({ count: 0 });
+    goalStore.set(where.id, { ...existing, ...data, updatedAt: new Date() });
+    return Promise.resolve({ count: 1 });
+  });
   prisma.goalEntry.update.mockImplementation(({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
     const existing = goalStore.get(where.id);
     if (existing) {
@@ -117,7 +147,7 @@ describe('updateGoalProgress', () => {
       { id: 'task3', status: 'TODO' },
     ]);
 
-    const updated = await updateGoalProgress(goal.id);
+    const updated = await updateGoalProgress(goal.id, 'user1');
     // 2 out of 3 tasks = 67% of target (100)
     expect(updated.currentValue).toBe(67);
   });
@@ -147,7 +177,7 @@ describe('updateGoalProgress', () => {
       { id: 'task3', status: 'TODO' },
     ]);
 
-    const updated = await updateGoalProgress(goal.id);
+    const updated = await updateGoalProgress(goal.id, 'user1');
     expect(updated.status).toBe('ON_TRACK');
   });
 
@@ -182,7 +212,7 @@ describe('updateGoalProgress', () => {
     // 50 of 60 days elapsed (83%) against 4 of 5 tasks done (80%): pace ratio
     // 0.96, i.e. inside the 80-100% AT_RISK band. Now that the clock is pinned
     // this is exact, so the assertion no longer has to accept ON_TRACK too.
-    const updated = await updateGoalProgress(goal.id);
+    const updated = await updateGoalProgress(goal.id, 'user1');
     expect(updated.status).toBe('AT_RISK');
   });
 
@@ -214,7 +244,7 @@ describe('updateGoalProgress', () => {
       { id: 't5', status: 'TODO' },
     ]);
 
-    const updated = await updateGoalProgress(goal.id);
+    const updated = await updateGoalProgress(goal.id, 'user1');
     expect(updated.status).toBe('BEHIND');
   });
 
@@ -236,7 +266,7 @@ describe('updateGoalProgress', () => {
       { id: 't1', status: 'DONE' },
     ]);
 
-    const updated = await updateGoalProgress(goal.id);
+    const updated = await updateGoalProgress(goal.id, 'user1');
     expect(updated.status).toBe('COMPLETE');
   });
 });
@@ -263,7 +293,7 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       stored.currentValue = 40;
     }
 
-    await suggestCourseCorrection(goal.id);
+    await suggestCourseCorrection(goal.id, 'user1');
     expect(generateJSON).toHaveBeenCalledTimes(1);
     const prompt = generateJSON.mock.calls[0][0] as string;
     expect(prompt).toContain('At risk');
@@ -290,7 +320,7 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       stored.currentValue = 10;
     }
 
-    await suggestCourseCorrection(goal.id);
+    await suggestCourseCorrection(goal.id, 'user1');
     const prompt = generateJSON.mock.calls[0][0] as string;
     expect(prompt).toContain('Current pace');
     expect(prompt).toContain('Required pace');
@@ -316,7 +346,7 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       stored.currentValue = 40;
     }
 
-    const result = await suggestCourseCorrection(goal.id);
+    const result = await suggestCourseCorrection(goal.id, 'user1');
     expect(result.suggestion).toBe('Increase your daily pace to meet the deadline.');
     expect(result.goalId).toBe(goal.id);
     expect(result.currentPace).toBeGreaterThanOrEqual(0);
@@ -345,7 +375,7 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       stored.currentValue = 10;
     }
 
-    const result = await suggestCourseCorrection(goal.id);
+    const result = await suggestCourseCorrection(goal.id, 'user1');
     expect(result.suggestion).toBeTruthy();
     expect(result.suggestion.length).toBeGreaterThan(0);
     expect(result.adjustedEndDate).toBeDefined();
@@ -371,7 +401,7 @@ describe('suggestCourseCorrection (AI-powered)', () => {
       stored.currentValue = 20;
     }
 
-    const suggestion = await suggestCourseCorrection(goal.id);
+    const suggestion = await suggestCourseCorrection(goal.id, 'user1');
     if (suggestion.adjustedEndDate) {
       expect(suggestion.adjustedEndDate).toBeInstanceOf(Date);
     }

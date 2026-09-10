@@ -8,7 +8,6 @@ import {
 } from '@/modules/analytics/services/productivity-scoring';
 
 const querySchema = z.object({
-  userId: z.string().min(1).optional(),
   days: z.coerce.number().int().min(1).max(365).optional(),
   date: z.string().optional(),
 });
@@ -23,7 +22,11 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
+      // Cross-entity view (P-13, tenancy-pattern.md 5b): the score fans out over
+      // every entity this user owns. The scope is therefore the SESSION's user id
+      // and nothing else -- `?userId=` used to override it, which read another
+      // tenant's whole productivity picture with a 200.
+      const userId = session.userId;
 
       if (parsed.data.days) {
         const scores = await getProductivityTrend(userId, parsed.data.days);

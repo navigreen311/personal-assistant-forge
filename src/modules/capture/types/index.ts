@@ -1,3 +1,5 @@
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
 // ============================================================================
 // Capture Module — Type Definitions
 // Items, routing, batch sessions, offline queue, and latency metrics
@@ -29,7 +31,13 @@ export type CaptureContentType =
 export interface CaptureItem {
   id: string;
   userId: string;
-  entityId?: string;
+  /**
+   * P-13: branded, so a capture cannot be filed against an entity that was
+   * never proven to belong to its user. `routeAndStore` writes a Task /
+   * KnowledgeEntry / Document into this entity, so an unbranded string here was
+   * a write target chosen by the caller.
+   */
+  entityId?: VerifiedEntityId;
   source: CaptureSource;
   contentType: CaptureContentType;
   rawContent: string; // original text, base64 image, audio URL, etc.
@@ -65,6 +73,14 @@ export interface RoutingResult {
 
 export interface RoutingRule {
   id: string;
+  /**
+   * P-13: the user who owns this rule. `undefined` marks a built-in default
+   * that every tenant sees. Rules used to live in one process-global array with
+   * no owner at all, so a rule added by one tenant was evaluated against every
+   * other tenant's captures -- and a rule's `actions.entityId` decides which
+   * entity the resulting Task/Contact/Note is written into.
+   */
+  userId?: string;
   name: string;
   conditions: RoutingCondition[];
   actions: RoutingAction;
@@ -89,6 +105,8 @@ export interface RoutingAction {
 export interface BatchCaptureSession {
   id: string;
   userId: string;
+  /** P-13: the proven entity every item in this batch is filed against. */
+  entityId?: VerifiedEntityId;
   items: CaptureItem[];
   status: 'ACTIVE' | 'COMPLETED';
   startedAt: Date;
@@ -102,6 +120,10 @@ export interface OfflineSyncQueue {
 }
 
 export interface CaptureLatencyMetrics {
+  /** P-13: whose capture produced this sample. `/api/capture/metrics` used to
+   *  take a `?userId=` off the query string AND ignore it, returning every
+   *  tenant's latency samples to anyone signed in. */
+  userId: string;
   captureToProcessedMs: number;
   processedToRoutedMs: number;
   totalMs: number;

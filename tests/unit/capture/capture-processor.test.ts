@@ -14,6 +14,14 @@ jest.mock('@/lib/queue/connection', () => ({
   getRedisUrl: jest.fn().mockReturnValue('redis://localhost:6379'),
 }));
 
+// P-13: `processCaptureJob` now proves the job's entityId against the job's
+// userId with `verifyEntityForUser` (tenancy-pattern.md 5, first case). That is
+// a real database call, so this suite -- which has no DATABASE_URL -- must stub
+// the middleware, exactly as it already stubs bullmq and the queue connection.
+jest.mock('@/shared/middleware/auth', () => ({
+  verifyEntityForUser: jest.fn(async (entityId: string) => entityId),
+}));
+
 // Mock the capture service
 jest.mock('@/modules/capture/services/capture-service', () => ({
   captureService: {
@@ -116,7 +124,7 @@ describe('CaptureProcessor', () => {
         entityId: 'entity-1',
         metadata: { sourceApp: 'test' },
       });
-      expect(captureService.processCapture).toHaveBeenCalledWith('capture-123');
+      expect(captureService.processCapture).toHaveBeenCalledWith('capture-123', 'user-1');
       expect(mockJob.updateProgress).toHaveBeenCalledWith(100);
     });
 

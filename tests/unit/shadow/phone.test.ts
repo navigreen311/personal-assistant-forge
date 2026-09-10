@@ -561,6 +561,31 @@ describe('PhoneOutboundHandler', () => {
         config: TEST_CONFIG,
         rateLimit: { maxPerDay: 5, maxPerHour: 2 },
       });
+
+      // COORDINATOR FIX: pin the clock for this block.
+      //
+      // 'should block when daily limit is exceeded' seeds five calls at
+      // startOfDay + 2h..10h and relies on them being in the PAST but outside the
+      // last hour. Before ~11:00 local they are in the FUTURE, so all five land
+      // inside the hourly window, the hourly limit (2) trips first, and the
+      // assertion about the daily limit fails.
+      //
+      // It therefore passed all afternoon and failed every morning. CI runs UTC,
+      // so it failed on master for any run before 11:00 UTC and passed after --
+      // reproduced here at 00:14 UTC (fails) and 17:14 PDT (passes).
+      //
+      // Third time bomb found in this codebase, after goal-tracking (a calendar
+      // year) and adoption-activation (a millisecond). Same root cause each time:
+      // the test treats the real clock as a stable input. Pinning it to midday
+      // makes the arithmetic a property of the test rather than of when it runs.
+      // LOCAL noon, not a UTC instant: startOfDay below is computed with
+      // new Date(y, m, d), which is local midnight. Pinning to 12:00Z would be
+      // 05:00 PDT and the seeds would still be in the future there.
+      jest.useFakeTimers({ now: new Date(2026, 5, 15, 12, 0, 0), doNotFake: ['nextTick'] });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
     });
 
     it('should allow calls within rate limits', () => {

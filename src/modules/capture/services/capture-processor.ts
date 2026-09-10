@@ -7,6 +7,7 @@
 import { Worker, type Job } from 'bullmq';
 import { getRedisUrl } from '@/lib/queue/connection';
 import { captureService } from '@/modules/capture/services/capture-service';
+import { verifyEntityForUser } from '@/shared/middleware/auth';
 import type { CaptureItem } from '@/modules/capture/types';
 
 const QUEUE_NAME = 'capture-queue';
@@ -22,18 +23,36 @@ interface OfflineQueueItem extends CaptureItem {
 async function processCaptureJob(job: Job<OfflineQueueItem>): Promise<void> {
   const item = job.data;
 
+  // tenancy-pattern.md 5, first case: there is no request here, but we DO know
+  // whose work this is -- the job payload names the user. So prove the entity
+  // against that user with the same database ownership check `withEntityScope`
+  // performs, rather than trusting an id that arrived on a queue.
+  //
+  // A job naming an entity its user does not own is dropped rather than filed
+  // into the wrong tenant; refusing here is the whole point of the check.
+  let entityId;
+  if (item.entityId) {
+    const verified = await verifyEntityForUser(item.entityId, item.userId);
+    if (!verified) {
+      throw new Error(
+        `Capture job ${item.id}: entity ${item.entityId} does not belong to user ${item.userId}`
+      );
+    }
+    entityId = verified;
+  }
+
   // Create the capture in the main capture service
   const capture = await captureService.createCapture({
     userId: item.userId,
     source: item.source,
     contentType: item.contentType,
     rawContent: item.rawContent,
-    entityId: item.entityId,
+    entityId,
     metadata: item.metadata,
   });
 
   // Process the capture (extraction, routing, etc.)
-  await captureService.processCapture(capture.id);
+  await captureService.processCapture(capture.id, item.userId);
 
   // Update progress to indicate completion
   await job.updateProgress(100);

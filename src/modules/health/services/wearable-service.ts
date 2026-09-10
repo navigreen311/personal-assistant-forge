@@ -1,6 +1,6 @@
-import { v4 as uuidv4 } from 'uuid';
 import { prisma } from '@/lib/db';
 import { subDays } from 'date-fns';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { WearableConnection, WearableProvider } from '../types';
 
 // === Adapter Interface ===
@@ -542,6 +542,11 @@ class GarminAdapter implements WearableAdapter {
 }
 
 // === Adapter Registry ===
+//
+// This Map stays in memory ON PURPOSE. Per the persistence doc's "is it actually
+// a store?" section, a registry of code objects is not a store: the adapters are
+// classes written in source and re-constructed at boot, and functions cannot be
+// persisted. Only `connectionStore` below was a genuine store, and it is gone.
 
 const adapterRegistry = new Map<string, WearableAdapter>([
   ['APPLE_WATCH', new AppleHealthAdapter()],
@@ -551,59 +556,121 @@ const adapterRegistry = new Map<string, WearableAdapter>([
   ['GARMIN', new GarminAdapter()],
 ]);
 
-// === Connection Management (transient sessions) ===
+// === Connection Management ===
+//
+// T-018. This was `const connectionStore = new Map<string, WearableConnection>()`.
+// The deployment target is one Docker instance with `restart: unless-stopped`,
+// which guarantees restarts, and every restart silently forgot which wearables a
+// user had connected -- while `getConnections` kept answering 200 with an empty
+// list, so it read as "never connected anything" rather than as data loss.
+//
+// The schema is frozen and there is no `WearableConnection` model, so a
+// connection is stored on `HealthMetric` -- the health module's own
+// entity-scoped table -- as a row of type `wearable_connection`:
+//
+//   entityId    the verified entity that owns the connection (the tenancy scope)
+//   type        CONNECTION_METRIC_TYPE
+//   source      the provider ('FITBIT', 'OURA', ...)
+//   value       1 while connected, 0 once disconnected
+//   unit        'connection'
+//   recordedAt  lastSyncAt
+//   id          the connection id, from @default(cuid())
+//
+// This follows the persistence doc's "point at a table that already exists"
+// rule rather than adding a second model. It is a deliberate shadow use and
+// deserves a real model in a later amendment window; said out loud here so the
+// next reader does not have to infer it from the queries.
 
-const connectionStore = new Map<string, WearableConnection>();
+const CONNECTION_METRIC_TYPE = 'wearable_connection';
+
+/** Real health readings only -- never the connection rows stored alongside them. */
+const MEASUREMENT_ONLY = { type: { not: CONNECTION_METRIC_TYPE } } as const;
+
+function rowToConnection(
+  row: { id: string; source: string; value: number; recordedAt: Date },
+  userId: string
+): WearableConnection {
+  return {
+    id: row.id,
+    userId,
+    provider: row.source as WearableProvider,
+    isConnected: row.value === 1,
+    lastSyncAt: row.recordedAt,
+  };
+}
 
 export async function connectWearable(
+  entityId: VerifiedEntityId,
   userId: string,
   provider: WearableProvider
 ): Promise<WearableConnection> {
-  const connection: WearableConnection = {
-    id: uuidv4(),
-    userId,
-    provider,
-    isConnected: true,
-    lastSyncAt: new Date(),
-  };
-  connectionStore.set(connection.id, connection);
-  return connection;
+  const now = new Date();
+  const row = await prisma.healthMetric.create({
+    data: {
+      entityId,
+      type: CONNECTION_METRIC_TYPE,
+      value: 1,
+      unit: 'connection',
+      source: provider,
+      metadata: { connectedAt: now.toISOString(), connectedByUserId: userId },
+      recordedAt: now,
+    },
+  });
+
+  return rowToConnection(row, userId);
 }
 
-export async function disconnectWearable(connectionId: string): Promise<void> {
-  const conn = connectionStore.get(connectionId);
-  if (conn) {
-    conn.isConnected = false;
-    connectionStore.set(connectionId, conn);
-  }
+export async function disconnectWearable(
+  entityId: VerifiedEntityId,
+  connectionId: string
+): Promise<void> {
+  // updateMany, not update: `update` takes a unique WHERE and cannot carry the
+  // entity, so a caller who knew an id could disconnect any tenant's wearable.
+  await prisma.healthMetric.updateMany({
+    where: { id: connectionId, entityId, type: CONNECTION_METRIC_TYPE },
+    data: { value: 0 },
+  });
 }
 
-export async function getConnections(userId: string): Promise<WearableConnection[]> {
-  return Array.from(connectionStore.values()).filter(c => c.userId === userId);
+export async function getConnections(
+  entityId: VerifiedEntityId,
+  userId: string
+): Promise<WearableConnection[]> {
+  const rows = await prisma.healthMetric.findMany({
+    where: { entityId, type: CONNECTION_METRIC_TYPE },
+    orderBy: { recordedAt: 'desc' },
+  });
+
+  return rows.map((row) => rowToConnection(row, userId));
 }
 
 // === Data Sync ===
 
 export async function syncWearableData(
+  entityId: VerifiedEntityId,
   connectionId: string
 ): Promise<HealthMetricInput[]> {
-  const conn = connectionStore.get(connectionId);
-  if (!conn || !conn.isConnected) {
+  // findFirst with the scope in the WHERE: another tenant's connection is simply
+  // not found, so there is no ownership check to forget.
+  const conn = await prisma.healthMetric.findFirst({
+    where: { id: connectionId, entityId, type: CONNECTION_METRIC_TYPE },
+  });
+  if (!conn || conn.value !== 1) {
     throw new Error('Wearable not connected');
   }
 
-  const adapter = adapterRegistry.get(conn.provider);
+  const adapter = adapterRegistry.get(conn.source);
   if (!adapter) {
-    throw new Error(`No adapter registered for provider: ${conn.provider}`);
+    throw new Error(`No adapter registered for provider: ${conn.source}`);
   }
 
   let metrics: HealthMetricInput[] = [];
 
   try {
     const [sleepData, stressData, heartRateData] = await Promise.all([
-      adapter.fetchSleepData(conn.userId, 7),
-      adapter.fetchStressData(conn.userId, 7),
-      adapter.fetchHeartRate(conn.userId, 7),
+      adapter.fetchSleepData(entityId, 7),
+      adapter.fetchStressData(entityId, 7),
+      adapter.fetchHeartRate(entityId, 7),
     ]);
 
     metrics = [...sleepData, ...stressData, ...heartRateData];
@@ -611,7 +678,7 @@ export async function syncWearableData(
     if (metrics.length > 0) {
       await prisma.healthMetric.createMany({
         data: metrics.map(m => ({
-          entityId: conn.userId,
+          entityId,
           type: m.type,
           value: m.value,
           unit: m.unit,
@@ -622,13 +689,16 @@ export async function syncWearableData(
       });
     }
 
-    conn.lastSyncAt = new Date();
-    connectionStore.set(connectionId, conn);
+    await prisma.healthMetric.updateMany({
+      where: { id: connectionId, entityId, type: CONNECTION_METRIC_TYPE },
+      data: { recordedAt: new Date() },
+    });
   } catch {
-    // Adapter not yet integrated or API failure — fall back to existing DB data
+    // Adapter not yet integrated or API failure -- fall back to existing DB data
     const dbMetrics = await prisma.healthMetric.findMany({
       where: {
-        entityId: conn.userId,
+        entityId,
+        ...MEASUREMENT_ONLY,
         recordedAt: { gte: subDays(new Date(), 7) },
       },
       orderBy: { recordedAt: 'desc' },
@@ -648,22 +718,23 @@ export async function syncWearableData(
 }
 
 /** @deprecated Use syncWearableData instead */
-export async function syncData(connectionId: string) {
-  return syncWearableData(connectionId);
+export async function syncData(entityId: VerifiedEntityId, connectionId: string) {
+  return syncWearableData(entityId, connectionId);
 }
 
 // === Query Helpers ===
 
 export async function getLatestMetrics(
-  entityId: string,
+  entityId: VerifiedEntityId,
   type?: string,
   days?: number
 ) {
-  const where: Record<string, unknown> = { entityId };
-  if (type) where.type = type;
+  const where: Record<string, unknown> = type ? { type } : { ...MEASUREMENT_ONLY };
   if (days) {
     where.recordedAt = { gte: subDays(new Date(), days) };
   }
+  // Scope applied last and unconditionally.
+  where.entityId = entityId;
 
   return prisma.healthMetric.findMany({
     where,

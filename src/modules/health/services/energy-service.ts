@@ -1,6 +1,7 @@
 import { subDays } from 'date-fns';
 import { prisma } from '@/lib/db';
 import { generateJSON } from '@/lib/ai';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { EnergyForecast } from '../types';
 
 // Deterministic perturbation based on hour and date
@@ -12,11 +13,15 @@ function deterministicPerturbation(hour: number, dateStr: string): number {
   return Math.sin(hour * 0.7 + dateHash) * 0.05;
 }
 
-export async function forecastEnergy(userId: string, date: string): Promise<EnergyForecast> {
+export async function forecastEnergy(
+  entityId: VerifiedEntityId,
+  userId: string,
+  date: string
+): Promise<EnergyForecast> {
   // Query recent sleep data from DB
   const recentSleep = await prisma.healthMetric.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'sleep',
       recordedAt: { gte: subDays(new Date(), 3) },
     },
@@ -27,7 +32,7 @@ export async function forecastEnergy(userId: string, date: string): Promise<Ener
   // Query historical energy patterns
   const historicalEnergy = await prisma.healthMetric.findMany({
     where: {
-      entityId: userId,
+      entityId,
       type: 'energy',
       recordedAt: { gte: subDays(new Date(), 7) },
     },
@@ -131,10 +136,11 @@ Return a JSON object with:
 }
 
 export async function getOptimalSchedule(
+  entityId: VerifiedEntityId,
   userId: string,
   date: string
 ): Promise<{ deepWorkSlots: string[]; meetingSlots: string[]; breakSlots: string[] }> {
-  const forecast = await forecastEnergy(userId, date);
+  const forecast = await forecastEnergy(entityId, userId, date);
 
   try {
     const energySummary = forecast.hourlyEnergy

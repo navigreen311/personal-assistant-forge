@@ -9,6 +9,7 @@ import SubscriptionManager from '@/modules/household/components/SubscriptionMana
 import VehicleDashboard from '@/modules/household/components/VehicleDashboard';
 import type {
   MaintenanceTask,
+  Property,
   ShoppingItem,
   WarrantyRecord,
   SubscriptionRecord,
@@ -29,7 +30,19 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'inventory', label: 'Inventory' },
 ];
 
-const MOCK_PROPERTIES = ['All Properties', '123 Main Street', '456 Rental Ave'];
+/**
+ * T-027. This was:
+ *
+ *   const MOCK_PROPERTIES = ['All Properties', '123 Main Street', '456 Rental Ave'];
+ *
+ * Two invented Las Vegas addresses, shown to every user in the property filter,
+ * and `MOCK_PROPERTIES.length - 1` reported as the "Properties" stat -- so the
+ * page told every account it owned exactly two properties. Properties now come
+ * from GET /api/household/properties, which reads the caller's own entity-scoped
+ * rows. The filter's "all" option is a UI concept rather than a property, so it
+ * stays a constant here.
+ */
+const ALL_PROPERTIES = 'All Properties';
 
 // ---------------------------------------------------------------------------
 // Component
@@ -41,24 +54,27 @@ export default function HouseholdDashboard() {
   const [warranties, setWarranties] = useState<WarrantyRecord[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [vehicles, setVehicles] = useState<VehicleRecord[]>([]);
+  const [properties, setProperties] = useState<Property[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
-  const [selectedProperty, setSelectedProperty] = useState('All Properties');
+  const [selectedProperty, setSelectedProperty] = useState(ALL_PROPERTIES);
 
   // -- Data fetching --------------------------------------------------------
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [tasksRes, shoppingRes, warrantiesRes, subsRes, vehiclesRes] = await Promise.all([
-          fetch('/api/household/maintenance'),
-          fetch('/api/household/shopping'),
-          fetch('/api/household/warranties'),
-          fetch('/api/household/subscriptions'),
-          fetch('/api/household/vehicles'),
-        ]);
+        const [tasksRes, shoppingRes, warrantiesRes, subsRes, vehiclesRes, propertiesRes] =
+          await Promise.all([
+            fetch('/api/household/maintenance'),
+            fetch('/api/household/shopping'),
+            fetch('/api/household/warranties'),
+            fetch('/api/household/subscriptions'),
+            fetch('/api/household/vehicles'),
+            fetch('/api/household/properties'),
+          ]);
 
         if (tasksRes.ok) {
           const j = await tasksRes.json();
@@ -79,6 +95,10 @@ export default function HouseholdDashboard() {
         if (vehiclesRes.ok) {
           const j = await vehiclesRes.json();
           setVehicles(j.data ?? []);
+        }
+        if (propertiesRes.ok) {
+          const j = await propertiesRes.json();
+          setProperties(j.data ?? []);
         }
       } catch (err) {
         console.error('Failed to fetch household data:', err);
@@ -119,10 +139,17 @@ export default function HouseholdDashboard() {
       return sum;
     }, 0);
 
-    const propertyCount = MOCK_PROPERTIES.length - 1; // exclude "All Properties"
+    // The caller's real property count. Zero is a truthful answer for an account
+    // that has not added one yet.
+    const propertyCount = properties.length;
 
     return { propertyCount, upcomingCount, overdueCount, monthlyHomeCost };
-  }, [tasks]);
+  }, [tasks, properties]);
+
+  const propertyOptions = useMemo(
+    () => [ALL_PROPERTIES, ...properties.map((p) => p.name)],
+    [properties]
+  );
 
   // -- Loading / Error states -----------------------------------------------
 
@@ -175,7 +202,7 @@ export default function HouseholdDashboard() {
             onChange={(e) => setSelectedProperty(e.target.value)}
             className="rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
           >
-            {MOCK_PROPERTIES.map((p) => (
+            {propertyOptions.map((p) => (
               <option key={p} value={p}>
                 {p}
               </option>
