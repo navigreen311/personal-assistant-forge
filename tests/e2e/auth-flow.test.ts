@@ -40,8 +40,26 @@ jest.mock('bcryptjs', () => ({
   compare: jest.fn(),
 }));
 
+// P-29: `encode` joins `getToken` here because `POST /api/auth/switch-entity`
+// now re-mints the session cookie rather than echoing the entity id back. A
+// mock that omits it would make the real module's export `undefined` and the
+// route would throw -- so this keeps the mock faithful to the module, it does
+// not soften anything. The returned string is asserted on below.
 jest.mock('next-auth/jwt', () => ({
   getToken: jest.fn(),
+  encode: jest.fn(async () => 'reminted-session-token'),
+}));
+
+// P-29: the switch is audited (`withAuditedAuth`). The audit service opens a
+// Postgres transaction with an advisory lock to extend a SHA-256 hash chain,
+// which the Prisma mock above cannot serve; `recordAround` swallows the failure
+// so the tests would still pass, but silently and with a misleading stack in
+// the log. Mocking it keeps the failure out of the way AND makes "a switch is
+// recorded" assertable, which it was not before.
+jest.mock('@/modules/security/services/audit-service', () => ({
+  auditService: {
+    logAuditEntry: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+  },
 }));
 
 import { NextRequest } from 'next/server';
@@ -49,7 +67,8 @@ import { POST as registerHandler } from '@/app/api/auth/register/route';
 import { GET as profileGetHandler, PATCH as profilePatchHandler } from '@/app/api/auth/profile/route';
 import { POST as switchEntityHandler } from '@/app/api/auth/switch-entity/route';
 import { authOptions } from '@/lib/auth/config';
-import { getToken } from 'next-auth/jwt';
+import { getToken, encode } from 'next-auth/jwt';
+import { auditService } from '@/modules/security/services/audit-service';
 import bcrypt from 'bcryptjs';
 import {
   createMockUser,
@@ -65,7 +84,19 @@ import {
   INVALID_REGISTRATIONS,
 } from './setup';
 
+// P-29: the switch route re-mints the session cookie, and refuses (500) rather
+// than reporting a success it cannot deliver when there is no secret to mint
+// with. `getToken`/`encode` are mocked here so the value is irrelevant, but its
+// PRESENCE is not -- this suite has no `.env`, and the production behaviour of
+// an unset NEXTAUTH_SECRET is "no sessions at all", not "silent no-op".
+process.env.NEXTAUTH_SECRET =
+  process.env.NEXTAUTH_SECRET ?? 'auth-flow-e2e-secret-do-not-use-in-production';
+
 const mockedGetToken = getToken as jest.MockedFunction<typeof getToken>;
+const mockedEncode = encode as jest.MockedFunction<typeof encode>;
+const mockedLogAuditEntry = auditService.logAuditEntry as jest.MockedFunction<
+  typeof auditService.logAuditEntry
+>;
 const mockedBcryptCompare = bcrypt.compare as jest.MockedFunction<typeof bcrypt.compare>;
 
 // --- Test Suite ---
@@ -594,6 +625,68 @@ describe('Auth Flow E2E Tests', () => {
       expect(mockPrisma.entity.findFirst).toHaveBeenCalledWith({
         where: { id: 'entity-2', userId: 'user-1' },
       });
+
+      // P-29: the 200 above is the part that was always true. What follows is
+      // the part that was not: a new session token carrying entity-2, minted
+      // from the OLD token's claims, and set as the session cookie.
+      expect(mockedEncode).toHaveBeenCalledTimes(1);
+      const encoded = mockedEncode.mock.calls[0][0];
+      expect(encoded.token).toMatchObject({
+        userId: 'user-1',
+        role: 'owner',
+        activeEntityId: 'entity-2',
+      });
+
+      const setCookie = res.headers.get('set-cookie');
+      expect(setCookie).toContain('next-auth.session-token=reminted-session-token');
+      expect(setCookie).toContain('HttpOnly');
+      expect(setCookie).toContain('Path=/');
+      expect(setCookie?.toLowerCase()).toContain('samesite=lax');
+
+      // And the context change is on the record.
+      expect(mockedLogAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'user-1',
+          action: 'POST /api/auth/switch-entity',
+          resource: 'auth.switch-entity',
+          statusCode: 200,
+        })
+      );
+    });
+
+    it('does NOT re-mint a cookie when the entity is refused', async () => {
+      mockedGetToken.mockResolvedValue(createMockSession() as never);
+      mockPrisma.entity.findFirst.mockResolvedValue(null);
+
+      const req = createPostRequest('/api/auth/switch-entity', {
+        entityId: 'entity-belonging-to-someone-else',
+      });
+
+      const res = await switchEntityHandler(req);
+
+      await expectErrorResponse(res, 403, 'FORBIDDEN');
+      // The ordering that matters: ownership is proved BEFORE anything reaches
+      // a token. A capability must never be minted from an unverified id.
+      expect(mockedEncode).not.toHaveBeenCalled();
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(mockedLogAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 403 })
+      );
+    });
+
+    it('fails the request with 500 when the session cannot be re-minted', async () => {
+      mockedGetToken.mockResolvedValue(createMockSession() as never);
+      mockPrisma.entity.findFirst.mockResolvedValue(
+        createMockEntity({ id: 'entity-2', userId: 'user-1' })
+      );
+      mockedEncode.mockRejectedValueOnce(new Error('kms unavailable'));
+
+      const req = createPostRequest('/api/auth/switch-entity', { entityId: 'entity-2' });
+
+      const res = await switchEntityHandler(req);
+
+      // A 200 here would be the original bug wearing the fix's clothes.
+      await expectErrorResponse(res, 500, 'SESSION_UPDATE_FAILED');
     });
 
     it('should reject switching to entity the user does not own', async () => {
