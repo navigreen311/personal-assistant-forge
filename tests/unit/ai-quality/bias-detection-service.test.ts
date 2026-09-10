@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   detectBias,
   getAffectedGroups,
@@ -55,7 +56,7 @@ describe('BiasDetectionService', () => {
 
   describe('detectBias', () => {
     it('should return a bias report with all 4 dimensions', async () => {
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(report.entityId).toBe('entity-1');
       expect(report.period).toBe('2026-02');
@@ -69,7 +70,7 @@ describe('BiasDetectionService', () => {
     it('should return entity_bias with score 0 when entity is not found', async () => {
       (prisma.entity.findUnique as jest.Mock).mockResolvedValue(null);
 
-      const report = await detectBias('nonexistent', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('nonexistent'), '2026-02');
 
       const entityDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'entity_bias'
@@ -87,7 +88,7 @@ describe('BiasDetectionService', () => {
         .mockResolvedValueOnce(10) // entity-2 total
         .mockResolvedValueOnce(8); // entity-2 done
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const entityDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'entity_bias'
@@ -105,7 +106,7 @@ describe('BiasDetectionService', () => {
         .mockResolvedValueOnce(100) // entity-2 total
         .mockResolvedValueOnce(10); // entity-2 done (10%)
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const entityDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'entity_bias'
@@ -124,7 +125,7 @@ describe('BiasDetectionService', () => {
         { recipientId: 'contact-2', draftStatus: 'REJECTED' },
       ]);
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const contactDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'contact_bias'
@@ -142,7 +143,7 @@ describe('BiasDetectionService', () => {
         { channel: 'SLACK', draftStatus: 'REJECTED' },
       ]);
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const channelDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'channel_bias'
@@ -165,7 +166,7 @@ describe('BiasDetectionService', () => {
         makeAction(14, 'ROLLED_BACK'),
       ]);
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       const timeDim = report.dimensions.find(
         (d: BiasDimension) => d.name === 'time_bias'
@@ -176,14 +177,14 @@ describe('BiasDetectionService', () => {
     });
 
     it('should compute overall bias score as the average of all dimensions', async () => {
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(report.overallBiasScore).toBeGreaterThanOrEqual(0);
       expect(report.overallBiasScore).toBeLessThanOrEqual(1);
     });
 
     it('should use AI-generated descriptions when available', async () => {
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(generateJSON).toHaveBeenCalledTimes(1);
       expect(report.dimensions[0].description).toBe('AI: Entity bias is low.');
@@ -199,7 +200,7 @@ describe('BiasDetectionService', () => {
         .mockResolvedValueOnce(100)
         .mockResolvedValueOnce(5);
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(report.dimensions).toHaveLength(4);
       // High entity bias should generate an alert
@@ -215,7 +216,7 @@ describe('BiasDetectionService', () => {
     it('should return empty alerts when all bias scores are low', async () => {
       generateJSON.mockRejectedValueOnce(new Error('AI unavailable'));
 
-      const report = await detectBias('entity-1', '2026-02');
+      const report = await detectBias(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       // With default mocks (equal task counts), all scores should be low
       const hasHighBias = report.dimensions.some(

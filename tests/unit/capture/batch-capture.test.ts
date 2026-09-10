@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import { BatchCaptureService } from '@/modules/capture/services/batch-capture';
 
 // Mock Prisma
@@ -88,37 +89,37 @@ describe('BatchCapture', () => {
     it('should add item to the session', () => {
       const session = service.startBatchSession('user-1');
 
-      const item = service.addToBatch(session.id, 'First capture');
+      const item = service.addToBatch(session.id, 'user-1', 'First capture');
       expect(item.rawContent).toBe('First capture');
 
-      const status = service.getBatchStatus(session.id);
+      const status = service.getBatchStatus(session.id, 'user-1');
       expect(status?.items.length).toBe(1);
     });
 
     it('should default source to VOICE', () => {
       const session = service.startBatchSession('user-1');
-      const item = service.addToBatch(session.id, 'Voice capture');
+      const item = service.addToBatch(session.id, 'user-1', 'Voice capture');
 
       expect(item.source).toBe('VOICE');
     });
 
     it('should accept custom source', () => {
       const session = service.startBatchSession('user-1');
-      const item = service.addToBatch(session.id, 'Manual capture', 'MANUAL');
+      const item = service.addToBatch(session.id, 'user-1', 'Manual capture', 'MANUAL');
 
       expect(item.source).toBe('MANUAL');
     });
 
     it('should accept custom contentType', () => {
       const session = service.startBatchSession('user-1');
-      const item = service.addToBatch(session.id, 'Image capture', 'CAMERA_SCAN', 'IMAGE');
+      const item = service.addToBatch(session.id, 'user-1', 'Image capture', 'CAMERA_SCAN', 'IMAGE');
 
       expect(item.contentType).toBe('IMAGE');
     });
 
     it('should throw for non-existent session', () => {
       expect(() =>
-        service.addToBatch('fake-session', 'Content'),
+        service.addToBatch('fake-session', 'user-1', 'Content'),
       ).toThrow('Batch session "fake-session" not found');
     });
 
@@ -126,11 +127,11 @@ describe('BatchCapture', () => {
       const session = service.startBatchSession('user-1');
 
       // Force complete
-      const status = service.getBatchStatus(session.id);
+      const status = service.getBatchStatus(session.id, 'user-1');
       if (status) status.status = 'COMPLETED';
 
       expect(() =>
-        service.addToBatch(session.id, 'Too late'),
+        service.addToBatch(session.id, 'user-1', 'Too late'),
       ).toThrow('not active');
     });
 
@@ -138,11 +139,11 @@ describe('BatchCapture', () => {
       const session = service.startBatchSession('user-1');
 
       expect(() =>
-        service.addToBatch(session.id, ''),
+        service.addToBatch(session.id, 'user-1', ''),
       ).toThrow('rawContent must be non-empty');
 
       expect(() =>
-        service.addToBatch(session.id, '   '),
+        service.addToBatch(session.id, 'user-1', '   '),
       ).toThrow('rawContent must be non-empty');
     });
 
@@ -150,7 +151,7 @@ describe('BatchCapture', () => {
       const session = service.startBatchSession('user-1');
 
       expect(() =>
-        service.addToBatch(session.id, 'Content', 'INVALID_SOURCE' as never),
+        service.addToBatch(session.id, 'user-1', 'Content', 'INVALID_SOURCE' as never),
       ).toThrow('Invalid source');
     });
   });
@@ -158,31 +159,31 @@ describe('BatchCapture', () => {
   describe('completeBatch', () => {
     it('should process and route all items', async () => {
       const session = service.startBatchSession('user-1');
-      service.addToBatch(session.id, 'Item 1');
-      service.addToBatch(session.id, 'Item 2');
-      service.addToBatch(session.id, 'Item 3');
+      service.addToBatch(session.id, 'user-1', 'Item 1');
+      service.addToBatch(session.id, 'user-1', 'Item 2');
+      service.addToBatch(session.id, 'user-1', 'Item 3');
 
-      const results = await service.completeBatch(session.id);
+      const results = await service.completeBatch(session.id, 'user-1');
       expect(results.length).toBe(3);
     });
 
     it('should update session status to COMPLETED', async () => {
       const session = service.startBatchSession('user-1');
-      service.addToBatch(session.id, 'Item 1');
+      service.addToBatch(session.id, 'user-1', 'Item 1');
 
-      await service.completeBatch(session.id);
+      await service.completeBatch(session.id, 'user-1');
 
-      const status = service.getBatchStatus(session.id);
+      const status = service.getBatchStatus(session.id, 'user-1');
       expect(status?.status).toBe('COMPLETED');
       expect(status?.completedAt).toBeDefined();
     });
 
     it('should return all processed items', async () => {
       const session = service.startBatchSession('user-1');
-      service.addToBatch(session.id, 'Note about Q4 review');
-      service.addToBatch(session.id, 'Follow up with vendor');
+      service.addToBatch(session.id, 'user-1', 'Note about Q4 review');
+      service.addToBatch(session.id, 'user-1', 'Follow up with vendor');
 
-      const results = await service.completeBatch(session.id);
+      const results = await service.completeBatch(session.id, 'user-1');
       expect(results.length).toBe(2);
       results.forEach((item) => {
         expect(item.status).toBe('ROUTED');
@@ -191,13 +192,13 @@ describe('BatchCapture', () => {
 
     it('should handle empty batch gracefully', async () => {
       const session = service.startBatchSession('user-1');
-      const results = await service.completeBatch(session.id);
+      const results = await service.completeBatch(session.id, 'user-1');
       expect(results).toEqual([]);
     });
 
     it('should throw for non-existent session', async () => {
       await expect(
-        service.completeBatch('fake-session'),
+        service.completeBatch('fake-session', 'user-1'),
       ).rejects.toThrow('Batch session "fake-session" not found');
     });
 
@@ -211,28 +212,33 @@ describe('BatchCapture', () => {
         .mockRejectedValueOnce(new Error('Processing failed'));
 
       const session = service.startBatchSession('user-1');
-      service.addToBatch(session.id, 'Will fail');
-      service.addToBatch(session.id, 'Will succeed');
+      service.addToBatch(session.id, 'user-1', 'Will fail');
+      service.addToBatch(session.id, 'user-1', 'Will succeed');
 
-      const results = await service.completeBatch(session.id);
+      const results = await service.completeBatch(session.id, 'user-1');
       expect(results.length).toBe(2);
       expect(results[0].status).toBe('FAILED');
       expect(results[1].status).toBe('ROUTED');
     });
 
     it('should store batch summary Document with item counts', async () => {
-      const session = service.startBatchSession('user-1');
-      service.addToBatch(session.id, 'Item 1');
-      service.addToBatch(session.id, 'Item 2');
+      // P-13: this asserted `entityId: 'user-1'` -- the USER id, in
+      // `Document.entityId`, which is a required foreign key to `Entity`. The
+      // test encoded the defect: against a real Postgres that insert fails, so
+      // completing a batch always threw. The session now carries a proven entity
+      // and the summary is filed against it. Nothing else in this file moved.
+      const session = service.startBatchSession('user-1', verifiedEntityIdForTest('entity-1'));
+      service.addToBatch(session.id, 'user-1', 'Item 1');
+      service.addToBatch(session.id, 'user-1', 'Item 2');
 
-      await service.completeBatch(session.id);
+      await service.completeBatch(session.id, 'user-1');
 
       expect(prisma.document.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           title: expect.stringContaining('Batch Capture'),
           type: 'BATCH_CAPTURE',
           status: 'APPROVED',
-          entityId: 'user-1',
+          entityId: 'entity-1',
         }),
       });
 
@@ -248,14 +254,14 @@ describe('BatchCapture', () => {
   describe('getBatchStatus', () => {
     it('should return session status', () => {
       const session = service.startBatchSession('user-1');
-      const status = service.getBatchStatus(session.id);
+      const status = service.getBatchStatus(session.id, 'user-1');
 
       expect(status).toBeDefined();
       expect(status?.id).toBe(session.id);
     });
 
     it('should return null for non-existent session', () => {
-      expect(service.getBatchStatus('fake-id')).toBeNull();
+      expect(service.getBatchStatus('fake-id', 'user-1')).toBeNull();
     });
   });
 });

@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import type { ConfidenceScore } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 export function calculateConfidence(
   actionId: string,
@@ -41,7 +42,7 @@ export function calculateConfidence(
 }
 
 export async function getConfidenceDistribution(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: string
 ): Promise<{ bucket: string; count: number }[]> {
   const { startDate, endDate } = parsePeriod(period);

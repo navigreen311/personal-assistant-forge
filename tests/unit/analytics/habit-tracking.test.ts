@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 // Mock AI client
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated habit insight'),
@@ -5,21 +6,32 @@ jest.mock('@/lib/ai', () => ({
 }));
 
 // Mock prisma
-jest.mock('@/lib/db', () => ({
+jest.mock('@/lib/db', () => {
+  const habitFind = jest.fn();
+  const habitUpdate = jest.fn();
+  return {
   prisma: {
+    // P-13, tenancy-pattern.md 8 trap 1: the service now scopes by entity, so
+    // it reads with findFirst and writes with updateMany. Alias both onto the
+    // jest.fn the existing assertions already inspect.
     habitEntry: {
       create: jest.fn(),
       findMany: jest.fn(),
-      findUnique: jest.fn(),
-      update: jest.fn(),
+      findUnique: habitFind,
+      findFirst: habitFind,
+      update: habitUpdate,
+      updateMany: habitUpdate,
       delete: jest.fn(),
+      deleteMany: jest.fn(),
     },
+    entity: { findUnique: jest.fn().mockResolvedValue({ userId: 'user-1' }) },
     user: { findUnique: jest.fn() },
     task: { findMany: jest.fn() },
     calendarEvent: { findMany: jest.fn() },
     message: { findMany: jest.fn() },
   },
-}));
+  };
+});
 
 import { prisma } from '@/lib/db';
 import {
@@ -57,7 +69,7 @@ describe('createHabit', () => {
     };
     mockPrisma.habitEntry.create.mockResolvedValue(mockEntry);
 
-    const result = await createHabit('user-1', 'Exercise', 'DAILY');
+    const result = await createHabit(verifiedEntityIdForTest('user-1'), 'Exercise', 'DAILY');
 
     expect(mockPrisma.habitEntry.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -86,7 +98,7 @@ describe('createHabit', () => {
     };
     mockPrisma.habitEntry.create.mockResolvedValue(mockEntry);
 
-    const result = await createHabit('user-1', 'Read', 'DAILY');
+    const result = await createHabit(verifiedEntityIdForTest('user-1'), 'Read', 'DAILY');
 
     expect(result.streak).toBe(0);
     expect(result.longestStreak).toBe(0);
@@ -108,7 +120,7 @@ describe('createHabit', () => {
     };
     mockPrisma.habitEntry.create.mockResolvedValue(mockEntry);
 
-    const result = await createHabit('user-1', 'Meditate', 'DAILY');
+    const result = await createHabit(verifiedEntityIdForTest('user-1'), 'Meditate', 'DAILY');
 
     expect(result.completionHistory).toEqual([]);
     expect(mockPrisma.habitEntry.create).toHaveBeenCalledWith({
@@ -144,10 +156,12 @@ describe('completeHabit', () => {
       createdAt: new Date(),
     });
 
-    const result = await recordCompletion('habit-1', '2026-02-15', true);
+    const result = await recordCompletion('habit-1', verifiedEntityIdForTest('entity-1'), '2026-02-15', true);
 
     expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+      // P-13: was `{ id: 'habit-1' }` -- a unique WHERE with no tenant in it,
+      // so any caller who knew a habit id could write to another entity's row.
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: expect.objectContaining({
         completedDates: ['2026-02-14', '2026-02-15'],
       }),
@@ -178,10 +192,12 @@ describe('completeHabit', () => {
       createdAt: new Date(),
     });
 
-    await recordCompletion('habit-1', '2026-02-15', true);
+    await recordCompletion('habit-1', verifiedEntityIdForTest('entity-1'), '2026-02-15', true);
 
     expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+      // P-13: was `{ id: 'habit-1' }` -- a unique WHERE with no tenant in it,
+      // so any caller who knew a habit id could write to another entity's row.
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: expect.objectContaining({
         streak: 3,
       }),
@@ -213,14 +229,16 @@ describe('completeHabit', () => {
       createdAt: new Date(),
     }));
 
-    await recordCompletion('habit-1', '2026-02-15', true);
+    await recordCompletion('habit-1', verifiedEntityIdForTest('entity-1'), '2026-02-15', true);
 
     // The streak calculation counts consecutive completed entries from the end
     // All 3 entries are completed (true), so streak = 3
     // But the dates are not consecutive (gap at 13, 14)
     // calculateStreak only looks at completed boolean, not date gaps
     expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+      // P-13: was `{ id: 'habit-1' }` -- a unique WHERE with no tenant in it,
+      // so any caller who knew a habit id could write to another entity's row.
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: expect.objectContaining({
         completedDates: ['2026-02-11', '2026-02-12', '2026-02-15'],
       }),
@@ -251,10 +269,12 @@ describe('completeHabit', () => {
       createdAt: new Date(),
     }));
 
-    await recordCompletion('habit-1', '2026-02-15', true);
+    await recordCompletion('habit-1', verifiedEntityIdForTest('entity-1'), '2026-02-15', true);
 
     expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+      // P-13: was `{ id: 'habit-1' }` -- a unique WHERE with no tenant in it,
+      // so any caller who knew a habit id could write to another entity's row.
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: expect.objectContaining({
         longestStreak: 5,
       }),
@@ -285,10 +305,12 @@ describe('completeHabit', () => {
       createdAt: new Date(),
     }));
 
-    await recordCompletion('habit-1', '2026-02-15', true);
+    await recordCompletion('habit-1', verifiedEntityIdForTest('entity-1'), '2026-02-15', true);
 
     expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+      // P-13: was `{ id: 'habit-1' }` -- a unique WHERE with no tenant in it,
+      // so any caller who knew a habit id could write to another entity's row.
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: expect.objectContaining({
         completedDates: ['2026-02-15'],
       }),
@@ -312,7 +334,7 @@ describe('getHabits', () => {
       },
     ]);
 
-    await getHabits('user-1');
+    await getHabits(verifiedEntityIdForTest('user-1'));
 
     expect(mockPrisma.habitEntry.findMany).toHaveBeenCalledWith({
       where: { entityId: 'user-1', isActive: true },
@@ -322,7 +344,7 @@ describe('getHabits', () => {
   it('should return all habits when includeInactive is true', async () => {
     mockPrisma.habitEntry.findMany.mockResolvedValue([]);
 
-    await getHabits('user-1', true);
+    await getHabits(verifiedEntityIdForTest('user-1'), true);
 
     expect(mockPrisma.habitEntry.findMany).toHaveBeenCalledWith({
       where: { entityId: 'user-1' },
@@ -349,7 +371,7 @@ describe('getStreaks', () => {
       },
     ]);
 
-    const result = await getStreaks('user-1');
+    const result = await getStreaks(verifiedEntityIdForTest('user-1'));
 
     expect(result).toHaveLength(1);
     expect(result[0].streak).toBe(5);
@@ -361,22 +383,27 @@ describe('getStreaks', () => {
 
 describe('deleteHabit', () => {
   it('should soft delete by setting isActive to false', async () => {
-    mockPrisma.habitEntry.update.mockResolvedValue({});
+    // P-13: this asserted `update({ where: { id } })` -- a unique WHERE with no
+    // tenant in it, so any caller who knew a habit id could soft-delete another
+    // entity's habit. The test encoded the defect; it now asserts the scoped
+    // `updateMany`. Nothing else in this file moved.
+    mockPrisma.habitEntry.updateMany.mockResolvedValue({ count: 1 });
 
-    await deleteHabit('habit-1');
+    await deleteHabit('habit-1', verifiedEntityIdForTest('entity-1'));
 
-    expect(mockPrisma.habitEntry.update).toHaveBeenCalledWith({
-      where: { id: 'habit-1' },
+    expect(mockPrisma.habitEntry.updateMany).toHaveBeenCalledWith({
+      where: { id: 'habit-1', entityId: 'entity-1' },
       data: { isActive: false },
     });
   });
 
   it('should NOT call prisma.habitEntry.delete', async () => {
-    mockPrisma.habitEntry.update.mockResolvedValue({});
+    mockPrisma.habitEntry.updateMany.mockResolvedValue({ count: 1 });
 
-    await deleteHabit('habit-1');
+    await deleteHabit('habit-1', verifiedEntityIdForTest('entity-1'));
 
     expect(mockPrisma.habitEntry.delete).not.toHaveBeenCalled();
+    expect(mockPrisma.habitEntry.deleteMany).not.toHaveBeenCalled();
   });
 });
 

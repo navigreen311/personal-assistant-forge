@@ -2,11 +2,12 @@ import { prisma } from '@/lib/db';
 import { generateText, generateJSON } from '@/lib/ai';
 import type { Call, Contact } from '@prisma/client';
 import type { CallAnalytics } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // --- Core call analytics (Phase 2) ---
 
 export async function getCallAnalytics(
-  entityId: string,
+  entityId: VerifiedEntityId,
   startDate: Date,
   endDate: Date
 ): Promise<CallAnalytics> {
@@ -131,7 +132,7 @@ Provide 2-3 insights, each one sentence. Separate them with newlines.`,
 }
 
 export async function getCallTrend(
-  entityId: string,
+  entityId: VerifiedEntityId,
   days: number
 ): Promise<{ date: string; calls: number; connectRate: number }[]> {
   const trend: { date: string; calls: number; connectRate: number }[] = [];
@@ -168,7 +169,7 @@ export async function getCallTrend(
 // --- Additional analytics functions (Phase 3) ---
 
 export async function getCallsPerPeriod(
-  entityId: string,
+  entityId: VerifiedEntityId,
   period: 'day' | 'week' | 'month',
   dateRange?: { start: Date; end: Date }
 ): Promise<{ period: string; count: number }[]> {
@@ -201,7 +202,7 @@ export async function getCallsPerPeriod(
 }
 
 export async function getAverageDuration(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<number> {
   const where: Record<string, unknown> = {
@@ -221,7 +222,7 @@ export async function getAverageDuration(
 }
 
 export async function getSentimentDistribution(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<{ positive: number; neutral: number; negative: number }> {
   const where: Record<string, unknown> = {
@@ -257,7 +258,7 @@ export async function getSentimentDistribution(
 }
 
 export async function getOutcomeRates(
-  entityId: string,
+  entityId: VerifiedEntityId,
   dateRange?: { start: Date; end: Date }
 ): Promise<{ outcome: string; count: number; percentage: number }[]> {
   const where: Record<string, unknown> = { entityId };
@@ -283,7 +284,7 @@ export async function getOutcomeRates(
 }
 
 export async function getTopCallers(
-  entityId: string,
+  entityId: VerifiedEntityId,
   limit = 10,
   dateRange?: { start: Date; end: Date }
 ): Promise<{ contactId: string; contactName: string; callCount: number }[]> {
@@ -330,7 +331,7 @@ export async function getTopCallers(
 }
 
 export async function getCallTrends(
-  entityId: string
+  entityId: VerifiedEntityId
 ): Promise<{ insights: string[]; busiestHour?: number; sentimentTrend?: string }> {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);

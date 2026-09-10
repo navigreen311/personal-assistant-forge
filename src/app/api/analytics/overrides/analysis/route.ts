@@ -1,16 +1,16 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
 import { analyzeOverrides } from '@/modules/ai-quality/services/override-tracking-service';
 
 const querySchema = z.object({
-  entityId: z.string().min(1),
+  entityId: z.string().min(1).optional(),
   period: z.string().optional(),
 });
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, _session) => {
+  return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
       }
 
       const period = parsed.data.period ?? 'latest';
-      const analysis = await analyzeOverrides(parsed.data.entityId, period);
+      const analysis = await analyzeOverrides(entityId, period);
       return success(analysis);
     } catch (_err) {
       return error('INTERNAL_ERROR', 'Failed to analyze overrides', 500);

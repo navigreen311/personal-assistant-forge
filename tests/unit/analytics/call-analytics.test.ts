@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 jest.mock('@/lib/db', () => ({
   prisma: {
     call: {
@@ -47,7 +48,7 @@ describe('getCallsPerPeriod', () => {
       { createdAt: new Date('2026-02-16T09:00:00Z'), outcome: 'NO_ANSWER', direction: 'OUTBOUND', duration: null },
     ]);
 
-    const result = await getCallsPerPeriod('entity-1', 'day');
+    const result = await getCallsPerPeriod(verifiedEntityIdForTest('entity-1'), 'day');
 
     expect(result).toHaveLength(2);
     expect(result[0].count).toBe(2); // Feb 15
@@ -61,7 +62,7 @@ describe('getCallsPerPeriod', () => {
       { createdAt: new Date('2026-02-16T10:00:00Z'), outcome: 'CONNECTED', direction: 'OUTBOUND', duration: 250 },
     ]);
 
-    const result = await getCallsPerPeriod('entity-1', 'week');
+    const result = await getCallsPerPeriod(verifiedEntityIdForTest('entity-1'), 'week');
 
     expect(result.length).toBeGreaterThanOrEqual(1);
   });
@@ -74,7 +75,7 @@ describe('getCallsPerPeriod', () => {
       end: new Date('2026-02-28'),
     };
 
-    await getCallsPerPeriod('entity-1', 'day', dateRange);
+    await getCallsPerPeriod(verifiedEntityIdForTest('entity-1'), 'day', dateRange);
 
     expect(mockPrisma.call.findMany).toHaveBeenCalledWith({
       where: {
@@ -91,7 +92,7 @@ describe('getAverageDuration', () => {
       _avg: { duration: 350 },
     });
 
-    const result = await getAverageDuration('entity-1');
+    const result = await getAverageDuration(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toBe(350);
     expect(mockPrisma.call.aggregate).toHaveBeenCalledWith({
@@ -108,7 +109,7 @@ describe('getAverageDuration', () => {
       _avg: { duration: null },
     });
 
-    const result = await getAverageDuration('entity-1');
+    const result = await getAverageDuration(verifiedEntityIdForTest('entity-1'));
 
     expect(result).toBe(0);
   });
@@ -123,7 +124,7 @@ describe('getSentimentDistribution', () => {
       { sentiment: -0.5 }, // negative
     ]);
 
-    const result = await getSentimentDistribution('entity-1');
+    const result = await getSentimentDistribution(verifiedEntityIdForTest('entity-1'));
 
     expect(result.positive).toBe(50); // 2/4
     expect(result.neutral).toBe(25);  // 1/4
@@ -142,7 +143,7 @@ describe('getOutcomeRates', () => {
       { outcome: 'VOICEMAIL' },
     ]);
 
-    const result = await getOutcomeRates('entity-1');
+    const result = await getOutcomeRates(verifiedEntityIdForTest('entity-1'));
 
     const connected = result.find((r) => r.outcome === 'CONNECTED');
     expect(connected?.count).toBe(3);
@@ -163,7 +164,7 @@ describe('getTopCallers', () => {
       { id: 'contact-2', name: 'Jane Smith' },
     ]);
 
-    const result = await getTopCallers('entity-1', 10);
+    const result = await getTopCallers(verifiedEntityIdForTest('entity-1'), 10);
 
     expect(result[0].contactId).toBe('contact-1');
     expect(result[0].callCount).toBe(3);
@@ -178,7 +179,7 @@ describe('getCallTrends', () => {
       { outcome: 'CONNECTED', sentiment: 0.7, duration: 250, createdAt: new Date() },
     ]);
 
-    const result = await getCallTrends('entity-1');
+    const result = await getCallTrends(verifiedEntityIdForTest('entity-1'));
 
     expect(generateJSON).toHaveBeenCalled();
     expect(result.insights).toHaveLength(2);
@@ -191,7 +192,7 @@ describe('getCallTrends', () => {
     ]);
     (generateJSON as jest.Mock).mockRejectedValueOnce(new Error('AI error'));
 
-    const result = await getCallTrends('entity-1');
+    const result = await getCallTrends(verifiedEntityIdForTest('entity-1'));
 
     expect(result.insights).toHaveLength(1);
     expect(result.insights[0]).toContain('1 calls');
@@ -206,7 +207,7 @@ describe('getCallAnalytics', () => {
     ]);
 
     const result = await getCallAnalytics(
-      'entity-1',
+      verifiedEntityIdForTest('entity-1'),
       new Date('2026-02-01'),
       new Date('2026-02-28')
     );

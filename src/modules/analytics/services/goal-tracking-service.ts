@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Prisma } from '@prisma/client';
 import type { GoalEntry, Task, Workflow } from '@prisma/client';
 import type { GoalDefinition, GoalMilestone, GoalCorrectionSuggestion } from '../types';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 function dbRecordToGoal(record: GoalEntry): GoalDefinition {
   return {
@@ -60,10 +61,17 @@ export async function createGoal(
   return dbRecordToGoal(record);
 }
 
+/**
+ * P-13: every by-id entry point below now takes the OWNER's user id and puts it
+ * in the WHERE clause. `GoalEntry` is keyed by `userId` (its `entityId` is
+ * optional), so the user id -- taken from the session, never from the request --
+ * is the tenancy scope here. A foreign goal is not found rather than checked.
+ */
 export async function updateGoalProgress(
-  goalId: string
+  goalId: string,
+  userId: string
 ): Promise<GoalDefinition> {
-  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+  const record = await prisma.goalEntry.findFirst({ where: { id: goalId, userId } });
   if (!record) throw new Error(`Goal not found: ${goalId}`);
 
   const goal = dbRecordToGoal(record);
@@ -108,8 +116,8 @@ export async function updateGoalProgress(
   if (goal.currentValue >= goal.targetValue) {
     goal.status = 'COMPLETE';
 
-    await prisma.goalEntry.update({
-      where: { id: goalId },
+    await prisma.goalEntry.updateMany({
+      where: { id: goalId, userId },
       data: {
         currentValue: goal.currentValue,
         status: goal.status,
@@ -137,8 +145,8 @@ export async function updateGoalProgress(
     goal.status = 'BEHIND';
   }
 
-  await prisma.goalEntry.update({
-    where: { id: goalId },
+  await prisma.goalEntry.updateMany({
+    where: { id: goalId, userId },
     data: {
       currentValue: goal.currentValue,
       status: goal.status,
@@ -151,7 +159,7 @@ export async function updateGoalProgress(
 
 export async function getGoals(
   userId: string,
-  entityId?: string
+  entityId?: VerifiedEntityId
 ): Promise<GoalDefinition[]> {
   const where: Record<string, unknown> = { userId };
   if (entityId) {
@@ -163,9 +171,10 @@ export async function getGoals(
 }
 
 export async function suggestCourseCorrection(
-  goalId: string
+  goalId: string,
+  userId: string
 ): Promise<GoalCorrectionSuggestion> {
-  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+  const record = await prisma.goalEntry.findFirst({ where: { id: goalId, userId } });
   if (!record) throw new Error(`Goal not found: ${goalId}`);
 
   const goal = dbRecordToGoal(record);
@@ -230,8 +239,11 @@ Respond with JSON: { "suggestion": "<actionable advice in 1-2 sentences>" }`,
   };
 }
 
-export async function completeGoal(goalId: string): Promise<GoalDefinition> {
-  const record = await prisma.goalEntry.findUnique({ where: { id: goalId } });
+export async function completeGoal(
+  goalId: string,
+  userId: string
+): Promise<GoalDefinition> {
+  const record = await prisma.goalEntry.findFirst({ where: { id: goalId, userId } });
   if (!record) throw new Error(`Goal not found: ${goalId}`);
 
   const goal = dbRecordToGoal(record);
@@ -246,8 +258,8 @@ export async function completeGoal(goalId: string): Promise<GoalDefinition> {
     }
   }
 
-  await prisma.goalEntry.update({
-    where: { id: goalId },
+  await prisma.goalEntry.updateMany({
+    where: { id: goalId, userId },
     data: {
       status: 'COMPLETE',
       currentValue: goal.targetValue,

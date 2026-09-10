@@ -15,11 +15,38 @@ import type {
 import { generateJSON } from '@/lib/ai';
 import { prisma } from '@/lib/db';
 
+/**
+ * ============================================================================
+ * P-13 -- TWO TENANCY HOLES CLOSED HERE
+ * ============================================================================
+ *
+ * 1. RULES HAD NO OWNER. `this.rules` was one process-global array and
+ *    `/api/capture/rules` let any authenticated caller add, edit or delete any
+ *    entry in it. So a rule written by one tenant was evaluated against every
+ *    other tenant's captures. Rules now carry a `userId`; built-in defaults
+ *    carry `undefined` and are visible to everyone; every rule entry point
+ *    takes the owner and matches on it.
+ *
+ * 2. THE WRITE TARGET WAS CALLER-CHOSEN. `routeAndStore` wrote the resulting
+ *    Task / KnowledgeEntry / Document to `result.entityId || capture.entityId
+ *    || ''` -- an entity id that reached it from a routing rule's
+ *    `actions.entityId`, or from the capture's own unverified field. With (1),
+ *    that meant `POST /api/capture/rules` with `actions.entityId = <tenant B>`
+ *    caused every matching capture, from any tenant, to file a row into
+ *    tenant B. The destination is now the capture's OWN entity, proven to
+ *    belong to the capturing user, and a capture with no proven entity is not
+ *    stored at all.
+ */
 class RoutingService {
   private rules: RoutingRule[] = [];
 
   constructor() {
     this.registerDefaultRules();
+  }
+
+  /** The rules that apply to `userId`: the built-in defaults plus their own. */
+  private rulesFor(userId: string): RoutingRule[] {
+    return this.rules.filter((r) => r.userId === undefined || r.userId === userId);
   }
 
   private registerDefaultRules(): void {
@@ -70,8 +97,9 @@ class RoutingService {
   }
 
   async routeCapture(capture: CaptureItem): Promise<RoutingResult> {
-    // Sort rules by priority descending (higher = evaluated first)
-    const sortedRules = [...this.rules]
+    // Sort rules by priority descending (higher = evaluated first).
+    // Only this capture's owner's rules (plus the built-in defaults) apply.
+    const sortedRules = this.rulesFor(capture.userId)
       .filter((r) => r.isActive)
       .sort((a, b) => b.priority - a.priority);
 
@@ -79,7 +107,9 @@ class RoutingService {
       if (this.evaluateConditions(capture, rule.conditions)) {
         return {
           targetType: rule.actions.targetType,
-          entityId: capture.entityId ?? rule.actions.entityId ?? '',
+          // The capture's own entity wins. A rule may not redirect a row into an
+          // entity the capturing user has not been proven to own.
+          entityId: capture.entityId ?? '',
           projectId: rule.actions.projectId,
           priority: rule.actions.priority,
           confidence: 0.8,
@@ -129,12 +159,27 @@ Return JSON with: targetType, confidence (0-1), reasoning`, {
     };
   }
 
-  async routeAndStore(capture: CaptureItem): Promise<RoutingResult & { storedId?: string }> {
+  async routeAndStore(
+    capture: CaptureItem,
+    userId: string
+  ): Promise<RoutingResult & { storedId?: string }> {
+    if (capture.userId !== userId) {
+      throw new Error(`Capture "${capture.id}" not found`);
+    }
+
     const result = await this.routeCapture(capture);
+
+    // `capture.entityId` is only ever set from a VerifiedEntityId (see
+    // CaptureService.createCapture). With no entity there is nothing to file
+    // the row against, and guessing one is exactly the bug: return the routing
+    // decision without storing.
+    const entityId = capture.entityId;
+    if (!entityId) {
+      return result;
+    }
 
     try {
       let storedId: string | undefined;
-      const entityId = result.entityId || capture.entityId || '';
 
       switch (result.targetType) {
         case 'TASK': {
@@ -273,10 +318,16 @@ Return JSON with: targetType, confidence (0-1), reasoning`, {
     }
   }
 
-  addRoutingRule(rule: Omit<RoutingRule, 'id'>): RoutingRule {
+  /**
+   * `userId` is required and is applied LAST, so a caller cannot supply their
+   * own owner in the rule body. `undefined` is reserved for the built-in
+   * defaults registered by the constructor.
+   */
+  addRoutingRule(rule: Omit<RoutingRule, 'id'>, userId?: string): RoutingRule {
     const newRule: RoutingRule = {
       ...rule,
       id: uuidv4(),
+      userId,
     };
     this.rules.push(newRule);
     // Re-sort after adding
@@ -284,24 +335,26 @@ Return JSON with: targetType, confidence (0-1), reasoning`, {
     return newRule;
   }
 
-  getRoutingRules(): RoutingRule[] {
-    return [...this.rules].sort((a, b) => b.priority - a.priority);
+  getRoutingRules(userId: string): RoutingRule[] {
+    return this.rulesFor(userId).sort((a, b) => b.priority - a.priority);
   }
 
-  updateRoutingRule(id: string, updates: Partial<RoutingRule>): RoutingRule {
-    const index = this.rules.findIndex((r) => r.id === id);
+  updateRoutingRule(id: string, userId: string, updates: Partial<RoutingRule>): RoutingRule {
+    // The owner is part of the match, so another tenant's rule -- and a built-in
+    // default, which belongs to nobody -- is simply not found.
+    const index = this.rules.findIndex((r) => r.id === id && r.userId === userId);
     if (index === -1) {
       throw new Error(`Routing rule "${id}" not found`);
     }
 
-    const updated = { ...this.rules[index], ...updates, id };
+    const updated = { ...this.rules[index], ...updates, id, userId };
     this.rules[index] = updated;
     this.rules.sort((a, b) => b.priority - a.priority);
     return updated;
   }
 
-  deleteRoutingRule(id: string): void {
-    const index = this.rules.findIndex((r) => r.id === id);
+  deleteRoutingRule(id: string, userId: string): void {
+    const index = this.rules.findIndex((r) => r.id === id && r.userId === userId);
     if (index === -1) {
       throw new Error(`Routing rule "${id}" not found`);
     }

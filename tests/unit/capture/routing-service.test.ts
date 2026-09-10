@@ -31,7 +31,7 @@ describe('RoutingService', () => {
   describe('routeCapture', () => {
     it('should apply rules in priority order', async () => {
       // The default rules should be ordered by priority
-      const rules = service.getRoutingRules();
+      const rules = service.getRoutingRules('user-1');
       for (let i = 1; i < rules.length; i++) {
         expect(rules[i - 1].priority).toBeGreaterThanOrEqual(rules[i].priority);
       }
@@ -142,7 +142,7 @@ describe('RoutingService', () => {
         actions: { targetType: 'NOTE' },
         priority: 10,
         isActive: true,
-      });
+      }, 'user-1');
 
       expect(rule.id).toBeDefined();
       expect(rule.name).toBe('Test Rule');
@@ -157,7 +157,7 @@ describe('RoutingService', () => {
         actions: { targetType: 'NOTE' },
         priority: 10,
         isActive: true,
-      });
+      }, 'user-1');
 
       service.addRoutingRule({
         name: 'High Priority',
@@ -165,9 +165,9 @@ describe('RoutingService', () => {
         actions: { targetType: 'TASK' },
         priority: 100,
         isActive: true,
-      });
+      }, 'user-1');
 
-      const rules = service.getRoutingRules();
+      const rules = service.getRoutingRules('user-1');
       expect(rules[0].name).toBe('High Priority');
       expect(rules[1].name).toBe('Low Priority');
     });
@@ -183,14 +183,14 @@ describe('RoutingService', () => {
         actions: { targetType: 'NOTE' },
         priority: 10,
         isActive: true,
-      });
+      }, 'user-1');
 
-      const updated = service.updateRoutingRule(rule.id, { name: 'Updated' });
+      const updated = service.updateRoutingRule(rule.id, 'user-1', { name: 'Updated' });
       expect(updated.name).toBe('Updated');
     });
 
     it('should throw for non-existent rule', () => {
-      expect(() => service.updateRoutingRule('fake-id', { name: 'X' })).toThrow();
+      expect(() => service.updateRoutingRule('fake-id', 'user-1', { name: 'X' })).toThrow();
     });
   });
 
@@ -204,14 +204,14 @@ describe('RoutingService', () => {
         actions: { targetType: 'NOTE' },
         priority: 10,
         isActive: true,
-      });
+      }, 'user-1');
 
-      service.deleteRoutingRule(rule.id);
-      expect(service.getRoutingRules().length).toBe(0);
+      service.deleteRoutingRule(rule.id, 'user-1');
+      expect(service.getRoutingRules('user-1').length).toBe(0);
     });
 
     it('should throw for non-existent rule', () => {
-      expect(() => service.deleteRoutingRule('fake-id')).toThrow();
+      expect(() => service.deleteRoutingRule('fake-id', 'user-1')).toThrow();
     });
   });
 

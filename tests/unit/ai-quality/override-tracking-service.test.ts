@@ -1,3 +1,4 @@
+import { verifiedEntityIdForTest } from '../../helpers/factories';
 import {
   recordOverride,
   analyzeOverrides,
@@ -104,7 +105,7 @@ describe('OverrideTrackingService', () => {
     it('should return zero totals when no overrides exist in the period', async () => {
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(50);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.totalOverrides).toBe(0);
       expect(result.overrideRate).toBe(0);
@@ -135,7 +136,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(20);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.totalOverrides).toBe(2);
       expect(result.overrideRate).toBe(0.1); // 2/20 = 0.1
@@ -144,7 +145,7 @@ describe('OverrideTrackingService', () => {
     it('should return zero override rate when no actions exist', async () => {
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.overrideRate).toBe(0);
     });
@@ -161,7 +162,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(100);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.byReason['INCORRECT']).toBe(2);
       expect(result.byReason['WRONG_TONE']).toBe(1);
@@ -171,7 +172,7 @@ describe('OverrideTrackingService', () => {
     it('should determine trend as STABLE when no previous overrides exist', async () => {
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(0);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.trend).toBe('STABLE');
     });
@@ -205,7 +206,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(100);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.trend).toBe('IMPROVING');
     });
@@ -239,7 +240,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(100);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.trend).toBe('WORSENING');
     });
@@ -259,7 +260,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(100);
 
-      const result = await analyzeOverrides('entity-1', '2026-02');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02');
 
       expect(result.topPatterns[0].pattern).toBe('INCORRECT');
       expect(result.topPatterns[0].count).toBe(3);
@@ -283,7 +284,7 @@ describe('OverrideTrackingService', () => {
 
       (prisma.actionLog.count as jest.Mock).mockResolvedValue(10);
 
-      const result = await analyzeOverrides('entity-1', '2026-02-W6');
+      const result = await analyzeOverrides(verifiedEntityIdForTest('entity-1'), '2026-02-W6');
 
       expect(result).toBeDefined();
       expect(prisma.actionLog.count).toHaveBeenCalledTimes(1);
@@ -292,7 +293,7 @@ describe('OverrideTrackingService', () => {
 
   describe('getOverridePatterns', () => {
     it('should return empty array when no overrides exist', async () => {
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result).toEqual([]);
     });
@@ -306,7 +307,7 @@ describe('OverrideTrackingService', () => {
         { id: 'o4', actionId: 'a4', userId: 'u1', originalOutput: 'orig4', overriddenOutput: 'over4', reason: 'INCORRECT' as const, timestamp: new Date() }
       );
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(2);
       expect(result[0].pattern).toBe('INCORRECT');
@@ -327,7 +328,7 @@ describe('OverrideTrackingService', () => {
         timestamp: new Date(),
       });
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(generateJSON).toHaveBeenCalledTimes(1);
       expect(result[0].suggestedFix).toBe('AI: Improve factual accuracy.');
@@ -347,7 +348,7 @@ describe('OverrideTrackingService', () => {
         timestamp: new Date(),
       });
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result[0].suggestedFix).toBe(
         'Review training data and model prompts for factual accuracy.'
@@ -368,7 +369,7 @@ describe('OverrideTrackingService', () => {
         });
       }
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(result[0].count).toBe(5);
@@ -389,7 +390,7 @@ describe('OverrideTrackingService', () => {
         timestamp: new Date(),
       });
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result).toHaveLength(1);
       expect(generateJSON).toHaveBeenCalledTimes(1);
@@ -412,7 +413,7 @@ describe('OverrideTrackingService', () => {
         timestamp: new Date(),
       });
 
-      const result = await getOverridePatterns('entity-1');
+      const result = await getOverridePatterns(verifiedEntityIdForTest('entity-1'));
 
       expect(result[0].suggestedFix).toBe(
         'Investigate override details for new pattern categories.'

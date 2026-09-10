@@ -6,7 +6,6 @@ import { recordOverride } from '@/modules/ai-quality/services/override-tracking-
 
 const bodySchema = z.object({
   actionId: z.string().min(1),
-  userId: z.string().min(1).optional(),
   originalOutput: z.string().min(1),
   overriddenOutput: z.string().min(1),
   reason: z.enum([
@@ -30,7 +29,9 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
+      // The override is attributed to the authenticated caller, never to a
+      // user id supplied in the body.
+      const userId = session.userId;
       const record = await recordOverride(
         parsed.data.actionId,
         userId,

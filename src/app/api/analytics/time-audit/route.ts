@@ -5,7 +5,6 @@ import { withAuth } from '@/shared/middleware/auth';
 import { generateTimeAudit } from '@/modules/analytics/services/time-audit-service';
 
 const querySchema = z.object({
-  userId: z.string().min(1).optional(),
   start: z.string().datetime(),
   end: z.string().datetime(),
 });
@@ -20,7 +19,8 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const userId = parsed.data.userId ?? session.userId;
+      // Cross-entity view (tenancy-pattern.md 5b). Scope = the session's user.
+      const userId = session.userId;
 
       const report = await generateTimeAudit(
         userId,

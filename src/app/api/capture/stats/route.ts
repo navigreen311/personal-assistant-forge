@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth } from '@/shared/middleware/auth';
+import { withAuth, verifyEntityForUser } from '@/shared/middleware/auth';
 import { captureService } from '@/modules/capture/services/capture-service';
 import type { CaptureItem, CaptureLatencyMetrics } from '@/modules/capture/types';
 
@@ -182,14 +182,25 @@ export async function GET(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const { entityId } = parsed.data;
+      // P-13 -- CROSS-ENTITY aggregate over the caller's own captures.
+      // `?entityId=` reached `listCaptures` unproven; it is a filter, so it
+      // could not widen the set beyond the caller's own rows, but it was still
+      // an unverified id in a query and is now proved.
+      let entityId;
+      if (parsed.data.entityId) {
+        const verified = await verifyEntityForUser(parsed.data.entityId, session.userId);
+        if (!verified) {
+          return error('FORBIDDEN', 'You do not have access to this entity', 403);
+        }
+        entityId = verified;
+      }
 
       // Attempt to pull real data from the capture service
       try {
         // Fetch all captures for the user (large page to get everything)
         const { data: captures } = await captureService.listCaptures(
           session.userId,
-          { entityId: entityId ?? undefined },
+          { entityId },
           1,
           10_000,
         );
