@@ -498,19 +498,35 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // LEG 6 — "the action is written to an append-only audit log attributed to
     //          the real authenticated user".
     //
-    // THE GAP, MEASURED. Not one AuditLogEntry exists for anything this story
-    // has done: register, two entity creations, an entity switch, a task
-    // creation, a workflow creation and a workflow run. `grep -rln audit-wiring
-    // src/app/api` returns 30 route files, every one under crisis/, security/,
-    // admin/, delegation/ or safety/. Task creation — the audit's own example
-    // of "the action" — is not among them, and neither is anything else on this
-    // path.
+    // THE GAP, MEASURED — and it has moved by exactly one leg since P-20 wrote
+    // this. P-20's assertion was `count() === 0`: not one AuditLogEntry existed
+    // for anything this story had done — register, two entity creations, an
+    // entity switch, a task creation, a workflow creation and a workflow run.
+    //
+    // P-29 wired `POST /api/auth/switch-entity` to the audit log, because a
+    // tenant-context change is precisely what an auditor reconstructs a session
+    // from. So the switch in LEG 2 is now on the record, and the assertion is
+    // tightened rather than relaxed: the switch is the ONLY thing in this story
+    // that is audited, and everything else still writes nothing. `grep -rln
+    // audit-wiring src/app/api` returns 31 route files; the other 30 are all
+    // under crisis/, security/, admin/, delegation/ or safety/. Task creation —
+    // the audit's own example of "the action" — is still not among them, so
+    // this leg is still a FAIL.
     //
     // The worker's ActionLog rows above are a different table: no actor beyond
     // the literal 'SYSTEM', no hash chain, no tamper verifier, and no entityId
     // column at all.
     // -----------------------------------------------------------------------
-    expect(await db.auditLogEntry.count()).toBe(0);
+    const auditSoFar = await db.auditLogEntry.findMany({
+      orderBy: { timestamp: 'asc' },
+      select: { resource: true, action: true, actor: true, statusCode: true },
+    });
+    expect(auditSoFar.map((r) => r.resource)).toEqual(['auth.switch-entity']);
+    expect(auditSoFar[0]).toMatchObject({
+      action: 'POST /api/auth/switch-entity',
+      actor: email,
+      statusCode: 200,
+    });
     expect(stepRows.every((r) => r.actor === 'SYSTEM')).toBe(true);
     legs['6. audit row for the action'] = 'FAIL';
 
@@ -537,7 +553,11 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
         },
       })
     );
+    // Scoped to this route's resource. Before P-29 the switch wrote nothing, so
+    // the oldest row in the table was necessarily this one; now it is not, and
+    // an unscoped `findFirst` would silently assert against the switch instead.
     const firstAudit = await db.auditLogEntry.findFirstOrThrow({
+      where: { resource: 'crisis.dead-man-switch' },
       orderBy: { timestamp: 'asc' },
     });
     expect(firstAudit.actor).toBe(email);
