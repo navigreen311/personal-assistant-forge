@@ -1,5 +1,16 @@
 import type { Config } from 'jest';
 
+// P-25: this suite needs a real Redis, and needs it to itself.
+//
+// BullMQ names its keys from the queue name alone, so `capture-queue`,
+// `workflow-execution`, `pa-forge-jobs` and `workflow-cron` are the same keys in
+// every process on the machine -- and both this suite and the unit suite call
+// `obliterate({ force: true })` to start clean, which deletes them globally. Two
+// concurrent `npm run test:db` runs against separate Postgres databases still
+// failed 13 lanes out of 16 for this reason; giving each its own Redis logical
+// database took that to 0 of 18. `globalSetup` leases one exclusively.
+process.env.PAF_TEST_REDIS_ISOLATION = 'lease';
+
 /**
  * Real-database Jest config.
  *
@@ -31,6 +42,9 @@ const config: Config = {
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.json' }],
   },
+  // Leases an exclusive Redis logical database for this run and rewrites
+  // REDIS_URL to it, before any worker loads src/lib/queue/connection.ts.
+  globalSetup: '<rootDir>/tests/helpers/redis.ts',
   testTimeout: 30000,
 };
 
