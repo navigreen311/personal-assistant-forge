@@ -175,8 +175,17 @@ const PREDICTED_UNSCOPED = [
   '/api/onboarding/migration',
   '/api/settings/api-keys',
   '/api/shadow/config/voice-personas',
-  '/api/shadow/receipts',
-  '/api/shadow/receipts/[id]',
+  // P-34 repaired `/api/shadow/receipts` and `/api/shadow/receipts/[id]`; both
+  // now go through `withEntityScope`, so the detector correctly no longer finds
+  // them and they are struck from the prediction rather than from the run.
+  //
+  // `/api/shadow/config/voice-personas` STAYS, and deliberately: it is
+  // authenticated and unscoped, and it is RIGHT. It returns a hard-coded array
+  // of seven voice personas declared in the route file. No entity owns
+  // "Professional Female", so adding `withEntityScope` would produce a filter
+  // that looks like tenancy and filters nothing -- the exact shape of the ten
+  // defects P-28 exists to detect. It is on this list because it is unscoped,
+  // not because it leaks; it has never been in KNOWN_LEAKING_ROUTES.
 ];
 
 /**
@@ -214,8 +223,34 @@ const PREDICTED_UNSCOPED = [
  * user-scoped route does — it simply never checks the receipt. No static rule
  * this file could write would catch that. Handing it another tenant's receipt
  * id and watching what happens does.
+ *
+ * ==========================================================================
+ * P-34 CLOSED ALL FIVE. THE LIST IS EMPTY AND THE PARAGRAPH ABOVE IS HISTORY.
+ * ==========================================================================
+ *
+ * All five now go through `withEntityScope`, and the two services behind them
+ * (`consent-receipt.ts`, `call-playbook.ts`) take a `VerifiedEntityId` as a
+ * required argument on every read and every write, so a route that has not
+ * proved the tenant cannot call them — the failure is `tsc`, not review.
+ *
+ * The empty array is NOT the evidence. An empty array is also what "every route
+ * refuses everybody" produces. The evidence is that `enforcing` — route/method
+ * pairs that refuse A and SERVE B in the same sweep — went UP by exactly five,
+ * from 135 to 140, and that the test below now asserts that asymmetry on each
+ * of the five by name, where it used to assert their symmetry.
  */
-const KNOWN_LEAKING_ROUTES = [
+const KNOWN_LEAKING_ROUTES: string[] = [];
+
+/**
+ * The five that used to leak, kept by name as a regression guard.
+ *
+ * `KNOWN_LEAKING_ROUTES` going empty removes the only thing that named them, so
+ * a future edit could reopen one and the empty-array assertion would fail with
+ * no clue where to look. This keeps the names, and the test that reads it
+ * asserts the opposite of what the old one did: each must now refuse tenant A
+ * and still serve tenant B.
+ */
+const REPAIRED_BY_P34 = [
   'GET /api/shadow/playbooks',
   'GET /api/shadow/receipts',
   'GET /api/shadow/receipts/[id]',
@@ -541,7 +576,7 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     }
   });
 
-  it('reports the whole set — thirty routes, not five', () => {
+  it('reports the whole set — twenty-seven routes, not five', () => {
     const unscoped = unscopedAuthenticatedRoutes();
     const patterns = unscoped.map((r) => r.urlPattern);
 
@@ -589,6 +624,12 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     //
     // If a later package decides platform telemetry should be owner-only, or
     // partitioned per entity, this line is where that decision gets made.
+    //
+    // IT EARNED ITS KEEP A THIRD TIME, IN P-34, AND THIS TIME DOWNWARD. Thirty
+    // became twenty-seven: `/api/shadow/playbooks/[id]`, `/api/shadow/receipts`
+    // and `/api/shadow/receipts/[id]` now call `withEntityScope`, so the
+    // detector stops finding them. The recorded number is what forces that
+    // removal to be stated in the same commit as the repair.
     expect(patterns).toEqual([
       '/api/admin/observability',
       '/api/attention/insights',
@@ -611,9 +652,6 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/settings/api-keys',
       '/api/shadow/config/voice-personas',
       '/api/shadow/config/voice-personas/[id]/preview',
-      '/api/shadow/playbooks/[id]',
-      '/api/shadow/receipts',
-      '/api/shadow/receipts/[id]',
       '/api/shadow/test/phone',
       '/api/shadow/test/text',
       '/api/shadow/test/voice',
@@ -622,11 +660,19 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/travel/visa',
     ]);
 
-    // Eight of the twenty-nine are under /api/shadow/, backed by
-    // src/modules/shadow/ — the directory no tenancy package owned. That is not
-    // a coincidence, and it is the finding behind the finding: the five routes
-    // that actually leak are all in the same eight.
-    expect(patterns.filter((p) => p.startsWith('/api/shadow/')).length).toBe(8);
+    // Eight of the twenty-nine were under /api/shadow/, backed by
+    // src/modules/shadow/ — the directory no tenancy package owned. That was
+    // not a coincidence, and it was the finding behind the finding: the five
+    // routes that actually leaked were all in the same eight.
+    //
+    // P-34 took the module and the count is five. What is left is stated rather
+    // than left to be re-derived: `/api/shadow/config/voice-personas` and its
+    // `[id]/preview` return a hard-coded list of seven voice personas that no
+    // entity owns, and the three `/api/shadow/test/*` routes drive the agent
+    // against the CALLER'S OWN session and address no record by id. Both kinds
+    // are unscoped and correct; scoping them would add a filter that filters
+    // nothing. None has ever appeared in KNOWN_LEAKING_ROUTES.
+    expect(patterns.filter((p) => p.startsWith('/api/shadow/')).length).toBe(5);
   });
 });
 
@@ -744,56 +790,82 @@ describe('T-035 — every route, called by tenant A while naming tenant B', () =
     expect(leaking).toEqual([...KNOWN_LEAKING_ROUTES].sort());
   });
 
-  it('answers tenant A exactly as it answers tenant B — it cannot tell them apart', async () => {
+  it('now tells tenant A from tenant B on all five it could not — refuses A, serves B', async () => {
     const { attemptsAtoB, attemptsBtoB } = await sweep();
 
-    // The canary in an A→B response only means "another tenant's data" if B
-    // legitimately sees it too. If B could not reach its own rows either, the
-    // canary would be evidence of something else entirely, and a "fix" that
-    // denied everyone would satisfy every negative assertion in this file.
+    // P-20 WROTE THE OPPOSITE OF THIS TEST, AND WAS RIGHT TO.
     //
-    // So the claim is the strongest and simplest one available: on each of
-    // these routes the platform returns the SAME STATUS and the SAME ROW to the
-    // owner and to a stranger. It is not refusing anyone badly; it is not
-    // distinguishing them at all.
+    // It asserted that on each of these five the platform returned the SAME
+    // STATUS and the SAME ROW to the owner and to a stranger: not refusing
+    // anyone badly, not distinguishing them at all. P-34 repaired all five, so
+    // that assertion is now false and the honest replacement is its mirror.
+    //
+    // The direction matters more than the list. `leaking` being empty is also
+    // what "every route refuses everybody" produces, and P-20 counted 267
+    // route/method pairs that refuse everyone and prove nothing. So each of the
+    // five is asserted BOTH ways in the same sweep: tenant A is refused, and
+    // tenant B — the owner — still gets its own row back, canary and all. A fix
+    // that had simply broken these routes fails the second half.
     const table: string[] = [];
-    for (const key of KNOWN_LEAKING_ROUTES) {
+    for (const key of REPAIRED_BY_P34) {
       const attack = attemptsAtoB.find((a) => a.key === key);
       const control = attemptsBtoB.find((a) => a.key === key);
       expect(attack).toBeDefined();
       expect(control).toBeDefined();
 
-      // Both see tenant B's row...
-      expect(attack!.leaked).toBe(true);
+      // The discriminator is `leaked`, not the status. A saw nothing of tenant
+      // B's row on any of the five; B saw its own on all five.
+      expect(attack!.leaked).toBe(false);
+      expect(attack!.status).toBe(403);
       expect(control!.leaked).toBe(true);
-      // ...and the platform's answer to the two of them is identical.
-      expect(attack!.status).toBe(control!.status);
 
-      table.push(`  ${String(attack!.status).padStart(3)}  A=B  ${key}`);
+      table.push(
+        `  A=${String(attack!.status).padStart(3)}  B=${String(control!.status).padStart(3)}  ${key}`
+      );
     }
 
-    // One of the five answers 400 rather than 200 to both callers:
-    // `POST /api/shadow/receipts/[id]/rollback` reports ROLLBACK_FAILED for a
-    // receipt with nothing to undo — and puts the other tenant's action
-    // description in the message while doing it. A refusal that quotes the
-    // record it refused to touch is still a disclosure, so it is counted.
-    expect(table.filter((r) => r.trim().startsWith('400'))).toHaveLength(1);
+    // FOUR OF THE FIVE SERVE B WITH A 200. THE FIFTH DOES NOT, AND WHY MATTERS.
+    //
+    // `POST /api/shadow/receipts/[id]/rollback` answers the OWNER 400 as well,
+    // because the sweep's generic canary receipt is written with the column
+    // default `reversible: false` and there is therefore nothing to undo. That
+    // is a business refusal, not a tenancy one, so this pair is counted in
+    // `refusesEveryone` below and NOT in `enforcing` — deliberately, because a
+    // route that refuses everybody is not evidence of tenancy and this file
+    // does not let one be counted as though it were.
+    //
+    // Its tenancy is proved by `leaked` instead, asserted above: tenant B's
+    // 400 quotes B's own receipt (that quoting is what made P-20 count this
+    // route's refusal as a disclosure in the first place), and tenant A's 403
+    // quotes nothing, because A never reached the receipt at all.
+    const servesOwner = table.filter((r) => r.includes('B=200'));
+    expect(servesOwner).toHaveLength(4);
 
-    console.log(['', 'P-20 fuzz — routes that cannot tell A from B:', ...table, ''].join('\n'));
+    console.log(
+      ['', 'P-34 — routes that used to answer A and B identically:', ...table, ''].join('\n')
+    );
   });
 
-  it('reads one tenant consent receipt by id from another tenant session', async () => {
-    const { attemptsAtoB, rowIds, canary } = await sweep();
+  it('no longer reads one tenant consent receipt by id from another tenant session', async () => {
+    const { attemptsAtoB, attemptsBtoB, rowIds, canary } = await sweep();
     // Stated on its own because the sweep can only reach it by supplying a real
     // receipt id, and because a receipt is the record of a consent decision --
-    // reading someone else's is not a cosmetic leak.
+    // reading someone else's is not a cosmetic leak. P-20 pinned this at 200
+    // with the canary in the body; P-34 scoped `getReceipt` and the same call
+    // is now a 403 from `withEntityScope` with nothing of tenant B in it.
     const receiptId = rowIds.get('ShadowConsentReceipt');
     expect(receiptId).toBeDefined();
 
     const attempt = attemptsAtoB.find((a) => a.key === 'GET /api/shadow/receipts/[id]');
     expect(attempt).toBeDefined();
-    expect(attempt!.status).toBe(200);
-    expect(attempt!.body).toContain(canary);
+    expect(attempt!.status).toBe(403);
+    expect(attempt!.body).not.toContain(canary);
+
+    // The positive control, without which the line above is satisfied by a
+    // route that 403s everybody: the owner reads the same receipt id fine.
+    const control = attemptsBtoB.find((a) => a.key === 'GET /api/shadow/receipts/[id]');
+    expect(control!.status).toBe(200);
+    expect(control!.body).toContain(canary);
   });
 
   it('refuses A on every route that also serves B — the asymmetry is the enforcement', async () => {
@@ -830,13 +902,42 @@ describe('T-035 — every route, called by tenant A while naming tenant B', () =
       ].join('\n')
     );
 
-    // The load-bearing number. 135 route/method pairs demonstrably DISCRIMINATE
+    // The load-bearing number. 140 route/method pairs demonstrably DISCRIMINATE
     // between the two tenants in the same request — they answer B and refuse A.
     // That is the only class of result that is evidence of tenancy, and it is
     // recorded exactly rather than as a floor, because a "fix" that denied
     // everyone would push this number DOWN while every negative assertion in
     // every tenancy suite kept passing.
-    expect(enforcing.length).toBe(135);
+    //
+    // P-34: 135 -> 140, and the five are exactly `REPAIRED_BY_P34`. This is the
+    // number that makes `KNOWN_LEAKING_ROUTES` being empty mean something. Had
+    // the repair worked by refusing everyone, the empty array would still be
+    // empty and this line would read 135 or less.
+    expect(enforcing.length).toBe(140);
+
+    // The five additions, named, so the delta is not a number anyone has to
+    // take on trust. Four are repaired leaks; the fifth is
+    // `DELETE /api/shadow/playbooks/[id]`, which never appeared in
+    // KNOWN_LEAKING_ROUTES only because a successful delete returns
+    // `{ deleted: true }` and carries no canary to detect — it was deleting
+    // another tenant's playbook the whole time, and the same `withEntityScope`
+    // change stopped it. That is the second time this file has found a defect
+    // it was not looking for, and the same way: by measuring behaviour rather
+    // than reading code.
+    expect(enforcing).toEqual(
+      expect.arrayContaining([
+        'GET /api/shadow/playbooks',
+        'GET /api/shadow/receipts',
+        'GET /api/shadow/receipts/[id]',
+        'PUT /api/shadow/playbooks/[id]',
+        'DELETE /api/shadow/playbooks/[id]',
+      ])
+    );
+
+    // And the one repaired route that is NOT here, stated rather than omitted:
+    // its owner-side call is a business refusal (nothing to roll back), so it
+    // cannot demonstrate the asymmetry by status. See the test above.
+    expect(refusesEveryone).toContain('POST /api/shadow/receipts/[id]/rollback');
 
     // The honesty clause, stated as an assertion rather than a hope. These
     // refuse A — and they refuse B too, so their refusal is not evidence of

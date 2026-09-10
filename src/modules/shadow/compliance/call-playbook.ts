@@ -11,6 +11,27 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+
+// ============================================================================
+// P-34 — EVERY OPERATION HERE TAKES A `VerifiedEntityId`, AND IT IS NOT OPTIONAL
+// ============================================================================
+//
+// `getPlaybook`, `updatePlaybook` and `deletePlaybook` took a bare `id` and
+// called `findUnique`/`update`/`delete` on it. `PUT /api/shadow/playbooks/[id]`
+// is one of the five routes P-20's fuzz recorded as returning another tenant's
+// rows, and `GET /api/shadow/playbooks` is another: it read `?entityId=` off
+// the query string and passed it straight to `listPlaybooks`.
+//
+// A playbook is not an ordinary record. `neverDisclose` is the list of fields
+// Shadow must NOT say out loud on a call, and `dataAllowed` is the list it may.
+// Editing another tenant's playbook edits what their voice agent is permitted
+// to disclose to a caller -- on a MedLink entity, that is PHI policy. So the
+// parameter is the branded `VerifiedEntityId` from
+// `src/shared/middleware/auth.ts` rather than a `string`: a route that has not
+// been through `withEntityScope` cannot call these functions at all, and the
+// failure is `tsc`, not review.
+// ============================================================================
 
 // --- Types ---
 
@@ -71,7 +92,7 @@ export class CallPlaybookService {
   /**
    * List all playbooks for an entity.
    */
-  async listPlaybooks(entityId: string): Promise<Playbook[]> {
+  async listPlaybooks(entityId: VerifiedEntityId): Promise<Playbook[]> {
     const playbooks = await prisma.voiceforgeCallPlaybook.findMany({
       where: { entityId },
       orderBy: { name: 'asc' },
@@ -83,9 +104,9 @@ export class CallPlaybookService {
   /**
    * Get a single playbook by ID.
    */
-  async getPlaybook(id: string): Promise<Playbook> {
-    const playbook = await prisma.voiceforgeCallPlaybook.findUnique({
-      where: { id },
+  async getPlaybook(id: string, entityId: VerifiedEntityId): Promise<Playbook> {
+    const playbook = await prisma.voiceforgeCallPlaybook.findFirst({
+      where: { id, entityId },
     });
 
     if (!playbook) {
@@ -99,13 +120,17 @@ export class CallPlaybookService {
    * Create a new playbook. `entityId`, `name` and `scenario` are required;
    * everything else falls back to the column default.
    */
-  async createPlaybook(data: Record<string, unknown>): Promise<Playbook> {
-    const entityId = optionalString(data.entityId);
+  async createPlaybook(
+    data: Record<string, unknown>,
+    entityId: VerifiedEntityId,
+  ): Promise<Playbook> {
+    // P-34. `entityId` was read out of `data`, i.e. out of the request body, so
+    // `POST /api/shadow/playbooks` created rows in whatever entity the caller
+    // named. It is now the verified argument and the body's copy is ignored.
     const name = optionalString(data.name);
     // `description` is the legacy request field for what is now `scenario`.
     const scenario = optionalString(data.scenario) ?? optionalString(data.description);
 
-    if (!entityId) throw new Error('entityId is required');
     if (!name) throw new Error('name is required');
     if (!scenario) throw new Error('scenario is required');
 
@@ -130,9 +155,13 @@ export class CallPlaybookService {
   /**
    * Update an existing playbook. Only the fields present in `data` are written.
    */
-  async updatePlaybook(id: string, data: Record<string, unknown>): Promise<Playbook> {
-    const existing = await prisma.voiceforgeCallPlaybook.findUnique({
-      where: { id },
+  async updatePlaybook(
+    id: string,
+    data: Record<string, unknown>,
+    entityId: VerifiedEntityId,
+  ): Promise<Playbook> {
+    const existing = await prisma.voiceforgeCallPlaybook.findFirst({
+      where: { id, entityId },
     });
 
     if (!existing) {
@@ -169,9 +198,9 @@ export class CallPlaybookService {
   /**
    * Delete a playbook.
    */
-  async deletePlaybook(id: string): Promise<void> {
-    const existing = await prisma.voiceforgeCallPlaybook.findUnique({
-      where: { id },
+  async deletePlaybook(id: string, entityId: VerifiedEntityId): Promise<void> {
+    const existing = await prisma.voiceforgeCallPlaybook.findFirst({
+      where: { id, entityId },
     });
 
     if (!existing) {
