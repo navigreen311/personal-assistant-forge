@@ -1024,3 +1024,87 @@ That is the third hang of this shape in this run — after P-18's Redis singleto
 and P-20's `setInterval` — and **the first one a package caught in its own work
 before it reached CI**. "Suite passes, process hangs" now has three instances and
 one cause: a long-lived handle with no close point.
+
+
+---
+
+# PHASE TWO — the owner's six steps, and what they cost
+
+After P-20 answered "no, five of nine", Ivan set six steps. All six are done.
+Packages 27-35, plus one migration window.
+
+| # | package | PR | sha | what it closed |
+|---|---|---|---|---|
+| 23 | P-27 the three joins | #83 | `7269ff9` | legs 4, 6, 8b — **5/9 -> 8/9** |
+| 21 | P-29 entity switching | #81 | `eaca9eb` | the eleventh phantom; prerequisite for Decision 1 |
+| 22 | P-28 observability | #82 | `e3ddaff` | T-013 + T-025, never dispatched in phase one |
+| 24 | P-30 entity isolation | #84 | `379ff43` | leg 7 — **nine of nine** |
+| 25 | P-31 workflow worker | #85 | `bd9dfc1` | the worker that logged EXECUTED and executed nothing |
+| 26 | P-32 workflow validation | #86 | `1e0ee02` | `'ACTVIE'` cannot be stored |
+| 27 | P-33 store persistence | #87 | `32c84af` | live 2FA in a Map; trusted devices permanently empty |
+| 28 | P-34 Shadow tenancy | #88 | `d54e8f4` | 11 LLM-reachable cross-tenant sites; **all 5 leaks closed** |
+| 29 | P-35 lint gate | #89 | `fdabaa2` | gate covers the repo: **128 errors -> 0**, 1,350 -> 1,686 files |
+
+## THE ANSWER CHANGED
+
+```
+P-20, 2026-09-10 06:00   FAIL 4, 6, 7, 8b        five of nine
+P-30, 2026-09-10 20:00   all nine PASS           NINE OF NINE
+```
+
+**The audit's end-to-end scenario runs.** Every leg, including entity isolation
+within one account, proven against a real Postgres with the record re-read rather
+than the status code asserted.
+
+## THE PATTERN THAT DEFINED BOTH PHASES
+
+Twelve confirmed phantoms — code that reports success for work that did not
+happen. Ten were `as any` over a Prisma delegate that does not exist (P-19). The
+other two were not:
+
+- **`POST /api/auth/switch-entity` returned the value you sent it.** Entity
+  switching never worked; `activeEntityId` was pinned to the oldest entity for
+  the life of the account (P-29).
+- **Shadow's `trigger_workflow` wrote `WORKFLOW_TRIGGERED` without calling the
+  executor** — and read cross-tenant while doing it (P-32/P-34).
+
+Adjacent, same shape: `processWorkflowJob` wrote `status: 'EXECUTED'` per node
+and dispatched nothing (P-31); a DELAY "completed" instantly because the queued
+job was a duplicate of the tail, so **"wait five minutes" ran in zero** (P-31);
+`trustedDevices` was permanently empty while four routes wrote real rows the
+handlers could not see (P-33); `src/lib/monitoring/` was 350 typed lines with
+zero importers and no SDK, a no-op **even with a DSN** (P-28).
+
+**A plausible result is indistinguishable from a real one.** Every gate this
+repository had — 5,499 unit tests, `tsc`, eslint, CI — passed over all of it.
+
+## THE THREE INSTRUMENTS THAT FOUND WHAT TESTS COULD NOT
+
+1. **P-20's behavioural sweep.** 503 route/method pairs swept twice against a
+   real Postgres. Found five leaks no static rule could see, incl.
+   `POST /api/shadow/receipts/[id]/rollback` undoing another tenant's consented
+   action. P-34 later found a sixth **by arithmetic** — `enforcing` rose by five
+   when only four routes could explain it, exposing a DELETE that returned no
+   canary.
+2. **P-28's phantom-delegate scan.** Reads delegate names from the DMMF; would
+   have caught all ten `as any` bugs before merge, in ~2s, with no database.
+3. **The end-to-end proof itself**, whose value is that it fails when a leg
+   regresses — `expect(passed).toBe(9)` plus a named assertion per leg, so a fix
+   in one cannot hide a break in another.
+
+## THE FINDING ABOUT THE TEST SUITE
+
+**205 `jest.mock('@/lib/db')` sites across 203 files.** In P-28's words: a mocked
+delegate *proves the delegate exists* — the opposite of what is true in
+production. **A mock is a claim about an interface, and nothing was checking the
+claim.** That is how ten routes querying absent tables coexisted with a fully
+green suite, and it is the single most transferable lesson of this build.
+
+## SEVEN SCOPE-DEPENDENT NUMBERS
+
+Every naive count on this repository has misled at least once: `_session` went
+*up* after two packages fixed 16 routes; 7 vs 5 bad-pattern routes; a
+`continue-on-error` that was a comment; `as any` 237 vs 367 depending on `.tsx`
+and tests; in-memory stores 64 vs 69 vs 104 depending on arrays and constants;
+`as unknown as` "+3" that was its own explanatory comments. **Quote no number
+from this codebase without its scope attached.**
