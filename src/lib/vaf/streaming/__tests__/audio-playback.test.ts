@@ -54,8 +54,36 @@ class FakeAudioContext {
   }
 }
 
+// ---------------------------------------------------------------------------
+// P-25: why this file runs on fake timers
+// ---------------------------------------------------------------------------
+//
+// Every wait in this suite used to be `await new Promise(r => setTimeout(r, N))`
+// against the real clock -- a guess that the decode chain would have finished N
+// real milliseconds later. `FakeAudioContext.decodeAudioData` resolves on its own
+// `setTimeout(..., 1)`, so the margin was 20ms of wall clock covering two 1ms
+// decodes plus the microtask turns between them. That margin is not a property of
+// the code under test; it is a property of how busy the machine is. On a loaded
+// box -- 321 suites across ~31 jest workers, or three agents running the suite at
+// once -- the process is descheduled past the 20ms and `sources` still has one
+// entry, which is what P-24 measured as "fails 1 run in 6 on master".
+//
+// So the clock is pinned. `jest.advanceTimersByTimeAsync` moves fake time forward
+// and drains the microtask queue between each timer callback, which is exactly the
+// interleaving the decode chain needs: timer -> decode promise resolves -> chain
+// step schedules the source -> next step's decode timer. No real time passes, so
+// there is no margin left to lose and machine load cannot change the outcome.
+//
+// This is a stronger assertion than the old one, not a weaker one: 20 fake
+// milliseconds is a hard bound the chain must finish inside, where 20 real
+// milliseconds was a bound the chain was merely likely to finish inside.
 beforeEach(() => {
   FakeAudioContext.reset();
+  jest.useFakeTimers();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe('StreamingPlayer', () => {
@@ -82,8 +110,9 @@ describe('StreamingPlayer', () => {
     player.enqueue(new Uint8Array(1000).buffer);
     player.enqueue(new Uint8Array(2000).buffer);
 
-    // Wait for the decode chain to settle.
-    await new Promise((r) => setTimeout(r, 20));
+    // Drive the decode chain to completion in fake time: both decode timers and
+    // every microtask turn between them, with no dependence on the real clock.
+    await jest.advanceTimersByTimeAsync(20);
 
     expect(FakeAudioContext.sources).toHaveLength(2);
     // Buffers were assigned and connected to the destination.
@@ -107,7 +136,7 @@ describe('StreamingPlayer', () => {
     player.enqueue(new Uint8Array([1, 2, 3]).buffer);
     // Replace the mock so the next decode rejects, then reset so the chunk
     // after it succeeds.
-    await new Promise((r) => setTimeout(r, 5));
+    await jest.advanceTimersByTimeAsync(5);
 
     // Get the (single) FakeAudioContext instance via the source list.
     // Hard to reach directly — instead just verify the chain doesn't reject.
@@ -122,7 +151,7 @@ describe('StreamingPlayer', () => {
       audioContextCtor: FakeAudioContext as unknown as typeof AudioContext,
     });
     player.enqueue(new Uint8Array([1]).buffer);
-    await new Promise((r) => setTimeout(r, 5));
+    await jest.advanceTimersByTimeAsync(5);
 
     await player.close();
     expect(player.hasContext()).toBe(false);
