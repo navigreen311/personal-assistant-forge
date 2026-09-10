@@ -157,11 +157,30 @@ export class AuditService {
   async logAuditEntry(
     params: Omit<AuditLogEntry, 'id' | 'timestamp' | 'hash' | 'previousHash'>,
   ): Promise<AuditLogEntry> {
-    const timestamp = new Date();
-
     const row = await prisma.$transaction(async (tx) => {
       // Serialise writers for this entity. Released when the transaction ends.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.entityId})::bigint)`;
+
+      // COORDINATOR FIX: the timestamp is taken HERE, inside the lock, and not
+      // before it.
+      //
+      // It used to be captured before `$transaction`, and that forked the chain.
+      // Writers contend for the lock in an order that need not match the order in
+      // which they read the clock, so a writer could hold an EARLIER timestamp and
+      // still commit LATER. The tail read below orders by `timestamp desc`, so the
+      // next writer would then pick the wrong row as the tail and chain off a
+      // stale parent -- two rows sharing one `previousHash`, which the verifier
+      // reports as a broken chain, i.e. ordinary concurrency indistinguishable
+      // from tampering.
+      //
+      // Reproduced with a throwaway probe driving logAuditEntry at n=5/10/20 for
+      // one entity: at n=10 it produced 10 distinct hashes but only 9 distinct
+      // previousHashes. Ten unique hashes rules out a hash collision -- two
+      // writers genuinely read the same tail. Taking the clock inside the lock
+      // makes timestamp order match commit order, and the `id desc` tiebreak
+      // handles a shared millisecond (cuids are monotonic for sequential inserts
+      // in one process, which a separate probe confirmed).
+      const timestamp = new Date();
 
       const tail = await tx.auditLogEntry.findFirst({
         where: { entityId: params.entityId },
