@@ -61,12 +61,18 @@ jobs:
 
       # P-19/T-010. This carried `continue-on-error: true`, so `npx eslint src`
       # reported 142 errors and 68 warnings on every run and failed nothing.
-      # The 142 errors are now 0 -- 115 of them `@typescript-eslint/no-explicit-any`,
-      # the rule that would have caught every one of the phantom-Prisma-delegate
-      # bugs this run found -- so the step gates for real. Nine narrowly-scoped
-      # `eslint-disable-next-line` exceptions remain, each with a written reason
-      # and each listed in the P-19 PR; there is no file-level or rule-level
-      # suppression anywhere in src/.
+      # The 142 errors are now 0, so the step gates for real.
+      #
+      # 115 of those 142 were `@typescript-eslint/no-explicit-any` -- the rule
+      # that would have caught every phantom-Prisma-delegate bug in this
+      # codebase, six found by the audit and four more by P-19. It is now
+      # enforced with ZERO exceptions: `grep -rn "no-explicit-any" src` returns
+      # one line and it is prose in a comment. Two file-level `eslint-disable`
+      # blocks and 39 inline ones were removed, not worked around.
+      #
+      # Nine `eslint-disable-next-line react-hooks/*` exceptions remain, each
+      # with a written reason at the site and each listed in the P-19 PR. If you
+      # are about to add a tenth, put the reason next to it.
       - name: Lint
         run: npx eslint src
 
