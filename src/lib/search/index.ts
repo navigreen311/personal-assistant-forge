@@ -187,10 +187,14 @@ export async function getSearchSuggestions(params: {
   // intent -- one row per distinct title, newest first -- and states the
   // aggregate the old query left implicit. Verified against PG17, not a mock;
   // `tests/db/search.test.ts` is what holds it.
+  //
+  // `"deletedAt" IS NULL` is a second, separate repair: autocomplete was
+  // offering the titles of rows the user had already deleted. All three of
+  // these tables carry the column.
   const [tasks, documents, contacts] = await Promise.all([
     prisma.$queryRawUnsafe(
       `SELECT title FROM "Task"
-       WHERE "entityId" = $1 AND title ILIKE $2
+       WHERE "entityId" = $1 AND title ILIKE $2 AND "deletedAt" IS NULL
        GROUP BY title
        ORDER BY MAX("updatedAt") DESC
        LIMIT $3`,
@@ -200,7 +204,7 @@ export async function getSearchSuggestions(params: {
     ) as Promise<{ title: string }[]>,
     prisma.$queryRawUnsafe(
       `SELECT title FROM "Document"
-       WHERE "entityId" = $1 AND title ILIKE $2
+       WHERE "entityId" = $1 AND title ILIKE $2 AND "deletedAt" IS NULL
        GROUP BY title
        ORDER BY MAX("updatedAt") DESC
        LIMIT $3`,
@@ -210,7 +214,7 @@ export async function getSearchSuggestions(params: {
     ) as Promise<{ title: string }[]>,
     prisma.$queryRawUnsafe(
       `SELECT name FROM "Contact"
-       WHERE "entityId" = $1 AND name ILIKE $2
+       WHERE "entityId" = $1 AND name ILIKE $2 AND "deletedAt" IS NULL
        GROUP BY name
        ORDER BY MAX("updatedAt") DESC
        LIMIT $3`,
@@ -244,7 +248,7 @@ async function prismaFallbackSearch(
   // Was `filters.entityId ? { entityId: filters.entityId } : {}` -- an absent
   // scope produced an EMPTY where-fragment, i.e. every tenant's rows. The
   // scope is now required and unconditional; there is no falsy branch left.
-  const entityFilter = { entityId };
+  const entityFilter = { entityId, deletedAt: null };
   const dateFilter: Record<string, unknown> = {};
   if (filters.dateFrom) dateFilter.gte = filters.dateFrom;
   if (filters.dateTo) dateFilter.lte = filters.dateTo;

@@ -461,3 +461,84 @@ describe('GET /api/search — scope', () => {
     expect((await searchGET(anonymousRequest('/api/search?q=quarterly'))).status).toBe(401);
   });
 });
+
+// ===========================================================================
+// 5. SOFT DELETE — a sibling defect found by reading the same queries.
+//
+//    Not in the P-26 card, and a deliberate BEHAVIOUR CHANGE, so it is called
+//    out in the PR rather than slipped in. 64 places in `src/` filter
+//    `deletedAt: null`; `src/lib/search/` filtered it in none of them, so a
+//    document the user had deleted was still readable in full through
+//    /api/search and its title was still offered by autocomplete.
+//
+//    `KnowledgeEntry` has no `deletedAt` column, which is why the exclusion is
+//    a per-model flag rather than an assumption -- naming a column that is not
+//    there is error 42703, the same never-worked shape as the 42P10 above.
+// ===========================================================================
+
+describe('GET /api/search — soft-deleted rows', () => {
+  it('does not return a deleted task, or its description', async () => {
+    await db.task.updateMany({
+      where: { entityId: tenantA.entity.id, title: 'Alpha annual review' },
+      data: { deletedAt: new Date() },
+    });
+
+    const res = await searchGET(requestAs(tenantA, '/api/search?q=annual&type=task'));
+
+    expect(res.status).toBe(200);
+    const raw = JSON.stringify(await readJson(res));
+    expect(raw).not.toContain('Alpha annual review');
+    expect(raw).not.toContain('A private note about the annual numbers');
+  });
+
+  it('does not return a deleted document', async () => {
+    await db.document.updateMany({
+      where: { entityId: tenantA.entity.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const res = await searchGET(
+      requestAs(tenantA, '/api/search?q=architecture&type=document'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(await readJson(res))).not.toContain('Alpha architecture memo');
+  });
+
+  it('does not suggest a deleted title', async () => {
+    await db.contact.updateMany({
+      where: { entityId: tenantA.entity.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const res = await searchGET(
+      requestAs(tenantA, '/api/search?suggestions=true&q=Alph&limit=10'),
+    );
+
+    expect(res.status).toBe(200);
+    const { suggestions } = (await readJson<OkBody<{ suggestions: string[] }>>(res)).data;
+    expect(suggestions).not.toContain('Alphonse Parker');
+    // and the live rows are still there -- this is an exclusion, not a break
+    expect(suggestions).toContain('Alpha quarterly review');
+  });
+
+  it('still searches knowledgeEntry, which has no deletedAt column', async () => {
+    // The 42703 the flag exists to avoid: if the exclusion were applied
+    // unconditionally, this returns 500 instead of 200.
+    await db.knowledgeEntry.create({
+      data: {
+        entityId: tenantA.entity.id,
+        content: 'A quarterly knowledge note',
+        source: 'test',
+      },
+    });
+
+    const res = await searchGET(
+      requestAs(tenantA, '/api/search?q=quarterly&type=knowledgeEntry'),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await readJson<OkBody<SearchData>>(res);
+    expect(body.data.results.length).toBeGreaterThan(0);
+  });
+});

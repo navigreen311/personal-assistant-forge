@@ -11,6 +11,13 @@ export interface SearchableModel {
   searchFields: string[];
   titleField: string;
   weights: Record<string, 'A' | 'B' | 'C' | 'D'>;
+  /**
+   * Whether the table has a `deletedAt` column. Four of the five do;
+   * `KnowledgeEntry` does not, and asking for a column that is not there is
+   * error 42703 -- the same class of never-worked defect this package exists
+   * to remove, so the flag is per-model rather than assumed.
+   */
+  softDelete: boolean;
 }
 
 export const SEARCHABLE_MODELS: SearchableModel[] = [
@@ -20,6 +27,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['title', 'description'],
     titleField: 'title',
     weights: { title: 'A', description: 'B' },
+    softDelete: true,
   },
   {
     model: 'message',
@@ -27,6 +35,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['subject', 'body'],
     titleField: 'subject',
     weights: { subject: 'A', body: 'B' },
+    softDelete: true,
   },
   {
     model: 'document',
@@ -34,6 +43,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['title', 'content'],
     titleField: 'title',
     weights: { title: 'A', content: 'C' },
+    softDelete: true,
   },
   {
     model: 'knowledgeEntry',
@@ -41,6 +51,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['content'],
     titleField: 'content',
     weights: { content: 'B' },
+    softDelete: false,
   },
   {
     model: 'contact',
@@ -48,6 +59,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['name', 'email'],
     titleField: 'name',
     weights: { name: 'A', email: 'C' },
+    softDelete: true,
   },
 ];
 
@@ -338,6 +350,14 @@ export function buildSearchQuery(params: {
     paramIndex++;
   }
 
+  // Soft-deleted rows are not searchable. Every other list surface in the repo
+  // filters `deletedAt: null` (64 sites); search did not, so a "deleted"
+  // document was still readable in full through /api/search and still offered
+  // by autocomplete. See the PR -- this is a deliberate behaviour change.
+  if (model.softDelete) {
+    conditions.push(`"deletedAt" IS NULL`);
+  }
+
   // The scope goes on LAST and UNCONDITIONALLY (tenancy-pattern.md §3), so no
   // combination of the filters above can widen it.
   conditions.push(`"entityId" = $${paramIndex}`);
@@ -423,6 +443,10 @@ function buildCountQuery(params: {
     conditions.push(`"priority" = $${paramIndex}`);
     sqlParams.push(filters.priority);
     paramIndex++;
+  }
+
+  if (model.softDelete) {
+    conditions.push(`"deletedAt" IS NULL`);
   }
 
   // Scope last and unconditional, exactly as in the data query.
