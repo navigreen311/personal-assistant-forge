@@ -653,6 +653,8 @@ One row per merge. Appended by the coordinator at merge time.
 | 16 | P-26 search | [#76](https://github.com/navigreen311/personal-assistant-forge/pull/76) | `30a57ac` | 0 | 321/321 | 5349/5349 | 802/802 | **none** |
 | 17 | P-25 test isolation | [#77](https://github.com/navigreen311/personal-assistant-forge/pull/77) | `3731bc3` | 0 | 321/321 | 5349/5349 | 802/802 | **flake eliminated** |
 | 18 | P-18 rate limiting | [#78](https://github.com/navigreen311/personal-assistant-forge/pull/78) | `eb82ffa` | 0 | 321/321 | 5346/5346 | **826/826** | **none** |
+| 19 | P-19 closing gate | [#80](https://github.com/navigreen311/personal-assistant-forge/pull/80) | `7531cc2` | 0 | 321/321 | 5346/5346 | 826/826 | **none** |
+| 20 | P-20 end-to-end proof | [#79](https://github.com/navigreen311/personal-assistant-forge/pull/79) | `2dc2ed9` | 0 | 321/321 | 5346/5346 | **849/849** | **none** |
 
 ---
 
@@ -713,3 +715,109 @@ authenticated session, which is the point.
 
 **Unblocked now:** P-02 (typecheck repair) is in flight,
 then P-03, then P-04 as the reference implementation, then the Wave 2 fan-out.
+
+
+---
+
+# THE ANSWER — P-20, the package the whole run was for
+
+**Can the audit's end-to-end scenario run today? No.** Five of nine checkpoints
+pass. Four fail, **all four in the joins, and no package failed one.**
+
+| leg | verdict |
+|---|---|
+| register / two entities / task via API | PASS |
+| **workflow triggers ON THE TASK** | **FAIL** |
+| executes through the queue | PASS |
+| **audit row for the action** | **FAIL** |
+| **entity A refused entity B** | **FAIL** |
+| switch fires and is audited | PASS |
+| **the agent STOPS** | **FAIL** |
+
+P-04 built task creation, P-09 workflow execution, P-11 the queue, P-10 the audit
+log. All four are correct and tested. Verified independently at merge:
+`src/modules/tasks/` emits nothing and contains no audit call, and nothing
+evaluates workflow triggers from task events. **The absences live between the
+cards, so no card's test could fail for them.**
+
+> Each of those tests builds its own fixture, proves its own leg against it, and
+> throws the fixture away. That is the right way to test a component and it is
+> **structurally incapable of finding a seam** — because a seam is not inside
+> either component.
+
+That is why eighteen green packages could coexist with a chain that does not
+connect, and it is the single most transferable lesson of this run.
+
+## Leg 7 is an unmade product decision, not a defect
+
+`withEntityScope` compares `entity.userId` to `session.userId` — **who owns the
+entity**. Correct for the audit's original defect and what ~138 refusal cases
+across eleven suites assert. The audit's scenario is **one user with two of their
+own entities**: ownership is satisfied both times, so nothing refuses. Entity A's
+session reads, updates and cancels entity B's task, and the test asserts **the
+row** — title changed, status CANCELLED — not the status code.
+
+**Entity isolation within one account has never been decided.** It must be
+decided before anyone reads leg 7 as passing. P-20 correctly refused to answer it
+by editing a frozen file.
+
+## The five that leak are all in the one directory nobody owned
+
+503 route/method pairs swept twice against a real Postgres, tenant B seeded from
+the Prisma DMMF. **Five pairs leak, two of them writes, all five under
+`/api/shadow/`.** `POST /api/shadow/receipts/[id]/rollback` **undoes another
+tenant's consented action** and is invisible to any static rule. Reported
+honestly: 135 pairs demonstrably discriminate between tenants; **267 refuse
+everyone and are counted nowhere.**
+
+## The merge itself produced the run's sharpest finding
+
+Rebasing P-20 onto P-19 moved the recorded unscoped set 27 -> 29:
+`/api/attention/insights` and `/api/attention/notifications` joined it, and
+**neither route's tenancy changed.** Both were always tenant-blind. Both *looked*
+scoped because between them they named `session.userId` **six times** in `where:`
+clauses on `(prisma as any)` delegates that do not exist on this schema, inside
+swallowed catches. Those queries threw on every request these routes ever served.
+
+P-19 deleted the dead code and the hole it was covering became visible. **The
+repair did not introduce the bug; it disclosed it.** Dead code that mentions the
+right variable is indistinguishable from live code that uses it — to a grep, to
+an instrument, and to a human reading the file.
+
+# CORRECTION TO THE P-19 RECORD — the gate's scope
+
+P-19 was recorded as "eslint 0 errors". That is true **of `src/`, which is what
+the gate runs**: `npx eslint src` -> 66 problems, 0 errors. Bare `npm run lint`
+across the whole repository is **331 problems, 128 errors, every one of them
+under `tests/`** (87 `no-explicit-any`, 35 `no-require-imports`, 1 `no-var`).
+
+The gate is closed on `src/`. It is **not** closed on the test tree, and the test
+tree is where the tenancy proofs live. This is a follow-up, not a regression —
+but "lint is green" should not be said of this repository without the scope
+attached.
+
+# WHAT IS LEFT
+
+**Decisions only Ivan can make**
+1. **Entity isolation within one account** — does entity A refuse entity B when
+   one user owns both? Leg 7 cannot be scored until this is answered.
+
+**Wiring — the four failing legs**
+2. Subscribe workflow trigger evaluation to task creation.
+3. Wire the audit log into task creation.
+4. Make the dead-man's switch actually stop execution (it fires and audits; no
+   gate is created and all four workers keep running).
+
+**Repairs with a named owner-shaped gap**
+5. The **five leaking `/api/shadow/` routes**, `rollback` first.
+6. The **29** authenticate-but-never-scope routes, eight of them `/api/shadow/`.
+7. `src/modules/shadow/safety/auth-manager.ts` — one word, `.unref()`.
+8. **128 lint errors under `tests/`**, ungated.
+9. 64 domain-level in-memory stores.
+10. `trust-safety/throttle-service.ts` — a fourth counter with no product callers
+    and incoherent defaults (`maxPerHour: 10, maxPerDay: 1`).
+11. Six schema-window items from P-19, each its own migration: `FocusSession`;
+    `Notification.source`/`.blocked`; `ActionLog.module`/`.confidence`/`.metadata`;
+    `Task.completedAt`; `NotificationPreference`; `VafFallbackEvent`.
+12. T-013 Sentry and T-025 metrics — never dispatched. The platform still has no
+    error reporting and no metrics.
