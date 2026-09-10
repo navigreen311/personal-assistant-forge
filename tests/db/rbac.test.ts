@@ -57,6 +57,7 @@
  */
 
 import { db, setupTestDatabase } from '../helpers/db';
+import { closeDomainEventQueue } from '@/lib/queue/domain-events';
 import { createTenant, createTwoTenants, type Tenant } from '../helpers/factories';
 import { encode } from 'next-auth/jwt';
 import type { JWT } from 'next-auth/jwt';
@@ -71,6 +72,15 @@ import { DELETE as deleteContact } from '@/app/api/contacts/[id]/route';
 import { POST as createPolicy, GET as listPolicies } from '@/app/api/admin/policies/route';
 
 setupTestDatabase();
+
+// P-27: `POST /api/tasks` publishes `task.created`, which opens a producer
+// connection to Redis the first time any test in this file creates a task. It
+// belongs to the process, not to a test, so it is closed here -- otherwise jest
+// reports "did not exit one second after the test run has completed" and the
+// run hangs rather than failing.
+afterAll(async () => {
+  await closeDomainEventQueue();
+});
 
 // ---------------------------------------------------------------------------
 // The fixture: one tenant, four sessions over it.

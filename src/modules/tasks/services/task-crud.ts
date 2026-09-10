@@ -31,6 +31,7 @@
  */
 
 import { prisma } from '@/lib/db';
+import { emitDomainEvent } from '@/lib/queue/domain-events';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { Task, Priority, TaskStatus } from '@/shared/types';
 import type { TaskQueryFilters, TaskSortOptions } from '../types';
@@ -121,6 +122,35 @@ export async function createTaskForEntityOwner(
  * The shared write. Takes the scope as a plain string because both callers have
  * already established it -- one by proving ownership, one by reading it off a
  * row. Not exported: there is no third way in.
+ *
+ * ============================================================================
+ * P-27 (T-036) -- AND THE ONE PLACE `task.created` IS PUBLISHED
+ * ============================================================================
+ *
+ * The audit's scenario is "a workflow triggers on that task", and before this
+ * package nothing connected the two: `Workflow.triggers` could say
+ * `triggerType: 'EVENT'` and no code anywhere read it against a domain change.
+ *
+ * The publish is HERE, in the private write, and not in the route, for the
+ * reason this function already exists. A route-level hook fires for
+ * `POST /api/tasks` and for nothing else -- not the meeting processor's
+ * `createTaskForEntityOwner`, not a future importer, not a webhook. The
+ * `createTask` / `createTaskForEntityOwner` pair over one private `insertTask`
+ * is this codebase's answer to "two callers, one truth", and an event that only
+ * one of the two callers emits is exactly the half-connected seam P-20 found.
+ * One write, one event, no way in that skips it.
+ *
+ * It is published AFTER the row is committed and its result is discarded. A
+ * task that exists must not be reported as a failure because the notice about
+ * it could not be queued -- see `emitDomainEvent`, which never throws.
+ *
+ * KNOWN, AND NOT GUARDED HERE: a workflow whose ACTION node creates a task
+ * cannot re-trigger itself today, because `handleCreateTask` in
+ * `action-handlers.ts` writes with `prisma.task.create` directly and never
+ * reaches this function. That is an accident of a duplicate write path, not a
+ * loop guard, and it is reported as a finding. If that handler is ever routed
+ * through the service -- which it should be, it skips the project-scope check
+ * this function does -- a cycle becomes reachable and needs a real guard.
  */
 async function insertTask(params: TaskDraft, entityId: string): Promise<Task> {
   if (params.projectId) {
@@ -149,6 +179,17 @@ async function insertTask(params: TaskDraft, entityId: string): Promise<Task> {
       tags: params.tags ?? [],
       createdFrom: params.createdFrom ? JSON.parse(JSON.stringify(params.createdFrom)) : undefined,
     },
+  });
+
+  await emitDomainEvent({
+    entity: 'task',
+    event: 'created',
+    // Off the row that was just written, which is what makes it trustworthy
+    // downstream: by the time an event exists, the write it describes has
+    // already been authorised.
+    entityId: task.entityId,
+    recordId: task.id,
+    payload: { title: task.title, priority: task.priority, status: task.status },
   });
 
   return mapPrismaTask(task);

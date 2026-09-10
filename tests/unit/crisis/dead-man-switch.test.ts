@@ -25,6 +25,68 @@ const switchRows = new Map<string, FakeSwitchRow>();
 const auditRows: Array<Record<string, unknown>> = [];
 let auditSeq = 0;
 
+// ---------------------------------------------------------------------------
+// P-27/T-038. Firing the switch now STOPS things, and stopping is a row in
+// `ExecutionGateRule` -- one per entity the user owns. So this file needs two
+// more fakes: the entities to halt, and the gate table to halt them in.
+//
+// The gate fake is a real little table rather than a bag of jest.fn(): the
+// point of the new assertions is which rows exist afterwards, and a mock that
+// only records calls could not tell a halt that was installed from one that was
+// installed and immediately deleted.
+// ---------------------------------------------------------------------------
+
+interface FakeGateRow {
+  id: string;
+  name: string;
+  expression: string;
+  description: string;
+  scope: string;
+  entityId: string | null;
+  isActive: boolean;
+}
+
+const entityRows: Array<{ id: string; userId: string }> = [];
+const gateRows: FakeGateRow[] = [];
+let gateSeq = 0;
+
+function gateMatches(row: FakeGateRow, where: Record<string, unknown>): boolean {
+  if (where.name !== undefined && row.name !== where.name) return false;
+  if (where.isActive !== undefined && row.isActive !== where.isActive) return false;
+  const entityId = where.entityId as string | { in?: string[] } | undefined;
+  if (typeof entityId === 'string' && row.entityId !== entityId) return false;
+  if (entityId && typeof entityId === 'object' && Array.isArray(entityId.in)) {
+    if (!entityId.in.includes(row.entityId ?? '')) return false;
+  }
+  return true;
+}
+
+const executionGateRuleDelegate = {
+  createMany: jest.fn(async ({ data }: { data: Omit<FakeGateRow, 'id'>[] }) => {
+    for (const row of data) {
+      gateSeq += 1;
+      gateRows.push({ ...row, id: `gate-${gateSeq}` });
+    }
+    return { count: data.length };
+  }),
+  deleteMany: jest.fn(async ({ where }: { where: Record<string, unknown> }) => {
+    const keep = gateRows.filter((row) => !gateMatches(row, where));
+    const count = gateRows.length - keep.length;
+    gateRows.length = 0;
+    gateRows.push(...keep);
+    return { count };
+  }),
+  findFirst: jest.fn(async ({ where }: { where: Record<string, unknown> }) =>
+    gateRows.find((row) => gateMatches(row, where)) ?? null),
+  findMany: jest.fn(async ({ where }: { where?: Record<string, unknown> } = {}) =>
+    gateRows.filter((row) => gateMatches(row, where ?? {}))),
+};
+
+const entityDelegate = {
+  findMany: jest.fn(async ({ where }: { where: { userId: string } }) =>
+    entityRows.filter((row) => row.userId === where.userId).map((row) => ({ id: row.id }))),
+};
+
 const auditLogEntryDelegate = {
   create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
     auditSeq += 1;
@@ -90,6 +152,8 @@ jest.mock('@/lib/db', () => ({
       }),
     },
     auditLogEntry: auditLogEntryDelegate,
+    entity: entityDelegate,
+    executionGateRule: executionGateRuleDelegate,
     $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({ auditLogEntry: auditLogEntryDelegate, $executeRaw: jest.fn(async () => 1) })),
   },
@@ -121,6 +185,9 @@ beforeEach(() => {
   switchRows.clear();
   auditRows.length = 0;
   auditSeq = 0;
+  entityRows.length = 0;
+  gateRows.length = 0;
+  gateSeq = 0;
 });
 
 import {
@@ -453,6 +520,132 @@ describe('DeadManSwitchService', () => {
 
       expect(auditRows[0].actor).toBe('ops@example.com');
       expect(auditRows[0].actorId).toBe('ops-9');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P-27 / T-038 — "...and the agent stops."
+  //
+  // Before this, `fireDeadManSwitch` executed a protocol by writing one audit
+  // row naming it. `DeadManProtocol.action` is a free string and no dispatcher
+  // read it, so a firing changed nothing that could stop anything. These tests
+  // assert the row that does the stopping, and — as much as they assert its
+  // presence — that it is not there when it should not be.
+  // -------------------------------------------------------------------------
+  describe('the halt', () => {
+    const protocols: DeadManProtocol[] = [
+      { order: 1, action: 'NOTIFY', contactName: 'Now', message: 'immediate', delayHoursAfterTrigger: 0 },
+    ];
+
+    async function armedWithEntities(userId: string, entityIds: string[], hoursAgo: number) {
+      for (const id of entityIds) entityRows.push({ id, userId });
+      await configure(userId, {
+        userId,
+        isEnabled: true,
+        checkInIntervalHours: 1,
+        triggerAfterMisses: 2,
+        protocols,
+      });
+      backdateStoredCheckIn(userId, hoursAgo);
+    }
+
+    it('halts EVERY entity the user owns, not the one in the request context', async () => {
+      // The switch is keyed by userId and has no entity column, so the tenant
+      // in `context.entityId` is only where the audit rows are filed. Halting
+      // that one alone would leave the agent running in this user's other
+      // entities -- invisible to anyone who has just one.
+      await armedWithEntities('halt-1', ['e-a', 'e-b', 'e-c'], 3);
+
+      const result = await fireDeadManSwitch('halt-1', ACTOR);
+
+      expect(result.triggered).toBe(true);
+      expect(result.haltedEntityIds.sort()).toEqual(['e-a', 'e-b', 'e-c']);
+      expect(gateRows.map((g) => g.entityId).sort()).toEqual(['e-a', 'e-b', 'e-c']);
+    });
+
+    it('writes a halt the existing gate evaluator already understands', async () => {
+      // Not a second mechanism beside `evaluateGates`: an ordinary gate whose
+      // expression is `false`, which that function already refuses everything
+      // for. A bespoke column or a magic flag would need a second reader, and a
+      // halt with one reader is how the first version of this feature failed.
+      await armedWithEntities('halt-2', ['e-only'], 3);
+
+      await fireDeadManSwitch('halt-2', ACTOR);
+
+      expect(gateRows).toHaveLength(1);
+      expect(gateRows[0]).toMatchObject({
+        expression: 'false',
+        scope: 'ENTITY',
+        isActive: true,
+        entityId: 'e-only',
+      });
+    });
+
+    it('does NOT halt when the switch has not tripped', async () => {
+      entityRows.push({ id: 'e-quiet', userId: 'halt-3' });
+      await configure('halt-3', {
+        userId: 'halt-3',
+        isEnabled: true,
+        checkInIntervalHours: 24,
+        triggerAfterMisses: 3,
+        protocols,
+      });
+
+      const result = await fireDeadManSwitch('halt-3', ACTOR);
+
+      expect(result.triggered).toBe(false);
+      expect(gateRows).toHaveLength(0);
+    });
+
+    it('reasserts the halt on a tick that does NOT re-execute the protocols', async () => {
+      // The two halves have different idempotency requirements. Notifying the
+      // contacts must happen once per outage; being stopped must be TRUE for
+      // the whole of it. A crash between the audit row and the gate rows would
+      // otherwise leave a switch that refuses to fire again and an agent that
+      // never stopped.
+      await armedWithEntities('halt-4', ['e-4'], 3);
+      await fireDeadManSwitch('halt-4', ACTOR);
+
+      gateRows.length = 0; // as if the halt had been lost, or never written
+
+      const second = await fireDeadManSwitch('halt-4', ACTOR);
+
+      expect(second.alreadyFired).toBe(true);
+      expect(second.executed).toEqual([]);
+      expect(auditRows).toHaveLength(2); // still no second notification
+      expect(gateRows.map((g) => g.entityId)).toEqual(['e-4']); // but stopped again
+    });
+
+    it('lifts the halt when the user checks in', async () => {
+      // Without this the switch is a one-way door: the product can stop the
+      // agent and offers no way to start it again.
+      await armedWithEntities('halt-5', ['e-5a', 'e-5b'], 3);
+      await fireDeadManSwitch('halt-5', ACTOR);
+      expect(gateRows).toHaveLength(2);
+
+      await checkIn('halt-5');
+
+      expect(gateRows).toHaveLength(0);
+    });
+
+    it('lifts the halt when the switch is reconfigured', async () => {
+      // `configure` resets `lastCheckIn`, so `alreadyFiredSince` treats the
+      // outage as over and the switch may fire again. The halt has to end on
+      // the same edge or the reconfigured switch is armed over a user who is
+      // still stopped.
+      await armedWithEntities('halt-6', ['e-6'], 3);
+      await fireDeadManSwitch('halt-6', ACTOR);
+      expect(gateRows).toHaveLength(1);
+
+      await configure('halt-6', {
+        userId: 'halt-6',
+        isEnabled: true,
+        checkInIntervalHours: 12,
+        triggerAfterMisses: 2,
+        protocols,
+      });
+
+      expect(gateRows).toHaveLength(0);
     });
   });
 });

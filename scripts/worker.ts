@@ -67,6 +67,7 @@ import type { Job, Worker } from 'bullmq';
 import { prisma } from '@/lib/db';
 import { createJobWorker } from '@/lib/queue/jobs/registry';
 import { createCronWorker } from '@/lib/queue/scheduler';
+import { createDomainEventWorker } from '@/lib/queue/domain-event-worker';
 import { createWorkflowWorker } from '@/lib/queue/workflow-worker';
 import { report, reportError } from '@/lib/observability/report';
 import { startHeartbeat, reportWorkerShutdown } from '@/lib/observability/worker-health';
@@ -95,6 +96,11 @@ export function createAllWorkers(): NamedWorker[] {
     { name: 'pa-forge-jobs', worker: createJobWorker(CONCURRENCY) },
     { name: 'capture-queue', worker: createCaptureWorker({ concurrency: CONCURRENCY }) },
     { name: 'workflow-cron', worker: createCronWorker() },
+    // P-27 (T-036). The consumer that turns a domain change into a workflow
+    // run. Listed here rather than started anywhere else for the reason this
+    // file exists at all: a worker nobody constructs is a queue that fills up
+    // in silence, and P-11 found four of those.
+    { name: 'domain-events', worker: createDomainEventWorker({ concurrency: CONCURRENCY }) },
   ];
 }
 

@@ -80,6 +80,9 @@ import { createAllWorkers } from '../../scripts/worker';
 import { JobType } from '@/lib/queue/jobs';
 import { enqueueJob, getJobQueue } from '@/lib/queue/jobs/registry';
 import { getSchedulerQueue } from '@/lib/queue/scheduler';
+// P-27: `createAllWorkers` now starts a consumer for this queue too, so a job
+// another test file left in it would be processed against a truncated database.
+import { getDomainEventQueue } from '@/lib/queue/domain-events';
 import { enqueueWorkflowExecution, getQueue } from '@/lib/queue/workflow-queue';
 import type { WorkflowGraph } from '@/modules/workflows/types';
 
@@ -202,14 +205,14 @@ describe('queue workers actually consume', () => {
     // Redis is durable and shared between runs. A job left over from a previous
     // run would be consumed by these workers against a database that has since
     // been truncated, producing failures that belong to nobody. Start clean.
-    queues = [getQueue(), getJobQueue(), getSchedulerQueue()];
+    queues = [getQueue(), getJobQueue(), getSchedulerQueue(), getDomainEventQueue()];
     for (const queue of queues) {
       await queue.obliterate({ force: true });
     }
 
-    // The same four workers the container starts. Asserting against a
-    // hand-rolled worker would prove that a worker can consume, not that THIS
-    // deployment's workers do.
+    // The same workers the container starts. Asserting against a hand-rolled
+    // worker would prove that a worker can consume, not that THIS deployment's
+    // workers do.
     workers = createAllWorkers();
   }, 30_000);
 
@@ -226,6 +229,12 @@ describe('queue workers actually consume', () => {
     // miniature, so the names are asserted rather than the count.
     expect(workers.map((w) => w.name).sort()).toEqual([
       'capture-queue',
+      // P-27 (T-036): the consumer that turns a domain change into a workflow
+      // run. Added here at the same time as `createAllWorkers` learned about
+      // it, which is the point of asserting the names -- P-11 found four
+      // workers that were written, exported and never constructed, and this
+      // list is what stops that happening a fifth time.
+      'domain-events',
       'pa-forge-jobs',
       'workflow-cron',
       'workflow-execution',

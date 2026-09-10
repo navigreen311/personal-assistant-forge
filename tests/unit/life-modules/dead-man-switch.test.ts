@@ -89,6 +89,18 @@ jest.mock('@/lib/db', () => ({
         return row;
       }),
     },
+    // P-27 (T-038): `checkIn` and `configure` now lift the execution halt the
+    // dead man switch installs, which means asking which entities the user owns.
+    // No entities here, so `releaseEntities([])` short-circuits and the gate
+    // delegate is never reached -- it is present so that a change which DOES
+    // reach it fails loudly rather than on `undefined`.
+    entity: { findMany: jest.fn(async () => []) },
+    executionGateRule: {
+      findFirst: jest.fn(async () => null),
+      findMany: jest.fn(async () => []),
+      createMany: jest.fn(async () => ({ count: 0 })),
+      deleteMany: jest.fn(async () => ({ count: 0 })),
+    },
     auditLogEntry: auditLogEntryDelegate,
     $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({ auditLogEntry: auditLogEntryDelegate, $executeRaw: jest.fn(async () => 1) })),

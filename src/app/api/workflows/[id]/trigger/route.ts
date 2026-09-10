@@ -18,6 +18,7 @@ import { success, error } from '@/shared/utils/api-response';
 import { withAuth, withEntityScope, type VerifiedEntityId, withRole } from '@/shared/middleware/auth';
 import type { AuthSession } from '@/lib/auth/types';
 import { executeWorkflow } from '@/modules/workflows/services/workflow-executor';
+import { ExecutionHaltedError } from '@/modules/execution/services/execution-gate';
 
 const triggerSchema = z.object({
   // Accepted for backwards compatibility and deliberately ignored.
@@ -71,6 +72,19 @@ export async function POST(
 
         return success(execution, 201);
       } catch (err) {
+        // P-27 (T-038). A halted tenant is refused here, and it is refused with
+        // its own code rather than folded into TRIGGER_FAILED: "the dead man
+        // switch stopped you" and "your workflow crashed" are different facts
+        // and an operator must not have to read a message to tell them apart.
+        // 423 Locked, because the resource is intact and the refusal is
+        // temporary -- a check-in lifts it.
+        if (err instanceof ExecutionHaltedError) {
+          return error(
+            'EXECUTION_HALTED',
+            `Execution is stopped for entity ${err.entityId}. Check in to resume.`,
+            423
+          );
+        }
         const message =
           err instanceof Error ? err.message : 'Failed to trigger workflow';
         if (message.includes('not found')) {

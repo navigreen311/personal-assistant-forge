@@ -20,7 +20,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error, paginated } from '@/shared/utils/api-response';
-import { withEntityScope, withRole } from '@/shared/middleware/auth';
+import { withEntityScope } from '@/shared/middleware/auth';
+import { withAuditedRoleEntityScope } from '@/modules/security/audit-wiring';
 import { createTask, listTasks } from '@/modules/tasks/services/task-crud';
 import type { TaskStatus, Priority } from '@/shared/types';
 import type { TaskQueryFilters, TaskSortOptions } from '@/modules/tasks/types';
@@ -41,9 +42,44 @@ const CreateTaskSchema = z.object({
   createdFrom: z.object({ type: z.string(), sourceId: z.string() }).optional(),
 });
 
+/**
+ * P-27 (T-037) — WHICH TASK ROUTES WRITE AN AUDIT ROW, AND WHY NOT ALL OF THEM.
+ *
+ * The audit's scenario says "the action is written to an append-only audit log
+ * attributed to the real authenticated user", and its example of "the action"
+ * is this exact route. Before P-27 the audit log was wired into thirty route
+ * files, every one of them under crisis/, security/, admin/, delegation/ or
+ * safety/ — and not the one the scenario names.
+ *
+ * AUDITED: POST here, and GET / PUT / DELETE on `[id]`. Every one of those
+ * either changes a specific record or names one, so the row it produces answers
+ * "who did what to which task", which is the only question an audit row is for.
+ *
+ * NOT AUDITED: GET on this collection route. Not an oversight, and not
+ * squeamishness about volume for its own sake — `logAuditEntry` takes
+ * `pg_advisory_xact_lock` keyed on the entity to keep the per-tenant hash chain
+ * from forking under concurrency (see audit-service.ts). Every audited request
+ * for one tenant therefore SERIALISES against every other. A task list is what
+ * a dashboard polls; auditing it would put every page refresh in that queue,
+ * behind every write, and fill the tenant's chain with rows recording that
+ * somebody looked at a page. The chain would still verify and would say almost
+ * nothing.
+ *
+ * The cost of that line, stated rather than glossed: a successful cross-tenant
+ * LIST leaves no audit row. Today no such thing exists to record — one user's
+ * two entities do not refuse each other at all, which is leg 7 and is P-29's.
+ * When P-29 closes it, the refusal becomes a 403 worth recording and this
+ * decision is worth revisiting with the volume question answered by a real
+ * deployment rather than by me.
+ */
+const TASK_AUDIT = { resource: 'tasks', sensitivityLevel: 'INTERNAL' as const };
+
 export async function POST(request: NextRequest) {
-  return withRole(request, ['owner', 'admin', 'member'], () =>
-    withEntityScope(request, async (req, session, entityId) => {
+  return withAuditedRoleEntityScope(
+    request,
+    ['owner', 'admin', 'member'],
+    TASK_AUDIT,
+    async (req, session, entityId, report) => {
       try {
         const body = await req.json();
         const parsed = CreateTaskSchema.safeParse(body);
@@ -66,12 +102,16 @@ export async function POST(request: NextRequest) {
           session.userId
         );
 
+        // The row now names the task it created. Without this the audit entry
+        // for the audit's own example action says only that a task was made.
+        report(task.id);
+
         return success(task, 201);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to create task';
         return error('CREATE_FAILED', message, 500);
       }
-    })
+    }
   );
 }
 

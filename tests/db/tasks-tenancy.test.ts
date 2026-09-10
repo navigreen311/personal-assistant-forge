@@ -59,6 +59,7 @@ import {
 import { GET as projectStatsGET } from '@/app/api/projects/stats/route';
 
 import { db, setupTestDatabase } from '../helpers/db';
+import { closeDomainEventQueue } from '@/lib/queue/domain-events';
 import {
   createProject,
   createTask,
@@ -68,6 +69,15 @@ import {
 import { anonymousRequest, readJson, requestAs } from '../helpers/session';
 
 setupTestDatabase();
+
+// P-27: `POST /api/tasks` publishes `task.created`, which opens a producer
+// connection to Redis the first time any test in this file creates a task. It
+// belongs to the process, not to a test, so it is closed here -- otherwise jest
+// reports "did not exit one second after the test run has completed" and the
+// run hangs rather than failing.
+afterAll(async () => {
+  await closeDomainEventQueue();
+});
 
 type ErrBody = { success: false; error: { code: string; message: string } };
 type OkBody<T> = { success: true; data: T };

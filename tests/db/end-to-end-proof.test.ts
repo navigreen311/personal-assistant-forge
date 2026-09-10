@@ -41,21 +41,32 @@
  * around it with a fixture.
  *
  * ============================================================================
- * WHAT IT FOUND — read the four `THE GAP` blocks below
+ * WHAT IT FOUND, AND WHAT HAS SINCE BEEN JOINED
  * ============================================================================
  *
- * Three legs do not connect, and all three are invisible to a per-leg test:
+ * P-20 wrote this file and it found four legs that did not connect. Each was
+ * invisible to a per-leg test because none of them is inside a component.
  *
- *   1. Nothing triggers a workflow from a task. There is no event bus and no
- *      subscriber; the only starts are a manual POST, a cron tick and a
- *      re-enqueue from inside a run.
- *   2. `POST /api/tasks` writes no audit row. The audit log is wired into 30
+ *   1. Nothing triggered a workflow from a task. There was no event bus and no
+ *      subscriber; the only starts were a manual POST, a cron tick and a
+ *      re-enqueue from inside a run.                          FIXED by P-27.
+ *   2. `POST /api/tasks` wrote no audit row. The audit log was wired into 30
  *      route files, all under crisis / security / admin / delegation / safety.
- *      Task creation — the audit's own example — is not one of them.
+ *      Task creation — the audit's own example — was not one of them.
+ *                                                             FIXED by P-27.
  *   3. One user's two entities do NOT refuse each other. The frozen tenancy
  *      primitive proves the caller owns the entity, which is exactly the
  *      cross-USER check the eleven module suites assert. The audit's scenario
  *      is one user with two entities, and there ownership is satisfied.
+ *                                                             STILL OPEN. P-29.
+ *   4. The dead man switch fired and stopped nothing: it wrote an audit row
+ *      naming a protocol, and afterwards every worker was still consuming and a
+ *      workflow triggered a second later ran to completion.   FIXED by P-27.
+ *
+ * P-27 changed 1, 2 and 4 from FAIL to PASS, and this file is where that is
+ * asserted rather than claimed. The `THE GAP` blocks for those three have been
+ * replaced by `THE JOIN` blocks describing what now connects them; the one for
+ * leg 7 is untouched, because leg 7 is untouched.
  *
  * Requires a real Postgres and a real Redis. There is deliberately no skip.
  */
@@ -86,8 +97,10 @@ import {
   DELETE as taskDELETE,
 } from '@/app/api/tasks/[id]/route';
 import { POST as workflowsPOST } from '@/app/api/workflows/route';
+import { PUT as workflowPUT } from '@/app/api/workflows/[id]/route';
 import { POST as triggerPOST } from '@/app/api/workflows/[id]/trigger/route';
 import { POST as dmsPOST } from '@/app/api/crisis/dead-man-switch/route';
+import { POST as checkInPOST } from '@/app/api/crisis/dead-man-switch/check-in/route';
 import { POST as dmsEvaluatePOST } from '@/app/api/crisis/dead-man-switch/evaluate/route';
 import { GET as accessLogGET } from '@/app/api/security/access-log/route';
 
@@ -96,10 +109,21 @@ import { createAllWorkers } from '../../scripts/worker';
 import { getQueue } from '@/lib/queue/workflow-queue';
 import { getJobQueue } from '@/lib/queue/jobs/registry';
 import { getSchedulerQueue } from '@/lib/queue/scheduler';
+import { getDomainEventQueue, closeDomainEventQueue } from '@/lib/queue/domain-events';
 import { DMS_FIRED, DMS_PROTOCOL_EXECUTED } from '@/modules/crisis/services/dead-man-switch-service';
+import { HALT_GATE_NAME } from '@/modules/execution/services/execution-gate';
+import { auditService } from '@/modules/security/services/audit-service';
 
 setupTestDatabase();
 jest.setTimeout(180_000);
+
+// P-27: the domain-event producer opens a Redis connection the first time any
+// task is created, and it belongs to the process rather than to a test. The
+// describe below closes the queue instance it obliterates; this also clears the
+// module's cached handle, so nothing in a later describe can reach a closed one.
+afterAll(async () => {
+  await closeDomainEventQueue();
+});
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const PASSWORD = 'Correct-Horse-9';
@@ -296,6 +320,46 @@ function graphThatReachesTheQueue(taskId: string) {
   };
 }
 
+/**
+ * The graph an EVENT-triggered workflow runs — P-27 (T-036).
+ *
+ * The ACTION node names NO task id. It carries the placeholder `{{taskId}}`,
+ * which `executeActionNode` resolves against the run's variables, and those
+ * variables come from the event payload. That is the difference between a
+ * workflow triggered BY a task and a workflow about one particular task, and it
+ * is the only version of this that proves the seam: a hard-coded id would pass
+ * even if the trigger fired on some unrelated record.
+ */
+function graphThatActsOnWhicheverTaskTriggeredIt() {
+  return {
+    nodes: [
+      {
+        id: 'n-trigger',
+        type: 'TRIGGER',
+        label: 'Task created',
+        config: { nodeType: 'TRIGGER', triggerType: 'EVENT', eventName: 'task.created' },
+        position: { x: 0, y: 0 },
+        inputs: [],
+        outputs: ['out'],
+      },
+      {
+        id: 'n-action',
+        type: 'ACTION',
+        label: 'Update whichever task triggered this',
+        config: {
+          nodeType: 'ACTION',
+          actionType: 'UPDATE_RECORD',
+          parameters: { model: 'task', id: '{{taskId}}', data: { status: 'IN_PROGRESS' } },
+        },
+        position: { x: 200, y: 0 },
+        inputs: ['in'],
+        outputs: [],
+      },
+    ],
+    edges: [{ id: 'e1', sourceNodeId: 'n-trigger', targetNodeId: 'n-action' }],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The scenario, once, start to finish.
 // ---------------------------------------------------------------------------
@@ -306,9 +370,10 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
 
   beforeAll(async () => {
     await assertRedisReachable();
-    queues = [getQueue(), getJobQueue(), getSchedulerQueue()];
+    queues = [getQueue(), getJobQueue(), getSchedulerQueue(), getDomainEventQueue()];
     for (const queue of queues) await queue.obliterate({ force: true });
-    // The same four the container starts. See scripts/worker.ts.
+    // The same set the container starts — five since P-27 added the
+    // domain-event consumer. See scripts/worker.ts.
     workers = createAllWorkers();
   }, 60_000);
 
@@ -405,24 +470,109 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // -----------------------------------------------------------------------
     // LEG 4 — "a workflow triggers on that task".
     //
-    // THE GAP, MEASURED. Creating a task starts nothing. `grep -rn
-    // executeWorkflow\|enqueueWorkflowExecution src/` returns four call sites:
-    // POST /api/workflows/[id]/trigger, the cron tick, the agent orchestrator,
-    // and workflow-executor's own delay/resume re-enqueue. None of them is
-    // subscribed to anything a task does. `src/lib/realtime/events.ts` declares
-    // a `'task.created'` event type and `emitEvent`; `createTask` does not call
-    // it, and nothing subscribes to it if it did.
+    // THE JOIN — P-27 (T-036). This was FAIL. Creating a task started nothing:
+    // `executeWorkflow` had four call sites (a manual POST, the cron tick, the
+    // agent orchestrator, and the executor's own delay/resume re-enqueue), and
+    // none of them was subscribed to anything a record did. `Workflow.triggers`
+    // could say `triggerType: 'EVENT'` and no code on earth read it.
+    // `src/lib/realtime/events.ts` declared a `'task.created'` type and an
+    // `emitEvent` that fans out over the SSE connections held by ONE process —
+    // which the worker is not.
     //
-    // So the assertion is the absence, stated plainly rather than papered over:
-    // the platform is at rest a full second after the task was created.
+    // Now `insertTask` publishes `task.created` onto a `domain-events` BullMQ
+    // queue and `createDomainEventWorker` consumes it, matches the event name
+    // against every ACTIVE workflow's stored triggers in that entity, and runs
+    // the ones that asked. Nothing below reaches around that: the only thing
+    // this leg does is create a task through the API and then wait.
     // -----------------------------------------------------------------------
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    expect(await db.workflowExecutionRecord.count()).toBe(0);
-    legs['4. workflow triggers ON THE TASK'] = 'FAIL';
+    const reactive = await dataOf<{ id: string; status: string }>(
+      await workflowsPOST(requestAs(session, '/api/workflows', {
+        method: 'POST',
+        query: { entityId: entityA.id },
+        body: {
+          name: 'On task created',
+          entityId: entityA.id,
+          triggers: [{ triggerType: 'EVENT', eventName: 'task.created' }],
+          graph: graphThatActsOnWhicheverTaskTriggeredIt(),
+        },
+      })),
+      'create the reactive workflow'
+    );
 
-    // What the platform CAN do is run a workflow that acts on the task, when
-    // something asks it to. The rest of the leg is proved on that path, because
-    // "the queue executes to completion" is a separate claim worth settling.
+    // `createWorkflow` writes DRAFT, and a DRAFT workflow must not fire. That
+    // is the same rule the cron consumer applies to a schedule, and asserting
+    // it here first is what makes the wait below evidence of a TRIGGER rather
+    // than evidence that any task creation starts any workflow.
+    expect(reactive.status).toBe('DRAFT');
+    await dataOf<{ id: string }>(
+      await tasksPOST(requestAs(session, '/api/tasks', {
+        method: 'POST',
+        query: { entityId: entityA.id },
+        body: { title: 'Created while the workflow is still a draft', entityId: entityA.id },
+      })),
+      'create a task before the workflow is active'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(await db.workflowExecutionRecord.count()).toBe(0);
+
+    const activated = await dataOf<{ status: string }>(
+      await workflowPUT(
+        requestAs(session, `/api/workflows/${reactive.id}`, {
+          method: 'PUT',
+          query: { entityId: entityA.id },
+          body: { status: 'ACTIVE' },
+        }),
+        { params: Promise.resolve({ id: reactive.id }) }
+      ),
+      'activate the reactive workflow'
+    );
+    expect(activated.status).toBe('ACTIVE');
+
+    // One ordinary task creation. No trigger call, no queue call, no fixture.
+    const triggerTask = await dataOf<{ id: string; entityId: string }>(
+      await tasksPOST(requestAs(session, '/api/tasks', {
+        method: 'POST',
+        query: { entityId: entityA.id },
+        body: { title: 'The task that starts the workflow', entityId: entityA.id },
+      })),
+      'create the triggering task'
+    );
+
+    const eventRun = await waitFor(
+      `a COMPLETED run of ${reactive.id} started by task ${triggerTask.id}`,
+      async () => {
+        const rows = await db.workflowExecutionRecord.findMany({
+          where: { workflowId: reactive.id, status: 'COMPLETED' },
+        });
+        return (
+          rows.find(
+            (row) => (row.variables as { taskId?: string }).taskId === triggerTask.id
+          ) ?? null
+        );
+      }
+    );
+
+    // The run knows what started it, and says so in a column rather than in a
+    // log line: a run started by a task and a run started by a cron tick are
+    // different provenances and the history has to be able to tell them apart.
+    expect(eventRun.triggerType).toBe('EVENT');
+    expect(eventRun.triggeredBy).toBe(`event:task.created:${triggerTask.id}`);
+
+    // And it ACTED on the task that triggered it — the placeholder in the node
+    // resolved against the event payload. This is the assertion that makes the
+    // leg a join rather than a coincidence.
+    expect(
+      (await db.task.findUniqueOrThrow({ where: { id: triggerTask.id } })).status
+    ).toBe('IN_PROGRESS');
+
+    // Exactly one run: the draft-era task was not retro-triggered by the
+    // activation, and the event was not delivered twice.
+    expect(await db.workflowExecutionRecord.count({ where: { workflowId: reactive.id } })).toBe(1);
+    legs['4. workflow triggers ON THE TASK'] = 'PASS';
+
+    // Leg 5 is a separate claim — "it executes THROUGH THE QUEUE to completion"
+    // — and is settled below on its own workflow, whose DELAY node is the
+    // product's own API-reachable path from a run into BullMQ.
     const workflow = await dataOf<{ id: string; status: string }>(
       await workflowsPOST(requestAs(session, '/api/workflows', {
         method: 'POST',
@@ -465,9 +615,13 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // did leave a row: `handleUpdateRecord` logs UPDATE_RECORD for the task it
     // just changed. Only `WORKFLOW_STEP_*` rows come from
     // src/lib/queue/workflow-worker.ts, and there are none of those yet.
+    //
+    // TWO UPDATE_RECORD rows since P-27, not one: the first is the event-driven
+    // run in leg 4, the second is this manual one. Both went through the real
+    // action handler, which is the point of counting them here.
     expect(
       (await db.actionLog.findMany()).map((r) => r.actionType)
-    ).toEqual(['UPDATE_RECORD']);
+    ).toEqual(['UPDATE_RECORD', 'UPDATE_RECORD']);
 
     // The queue half: the DELAY node handed this same execution id to BullMQ,
     // and the worker the container starts picked it up and wrote to Postgres.
@@ -498,41 +652,92 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // LEG 6 — "the action is written to an append-only audit log attributed to
     //          the real authenticated user".
     //
-    // THE GAP, MEASURED — and it has moved by exactly one leg since P-20 wrote
-    // this. P-20's assertion was `count() === 0`: not one AuditLogEntry existed
+    // THE JOIN, in two halves by two packages.
+    //
+    // P-20's assertion here was `count() === 0`: not one AuditLogEntry existed
     // for anything this story had done — register, two entity creations, an
     // entity switch, a task creation, a workflow creation and a workflow run.
+    // The machinery was real (hash-chained, per-entity, tamper-verifiable, the
+    // actor taken from the verified session) and was wired into 30 route files,
+    // every one of them under crisis/, security/, admin/, delegation/ or
+    // safety/ — none of them on this path.
     //
-    // P-29 wired `POST /api/auth/switch-entity` to the audit log, because a
-    // tenant-context change is precisely what an auditor reconstructs a session
-    // from. So the switch in LEG 2 is now on the record, and the assertion is
-    // tightened rather than relaxed: the switch is the ONLY thing in this story
-    // that is audited, and everything else still writes nothing. `grep -rln
-    // audit-wiring src/app/api` returns 31 route files; the other 30 are all
-    // under crisis/, security/, admin/, delegation/ or safety/. Task creation —
-    // the audit's own example of "the action" — is still not among them, so
-    // this leg is still a FAIL.
+    // P-29 wired `POST /api/auth/switch-entity`, because a tenant-context
+    // change is precisely what an auditor reconstructs a session from.
+    // P-27 wired `POST /api/tasks` and the three `[id]` handlers, because task
+    // creation is the audit's own example of "the action".
     //
-    // The worker's ActionLog rows above are a different table: no actor beyond
-    // the literal 'SYSTEM', no hash chain, no tamper verifier, and no entityId
-    // column at all.
+    // Both are asserted below, and the set of audited resources is asserted
+    // EXACTLY rather than loosely: the claim is that the log now reaches the
+    // tenant-context change and the action and still nothing else on this path,
+    // which a `count() > 0` would not say.
+    //
+    // `POST /api/tasks` and the three `[id]` handlers now go through
+    // `audit-wiring.ts`. The assertion is on THE row for THE task this story
+    // created, found by its resourceId — not on a count, which would pass for
+    // any row from anywhere.
     // -----------------------------------------------------------------------
     const auditSoFar = await db.auditLogEntry.findMany({
       orderBy: { timestamp: 'asc' },
       select: { resource: true, action: true, actor: true, statusCode: true },
     });
-    expect(auditSoFar.map((r) => r.resource)).toEqual(['auth.switch-entity']);
+    expect(new Set(auditSoFar.map((r) => r.resource))).toEqual(
+      new Set(['auth.switch-entity', 'tasks'])
+    );
     expect(auditSoFar[0]).toMatchObject({
       action: 'POST /api/auth/switch-entity',
       actor: email,
       statusCode: 200,
     });
-    expect(stepRows.every((r) => r.actor === 'SYSTEM')).toBe(true);
-    legs['6. audit row for the action'] = 'FAIL';
 
-    // The audit log itself is real and is attributed correctly — on the routes
-    // that are wired to it. Asserting that here keeps the finding precise: the
-    // machinery works, the coverage does not reach this path.
+    // And THE row for THE task this story created, found by its resourceId --
+    // not by a count, which would pass for any row from anywhere.
+    const taskRows = await db.auditLogEntry.findMany({
+      where: { resource: 'tasks' },
+      orderBy: { timestamp: 'asc' },
+    });
+    const createdRow = taskRows.find(
+      (r) => r.requestMethod === 'POST' && r.resourceId === task.id
+    );
+    expect(createdRow).toBeDefined();
+    expect(createdRow!.actor).toBe(email);
+    expect(createdRow!.actorId).toBe(userId);
+    expect(createdRow!.entityId).toBe(entityA.id);
+    expect(createdRow!.statusCode).toBe(201);
+    expect(createdRow!.action).toBe('POST /api/tasks');
+    expect(createdRow!.hash).toMatch(/^[0-9a-f]{64}$/);
+
+    // Append-only and tamper-evident is a claim about the CHAIN, so it is
+    // checked by the product's own verifier over the rows this story produced,
+    // rather than by re-implementing the comparison here. Entity A now HAS a
+    // chain -- it had none at all when P-20 wrote this -- and the task rows are
+    // in it. Which row is the genesis is deliberately not asserted: it depends
+    // on whether the session's active entity at switch time was already A, and
+    // that is P-29's question, not this leg's.
+    const chainA = await db.auditLogEntry.findMany({
+      where: { entityId: entityA.id },
+      orderBy: { timestamp: 'asc' },
+    });
+    expect(chainA[0].previousHash).toBe('0');
+    expect(chainA.some((r) => r.resource === 'tasks')).toBe(true);
+    await expect(
+      auditService.verifyAuditChain(entityA.id, {
+        from: new Date(Date.now() - 60 * 60 * 1000),
+        to: new Date(Date.now() + 60 * 1000),
+      })
+    ).resolves.toMatchObject({ valid: true });
+
+    // The worker's ActionLog rows are still a DIFFERENT table, and the
+    // distinction matters: no actor beyond the literal 'SYSTEM', no hash chain,
+    // no tamper verifier, and no entityId column at all. Wiring the audit log
+    // into the task routes did not turn those into audit rows.
+    expect(stepRows.every((r) => r.actor === 'SYSTEM')).toBe(true);
+    legs['6. audit row for the action'] = 'PASS';
+
+    // The dead man switch has to be configured for leg 8 regardless. Its audit
+    // row is asserted here too, because "the log reaches the crisis routes AND
+    // the task routes" is the coverage claim, and one of the two used to be the
+    // whole of it.
     await dmsPOST(
       requestAs(session, '/api/crisis/dead-man-switch', {
         method: 'POST',
@@ -553,18 +758,21 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
         },
       })
     );
-    // Scoped to this route's resource. Before P-29 the switch wrote nothing, so
-    // the oldest row in the table was necessarily this one; now it is not, and
-    // an unscoped `findFirst` would silently assert against the switch instead.
-    const firstAudit = await db.auditLogEntry.findFirstOrThrow({
+    // Scoped to this route's resource. Before P-29 and P-27 the switch and the
+    // task routes wrote nothing, so the oldest row in the table was necessarily
+    // this one; now it is not, and an unscoped `findFirst` would silently
+    // assert against one of theirs instead.
+    const dmsRow = await db.auditLogEntry.findFirstOrThrow({
       where: { resource: 'crisis.dead-man-switch' },
       orderBy: { timestamp: 'asc' },
     });
-    expect(firstAudit.actor).toBe(email);
-    expect(firstAudit.actorId).toBe(userId);
-    expect(firstAudit.entityId).toBe(entityA.id);
-    expect(firstAudit.previousHash).toBe('0');
-    expect(firstAudit.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(dmsRow.actor).toBe(email);
+    expect(dmsRow.actorId).toBe(userId);
+    expect(dmsRow.entityId).toBe(entityA.id);
+    expect(dmsRow.hash).toMatch(/^[0-9a-f]{64}$/);
+    // It is no longer the genesis row for entity A -- the switch or the task
+    // creation is -- so it is chained to whatever preceded it rather than '0'.
+    expect(dmsRow.previousHash).not.toBe('0');
 
     // -----------------------------------------------------------------------
     // LEG 7 — "from entity A's session, read and write entity B's tasks, and is
@@ -639,13 +847,17 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // executes lands in the hash-chained audit log with the right actor. All of
     // that is asserted below and all of it is real.
     //
-    // THE GAP: nothing stops. `fireDeadManSwitch` "executes" a protocol by
-    // writing one AuditLogEntry naming it. `DeadManProtocol.action` is a free
-    // string and no dispatcher reads it. Measured here directly: after the
-    // switch fires, the four BullMQ workers are still consuming, an unrelated
-    // workflow triggered afterwards still runs to completion, and no
-    // ExecutionGateRule — the platform's one real halt primitive, proved by
-    // P-09's tests/db/execution-gate.test.ts — is created by the firing.
+    // THE JOIN — P-27 (T-038). This was FAIL. `fireDeadManSwitch` "executed" a
+    // protocol by writing one AuditLogEntry naming it; `DeadManProtocol.action`
+    // is a free string and no dispatcher read it. Measured then: after the
+    // switch fired, every worker was still consuming, a workflow triggered a
+    // second later ran to completion, and no ExecutionGateRule — the platform's
+    // one real halt primitive — was created by the firing.
+    //
+    // The firing now writes a halt row per entity the user owns, and the
+    // workflow engine consults that table before a run starts, at every node
+    // boundary, and in the queue worker. Everything below reads the product's
+    // own surfaces for that.
     // -----------------------------------------------------------------------
     await db.deadManSwitch.update({
       where: { userId },
@@ -658,6 +870,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       triggered: boolean;
       executed: { action: string }[];
       alreadyFired: boolean;
+      haltedEntityIds: string[];
     }>(
       await dmsEvaluatePOST(
         requestAs(session, '/api/crisis/dead-man-switch/evaluate', {
@@ -684,10 +897,86 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     legs['8a. switch fires and is audited'] = 'PASS';
 
     // ...and now the half the audit actually asked for.
-    expect(await db.executionGateRule.count()).toBe(0);
+    //
+    // The halt is USER-scoped, so it covers EVERY entity this user owns and not
+    // merely the one that happened to be in the request context. That
+    // distinction is invisible to anyone with a single entity, which is exactly
+    // why this story creates more than one -- and it turns out to be three, not
+    // two, because `POST /api/auth/register` also creates a default 'Personal'
+    // entity. The third one is the best evidence available that the halt is
+    // derived from ownership rather than from what this test happened to name:
+    // nothing in this file ever mentions it.
+    const ownedEntityIds = (
+      await db.entity.findMany({ where: { userId }, select: { id: true } })
+    )
+      .map((e) => e.id)
+      .sort();
+    expect(ownedEntityIds).toEqual(expect.arrayContaining([entityA.id, entityB.id]));
+    expect(ownedEntityIds.length).toBeGreaterThan(2);
+
+    const haltRows = await db.executionGateRule.findMany({
+      where: { name: HALT_GATE_NAME },
+    });
+    expect(haltRows.map((r) => r.entityId).sort()).toEqual(ownedEntityIds);
+    expect(haltRows.every((r) => r.isActive && r.expression === 'false')).toBe(true);
+    expect([...fired.haltedEntityIds].sort()).toEqual(ownedEntityIds);
+
+    // The workers are STILL RUNNING, and that is the design rather than a
+    // leftover: all five are shared by every tenant on the platform, so a
+    // per-user switch that shut them down would be everybody else's outage.
+    // What stops is this user's execution, not the machine.
     expect(workers.every(({ worker }) => worker.isRunning())).toBe(true);
 
-    const afterSwitch = await dataOf<{ id: string; status: string }>(
+    const runsBeforeHalt = await db.workflowExecutionRecord.count();
+
+    const refused = await triggerPOST(
+      requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
+        method: 'POST',
+        query: { entityId: entityA.id },
+        body: { variables: { taskId: task.id } },
+      }),
+      { params: Promise.resolve({ id: workflow.id }) }
+    );
+    // 423 Locked: the workflow is intact and the refusal is temporary.
+    expect(refused.status).toBe(423);
+    const refusedBody = await readJson<{ success: boolean; error: { code: string } }>(refused);
+    expect(refusedBody.success).toBe(false);
+    expect(refusedBody.error.code).toBe('EXECUTION_HALTED');
+
+    // Nothing started. Not a run recorded as cancelled — no run at all, which
+    // is the difference between a refusal and a failure.
+    expect(await db.workflowExecutionRecord.count()).toBe(runsBeforeHalt);
+
+    // The EVENT path is stopped too, and this is the assertion that would have
+    // caught a halt bolted onto one of the several doors: the reactive workflow
+    // from leg 4 is still ACTIVE and still matches `task.created`.
+    await dataOf<{ id: string }>(
+      await tasksPOST(requestAs(session, '/api/tasks', {
+        method: 'POST',
+        query: { entityId: entityA.id },
+        body: { title: 'Created after the switch fired', entityId: entityA.id },
+      })),
+      'create a task after the halt'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(
+      await db.workflowExecutionRecord.count({ where: { workflowId: reactive.id } })
+    ).toBe(1);
+
+    // And it is a SWITCH, not a wall. A check-in is the user saying they are
+    // here, and it lifts the halt through the product's own route — without
+    // this the feature can only ever stop the agent once, permanently, and a
+    // stop nobody can undo is a different product from the one described.
+    const checkedIn = await checkInPOST(
+      requestAs(session, '/api/crisis/dead-man-switch/check-in', {
+        method: 'POST',
+        query: { entityId: entityA.id },
+      })
+    );
+    expect(checkedIn.status).toBe(200);
+    expect(await db.executionGateRule.count({ where: { name: HALT_GATE_NAME } })).toBe(0);
+
+    const resumed = await dataOf<{ id: string; status: string }>(
       await triggerPOST(
         requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
           method: 'POST',
@@ -696,12 +985,11 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
         }),
         { params: Promise.resolve({ id: workflow.id }) }
       ),
-      'trigger workflow after the switch fired'
+      'trigger workflow after the check-in'
     );
-    // A stopped agent does not run a workflow to completion.
-    expect(afterSwitch.status).toBe('COMPLETED');
-    expect(afterSwitch.id).not.toBe(execution.id);
-    legs['8b. the agent STOPS'] = 'FAIL';
+    expect(resumed.status).toBe('COMPLETED');
+    expect(resumed.id).not.toBe(execution.id);
+    legs['8b. the agent STOPS'] = 'PASS';
 
     // -----------------------------------------------------------------------
     // The scoreboard, printed rather than hidden in a diff.
@@ -723,7 +1011,12 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // Recorded exactly, so that a later package closing one of the four gaps
     // fails this line and has to come here and say which.
     expect(Object.keys(legs).length).toBe(9);
-    expect(passed).toBe(5);
+    // Was 5 when P-20 wrote this file. P-27 joined legs 4, 6 and 8b, so it is
+    // 8 — and the one that is still FAIL is leg 7, which P-29 owns. Recorded
+    // exactly, so that closing it fails this line and forces whoever does it to
+    // come here and say which.
+    expect(passed).toBe(8);
+    expect(legs['7. entity A refused entity B']).toBe('FAIL');
   });
 
   it('the access log serves the story back to the user who lived it', async () => {

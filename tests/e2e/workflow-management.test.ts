@@ -129,6 +129,9 @@ const mockPrisma = {
     findMany: jest.fn(),
     count: jest.fn(),
   },
+  // P-27 (T-038): the executor consults the execution-gate table for a halt
+  // before a run starts and at every node boundary. `null` is "not halted".
+  executionGateRule: { findFirst: jest.fn().mockResolvedValue(null) },
   workflowExecutionRecord: mockExecutionRecordDelegate,
   workflowApproval: mockApprovalDelegate,
   actionLog: { create: jest.fn().mockResolvedValue({ id: 'log-1' }) },

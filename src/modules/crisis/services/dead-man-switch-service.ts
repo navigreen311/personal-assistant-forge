@@ -37,6 +37,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { auditService } from '@/modules/security/services/audit-service';
+import { haltEntities, releaseEntities } from '@/modules/execution/services/execution-gate';
 import type { DeadManSwitch, DeadManProtocol } from '../types';
 
 /** The audit `resource` every dead-man-switch record is filed under. */
@@ -47,6 +48,27 @@ export const DMS_PROTOCOL_EXECUTED = 'DEAD_MAN_SWITCH_PROTOCOL_EXECUTED';
 
 /** The audit `action` written once per firing. Doubles as the idempotency key. */
 export const DMS_FIRED = 'DEAD_MAN_SWITCH_FIRED';
+
+/** The `description` on the halt rows a firing installs. */
+export const DMS_HALT_REASON = 'Dead man switch fired; execution stopped for this user';
+
+/**
+ * Every entity this user owns.
+ *
+ * P-27. The switch is USER-scoped and the halt has to be too. Halting only the
+ * entity that happened to be in the request context would leave the agent
+ * running in the same user's other entities — which is not "the agent stops",
+ * it is "one of the agents stops", and the difference is invisible to anyone
+ * with a single entity. Read off `Entity.userId`, so the ids the halt is
+ * written against came from a database column and not from a caller.
+ */
+async function entityIdsOf(userId: string): Promise<string[]> {
+  const rows = await prisma.entity.findMany({
+    where: { userId },
+    select: { id: true },
+  });
+  return rows.map((row) => row.id);
+}
 
 type SwitchRow = {
   userId: string;
@@ -112,6 +134,12 @@ export async function configure(
     },
   });
 
+  // P-27. `configure` sets `lastCheckIn` to now, so as far as
+  // `alreadyFiredSince` is concerned the outage is over and the switch may fire
+  // again. The halt has to end on the same edge, or a user who reconfigures
+  // after a firing is left permanently stopped by a row no product path clears.
+  await releaseEntities(await entityIdsOf(userId));
+
   return toSwitch(row as SwitchRow);
 }
 
@@ -122,6 +150,14 @@ export async function checkIn(userId: string): Promise<DeadManSwitch> {
     where: { userId },
     data: { lastCheckIn: new Date(), missedCheckIns: 0 },
   });
+
+  // P-27. A check-in is the user saying "I am here", which is the one signal
+  // that means the halt below should be lifted. Without this the switch is a
+  // one-way door: the product can stop the agent and offers no way to start it
+  // again, so the only recovery is a DBA deleting rows. Releasing here also
+  // keeps the two halves symmetric -- `alreadyFiredSince` already treats a
+  // check-in as ending the outage, and the halt must end with it.
+  await releaseEntities(await entityIdsOf(userId));
 
   return toSwitch(row as SwitchRow);
 }
@@ -194,6 +230,14 @@ export interface DeadManSwitchFiring {
   deferred: DeadManProtocol[];
   /** True when this outage already fired, so nothing was executed again. */
   alreadyFired: boolean;
+  /**
+   * The entities whose execution is now stopped (P-27).
+   *
+   * Reported back so the halt is visible in the API response and not only in a
+   * table — a stop nobody can see from the product is how the previous version
+   * of this feature managed to halt nothing while looking finished.
+   */
+  haltedEntityIds: string[];
 }
 
 /**
@@ -257,8 +301,26 @@ export async function fireDeadManSwitch(
       executed: [],
       deferred: [],
       alreadyFired: false,
+      haltedEntityIds: [],
     };
   }
+
+  // P-27 (T-038) — AND NOW THE HALF THE AUDIT ASKED FOR: the agent stops.
+  //
+  // BEFORE the idempotency check, and that ordering is the whole of the crash
+  // story. Notifying the contacts is the part that must happen exactly once, so
+  // it stays behind `alreadyFiredSince`. Stopping the agent is the part that
+  // must be TRUE while the outage lasts, so it is reasserted on every tick: a
+  // crash between the DMS_FIRED row and the halt would otherwise leave a switch
+  // recorded as fired, refusing to fire again, and an agent still running.
+  // `haltEntities` is idempotent, so reasserting costs one delete and one
+  // insert per entity per tick and cannot accumulate rows.
+  //
+  // Every entity the user owns, not the one that happened to be in the request
+  // context — see `entityIdsOf`. The switch is user-scoped and so is its
+  // consequence.
+  const haltedEntityIds = await entityIdsOf(userId);
+  await haltEntities(haltedEntityIds, DMS_HALT_REASON);
 
   if (await alreadyFiredSince(userId, new Date(row.lastCheckIn))) {
     return {
@@ -267,6 +329,7 @@ export async function fireDeadManSwitch(
       executed: [],
       deferred: [],
       alreadyFired: true,
+      haltedEntityIds,
     };
   }
 
@@ -301,6 +364,9 @@ export async function fireDeadManSwitch(
       lastCheckIn: new Date(row.lastCheckIn).toISOString(),
       executedCount: executed.length,
       deferredCount: deferred.length,
+      // P-27: the record of the firing now says what the firing DID, so an
+      // auditor reading this row can tell a stop from a notification.
+      haltedEntityIds,
     },
   });
 
@@ -326,5 +392,6 @@ export async function fireDeadManSwitch(
     executed,
     deferred,
     alreadyFired: false,
+    haltedEntityIds,
   };
 }

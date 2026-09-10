@@ -165,6 +165,153 @@ export async function deleteGate(
   }
 }
 
+// ---------------------------------------------------------------------------
+// P-27 (T-038) — THE HALT. "...and the agent stops."
+// ---------------------------------------------------------------------------
+//
+// `fireDeadManSwitch` used to execute a protocol by writing one audit row
+// naming it. After it fired, measurably: every worker kept consuming, and a
+// workflow triggered a second later ran to completion. The switch was a record
+// that something had happened, attached to nothing that made it happen.
+//
+// WHAT "STOPS" MEANS HERE, AND WHAT IT DOES NOT
+//
+// REJECTED — pausing the BullMQ queues. `queue.pause()` is durable (the flag
+// lives in Redis) and it is trivially observable, but the queues are shared by
+// every tenant on the platform. One user's contingency plan would be everyone
+// else's outage. A kill switch that cannot be scoped to its owner is not a
+// safety feature, it is a denial of service anybody can trip.
+//
+// REJECTED — shutting the workers down. Same blast radius, plus it does not
+// survive the restart it would immediately provoke: `restart: unless-stopped`
+// brings the container straight back with the halt forgotten. The stop has to
+// outlive the process, so it has to be a row.
+//
+// CHOSEN — a row in `ExecutionGateRule`, the platform's one real halt
+// primitive, which P-09 already made durable and tenant-scoped for exactly this
+// class of problem. The row is an ordinary gate with the expression `false`, so
+// it is not a second mechanism bolted alongside the first: `evaluateGates`
+// above already refuses every action of an entity that owns one, with no change
+// to that function at all. What P-27 adds is the workflow engine consulting the
+// same table before it starts a run and at every node boundary.
+//
+// GUARANTEES IT GIVES:
+//   * it survives a process restart, a deploy, and a second process — it is in
+//     Postgres, and every check is a read of Postgres;
+//   * it is scoped to the entities of the user who tripped it, so no other
+//     tenant is affected;
+//   * it is reversible by the product's own path — `checkIn()` releases it —
+//     rather than by a DBA;
+//   * it blocks the queued-action path for free, because `evaluateGates` was
+//     already the gatekeeper there.
+//
+// GUARANTEES IT DOES NOT GIVE:
+//   * a run already inside a node when the switch fires finishes that node. The
+//     check is at the node boundary, not inside `executeAction`; a handler that
+//     has already sent an email cannot be un-sent by a row appearing;
+//   * it does not stop the non-workflow workers (email, sms, capture). Those
+//     consume jobs enqueued before the halt and have no entity gate of their
+//     own. Named in the PR body; not silently implied by the word "stops".
+
+/** The `name` every halt row carries. The handle for finding and lifting one. */
+export const HALT_GATE_NAME = 'PLATFORM_HALT';
+
+/**
+ * The expression that makes a gate a halt.
+ *
+ * `evaluateExpression('false', ...)` is a boolean literal, evaluates to false,
+ * and `evaluateGates` reports `passed: false` — so a halt row is understood by
+ * the gate evaluator that already exists rather than by a special case.
+ */
+const HALT_EXPRESSION = 'false';
+
+/**
+ * Raised when something tries to start work for a halted entity.
+ *
+ * Carries the entity so a route can say which tenant is stopped without
+ * re-deriving it, and so the message never has to be parsed.
+ */
+export class ExecutionHaltedError extends Error {
+  readonly entityId: string;
+
+  constructor(entityId: string) {
+    super(`Execution is halted for entity ${entityId}`);
+    this.name = 'ExecutionHaltedError';
+    this.entityId = entityId;
+  }
+}
+
+/**
+ * Stop all execution for these entities. Returns how many rows were written.
+ *
+ * `entityIds` are plain strings, and the rule that makes that safe is the same
+ * one `createTaskForEntityOwner` runs on: they must have been read off a
+ * database column — `Entity.userId` for the user whose switch fired — never off
+ * a request. There is no caller to authorise here; the dead man switch is
+ * user-scoped and the user is, by definition, unreachable.
+ *
+ * Idempotent: an entity already halted is re-halted with the current reason
+ * rather than accumulating rows, so a scheduler calling this on every tick does
+ * not fill the table.
+ */
+export async function haltEntities(
+  entityIds: string[],
+  reason: string
+): Promise<number> {
+  if (entityIds.length === 0) return 0;
+
+  await prisma.executionGateRule.deleteMany({
+    where: { name: HALT_GATE_NAME, entityId: { in: entityIds } },
+  });
+
+  const { count } = await prisma.executionGateRule.createMany({
+    data: entityIds.map((entityId) => ({
+      name: HALT_GATE_NAME,
+      expression: HALT_EXPRESSION,
+      description: reason,
+      scope: 'ENTITY',
+      entityId,
+      isActive: true,
+    })),
+  });
+
+  return count;
+}
+
+/** Lift the halt on these entities. Returns how many rows were removed. */
+export async function releaseEntities(entityIds: string[]): Promise<number> {
+  if (entityIds.length === 0) return 0;
+
+  const { count } = await prisma.executionGateRule.deleteMany({
+    where: { name: HALT_GATE_NAME, entityId: { in: entityIds } },
+  });
+
+  return count;
+}
+
+/**
+ * Is execution stopped for this entity?
+ *
+ * A plain string is accepted deliberately. This is a read whose only possible
+ * effect is to REFUSE work, so the worst a forged id can do is halt nothing;
+ * requiring a `VerifiedEntityId` would instead make the check unreachable from
+ * the worker process, which has no request and is precisely where it is needed.
+ */
+export async function isEntityHalted(entityId: string): Promise<boolean> {
+  const halt = await prisma.executionGateRule.findFirst({
+    where: { name: HALT_GATE_NAME, entityId, isActive: true },
+    select: { id: true },
+  });
+  return halt !== null;
+}
+
+/** `isEntityHalted`, as a guard. Throws `ExecutionHaltedError` when stopped. */
+export async function assertNotHalted(entityId: string): Promise<void> {
+  if (await isEntityHalted(entityId)) {
+    throw new ExecutionHaltedError(entityId);
+  }
+}
+
 // --- Safe Expression Evaluator ---
 // Recursive descent parser supporting:
 //   - Comparisons: <, <=, >, >=, ==, !=
