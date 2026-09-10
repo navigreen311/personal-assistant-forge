@@ -655,6 +655,9 @@ One row per merge. Appended by the coordinator at merge time.
 | 18 | P-18 rate limiting | [#78](https://github.com/navigreen311/personal-assistant-forge/pull/78) | `eb82ffa` | 0 | 321/321 | 5346/5346 | **826/826** | **none** |
 | 19 | P-19 closing gate | [#80](https://github.com/navigreen311/personal-assistant-forge/pull/80) | `7531cc2` | 0 | 321/321 | 5346/5346 | 826/826 | **none** |
 | 20 | P-20 end-to-end proof | [#79](https://github.com/navigreen311/personal-assistant-forge/pull/79) | `2dc2ed9` | 0 | 321/321 | 5346/5346 | **849/849** | **none** |
+| — | coordinator: `.dockerignore` recursive test patterns | — | `d58e936` | 0 | 321/321 | 5346/5346 | 849/849 | fixed a red master |
+| — | coordinator: db job ceiling 15 -> 30 min | — | `f2c87bf` | 0 | 321/321 | 5346/5346 | 849/849 | **none** |
+| 21 | P-29 entity switching | [#81](https://github.com/navigreen311/personal-assistant-forge/pull/81) | `eaca9eb` | 0 | 321/321 | **5348/5348** | **863/863** | **none** |
 
 ---
 
@@ -783,6 +786,61 @@ P-19 deleted the dead code and the hole it was covering became visible. **The
 repair did not introduce the bug; it disclosed it.** Dead code that mentions the
 right variable is indistinguishable from live code that uses it — to a grep, to
 an instrument, and to a human reading the file.
+
+# THE ELEVENTH PHANTOM — P-29, and why Decision 1 could not have shipped without it
+
+`POST /api/auth/switch-entity` verified you owned the entity and then **returned
+the value you sent it**. No row, no cookie, no re-minted token.
+`token.activeEntityId` is assigned in exactly one place — `src/lib/auth/config.ts`,
+inside `if (user)`, i.e. **initial sign-in only** — and set to
+`dbUser.entities[0]`, the oldest entity. The client called the endpoint and then
+`update()` under the comment *"Refresh the session to pick up the new
+activeEntityId"*, which re-issued the value it already had.
+
+**Every user was pinned to their oldest entity for the life of the account while
+the UI reported success.** Same shape as the ten phantom-delegate bugs: a 200, a
+plausible value, nothing happened. The difference is that this one was load-
+bearing for a decision the owner had just made — enforcing
+`record.entityId === scopedEntityId` against a value nothing could change would
+have pinned every multi-entity user permanently, a total outage for exactly the
+architecture Decision 1 exists to protect.
+
+Fixed by re-minting the session cookie server-side. **No migration**: the active
+entity lives in the JWT, and `encode` from `next-auth/jwt` was already in use by
+the test helpers. The ownership query is byte-identical to the one that was
+already there and runs before the re-mint; the value written is `entity.id`, the
+row that came back, never the caller's string; `changes` is typed
+`Partial<Pick<JWT, 'activeEntityId'>>` so no other claim can be injected; and a
+failed re-mint returns 500, because — in P-29's words — *"a 200 here would be the
+original bug wearing the fix's clothes."*
+
+**Twelfth consecutive package to find a passing test encoding the defect.** Leg 6
+of the proof asserted `auditLogEntry.count() === 0` and listed "an entity switch"
+among six unaudited things. Tightened rather than relaxed: the switch is now
+asserted to be the *only* audited event, and leg 6 stays FAIL.
+
+It also caught what the coordinator had missed: **the proof switches to entity A
+and then passes `entityId=A` explicitly on every later leg**, under the comment
+*"the same call the UI makes when you switch context."* The proof was tolerating
+the no-op it meant to exercise. Dropping those ids is now a meaningful assertion
+and belongs to whoever lands Decision 1.
+
+# TWO COORDINATOR FIXES TO A RED MASTER
+
+**`.dockerignore` patterns are not recursive.** `tests` excluded the top-level
+directory, but `__tests__` matched only a top-level entry — so every
+`src/**/__tests__/` was copied into the builder while the `tests/` one of them
+imports was not. TS2307 inside the image and nowhere else. Two covers had to be
+removed before it could surface: `ignoreBuildErrors` (P-19) meant `npm run build`
+never type-checked, and **Docker Build reports `skipping` on PRs and runs only on
+master**. P-19's PR was five-for-five green and its merge commit turned master
+red. It also stopped 39 test files shipping inside the production image.
+
+**The db job's ceiling was ~2x its normal runtime.** Raised 15 -> 30. An
+identical tree ran 5-8x slower on a degraded runner (content-tenancy 28s -> 201s)
+and was cancelled with everything it reached passing. `cancelled` reads like a
+hang and invites a re-run; diagnose from the per-suite timings, not the
+conclusion. Slow is bounded, hung is not.
 
 # CORRECTION TO THE P-19 RECORD — the gate's scope
 
