@@ -58,15 +58,31 @@
  *      primitive proves the caller owns the entity, which is exactly the
  *      cross-USER check the eleven module suites assert. The audit's scenario
  *      is one user with two entities, and there ownership is satisfied.
- *                                                             STILL OPEN. P-29.
+ *                                        FIXED by P-29 (the switch) and P-30
+ *                                        (the rule). Decision 1.
  *   4. The dead man switch fired and stopped nothing: it wrote an audit row
  *      naming a protocol, and afterwards every worker was still consuming and a
  *      workflow triggered a second later ran to completion.   FIXED by P-27.
  *
- * P-27 changed 1, 2 and 4 from FAIL to PASS, and this file is where that is
- * asserted rather than claimed. The `THE GAP` blocks for those three have been
- * replaced by `THE JOIN` blocks describing what now connects them; the one for
- * leg 7 is untouched, because leg 7 is untouched.
+ * P-27 changed 1, 2 and 4 from FAIL to PASS and P-30 changed 3, so every `THE
+ * GAP` block in this file has become a `THE JOIN` block describing what now
+ * connects. All nine rows read PASS.
+ *
+ * ============================================================================
+ * WHAT P-30 ALSO HAD TO CHANGE HERE, AND WHY IT IS NOT A WEAKENING
+ * ============================================================================
+ *
+ * This file used to switch to entity A and then pass `entityId=A` explicitly on
+ * every later leg, under the comment "the same call the UI makes when you
+ * switch context". P-29 flagged it: the switch was a no-op at the time, so the
+ * story would have read identically with that call deleted, and the proof was
+ * tolerating exactly the defect it meant to exercise.
+ *
+ * Every one of those explicit ids is now gone. The scope of every leg comes
+ * from the session cookie the switch re-mints and from nothing else, which is
+ * what makes LEG 7's refusals mean anything: the same request shape that
+ * reaches entity A's rows is refused for entity B's, and the only difference
+ * is which entity the session is acting in.
  *
  * Requires a real Postgres and a real Redis. There is deliberately no skip.
  */
@@ -237,6 +253,33 @@ async function signIn(email: string, password: string): Promise<{ token: string 
       maxAge: 3600,
     }),
   };
+}
+
+/**
+ * The session cookie the response tells the browser to store.
+ *
+ * P-30. `POST /api/auth/switch-entity` moves the acting entity by RE-MINTING
+ * the session token (P-29), so "acting in entity A" is a cookie the server
+ * hands back, not a flag this file sets for itself. Reading it here is the
+ * browser's behaviour and nothing else: `requestAs` accepts a bare token
+ * string, so the next request presents exactly what the switch issued.
+ *
+ * `getSetCookie()` is the correct reader when more than one cookie is set;
+ * the split is the fallback for a Headers implementation without it.
+ */
+function sessionTokenFromResponse(res: Response): string {
+  const headers: string[] =
+    typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : (res.headers.get('set-cookie') ?? '').split(/,(?=\s*[A-Za-z0-9_.-]+=)/);
+
+  for (const header of headers) {
+    // A chunk cookie (`...session-token.0=`) never matches: `=` is anchored
+    // straight after the name.
+    const match = header.trim().match(/^(?:__Secure-)?next-auth\.session-token=([^;]*)/);
+    if (match && match[1]) return decodeURIComponent(match[1]);
+  }
+  throw new Error('the switch set no session cookie');
 }
 
 /** Unwrap `{ success: true, data }`, failing loudly on the other shape. */
@@ -411,7 +454,10 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // LEG 1b — sign in. The real credentials provider, the real bcrypt compare.
     // -----------------------------------------------------------------------
     await expect(signIn(email, 'wrong-password-entirely')).rejects.toThrow(/rejected/);
-    const session = await signIn(email, PASSWORD);
+    // `let`, because from LEG 2 onwards this story SWITCHES ENTITY, and a switch
+    // replaces the session cookie. Holding the pre-switch token would be the
+    // no-op P-29 removed.
+    let session = await signIn(email, PASSWORD);
 
     // -----------------------------------------------------------------------
     // LEG 2 — the user creates two entities, A and B.
@@ -441,6 +487,18 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     legs['2. two entities'] = 'PASS';
 
     // Acting in entity A: the same call the UI makes when you switch context.
+    //
+    // P-30. This call used to be decorative. P-29 found the endpoint returned
+    // the value it was handed and re-minted nothing, and P-29's own note on
+    // this file recorded the second half of the problem: every leg below then
+    // passed `entityId=A` explicitly anyway, so the proof was tolerating the
+    // no-op it meant to exercise -- the story would have read identically with
+    // the switch deleted.
+    //
+    // Both halves are closed here. The re-minted cookie is adopted, and every
+    // leg below names NO entity at all. From this line on, the only thing that
+    // says which tenant this story is acting in is the session, which is the
+    // claim LEG 7 rests on.
     const switched = await switchEntityPOST(
       requestAs(session, '/api/auth/switch-entity', {
         method: 'POST',
@@ -448,6 +506,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       })
     );
     expect(switched.status).toBe(200);
+    session = { token: sessionTokenFromResponse(switched) };
 
     // -----------------------------------------------------------------------
     // LEG 3 — acting in entity A, create a task via the API.
@@ -455,8 +514,10 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const task = await dataOf<{ id: string; title: string; entityId: string }>(
       await tasksPOST(requestAs(session, '/api/tasks', {
         method: 'POST',
-        query: { entityId: entityA.id },
-        body: { title: 'Ship the platform proof', entityId: entityA.id, priority: 'P0' },
+        // No `entityId`, in the query or the body. The task lands in entity A
+        // because the session is acting in entity A, and the assertion below is
+        // what proves the switch above was real.
+        body: { title: 'Ship the platform proof', priority: 'P0' },
       })),
       'create task'
     );
@@ -488,10 +549,8 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const reactive = await dataOf<{ id: string; status: string }>(
       await workflowsPOST(requestAs(session, '/api/workflows', {
         method: 'POST',
-        query: { entityId: entityA.id },
         body: {
           name: 'On task created',
-          entityId: entityA.id,
           triggers: [{ triggerType: 'EVENT', eventName: 'task.created' }],
           graph: graphThatActsOnWhicheverTaskTriggeredIt(),
         },
@@ -507,8 +566,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     await dataOf<{ id: string }>(
       await tasksPOST(requestAs(session, '/api/tasks', {
         method: 'POST',
-        query: { entityId: entityA.id },
-        body: { title: 'Created while the workflow is still a draft', entityId: entityA.id },
+        body: { title: 'Created while the workflow is still a draft' },
       })),
       'create a task before the workflow is active'
     );
@@ -519,7 +577,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       await workflowPUT(
         requestAs(session, `/api/workflows/${reactive.id}`, {
           method: 'PUT',
-          query: { entityId: entityA.id },
           body: { status: 'ACTIVE' },
         }),
         { params: Promise.resolve({ id: reactive.id }) }
@@ -532,8 +589,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const triggerTask = await dataOf<{ id: string; entityId: string }>(
       await tasksPOST(requestAs(session, '/api/tasks', {
         method: 'POST',
-        query: { entityId: entityA.id },
-        body: { title: 'The task that starts the workflow', entityId: entityA.id },
+        body: { title: 'The task that starts the workflow' },
       })),
       'create the triggering task'
     );
@@ -576,10 +632,8 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const workflow = await dataOf<{ id: string; status: string }>(
       await workflowsPOST(requestAs(session, '/api/workflows', {
         method: 'POST',
-        query: { entityId: entityA.id },
         body: {
           name: 'On task created',
-          entityId: entityA.id,
           triggers: [{ triggerType: 'EVENT', config: { entity: 'task', event: 'created' } }],
           graph: graphThatReachesTheQueue(task.id),
         },
@@ -594,7 +648,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       await triggerPOST(
         requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
           method: 'POST',
-          query: { entityId: entityA.id },
           body: { variables: { taskId: task.id } },
         }),
         { params: Promise.resolve({ id: workflow.id }) }
@@ -741,7 +794,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     await dmsPOST(
       requestAs(session, '/api/crisis/dead-man-switch', {
         method: 'POST',
-        query: { entityId: entityA.id },
         body: {
           isEnabled: true,
           checkInIntervalHours: 1,
@@ -778,40 +830,83 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // LEG 7 — "from entity A's session, read and write entity B's tasks, and is
     //          refused".
     //
-    // THE GAP, MEASURED, AND IT IS THE ONE THAT MATTERS MOST.
+    // THE JOIN — P-30 (Decision 1). This was the last FAIL, and the one that
+    // mattered most.
     //
-    // `withEntityScope` resolves the entity and compares `entity.userId` to
+    // `withEntityScope` resolved the entity and compared `entity.userId` to
     // `session.userId`. That is a check on WHO OWNS THE ENTITY, and it is
     // exactly right for the defect the audit found — user A reading user B's
     // records — which is what all ~138 refusal cases across eleven module
     // suites exercise, and what tests/db/cross-tenant-fuzz.test.ts sweeps.
     //
     // The scenario in this file is a different question: ONE user, TWO of their
-    // own entities. Ownership is satisfied both times, so nothing refuses. The
-    // task belonging to entity B is read, updated and deleted from a session
-    // whose active entity is A.
+    // own entities. Ownership was satisfied both times, so nothing refused, and
+    // the block below used to assert the leak in the strongest available form —
+    // not a status code, but the retitled row and the CANCELLED status.
+    //
+    // The owner ruled that refusing is correct
+    // (docs/parallel-build/decision-01-entity-isolation.md), and P-30 added ONE
+    // rule to `withEntityScope`: after ownership passes, the resolved entity
+    // must also be the session's active entity. Ownership is still checked
+    // first and still answers the indistinct `FORBIDDEN`, so the ~138 cross-USER
+    // cases are untouched; this is a second rule, not a replacement.
+    //
+    // Note what creating the task in B now takes: a SWITCH. It cannot be done
+    // by naming B from a session acting in A any more — which is the same
+    // finding as the refusals below, arriving one line earlier.
     // -----------------------------------------------------------------------
-    const taskInB = await dataOf<{ id: string }>(
-      await tasksPOST(requestAs(session, '/api/tasks', {
+    const inEntityB = { token: sessionTokenFromResponse(
+      await switchEntityPOST(
+        requestAs(session, '/api/auth/switch-entity', {
+          method: 'POST',
+          body: { entityId: entityB.id },
+        })
+      )
+    ) };
+
+    const taskInB = await dataOf<{ id: string; entityId: string }>(
+      await tasksPOST(requestAs(inEntityB, '/api/tasks', {
         method: 'POST',
-        query: { entityId: entityB.id },
-        body: { title: 'Belongs to B', entityId: entityB.id },
+        body: { title: 'Belongs to B' },
       })),
       'create task in B'
     );
+    expect(taskInB.entityId).toBe(entityB.id);
 
+    // Back to A. Everything below is entity A's session reaching for entity B.
+    session = { token: sessionTokenFromResponse(
+      await switchEntityPOST(
+        requestAs(inEntityB, '/api/auth/switch-entity', {
+          method: 'POST',
+          body: { entityId: entityA.id },
+        })
+      )
+    ) };
+
+    // The list, scoped to B by name. 403 rather than a 200 that omits the rows:
+    // the request asked a question about another tenant and is refused, not
+    // silently reinterpreted.
     const crossRead = await tasksGET(
       requestAs(session, '/api/tasks', { query: { entityId: entityB.id } })
     );
-    expect(crossRead.status).toBe(200);
-    const crossBody = await readJson<{ data: { id: string }[] }>(crossRead);
-    expect(crossBody.data.map((t) => t.id)).toContain(taskInB.id);
+    expect(crossRead.status).toBe(403);
+    expect(
+      (await readJson<{ error: { code: string } }>(crossRead)).error.code
+    ).toBe('ENTITY_SCOPE_MISMATCH');
+
+    // And an ordinary unscoped list does not leak B's row either — a different
+    // failure from the one above, and both have to hold.
+    const ownList = await tasksGET(requestAs(session, '/api/tasks'));
+    expect(ownList.status).toBe(200);
+    expect(
+      (await readJson<{ data: { id: string }[] }>(ownList)).data.map((t) => t.id)
+    ).not.toContain(taskInB.id);
 
     const crossReadOne = await taskGET(
       requestAs(session, `/api/tasks/${taskInB.id}`),
       { params: Promise.resolve({ id: taskInB.id }) }
     );
-    expect(crossReadOne.status).toBe(200);
+    expect(crossReadOne.status).toBe(403);
 
     const crossWrite = await taskPUT(
       requestAs(session, `/api/tasks/${taskInB.id}`, {
@@ -820,25 +915,53 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       }),
       { params: Promise.resolve({ id: taskInB.id }) }
     );
-    expect(crossWrite.status).toBe(200);
-    // The write landed. This is the assertion that makes the finding a finding
-    // rather than a status code.
+    expect(crossWrite.status).toBe(403);
+    // The write did NOT land. Asserted on the row for the same reason the
+    // original finding was: a 403 that still writes is not a fix, and this line
+    // is the inverse of the one that made the finding a finding.
     expect(
       (await db.task.findUniqueOrThrow({ where: { id: taskInB.id } })).title
-    ).toBe('Written from entity A');
+    ).toBe('Belongs to B');
 
     const crossDelete = await taskDELETE(
       requestAs(session, `/api/tasks/${taskInB.id}`, { method: 'DELETE' }),
       { params: Promise.resolve({ id: taskInB.id }) }
     );
-    expect(crossDelete.status).toBe(200);
-    // `deleteTask` is a soft delete, so the row survives with status CANCELLED.
-    // That is the state change, and it happened from entity A's session.
+    expect(crossDelete.status).toBe(403);
+    // `deleteTask` is a soft delete, so the tell is the status rather than the
+    // row's absence. It used to read CANCELLED here.
     expect(
       (await db.task.findUniqueOrThrow({ where: { id: taskInB.id } })).status
-    ).toBe('CANCELLED');
+    ).not.toBe('CANCELLED');
 
-    legs['7. entity A refused entity B'] = 'FAIL';
+    // The refusal is a SCOPE and not a denial: the same caller, the same row,
+    // one switch later. Without this line "refuse everything" would score a
+    // PASS on leg 7, which is a different product from the one described.
+    const inBAgain = { token: sessionTokenFromResponse(
+      await switchEntityPOST(
+        requestAs(session, '/api/auth/switch-entity', {
+          method: 'POST',
+          body: { entityId: entityB.id },
+        })
+      )
+    ) };
+    const reachable = await taskGET(
+      requestAs(inBAgain, `/api/tasks/${taskInB.id}`),
+      { params: Promise.resolve({ id: taskInB.id }) }
+    );
+    expect(reachable.status).toBe(200);
+
+    // and back to A for LEG 8, which is this story's own context.
+    session = { token: sessionTokenFromResponse(
+      await switchEntityPOST(
+        requestAs(inBAgain, '/api/auth/switch-entity', {
+          method: 'POST',
+          body: { entityId: entityA.id },
+        })
+      )
+    ) };
+
+    legs['7. entity A refused entity B'] = 'PASS';
 
     // -----------------------------------------------------------------------
     // LEG 8 — "they trip the dead-man's switch and the agent stops".
@@ -875,9 +998,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       await dmsEvaluatePOST(
         requestAs(session, '/api/crisis/dead-man-switch/evaluate', {
           method: 'POST',
-          query: { entityId: entityA.id },
-          body: { entityId: entityA.id },
-        })
+          })
       ),
       'evaluate dead man switch'
     );
@@ -932,7 +1053,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const refused = await triggerPOST(
       requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
         method: 'POST',
-        query: { entityId: entityA.id },
         body: { variables: { taskId: task.id } },
       }),
       { params: Promise.resolve({ id: workflow.id }) }
@@ -953,8 +1073,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     await dataOf<{ id: string }>(
       await tasksPOST(requestAs(session, '/api/tasks', {
         method: 'POST',
-        query: { entityId: entityA.id },
-        body: { title: 'Created after the switch fired', entityId: entityA.id },
+        body: { title: 'Created after the switch fired' },
       })),
       'create a task after the halt'
     );
@@ -970,7 +1089,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     const checkedIn = await checkInPOST(
       requestAs(session, '/api/crisis/dead-man-switch/check-in', {
         method: 'POST',
-        query: { entityId: entityA.id },
       })
     );
     expect(checkedIn.status).toBe(200);
@@ -980,7 +1098,6 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       await triggerPOST(
         requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
           method: 'POST',
-          query: { entityId: entityA.id },
           body: { variables: { taskId: task.id } },
         }),
         { params: Promise.resolve({ id: workflow.id }) }
@@ -1011,12 +1128,19 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     // Recorded exactly, so that a later package closing one of the four gaps
     // fails this line and has to come here and say which.
     expect(Object.keys(legs).length).toBe(9);
-    // Was 5 when P-20 wrote this file. P-27 joined legs 4, 6 and 8b, so it is
-    // 8 — and the one that is still FAIL is leg 7, which P-29 owns. Recorded
-    // exactly, so that closing it fails this line and forces whoever does it to
-    // come here and say which.
-    expect(passed).toBe(8);
-    expect(legs['7. entity A refused entity B']).toBe('FAIL');
+    // Was 5 when P-20 wrote this file. P-27 joined legs 4, 6 and 8b, taking it
+    // to 8, and left leg 7 recorded exactly as FAIL so that closing it would
+    // fail this line and force whoever did it to come here and say which.
+    //
+    // P-30 closed leg 7 — one user's two entities now refuse each other, per
+    // docs/parallel-build/decision-01-entity-isolation.md — so this is 9, and
+    // every leg of the audit's scenario runs with no manual step.
+    //
+    // The same discipline applies from here: a leg that regresses fails this
+    // line rather than quietly dropping to 8, and anyone who ever needs to
+    // lower it has to say why in this comment.
+    expect(passed).toBe(9);
+    expect(legs['7. entity A refused entity B']).toBe('PASS');
   });
 
   it('the access log serves the story back to the user who lived it', async () => {
@@ -1030,26 +1154,40 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
         body: { name: 'Reader', email, password: PASSWORD },
       }) as NextRequest
     );
-    const session = await signIn(email, PASSWORD);
+    const signedIn = await signIn(email, PASSWORD);
     const entity = await dataOf<{ id: string }>(
-      await entitiesPOST(requestAs(session, '/api/entities', {
+      await entitiesPOST(requestAs(signedIn, '/api/entities', {
         method: 'POST',
         body: { name: 'Only entity', type: 'Personal' },
       })),
       'create entity'
     );
 
+    // P-30. `POST /api/auth/register` creates a default 'Personal' entity, so
+    // the session signed in above is acting in THAT one -- not in the entity
+    // just created. Naming the new entity in a query string used to be enough;
+    // under Decision 1 it is not, and the honest way to act in an entity you
+    // just made is to switch into it. This is the migration, not a workaround:
+    // the old two lines encoded the defect.
+    const session = {
+      token: sessionTokenFromResponse(
+        await switchEntityPOST(
+          requestAs(signedIn, '/api/auth/switch-entity', {
+            method: 'POST',
+            body: { entityId: entity.id },
+          })
+        )
+      ),
+    };
+
     await dmsPOST(
       requestAs(session, '/api/crisis/dead-man-switch', {
         method: 'POST',
-        query: { entityId: entity.id },
         body: { isEnabled: true, checkInIntervalHours: 24, triggerAfterMisses: 3, protocols: [] },
       })
     );
 
-    const res = await accessLogGET(
-      requestAs(session, '/api/security/access-log', { query: { entityId: entity.id } })
-    );
+    const res = await accessLogGET(requestAs(session, '/api/security/access-log'));
     expect(res.status).toBe(200);
     const body = await readJson<{ data: { entries: { user: string; hash: string }[] } }>(res);
     expect(body.data.entries.length).toBeGreaterThan(0);
@@ -1104,21 +1242,37 @@ describe('T-035 — the workflow engine is scoped at the route and not at the no
         body: { name: 'Attacker', email, password: PASSWORD },
       }) as NextRequest
     );
-    const session = await signIn(email, PASSWORD);
+    const signedIn = await signIn(email, PASSWORD);
     const own = await dataOf<{ id: string }>(
-      await entitiesPOST(requestAs(session, '/api/entities', {
+      await entitiesPOST(requestAs(signedIn, '/api/entities', {
         method: 'POST',
         body: { name: 'Attacker entity', type: 'Personal' },
       })),
       'create attacker entity'
     );
 
+    // P-30. Register creates a default 'Personal' entity, so this session is
+    // acting in that one and not in the entity just created. Under Decision 1
+    // an explicit ?entityId= no longer moves the scope, so the attacker has to
+    // switch into their own entity -- which they can, because they own it. The
+    // finding below is untouched by that: it is about node parameters, not
+    // about the route, and the route was always correctly scoped.
+    const session = {
+      token: sessionTokenFromResponse(
+        await switchEntityPOST(
+          requestAs(signedIn, '/api/auth/switch-entity', {
+            method: 'POST',
+            body: { entityId: own.id },
+          })
+        )
+      ),
+    };
+
     // The workflow is created in the attacker's OWN entity. Every tenancy check
     // on the way in is satisfied, because none of them looks at node parameters.
     const workflow = await dataOf<{ id: string }>(
       await workflowsPOST(requestAs(session, '/api/workflows', {
         method: 'POST',
-        query: { entityId: own.id },
         body: {
           name: 'Reaches across',
           entityId: own.id,
@@ -1153,7 +1307,6 @@ describe('T-035 — the workflow engine is scoped at the route and not at the no
     const res = await triggerPOST(
       requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
         method: 'POST',
-        query: { entityId: own.id },
         body: {},
       }),
       { params: Promise.resolve({ id: workflow.id }) }
@@ -1181,19 +1334,35 @@ describe('T-035 — the workflow engine is scoped at the route and not at the no
         body: { name: 'Attacker 2', email, password: PASSWORD },
       }) as NextRequest
     );
-    const session = await signIn(email, PASSWORD);
+    const signedIn = await signIn(email, PASSWORD);
     const own = await dataOf<{ id: string }>(
-      await entitiesPOST(requestAs(session, '/api/entities', {
+      await entitiesPOST(requestAs(signedIn, '/api/entities', {
         method: 'POST',
         body: { name: 'Attacker entity 2', type: 'Personal' },
       })),
       'create attacker entity'
     );
 
+    // P-30. Register creates a default 'Personal' entity, so this session is
+    // acting in that one and not in the entity just created. Under Decision 1
+    // an explicit ?entityId= no longer moves the scope, so the attacker has to
+    // switch into their own entity -- which they can, because they own it. The
+    // finding below is untouched by that: it is about node parameters, not
+    // about the route, and the route was always correctly scoped.
+    const session = {
+      token: sessionTokenFromResponse(
+        await switchEntityPOST(
+          requestAs(signedIn, '/api/auth/switch-entity', {
+            method: 'POST',
+            body: { entityId: own.id },
+          })
+        )
+      ),
+    };
+
     const workflow = await dataOf<{ id: string }>(
       await workflowsPOST(requestAs(session, '/api/workflows', {
         method: 'POST',
-        query: { entityId: own.id },
         body: {
           name: 'Plants a task',
           entityId: own.id,
@@ -1224,7 +1393,6 @@ describe('T-035 — the workflow engine is scoped at the route and not at the no
     await triggerPOST(
       requestAs(session, `/api/workflows/${workflow.id}/trigger`, {
         method: 'POST',
-        query: { entityId: own.id },
         body: {},
       }),
       { params: Promise.resolve({ id: workflow.id }) }

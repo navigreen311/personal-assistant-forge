@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, useRef, use } from 'react';
 import { useRouter } from 'next/navigation';
 import type { EntityDashboardData } from '@/modules/entities/entity.types';
 import { EntityHealthBadge } from '@/modules/entities/components/EntityHealthBadge';
+import { useAuthSession } from '@/lib/auth/use-session';
 
 type Tab = 'overview' | 'tasks' | 'messages' | 'calendar' | 'financial' | 'compliance';
 
@@ -30,12 +31,40 @@ export default function EntityDashboardPage({
 }) {
   const { entityId } = use(params);
   const router = useRouter();
+  const { activeEntityId, switchEntity } = useAuthSession();
   const [data, setData] = useState<EntityDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
 
+  // P-30 / Decision 1. `/api/entities/<id>/dashboard` is entity-scoped, and the
+  // rule is now that the entity a request names must be the entity the session
+  // is acting in. Opening this page IS entering the entity, so the page says so
+  // instead of relying on a caller-supplied id that no longer moves the scope.
+  // Without this the page 403s for every entity except whichever one the user
+  // happened to be in.
+  //
+  // The ref is load-bearing, not defensive: `switchEntity` is a fresh closure
+  // on every render and `update()` causes a render, so an unguarded effect
+  // would re-issue the switch in a loop.
+  const switchAttemptedFor = useRef<string | null>(null);
   useEffect(() => {
+    if (!activeEntityId || activeEntityId === entityId) return;
+    if (switchAttemptedFor.current === entityId) return;
+    switchAttemptedFor.current = entityId;
+    switchEntity(entityId).catch(() => {
+      // Not the caller's entity, or the session could not be re-minted. The
+      // page stays on its empty state rather than rendering another entity's
+      // figures, which is the failure this rule exists to prevent.
+      setLoading(false);
+    });
+  }, [entityId, activeEntityId, switchEntity]);
+
+  useEffect(() => {
+    // Wait until the session is acting in this entity, or the first fetch is a
+    // guaranteed 403 whose empty result would be rendered as "no data".
+    if (!activeEntityId || activeEntityId !== entityId) return;
+
     async function fetchDashboard() {
       setLoading(true);
       try {
@@ -49,7 +78,7 @@ export default function EntityDashboardPage({
       }
     }
     fetchDashboard();
-  }, [entityId]);
+  }, [entityId, activeEntityId]);
 
   // Fetch recent activity from ActionLog
   useEffect(() => {
