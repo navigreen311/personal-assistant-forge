@@ -332,6 +332,67 @@ across `bullmq` and `next-auth` is a real major upgrade with real blast radius,
 and it touches `package.json` / `package-lock.json`, which no in-flight package
 may hold. It must run alone.
 
+## SECOND RE-SCORE — 48% -> 71% (measured, 18 packages merged)
+
+Master: `tsc` **0** · unit **321/321, 5346/5346** · `test:db` **826/826** ·
+`npm audit` **0 vulnerabilities** · CI **all five jobs green**.
+
+| Dimension | Audit | Mid-run | Now |
+|---|---|---|---|
+| Feature completeness | 66 | 72 | **82** |
+| Wiring & integration | 38 | 48 | **78** |
+| Test coverage | 22 | 45 | **72** |
+| Quality & polish | 45 | 58 | **62** |
+| Production readiness | 30 | 45 | **68** |
+| Platform reliability | 12 | 20 | **58** |
+
+**Weighted: 71%** (range 66–76). Was 48%, was 37%.
+
+### The number that actually moved
+
+| | audit | after P-04 | after batch 1 | **now** |
+|---|---|---|---|---|
+| routes on the bad tenancy pattern | ~145 | 129 | 77 | **5** |
+
+177 routes use `withEntityScope`; 182 use `withRole` (from 4). In-memory stores
+78 → 64 — and the eight the audit classified BLOCKER are all persisted. The audit
+log is wired into 33 files and **writes rows for the first time**.
+
+### ⚠️ A SECOND METRIC CORRECTION, SAME MISTAKE AS THE FIRST
+
+I first measured 7 remaining bad-pattern routes. Two were false positives: the
+files mention `withAuth` and `_session` **only in a comment describing what they
+used to be**. Excluding comment lines gives **5**.
+
+That is the second time a grep over this codebase has counted prose as code — the
+first was `_session` itself, which went *up* after two packages fixed 16 routes.
+**Any metric quoted from this repository should exclude comment lines**, because
+the packages in this run were unusually diligent about recording what they
+changed, and that diligence inflates every naive count.
+
+### The 5 that remain, and why
+
+```
+onboarding/migration/route.ts
+settings/api-keys/route.ts
+shadow/config/voice-personas/route.ts
+shadow/receipts/route.ts
+shadow/receipts/[id]/route.ts
+```
+
+Three are `shadow/` — **no tenancy package ever owned `src/modules/shadow/`**.
+P-02 repaired its type errors and P-14 was explicitly told to stay out of it. The
+other two fell between P-13 (`onboarding`) and P-23 (`settings`) at the boundary.
+This is a real remaining gap, not noise, and it needs a small follow-up package.
+
+### Still open
+
+- **26 live `prisma as any`** — P-19 is on it; 115 of the 142 lint errors are this rule.
+- **64 in-memory stores**, all domain-level; the control plane is done.
+- **No Sentry SDK, no metrics** — T-013 and T-025 were never dispatched.
+- `src/engines/trust-safety/throttle-service.ts` — a fourth counter with no
+  product callers, found by P-18.
+
 ## WAVE 2 BATCH 1 — 5 PACKAGES MERGED (2026-09-09)
 
 **Master at `12df9a7`: tsc 0 · unit 320/320, 5283/5283 · test:db 366/366 ·
@@ -584,6 +645,14 @@ One row per merge. Appended by the coordinator at merge time.
 | 10 | P-24 dependency remediation | [#66](https://github.com/navigreen311/personal-assistant-forge/pull/66) | `a3733e0` | 0 | 320/320 | 5271/5271 | 240/240 | **none** — audit 30 -> 0 |
 | 11 | P-06 inbox tenancy | [#67](https://github.com/navigreen311/personal-assistant-forge/pull/67) | `225168c` | 0 | 320/320 | 5269/5269 | 309/309 | **none** |
 | 12 | P-09 execution control plane | [#68](https://github.com/navigreen311/personal-assistant-forge/pull/68) | `12df9a7` | 0 | 320/320 | 5283/5283 | 366/366 | **none — ALL 5 CI JOBS GREEN** |
+| 13 | P-12 life modules | [#73](https://github.com/navigreen311/personal-assistant-forge/pull/73) | `c24be32` | 0 | 321/321 | 5325/5325 | 665/665 | **none** |
+| 14 | P-08 content + decisions | [#74](https://github.com/navigreen311/personal-assistant-forge/pull/74) | `dfbee3a` | 0 | 321/321 | 5348/5348 | 743/743 | **none** |
+| — | coordinator: phone.test.ts clock | — | `4610df7` | 0 | 321/321 | 5348/5348 | 743/743 | fixed a red master |
+| — | coordinator: audit chain race | — | `aa5f07d` | 0 | 321/321 | 5348/5348 | 743/743 | **none** |
+| 15 | P-15 RBAC | [#75](https://github.com/navigreen311/personal-assistant-forge/pull/75) | `43b82fc` | 0 | 321/321 | 5348/5348 | 772/772 | **none** |
+| 16 | P-26 search | [#76](https://github.com/navigreen311/personal-assistant-forge/pull/76) | `30a57ac` | 0 | 321/321 | 5349/5349 | 802/802 | **none** |
+| 17 | P-25 test isolation | [#77](https://github.com/navigreen311/personal-assistant-forge/pull/77) | `3731bc3` | 0 | 321/321 | 5349/5349 | 802/802 | **flake eliminated** |
+| 18 | P-18 rate limiting | [#78](https://github.com/navigreen311/personal-assistant-forge/pull/78) | `eb82ffa` | 0 | 321/321 | 5346/5346 | **826/826** | **none** |
 
 ---
 
