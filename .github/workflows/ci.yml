@@ -94,7 +94,22 @@ jobs:
   db-tests:
     name: Real-Database Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not 15. This suite normally finishes in 5-7 minutes (5m40s, 6m36s,
+    # 6m54s, 7m00s over the last four runs), so 15 looked like ample headroom.
+    # It is not: on 2026-09-10 an identical tree ran 5-8x slower on a degraded
+    # runner -- content-tenancy 28s -> 201s, analytics 31s -> 214s, inbox 24s ->
+    # 189s -- and was cancelled at the ceiling with every suite it had reached
+    # passing. A ceiling only ~2x the normal runtime turns runner variance into
+    # a red master, and "cancelled" reads like a hang, which invites a re-run
+    # instead of a diagnosis.
+    #
+    # This does NOT weaken the protection the ceiling exists for. The failure it
+    # guards against -- P-18's Redis singleton and P-20's un-`unref`ed
+    # `setInterval`, where every test passes and the PROCESS never exits -- is
+    # unbounded. It hits 30 exactly as reliably as it hit 15; it just costs
+    # fifteen more minutes on the rare occasion it happens. Slow is bounded,
+    # hung is not, and only the ceiling's height distinguishes them.
+    timeout-minutes: 30
 
     # Deliberately NOT gated on lint-typecheck-test. Originally because that job
     # was red on the standing type errors, and gating this behind it would have
