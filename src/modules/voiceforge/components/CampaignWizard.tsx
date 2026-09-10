@@ -10,7 +10,9 @@ import type { CallGuardrails } from '@/modules/voiceforge/types';
 interface CampaignWizardProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (campaign: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onCreated?: (campaign: unknown) => void;
 }
 
 interface EntityOption {
@@ -1186,8 +1188,11 @@ export default function CampaignWizard({ isOpen, onClose, onCreated }: CampaignW
       const campaign = await res.json();
       onCreated?.(campaign.data ?? campaign);
       onClose();
-    } catch (err: any) {
-      setSubmitError(err.message ?? 'An unexpected error occurred');
+    } catch (err) {
+      // `catch (err: any)` before. `unknown` plus the instanceof check is the
+      // honest form: a thrown non-Error no longer silently yields `undefined`
+      // here, it takes the fallback message -- which is what the `??` intended.
+      setSubmitError(err instanceof Error ? err.message : 'An unexpected error occurred');
     } finally {
       setIsSubmitting(false);
     }

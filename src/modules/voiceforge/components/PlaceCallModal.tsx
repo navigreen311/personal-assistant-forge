@@ -9,7 +9,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 interface PlaceCallModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCallPlaced?: (call: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onCallPlaced?: (call: unknown) => void;
   preSelectedEntityId?: string;
 }
 

@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, type ReactNode } from 'react';
 
 // -- Existing component imports (used as fallbacks) --------------------------
+import { ErrorBoundary } from '@/shared/components/ErrorBoundary';
 import TimeSavedDisplay from '@/modules/analytics/components/TimeSavedDisplay';
 import ProductivityScoreCard from '@/modules/analytics/components/ProductivityScoreCard';
 import TimeAuditChart from '@/modules/analytics/components/TimeAuditChart';
@@ -75,12 +76,24 @@ function useEnhancedComponent<P>(
 }
 
 // -- Error boundary wrapper ---------------------------------------------------
+/**
+ * P-19. This was a try/catch around `<>{children}</>`, at all thirteen call
+ * sites on this page. Constructing JSX does not render it, so the catch block
+ * could never run: a child that threw during render took the whole route down
+ * and the fallback below had never once been shown. The name, the section
+ * comment and the fallback all promised an error boundary; only a class
+ * component with `getDerivedStateFromError` actually is one, and the repo
+ * already ships that as `@/shared/components/ErrorBoundary`. Same props, same
+ * fallback, same call sites -- it just works now.
+ */
 function SafeRender({ children, fallback }: { children: ReactNode; fallback?: ReactNode }) {
-  try {
-    return <>{children}</>;
-  } catch {
-    return <>{fallback ?? <EmptyCard message="Something went wrong rendering this section." />}</>;
-  }
+  return (
+    <ErrorBoundary
+      fallback={fallback ?? <EmptyCard message="Something went wrong rendering this section." />}
+    >
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 function EmptyCard({ message, className }: { message: string; className?: string }) {
@@ -413,8 +426,13 @@ function SafeHabitsFallback({ habits }: { habits: HabitDefinition[] }) {
         </div>
       </div>
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {safeHabits.map((habit) => (
-          <HabitTracker key={habit?.id ?? Math.random()} habit={habit} />
+        {/* P-19: the key was `habit?.id ?? Math.random()`. A fresh random key
+            every render makes React treat the element as brand new -- it
+            unmounts and remounts the tracker on each re-render, discarding its
+            state and the DOM node. The list index is stable, which is the point
+            of a key. */}
+        {safeHabits.map((habit, i) => (
+          <HabitTracker key={habit?.id ?? `habit-${i}`} habit={habit} />
         ))}
       </div>
     </div>

@@ -167,7 +167,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             status: true,
           },
         }),
-        [] as any[]
+        []
       ),
 
       // Top 5 messages ordered by triageScore descending
@@ -192,7 +192,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             },
           },
         }),
-        [] as any[]
+        []
       ),
 
       // Last 10 action log entries ordered by timestamp desc.
@@ -220,7 +220,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             timestamp: true,
           },
         }),
-        [] as any[]
+        []
       ),
 
       // Today's calendar events ordered by startTime
@@ -239,7 +239,7 @@ export async function GET(request: NextRequest): Promise<Response> {
             prepPacket: true,
           },
         }),
-        [] as any[]
+        []
       ),
 
       // Placeholder for follow-up reminders (table may not exist yet)

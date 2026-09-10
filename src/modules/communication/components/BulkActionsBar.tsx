@@ -10,8 +10,17 @@ interface BulkActionsBarProps {
   selectedCount: number;
   selectedIds: string[];
   entities: Array<{ id: string; name: string }>;
-  onAction: (action: string, data?: any) => void;
+  /** Payload of a bulk action. Every call site in this file sends
+   *  `contactIds` plus at most one of the three optional fields. */
+  onAction: (action: string, data?: BulkActionPayload) => void;
   onClearSelection: () => void;
+}
+
+interface BulkActionPayload {
+  contactIds: string[];
+  tag?: string;
+  cadence?: string;
+  entityId?: string;
 }
 
 type ActiveDropdown = 'tag' | 'cadence' | 'entity' | null;
@@ -264,6 +273,11 @@ export default function BulkActionsBar({
   // Close everything when selection clears
   useEffect(() => {
     if (!isVisible) {
+      // the bar stays mounted and is hidden with opacity/pointer-events, so
+      // this state must be reset explicitly; deriving it in render would
+      // leave a stale dropdown open the next time a selection makes the bar
+      // visible again.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveDropdown(null);
       setShowDeleteConfirm(false);
     }

@@ -211,10 +211,15 @@ export function InsightsTab({ entityId, period: initialPeriod }: Props) {
         },
         heatmap: heatmapCells.length > 0 ? heatmapCells : (apiData.heatmap && !Array.isArray(apiData.heatmap?.[0]) ? apiData.heatmap : []),
         interrupters: apiData.topInterrupters ?? apiData.interrupters ?? [],
-        recommendations: (apiData.recommendations ?? []).map((r: any, i: number) => ({
-          id: r.id ?? `rec-${i}`,
-          text: r.text ?? r,
-        })),
+        // A recommendation arrives either as `{ id?, text }` or as a bare
+        // string -- the `r.text ?? r` fallback below is what says so. `any`
+        // hid that; the union states it.
+        recommendations: (apiData.recommendations ?? []).map(
+          (r: { id?: string; text?: string } | string, i: number) => ({
+            id: (typeof r === 'object' ? r.id : undefined) ?? `rec-${i}`,
+            text: (typeof r === 'object' ? r.text : undefined) ?? r,
+          }),
+        ),
       };
       setData(json);
     } catch {

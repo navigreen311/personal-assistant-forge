@@ -6,19 +6,26 @@ import { useState, useRef, useEffect } from 'react';
 // Types
 // ---------------------------------------------------------------------------
 
+interface ContactFilters {
+  tier?: string;
+  cadenceStatus?: string;
+  scoreMin?: number;
+  scoreMax?: number;
+  tags?: string[];
+  lastTouch?: string;
+  hasCommitments?: string;
+}
+
 interface ContactFilterPanelProps {
   isOpen: boolean;
-  filters: {
-    tier?: string;
-    cadenceStatus?: string;
-    scoreMin?: number;
-    scoreMax?: number;
-    tags?: string[];
-    lastTouch?: string;
-    hasCommitments?: string;
-  };
+  filters: ContactFilters;
   availableTags: string[];
-  onFilterChange: (key: string, value: any) => void;
+  /** Key/value of one filter. Naming the value union means a call site that
+   *  sends a number for `tags` no longer type-checks; `any` allowed it. */
+  onFilterChange: <K extends keyof ContactFilters>(
+    key: K,
+    value: ContactFilters[K],
+  ) => void;
   onClear: () => void;
   onApply: () => void;
 }
@@ -177,6 +184,10 @@ export default function ContactFilterPanel({
 
   useEffect(() => {
     if (contentRef.current) {
+      // this measures scrollHeight off a committed DOM node to drive the
+      // expand/collapse transition. A measurement is only available after
+      // layout, so it cannot be computed during render by construction.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMaxHeight(isOpen ? contentRef.current.scrollHeight : 0);
     }
   }, [isOpen, filters, availableTags]);

@@ -39,9 +39,9 @@ export async function GET(request: NextRequest) {
           where.draftStatus = status;
         }
 
-        total = await (prisma as any).message.count({ where });
+        total = await prisma.message.count({ where });
 
-        const rawMessages = await (prisma as any).message.findMany({
+        const rawMessages = await prisma.message.findMany({
           where,
           orderBy: { createdAt: 'desc' },
           skip,

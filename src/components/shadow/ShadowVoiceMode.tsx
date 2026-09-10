@@ -22,6 +22,21 @@ interface Props {
   onClose: () => void;
 }
 
+/**
+ * Deterministic per-bar variation for the decorative waveform.
+ *
+ * P-19: the four bar styles below were built from `Math.random()` called during
+ * render. React requires render to be idempotent -- under StrictMode or a
+ * re-entrant concurrent render the same bar gets two different heights, and the
+ * whole waveform reshuffles on any unrelated re-render. This keeps the varied,
+ * uneven look (that is all the randomness was for) while returning the same
+ * value for the same bar every time.
+ */
+function barVariation(i: number, salt: number): number {
+  const x = Math.sin(i * 12.9898 + salt * 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
 export function ShadowVoiceMode({ onSendMessage, onClose }: Props) {
   const [status, setStatus] = useState<Status>('idle');
   const [transcript, setTranscript] = useState('');
@@ -103,9 +118,9 @@ export function ShadowVoiceMode({ onSendMessage, onClose }: Props) {
                 key={i}
                 className="w-1 bg-indigo-500 rounded-full animate-pulse"
                 style={{
-                  height: `${20 + Math.random() * 40}px`,
+                  height: `${20 + barVariation(i, 1) * 40}px`,
                   animationDelay: `${i * 50}ms`,
-                  animationDuration: `${300 + Math.random() * 400}ms`,
+                  animationDuration: `${300 + barVariation(i, 2) * 400}ms`,
                 }}
               />
             ))}
@@ -118,9 +133,9 @@ export function ShadowVoiceMode({ onSendMessage, onClose }: Props) {
                 key={i}
                 className="w-1 bg-green-500 rounded-full animate-pulse"
                 style={{
-                  height: `${15 + Math.random() * 30}px`,
+                  height: `${15 + barVariation(i, 3) * 30}px`,
                   animationDelay: `${i * 60}ms`,
-                  animationDuration: `${400 + Math.random() * 300}ms`,
+                  animationDuration: `${400 + barVariation(i, 4) * 300}ms`,
                 }}
               />
             ))}

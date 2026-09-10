@@ -8,8 +8,10 @@ class FakeWebSocket {
 
   readyState = FakeWebSocket.OPEN;
   binaryType: 'arraybuffer' | 'blob' = 'blob';
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sent: any[] = [];
+  // P-19: `any[]` / `data: any` before. A real WebSocket's `send` takes
+  // `string | ArrayBufferLike | Blob | ArrayBufferView`, so the fake should
+  // take the same thing; assertions on `sent` narrow it themselves.
+  sent: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
 
   private listeners: Record<string, Array<(ev: unknown) => void>> = {};
 
@@ -27,8 +29,7 @@ class FakeWebSocket {
   removeEventListener(type: string, fn: (ev: unknown) => void) {
     this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn);
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  send(data: any) {
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
     this.sent.push(data);
   }
   close() {
@@ -141,7 +142,7 @@ describe('openTtsStream', () => {
     handle.speak('hello world');
     const sent = lastSocket().sent[0];
     expect(typeof sent).toBe('string');
-    expect(JSON.parse(sent)).toEqual({ type: 'text', text: 'hello world' });
+    expect(JSON.parse(sent as string)).toEqual({ type: 'text', text: 'hello world' });
   });
 
   it('close() sends a {type:"close"} frame and closes the socket', async () => {

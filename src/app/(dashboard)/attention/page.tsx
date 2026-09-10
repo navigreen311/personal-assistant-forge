@@ -7,16 +7,33 @@ import { DNDToggle } from '@/modules/attention/components/DNDToggle';
 import { NotificationDigest } from '@/modules/attention/components/NotificationDigest';
 import { PriorityRoutingConfig } from '@/modules/attention/components/PriorityRoutingConfig';
 import { NotificationLearningPanel } from '@/modules/attention/components/NotificationLearningPanel';
+import type { AttentionBudget, DNDConfig } from '@/modules/attention/types';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type Tab = 'overview' | 'notifications' | 'routing' | 'insights';
+
+/** Props every attention tab receives. The overview tab additionally gets the
+ *  budget/DND payloads the page has already fetched, so its import-failure
+ *  fallback can render them without re-fetching. */
+interface AttentionTabProps {
+  entityId?: string;
+  period?: string;
+  budget?: AttentionBudget | null;
+  dnd?: DNDConfig | null;
+}
 
 // ---------------------------------------------------------------------------
 // Dynamic imports with inline fallbacks
 // ---------------------------------------------------------------------------
 
-const EnhancedOverviewTab: any = dynamic(
+const EnhancedOverviewTab = dynamic<AttentionTabProps>(
   () =>
     import('@/modules/attention/components/EnhancedOverviewTab').catch(
       () => ({
-        default: ({ budget, dnd }: any) => (
+        default: ({ budget, dnd }: AttentionTabProps) => (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             {budget && <AttentionBudgetMeter budget={budget} />}
             {dnd && (
@@ -28,64 +45,49 @@ const EnhancedOverviewTab: any = dynamic(
           </div>
         ),
       }),
-    ) as any,
+    ),
   { ssr: false },
 );
 
-const NotificationsTab: any = dynamic(
+const NotificationsTab = dynamic<AttentionTabProps>(
   () =>
     import('@/modules/attention/components/NotificationsTab').catch(
       () => ({
-        default: (props: any) => (
-          <NotificationDigest {...props} />
-        ),
+        // P-19: this used to spread {entityId, period} into NotificationDigest,
+        // which accepts neither -- `bundles` arrived undefined. The component
+        // guards `!bundles`, so the rendered output was already the empty
+        // state; passing [] says so instead of relying on the guard.
+        default: () => <NotificationDigest bundles={[]} />,
       }),
-    ) as any,
+    ),
   { ssr: false },
 );
 
-const PriorityRoutingTab: any = dynamic(
+const PriorityRoutingTab = dynamic<AttentionTabProps>(
   () =>
     import('@/modules/attention/components/PriorityRoutingTab').catch(
       () => ({
-        default: (props: any) => (
-          <PriorityRoutingConfig {...props} />
-        ),
+        // P-19: as above -- PriorityRoutingConfig takes {config, onChange}, and
+        // was receiving neither. `(config ?? [])` meant it already rendered the
+        // empty list; the explicit [] and no-op preserve that exactly.
+        default: () => <PriorityRoutingConfig config={[]} onChange={() => {}} />,
       }),
-    ) as any,
+    ),
   { ssr: false },
 );
 
-const InsightsTab: any = dynamic(
+const InsightsTab = dynamic<AttentionTabProps>(
   () =>
     import('@/modules/attention/components/InsightsTab').catch(
       () => ({
-        default: (props: any) => (
-          <NotificationLearningPanel {...props} />
-        ),
+        // P-19: NotificationLearningPanel takes {learning} only; the spread
+        // props were ignored. It already renders "No learning data available."
+        // when `learning` is absent, which is what this path did before.
+        default: () => <NotificationLearningPanel />,
       }),
-    ) as any,
+    ),
   { ssr: false },
 );
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type Tab = 'overview' | 'notifications' | 'routing' | 'insights';
-
-interface BudgetData {
-  dailyBudget?: number;
-  usedToday?: number;
-  remaining?: number;
-  [key: string]: any;
-}
-
-interface DNDData {
-  isActive?: boolean;
-  mode?: string;
-  [key: string]: any;
-}
 
 // ---------------------------------------------------------------------------
 // Page Component
@@ -93,8 +95,8 @@ interface DNDData {
 
 export default function AttentionPage() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [budget, setBudget] = useState<BudgetData | null>(null);
-  const [dnd, setDnd] = useState<DNDData | null>(null);
+  const [budget, setBudget] = useState<AttentionBudget | null>(null);
+  const [dnd, setDnd] = useState<DNDConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

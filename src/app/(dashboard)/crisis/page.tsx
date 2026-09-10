@@ -22,6 +22,33 @@ interface CrisisStats {
   dmsStatus: string;
 }
 
+/** Props every lazily-loaded crisis tab accepts. */
+interface CrisisTabProps {
+  entityId?: string;
+  onRefresh?: () => void;
+}
+
+/** Props the declare-crisis modal accepts. */
+interface DeclareCrisisModalProps {
+  entityId?: string;
+  onClose?: () => void;
+  onSuccess?: () => void;
+}
+
+/** A crisis row as returned by GET /api/crisis. The handler is defensive about
+ *  every field, so the type is too. */
+interface CrisisSummary {
+  status?: string;
+  resolvedAt?: string | null;
+}
+
+/** An entity row as returned by GET /api/entities. */
+interface EntitySummary {
+  id?: string;
+  name?: string;
+  type?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Fallback components
 // ---------------------------------------------------------------------------
@@ -138,43 +165,43 @@ function ModalFallback() {
 // Dynamic imports with catch fallbacks
 // ---------------------------------------------------------------------------
 
-const EnhancedActiveTab: any = dynamic(
+const EnhancedActiveTab = dynamic<CrisisTabProps>(
   () =>
     import('@/modules/crisis/components/EnhancedActiveTab').catch(() => ({
       default: ActiveFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const CrisisPlaybooksTab: any = dynamic(
+const CrisisPlaybooksTab = dynamic<CrisisTabProps>(
   () =>
     import('@/modules/crisis/components/CrisisPlaybooksTab').catch(() => ({
       default: PlaybooksFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const CrisisHistoryTab: any = dynamic(
+const CrisisHistoryTab = dynamic<CrisisTabProps>(
   () =>
     import('@/modules/crisis/components/CrisisHistoryTab').catch(() => ({
       default: HistoryFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const CrisisConfigTab: any = dynamic(
+const CrisisConfigTab = dynamic<CrisisTabProps>(
   () =>
     import('@/modules/crisis/components/CrisisConfigTab').catch(() => ({
       default: ConfigFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const DeclareCrisisModal: any = dynamic(
+const DeclareCrisisModal = dynamic<DeclareCrisisModalProps>(
   () =>
     import('@/modules/crisis/components/DeclareCrisisModal').catch(() => ({
       default: ModalFallback,
-    })) as any,
+    })),
   { ssr: false },
 );
 
@@ -214,7 +241,7 @@ export default function CrisisPage() {
       }
 
       const json = await res.json().catch(() => null);
-      const crises: any[] = json?.data ?? [];
+      const crises: CrisisSummary[] = json?.data ?? [];
 
       // BUG FIX: Derive active count from actual API data, not hardcoded values.
       // The old page fell back to sample demo data when the API returned an empty
@@ -222,16 +249,15 @@ export default function CrisisPage() {
       // when none existed. Now we use zero-defaults and only count real records.
       const activeStatuses = ['DETECTED', 'ACKNOWLEDGED', 'IN_PROGRESS'];
       const activeCrises = Array.isArray(crises)
-        ? crises.filter((c: any) => c && activeStatuses.includes(c.status)).length
+        ? crises.filter((c) => c && activeStatuses.includes(c.status ?? '')).length
         : 0;
 
       // Compute days since last crisis
       let daysSinceLastCrisis = 0;
       if (Array.isArray(crises) && crises.length > 0) {
         const resolvedCrises = crises
-          .filter((c: any) => c?.resolvedAt)
-          .map((c: any) => new Date(c.resolvedAt).getTime())
-          .filter((t: number) => !isNaN(t));
+          .map((c) => (c?.resolvedAt ? new Date(c.resolvedAt).getTime() : NaN))
+          .filter((t) => !isNaN(t));
 
         if (resolvedCrises.length > 0) {
           const mostRecent = Math.max(...resolvedCrises);
@@ -293,7 +319,7 @@ export default function CrisisPage() {
           if (res && res.ok) {
             const data = await res.json().catch(() => null);
             const entityList: EntityOption[] = (data?.data ?? []).map(
-              (e: any) => ({
+              (e: EntitySummary) => ({
                 id: e?.id ?? '',
                 name: e?.name ?? 'Unknown',
                 type: e?.type ?? '',

@@ -155,11 +155,16 @@ export default function KnowledgeHubPage() {
   }, [selectedEntityId]);
 
   useEffect(() => {
+    // loadEntities() sets entity state from the network on mount; matches the
+    // three sibling effects on this page and in knowledge/learning and
+    // knowledge/sops.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadEntities();
   }, [loadEntities]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetching data on mount is intentional
+    // fetching data on mount is intentional
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadEntries();
     loadSurfaced();
     loadCollections();

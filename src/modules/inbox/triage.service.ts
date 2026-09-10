@@ -379,8 +379,7 @@ Return JSON with these exact fields:
         take: maxMessages,
         orderBy: { createdAt: 'desc' },
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messageIds = untriaged.map((m: any) => m.id as string);
+      messageIds = untriaged.map((m) => m.id);
     } else {
       messageIds = messageIds.slice(0, maxMessages);
     }

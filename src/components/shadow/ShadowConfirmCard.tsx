@@ -25,6 +25,10 @@ export function ShadowConfirmCard({
     if (!canUndo || undone || expired) return;
 
     if (secondsLeft <= 0) {
+      // `expired` is also set from the interval below and read by the undo
+      // handler, so it cannot become render-derived without changing when
+      // undo stops being offered.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setExpired(true);
       return;
     }

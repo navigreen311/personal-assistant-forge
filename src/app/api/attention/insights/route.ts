@@ -2,7 +2,10 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import { prisma } from '@/lib/db';
+
+// P-19: the `prisma` import and the `safeQuery` helper below existed only for
+// the three dead queries removed from GET. Nothing in this route reaches the
+// database any more.
 
 const querySchema = z.object({
   period: z
@@ -10,17 +13,6 @@ const querySchema = z.object({
     .optional()
     .default('thisWeek'),
 });
-
-/**
- * Safely execute a query, returning a default value on failure.
- */
-const safeQuery = async <T>(fn: () => Promise<T>, defaultVal: T): Promise<T> => {
-  try {
-    return await fn();
-  } catch {
-    return defaultVal;
-  }
-};
 
 /**
  * Compute the start and end dates for a given period.
@@ -79,7 +71,7 @@ function getDefaults() {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const params = Object.fromEntries(req.nextUrl.searchParams);
       const parsed = querySchema.safeParse(params);
@@ -88,53 +80,51 @@ export async function GET(request: NextRequest) {
       }
 
       const { period } = parsed.data;
-      const { start, end } = getDateRange(period);
+      // Underscore-prefixed since P-19: the queries that consumed the range
+      // were removed, but `period` remains part of the validated request
+      // contract, so the range is still computed and validated.
+      const { start: _start, end: _end } = getDateRange(period);
 
-      // Fetch interrupt / notification events in parallel with safe defaults
-      const [interruptEvents, dndBlocked, focusSessions] = await Promise.all([
-        // All interrupt-type notifications in range
-        safeQuery(
-          () =>
-            (prisma as any).notification.findMany({
-              where: {
-                userId: session.userId,
-                createdAt: { gte: start, lte: end },
-              },
-              select: {
-                id: true,
-                source: true,
-                priority: true,
-                createdAt: true,
-                blocked: true,
-              },
-            }),
-          [] as { id: string; source: string; priority: number; createdAt: Date; blocked: boolean }[],
-        ),
-        // Notifications blocked by DND
-        safeQuery(
-          () =>
-            (prisma as any).notification.count({
-              where: {
-                userId: session.userId,
-                createdAt: { gte: start, lte: end },
-                blocked: true,
-              },
-            }),
-          0,
-        ),
-        // Focus sessions for average duration
-        safeQuery(
-          () =>
-            (prisma as any).focusSession.findMany({
-              where: {
-                userId: session.userId,
-                startTime: { gte: start, lte: end },
-              },
-              select: { startTime: true, endTime: true },
-            }),
-          [] as { startTime: Date; endTime: Date }[],
-        ),
-      ]);
+      // P-19. Three queries stood here, all behind `(prisma as any)`, and all
+      // three fail on this schema. Verified against a real Postgres:
+      //
+      //   notification.findMany({ select: { source, blocked } })
+      //       -> "Unknown field 'source' for select statement on model
+      //          'Notification'" (there is no `blocked` either, and
+      //          `priority` is a String -- "low"/"normal"/"high"/"urgent" --
+      //          not the number the code averages).
+      //   notification.count({ where: { blocked: true } })
+      //       -> "Unknown argument 'blocked'".
+      //   focusSession.findMany(...)
+      //       -> **there is no `FocusSession` model at all**;
+      //          `prisma.focusSession` is `undefined`.
+      //
+      // `safeQuery` swallowed every one, so this endpoint has served
+      // totalInterrupts 0, blockedDND 0, avgFocusSession 0, an all-zero heatmap,
+      // no top interrupters -- and, because the score formula is
+      // `100 - unblocked*2 + avgFocus*0.5`, **attentionScore 100** -- to every
+      // user on every request since it was written. A perfect attention score,
+      // invented, presented as a measurement.
+      //
+      // The schema is frozen, so none of it can be repaired here. Following the
+      // P-10/T-026 precedent the dead calls are replaced by the exact defaults
+      // they were already producing: the response is byte-for-byte what it has
+      // always been, and the route no longer claims to consult stores that
+      // cannot answer.
+      //
+      // FLAGGED TO THE COORDINATOR: real attention insights need
+      // `Notification.source`, `Notification.blocked`, a numeric priority (or a
+      // mapping from the string one), and a `FocusSession` model. That is a
+      // migration, and therefore a separate package.
+      const interruptEvents: {
+        id: string;
+        source: string;
+        priority: number;
+        createdAt: Date;
+        blocked: boolean;
+      }[] = [];
+      const dndBlocked = 0;
+      const focusSessions: { startTime: Date; endTime: Date }[] = [];
 
       const totalInterrupts = interruptEvents.length;
       const blockedDND = typeof dndBlocked === 'number' ? dndBlocked : 0;

@@ -15,7 +15,9 @@ import type {
 interface CaptureRuleModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSaved?: (rule: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onSaved?: (rule: unknown) => void;
   editRule?: {
     id: string;
     name: string;

@@ -1,4 +1,7 @@
 import { prisma } from '@/lib/db';
+// P-19: `mapPrismaReceipt` took `raw: any`. Aliased -- the generated row type
+// shares a name with the domain type it maps to.
+import type { ConsentReceipt as PrismaConsentReceipt } from '@prisma/client';
 import type { ConsentReceipt } from '@/shared/types';
 
 export async function createConsentReceipt(
@@ -46,8 +49,7 @@ export async function getRecentReceipts(
     take: limit * 2, // fetch extra to account for actions without receipts
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const actionIds = actionLogs.map((a: any) => a.id as string);
+  const actionIds = actionLogs.map((a) => a.id);
 
   const receipts = await prisma.consentReceipt.findMany({
     where: { actionId: { in: actionIds } },
@@ -70,8 +72,7 @@ export function formatReceiptSummary(receipt: ConsentReceipt): string {
   return `Executed [${receipt.description}] because [${receipt.reason}]; impacted [${impactedStr}]; reversible: [${reversibleStr}]${rollbackStr}`;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapPrismaReceipt(raw: any): ConsentReceipt {
+function mapPrismaReceipt(raw: PrismaConsentReceipt): ConsentReceipt {
   return {
     id: raw.id,
     actionId: raw.actionId,

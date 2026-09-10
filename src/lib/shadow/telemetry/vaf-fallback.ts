@@ -63,9 +63,21 @@ export interface VafFallbackRate {
  * Today this is a structured `console.warn`. A log aggregator can grep
  * for the `[vaf-fallback]` prefix to pull the stream into a dashboard.
  *
- * TODO(post-WS04): replace with prisma.vafFallbackEvent.create once the
- * dedicated table exists. Keep the signature stable so callers do not
- * need to change.
+ * BLOCKED ON A MIGRATION -- checked by P-19/T-030 rather than carried as a
+ * bare TODO. The intended implementation is
+ * `prisma.vafFallbackEvent.create(...)`, and there is **no `VafFallbackEvent`
+ * model in prisma/schema.prisma** (verified: 0 matches against the 75 declared
+ * models). The schema is frozen for this run, so it cannot be added here.
+ *
+ * This is deliberately NOT written speculatively as
+ * `(prisma as any).vafFallbackEvent.create(...)`. That is exactly the shape --
+ * a cast onto a delegate that does not exist, wrapped in a swallowing catch --
+ * that hid ten separate defects in this codebase, six found by the audit and
+ * four more by P-19. A `console.warn` that a log aggregator can actually grep
+ * is worth more than a database write that silently never happens.
+ *
+ * To finish: add the model, then swap the body. The signature stays as it is so
+ * no caller changes.
  */
 export async function recordVafFallback(
   params: RecordVafFallbackParams

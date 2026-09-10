@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { useAuthSession } from '@/lib/auth/use-session';
 
 // --- Types ---
@@ -1104,12 +1105,12 @@ export default function SettingsPage() {
               </table>
             </div>
 
-            <a
+            <Link
               href="/entities"
               className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 transition-colors"
             >
               &rarr; Go to Entities page
-            </a>
+            </Link>
           </section>
         )}
 

@@ -4,7 +4,10 @@ import React from 'react';
 import type { NotificationLearning } from '../types';
 
 interface Props {
-  learning: NotificationLearning;
+  // P-19: optional because the body already guards `!learning` and renders an
+  // empty state. Declaring it required contradicted that guard and forced
+  // callers that legitimately have no data to cast.
+  learning?: NotificationLearning;
 }
 
 export function NotificationLearningPanel({ learning }: Props) {

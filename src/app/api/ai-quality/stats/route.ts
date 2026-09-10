@@ -112,10 +112,15 @@ export async function GET(request: NextRequest) {
       }
 
       const { entityId, period } = parsed.data;
-      const { start, end } = getDateRange(period);
+      // Underscore-prefixed since P-19: the two queries that consumed the date
+      // range were removed (see below). The range is still computed because
+      // `period` is part of the validated request contract.
+      const { start: _start, end: _end } = getDateRange(period);
 
-      // Determine entity IDs to query
-      let entityIds: string[] = [];
+      // Determine entity IDs to query. Nothing reads the resulting list any
+      // more (again, see below) but the ownership check must stay: it is what
+      // answers 404 for an entity the caller does not own.
+      let _entityIds: string[] = [];
 
       if (entityId) {
         // Verify entity ownership
@@ -125,7 +130,7 @@ export async function GET(request: NextRequest) {
         if (!entity) {
           return error('NOT_FOUND', 'Entity not found or access denied', 404);
         }
-        entityIds = [entityId];
+        _entityIds = [entityId];
       } else {
         const entities = await safeQuery(
           () =>
@@ -135,76 +140,51 @@ export async function GET(request: NextRequest) {
             }),
           [] as { id: string }[]
         );
-        entityIds = entities.map((e: { id: string }) => e.id);
+        _entityIds = entities.map((e: { id: string }) => e.id);
       }
 
-      // Gather action logs for AI quality analysis
-      const [actionLogs, aiDecisions] = await Promise.all([
-        // All AI-related action logs in period
-        safeQuery(
-          () =>
-            (prisma as any).actionLog.findMany({
-              where: {
-                actorId: session.userId,
-                timestamp: { gte: start, lte: end },
-                actionType: {
-                  in: [
-                    'AI_TRIAGE',
-                    'AI_DRAFT',
-                    'AI_SCHEDULE',
-                    'AI_PREDICTION',
-                    'AI_CLASSIFICATION',
-                    'AI_AUTOMATION',
-                    'TRIAGE_OVERRIDE',
-                    'DRAFT_REJECTED',
-                    'PREDICTION_WRONG',
-                    'CLASSIFICATION_OVERRIDE',
-                    'SCHEDULE_OVERRIDE',
-                    'AUTOMATION_OVERRIDE',
-                  ],
-                },
-              },
-              select: {
-                actionType: true,
-                module: true,
-                confidence: true,
-                metadata: true,
-                timestamp: true,
-              },
-            }),
-          [] as {
-            actionType: string;
-            module: string | null;
-            confidence: number | null;
-            metadata: any;
-            timestamp: Date;
-          }[]
-        ),
-
-        // AI decisions (tasks with due dates for deadline metric)
-        safeQuery(
-          () =>
-            (prisma as any).task.findMany({
-              where: {
-                entityId: { in: entityIds },
-                createdAt: { gte: start, lte: end },
-                dueDate: { not: null },
-              },
-              select: {
-                status: true,
-                dueDate: true,
-                completedAt: true,
-                module: true,
-              },
-            }),
-          [] as {
-            status: string;
-            dueDate: Date | null;
-            completedAt: Date | null;
-            module: string | null;
-          }[]
-        ),
-      ]);
+      // P-19. Both queries that used to stand here ran through
+      // `(prisma as any)` and selected columns that do not exist:
+      //
+      //   prisma.actionLog.findMany({ select: { module, confidence, metadata } })
+      //       -> ActionLog has none of those three.
+      //   prisma.task.findMany({ select: { completedAt, module } })
+      //       -> Task has neither.
+      //
+      // Verified against a real Postgres on this schema: both throw
+      // `Unknown field ... for select statement`. `safeQuery` swallowed both,
+      // so `actionLogs` and `aiDecisions` have been `[]` on every request since
+      // the route was written -- which means every metric below fell to its
+      // literal else-branch and this endpoint has always answered
+      // grade "B+", overallScore 88, triage 92, draftApproval 85, deadline 88,
+      // automation 88, totalDecisions 0, with an empty module breakdown. Those
+      // are invented figures, presented as measurements, to every user on every
+      // request: the same failure shape as `/api/health/dashboard`.
+      //
+      // The schema is frozen for this run, so the columns cannot be added here.
+      // Following the P-10/T-026 precedent (crisis/config, delegation/stats,
+      // execution/stats, voice/stats, household/dashboard, trip-service), the
+      // dead calls are removed rather than left pretending to consult a store
+      // that cannot answer. The response is byte-identical to what the route
+      // has always returned; what changes is that the code no longer claims
+      // otherwise, and `src/` loses four `any`s.
+      //
+      // FLAGGED TO THE COORDINATOR: making AI-quality real needs
+      // `ActionLog.module`, `ActionLog.confidence`, `ActionLog.metadata` and
+      // `Task.completedAt` -- a migration, and therefore a separate package.
+      const actionLogs: {
+        actionType: string;
+        module: string | null;
+        confidence: number | null;
+        metadata: unknown;
+        timestamp: Date;
+      }[] = [];
+      const aiDecisions: {
+        status: string;
+        dueDate: Date | null;
+        completedAt: Date | null;
+        module: string | null;
+      }[] = [];
 
       // --- Compute metrics ---
       const counts: Record<string, number> = {};

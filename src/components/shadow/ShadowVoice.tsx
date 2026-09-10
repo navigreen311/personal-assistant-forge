@@ -351,8 +351,15 @@ function WaveformVisualizer({
         // Audio-reactive height
         const audioFactor = isActive ? audioLevel * (1 - centerDistance * 0.5) : 0;
 
-        // Add pseudo-random variation per bar for natural look
-        const variation = Math.sin(i * 1.7 + Date.now() * 0.003) * 0.1;
+        // Add pseudo-random variation per bar for natural look.
+        //
+        // P-19: the phase term was `Date.now() * 0.003`, i.e. a clock read
+        // during render. That makes the component non-idempotent -- two renders
+        // of the same props give different bars -- and it never animated on its
+        // own anyway, since nothing re-renders this on a timer; it only moved
+        // when `audioLevel` changed. Driving the phase from `audioLevel`
+        // directly keeps the reactive shimmer and makes render pure.
+        const variation = Math.sin(i * 1.7 + audioLevel * 12) * 0.1;
 
         const height = Math.min(1, baseHeight + audioFactor + (isActive ? variation : 0));
         const heightPx = Math.max(3, height * 56);

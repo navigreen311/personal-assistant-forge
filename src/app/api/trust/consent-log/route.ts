@@ -7,7 +7,9 @@ export async function GET(request: NextRequest) {
   return withAuth(request, async (req, session) => {
     try {
       const { searchParams } = req.nextUrl;
-      const module = searchParams.get('module');
+      // Renamed from `module` in P-19: assigning that identifier shadows the
+      // CommonJS `module` in a bundled scope (@next/next/no-assign-module-variable).
+      const moduleFilter = searchParams.get('module');
       const actionType = searchParams.get('actionType');
       const dateRange = searchParams.get('dateRange');
 
@@ -27,8 +29,8 @@ export async function GET(request: NextRequest) {
         actorId: session.userId,
       };
 
-      if (module && module !== 'All') {
-        actionLogWhere.target = { contains: module, mode: 'insensitive' };
+      if (moduleFilter && moduleFilter !== 'All') {
+        actionLogWhere.target = { contains: moduleFilter, mode: 'insensitive' };
       }
 
       if (actionType && actionType !== 'All') {

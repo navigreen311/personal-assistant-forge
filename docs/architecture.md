@@ -39,7 +39,8 @@ AI-powered automation across productivity, communication, finance, and operation
 - **Technology**: Next.js Route Handlers, Zod validation
 - **Responsibility**: HTTP request/response handling, input validation, auth enforcement
 - **Key directories**: `src/app/api/`, `src/shared/middleware/`, `src/shared/utils/`
-- **Patterns**: Standardized `ApiResponse<T>` format, `withAuth`/`withRole`/`withEntityAccess` middleware
+- **Patterns**: Standardized `ApiResponse<T>` format, `withAuth`/`withRole`/`withEntityScope`
+  middleware (see [Multi-Entity Model](#multi-entity-model) for which is which)
 
 ### Layer 3: Service (Business Logic)
 - **Technology**: TypeScript modules with dedicated service classes
@@ -70,7 +71,7 @@ Next.js Middleware (auth check)
      v
 Route Handler (src/app/api/.../route.ts)
      |-- Zod validation on request body
-     |-- withAuth / withRole / withEntityAccess middleware
+     |-- withAuth / withRole / withEntityScope middleware
      |
      v
 Service Layer (src/modules/.../services/)
@@ -114,7 +115,8 @@ All responses follow the standardized `ApiResponse<T>` interface:
 4. Auto-creates user and default "Personal" entity on first Google sign-in
 5. Subsequent requests include JWT in session cookie
 6. `withAuth` middleware extracts and validates the JWT
-7. `withEntityAccess` middleware verifies entity ownership
+7. `withEntityScope` resolves the entity in scope and verifies ownership before
+   the handler runs
 8. Handler receives authenticated session with user context
 
 ### Async Job Processing
@@ -139,8 +141,41 @@ operates as an isolated context with its own:
 - Voice personas and campaigns
 
 Users switch between entities via `POST /api/auth/switch-entity`, which updates the
-session's `activeEntityId`. All data queries are scoped to the active entity by default
-using the `withEntityAccess` middleware.
+session's `activeEntityId`.
+
+### How entity scoping is actually enforced
+
+**Corrected in P-19/T-028.** This section previously said that "all data queries
+are scoped to the active entity by default using the `withEntityAccess`
+middleware". Neither half was true, and the untrue version is what the P-00 audit
+found in the code: **149 of 335 routes** called `withAuth`, discarded the session
+as `_session`, and took `entityId` straight off the caller's own query string or
+request body. `withEntityAccess` was correct and was imported by exactly **one**
+route. An authenticated user of entity A could read and write entity B by passing
+B's id -- authenticated, but not authorized. Believing scoping was automatic is
+precisely how that survived.
+
+There is no default. Scoping is per-route and explicit, and the enforcement is:
+
+- **`withEntityScope(req, handler, explicitEntityId?)`** -- the pattern in use.
+  Resolves the entity from, in order: an explicit argument, `?entityId=`, an
+  `entityId` in the JSON body, then the session's `activeEntityId`; checks
+  ownership against the database in *every* case; and hands the handler a
+  `VerifiedEntityId`. That is a branded type -- a string at runtime, but a plain
+  `string` is not assignable to it, so a service that takes one **cannot** be
+  called with an unverified value off the wire. That is a `tsc --noEmit` failure
+  in CI, not a review catch. 400 if no entity resolves, 404 if it does not exist,
+  403 if it belongs to someone else.
+- **`withAuditedEntityScope(...)`** -- the same, plus an audit record.
+- **`withEntityAccess(req, entityId, handler)`** -- the original, still present
+  and still correct, but it requires the route to already hold an entityId and to
+  remember to call it. Forgetting is silent, which is why it was superseded.
+
+Some resources have no entity at all -- delegations, for instance, are scoped to
+the delegating **user** -- and those routes use `withAuth`/`withAuditedAuth` with
+`session.userId`. Putting a meaningless entity check in front of a real user
+check is not an improvement; see `docs/parallel-build/tenancy-pattern.md`, which
+is the normative reference for all of this.
 
 ### Entity Types
 Entities can represent different organizational structures:
@@ -200,7 +235,27 @@ Entities can represent different organizational structures:
 
 ## Database Schema
 
-The database uses PostgreSQL 16 with Prisma ORM. 17 core models organized into groups:
+The database uses PostgreSQL 16 with Prisma ORM.
+
+**`prisma/schema.prisma` declares 75 models** (`grep -c '^model ' prisma/schema.prisma`).
+This document previously said 17. The selection below is the core domain; it is a
+*selection*, not the schema. Treat `prisma/schema.prisma` as the only authority
+on what exists -- assuming a model or a column is there because a document said
+so is how six modules ended up querying Prisma delegates that have never existed
+(`shadow/compliance`, `execution/stats`, `voice/stats`, `crisisConfig`,
+`delegationTask`, `/api/health/dashboard`), and P-19 found four more
+(`focusSession`, `notificationPreference`, `ActionLog.module`/`.confidence`,
+`Task.completedAt`).
+
+The other ~58 models cover Shadow (voice sessions, consent, trust, safety and
+retention), VoiceForge (playbooks, consent config, call preferences), the vault
+(entries, secrets, keys), governance (roles, assignments, permission grants,
+legal holds, retention policies), execution (queued actions, gate rules,
+rollback plans, approvals, runbook executions), platform (webhooks, plugins,
+usage records, subscriptions) and life/health (habits, health metrics, goals,
+attention budget, DND config).
+
+Core models by group:
 
 ### Identity
 - **User** -- name, email, preferences (tone, autonomy level, focus hours), timezone, chronotype
@@ -240,9 +295,21 @@ The database uses PostgreSQL 16 with Prisma ORM. 17 core models organized into g
 - **Roles**: `owner`, `admin`, `member`, `viewer`
 
 ### Authorization
-- `withAuth(req, handler)` -- Requires authenticated user
-- `withRole(req, roles[], handler)` -- Requires specific roles
-- `withEntityAccess(req, entityId, handler)` -- Verifies entity ownership
+- `withAuth(req, handler)` -- Requires an authenticated user; hands the handler a
+  session carrying `userId`, `role` and `activeEntityId`
+- `withRole(req, roles[], handler)` -- Requires one of the given roles
+- `withEntityScope(req, handler, explicitEntityId?)` -- Resolves and verifies the
+  entity in scope, then hands the handler a `VerifiedEntityId` (branded type;
+  an unverified `string` will not compile in its place)
+- `withAuditedAuth(req, opts, handler)` / `withAuditedEntityScope(...)` -- as
+  above, plus a tamper-evident audit entry whose actor comes from the verified
+  token (`resolveActor`), never from a client-supplied header
+- `withEntityAccess(req, entityId, handler)` -- Verifies entity ownership for a
+  route that has already parsed an entityId. Superseded by `withEntityScope`
+  because calling it is opt-in and forgetting is silent
+
+See `docs/parallel-build/tenancy-pattern.md` for the normative pattern and the
+worked example.
 
 ### Data Protection
 - Entity-scoped data isolation (multi-tenancy)

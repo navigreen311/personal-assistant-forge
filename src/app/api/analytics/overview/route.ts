@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
+import { Prisma } from '@prisma/client';
 
 const querySchema = z.object({
   entityId: z.string().min(1).optional(),
@@ -139,7 +140,7 @@ export async function GET(request: NextRequest) {
         // Tasks completed in period
         safeQuery(
           () =>
-            (prisma as any).task.count({
+            prisma.task.count({
               where: {
                 entityId: { in: entityIds },
                 status: 'DONE',
@@ -151,7 +152,7 @@ export async function GET(request: NextRequest) {
         // Total tasks in period
         safeQuery(
           () =>
-            (prisma as any).task.count({
+            prisma.task.count({
               where: {
                 entityId: { in: entityIds },
                 createdAt: { gte: start, lte: end },
@@ -162,7 +163,7 @@ export async function GET(request: NextRequest) {
         // Focus time events
         safeQuery(
           () =>
-            (prisma as any).calendarEvent.findMany({
+            prisma.calendarEvent.findMany({
               where: {
                 entityId: { in: entityIds },
                 startTime: { gte: start, lte: end },
@@ -175,7 +176,7 @@ export async function GET(request: NextRequest) {
         // Meeting events
         safeQuery(
           () =>
-            (prisma as any).calendarEvent.findMany({
+            prisma.calendarEvent.findMany({
               where: {
                 entityId: { in: entityIds },
                 startTime: { gte: start, lte: end },
@@ -188,7 +189,7 @@ export async function GET(request: NextRequest) {
         // All calendar events for time audit
         safeQuery(
           () =>
-            (prisma as any).calendarEvent.findMany({
+            prisma.calendarEvent.findMany({
               where: {
                 entityId: { in: entityIds },
                 startTime: { gte: start, lte: end },
@@ -197,15 +198,25 @@ export async function GET(request: NextRequest) {
             }),
           [] as { title: string; startTime: Date; endTime: Date }[]
         ),
-        // Automated tasks
+        // Automated tasks.
+        //
+        // P-19: this filter was `NOT: { createdFrom: null }` behind
+        // `(prisma as any)`. `createdFrom` is `Json?`, and Prisma rejects a bare
+        // `null` against a nullable Json field -- "Argument `createdFrom` must
+        // not be null." So the query threw on every request, `safeQuery`
+        // swallowed it, and `automatedTasks` was 0 for every user forever,
+        // which pinned the automation-rate metric below at 0%. Verified against
+        // a real Postgres: with 2 DONE tasks, 1 of them created from an
+        // integration, the old form throws and `{ not: Prisma.DbNull }`
+        // returns 1.
         safeQuery(
           () =>
-            (prisma as any).task.count({
+            prisma.task.count({
               where: {
                 entityId: { in: entityIds },
                 status: 'DONE',
                 createdAt: { gte: start, lte: end },
-                NOT: { createdFrom: null },
+                createdFrom: { not: Prisma.DbNull },
               },
             }),
           0
@@ -213,7 +224,7 @@ export async function GET(request: NextRequest) {
         // Completed workflows
         safeQuery(
           () =>
-            (prisma as any).workflow.count({
+            prisma.workflow.count({
               where: {
                 entityId: { in: entityIds },
                 status: 'COMPLETED',
@@ -225,7 +236,7 @@ export async function GET(request: NextRequest) {
         // AI-assisted action count
         safeQuery(
           () =>
-            (prisma as any).actionLog.count({
+            prisma.actionLog.count({
               where: {
                 actorId: session.userId,
                 actionType: { in: ['AI_DRAFT', 'AI_TRIAGE', 'AI_SCHEDULE'] },
@@ -237,7 +248,7 @@ export async function GET(request: NextRequest) {
         // Weekly tasks completed
         safeQuery(
           () =>
-            (prisma as any).task.findMany({
+            prisma.task.findMany({
               where: {
                 entityId: { in: entityIds },
                 status: 'DONE',
@@ -250,7 +261,7 @@ export async function GET(request: NextRequest) {
         // Weekly focus events
         safeQuery(
           () =>
-            (prisma as any).calendarEvent.findMany({
+            prisma.calendarEvent.findMany({
               where: {
                 entityId: { in: entityIds },
                 startTime: { gte: start, lte: end },
@@ -263,7 +274,7 @@ export async function GET(request: NextRequest) {
         // AI accuracy action logs
         safeQuery(
           () =>
-            (prisma as any).actionLog.findMany({
+            prisma.actionLog.findMany({
               where: {
                 actorId: session.userId,
                 timestamp: { gte: start, lte: end },

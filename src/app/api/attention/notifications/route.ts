@@ -2,18 +2,10 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withAuth } from '@/shared/middleware/auth';
-import { prisma } from '@/lib/db';
 
-/**
- * Safely execute a query, returning a default value on failure.
- */
-const safeQuery = async <T>(fn: () => Promise<T>, defaultVal: T): Promise<T> => {
-  try {
-    return await fn();
-  } catch {
-    return defaultVal;
-  }
-};
+// P-19: the `prisma` import and the `safeQuery` helper were both here only to
+// serve the two dead `notificationPreference` calls removed below. Nothing else
+// in this route touches the database.
 
 /** Default notification preferences returned when no data exists. */
 function getDefaultPreferences() {
@@ -35,25 +27,21 @@ function getDefaultPreferences() {
 }
 
 export async function GET(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (_req, _session) => {
     try {
-      // Attempt to load user notification preferences from DB
-      const prefs: Record<string, unknown> | null = await safeQuery(
-        () =>
-          (prisma as any).notificationPreference.findUnique({
-            where: { userId: session.userId },
-          }),
-        null as Record<string, unknown> | null,
-      );
-
-      if (prefs) {
-        return success({
-          channels: prefs.channels ?? getDefaultPreferences().channels,
-          moduleRules: prefs.moduleRules ?? getDefaultPreferences().moduleRules,
-        });
-      }
-
-      // No saved preferences — return safe defaults
+      // P-19: this read `(prisma as any).notificationPreference.findUnique(...)`
+      // inside `safeQuery`. **There is no `NotificationPreference` model in the
+      // schema** -- `prisma.notificationPreference` is `undefined`, so the call
+      // threw `Cannot read properties of undefined (reading 'findUnique')` on
+      // every request (verified against a real Postgres on this schema) and the
+      // swallowed result meant the `if (prefs)` branch has never once run.
+      // Every caller has always received the constants below. Removing the dead
+      // read changes nothing about the response; it only stops the route
+      // claiming to consult a table that does not exist.
+      //
+      // FLAGGED TO THE COORDINATOR: real per-user notification preferences need
+      // a `NotificationPreference` model, i.e. a migration -- out of scope for
+      // a frozen-schema run.
       return success(getDefaultPreferences());
     } catch {
       // Outer safety net: always return demo data
@@ -85,7 +73,7 @@ const updatePrefsSchema = z.object({
 });
 
 export async function PUT(request: NextRequest) {
-  return withAuth(request, async (req, session) => {
+  return withAuth(request, async (req, _session) => {
     try {
       const body = await req.json();
       const parsed = updatePrefsSchema.safeParse(body);
@@ -93,24 +81,15 @@ export async function PUT(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      // Attempt to persist — placeholder for when the model exists
-      await safeQuery(
-        () =>
-          (prisma as any).notificationPreference.upsert({
-            where: { userId: session.userId },
-            update: {
-              ...(parsed.data.channels ? { channels: parsed.data.channels } : {}),
-              ...(parsed.data.moduleRules ? { moduleRules: parsed.data.moduleRules } : {}),
-            },
-            create: {
-              userId: session.userId,
-              channels: parsed.data.channels ?? getDefaultPreferences().channels,
-              moduleRules: parsed.data.moduleRules ?? getDefaultPreferences().moduleRules,
-            },
-          }),
-        null,
-      );
-
+      // P-19: the upsert that stood here targeted the same non-existent
+      // `NotificationPreference` model and was swallowed the same way, so this
+      // endpoint has never persisted anything.
+      //
+      // NOTE, DELIBERATELY NOT CHANGED HERE: the response below still says
+      // "updated". It is not true -- nothing is written -- but the message is
+      // part of the response contract and rewriting it is a behaviour change,
+      // not a lint fix. Raised in the PR for a follow-up package alongside the
+      // model itself.
       return success({ message: 'Notification preferences updated', ...parsed.data });
     } catch {
       // Even on total failure, confirm acceptance

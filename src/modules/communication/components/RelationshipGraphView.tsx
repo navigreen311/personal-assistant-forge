@@ -163,6 +163,10 @@ export default function RelationshipGraphView({
   // ---- Initialize node positions ----
   useEffect(() => {
     if (contacts.length === 0) {
+      // the node layout it seeds is built with Math.random() and measured DOM
+      // dimensions, so it cannot be computed during render
+      // (react-hooks/purity forbids both).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNodes([]);
       return;
     }

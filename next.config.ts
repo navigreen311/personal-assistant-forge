@@ -2,11 +2,6 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
-  // TODO: remove once remaining Prisma schema gaps are filled — several
-  // modules reference models that don't exist in schema.prisma yet
-  // (shadowCallPlaybook, shadowRetentionConfig, voiceforgeConsentConfig,
-  // contactCallPreferences). Adding those requires new migrations.
-  typescript: { ignoreBuildErrors: true },
   // Image optimization
   images: {
     remotePatterns: [
