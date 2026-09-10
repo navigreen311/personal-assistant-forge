@@ -7,14 +7,15 @@
 // called then ignored the entity entirely (a filter ending in `|| true`), so
 // every caller got the whole platform's spend for the day. Both halves fixed.
 //
-// POST stays on `withAuth`: an estimate is a pure function of an action type
-// and its parameters -- it reads no tenant data and touches no database, so
-// there is no scope for it to be missing.
+// POST stays off `withEntityScope`: an estimate is a pure function of an
+// action type and its parameters -- it reads no tenant data and touches no
+// database, so there is no scope for it to be missing. P-15 nonetheless
+// role-gates it, because an estimate is what precedes spending money.
 
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withEntityScope, withRole } from '@/shared/middleware/auth';
+import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import {
   estimateActionCost,
   getDailyCostSummary,

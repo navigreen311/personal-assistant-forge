@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { success, error } from '@/shared/utils/api-response';
-import { withAuth, withRole } from '@/shared/middleware/auth';
+import { withRole } from '@/shared/middleware/auth';
 
 import { DraftService } from '@/modules/inbox';
 import { refineDraftSchema } from '@/modules/inbox/inbox.validation';
@@ -9,8 +9,9 @@ const draftService = new DraftService();
 
 export async function POST(request: NextRequest) {
   // No tenant data is read or written here: refineDraft rewrites text handed
-  // in by the caller and touches no database row. withAuth is the whole
-  // requirement, and the session is deliberately unused.
+  // in by the caller and touches no database row, so there is no entity to
+  // scope. P-15: authentication is still not the whole requirement -- drafting
+  // spends model budget and produces content, so a viewer is refused.
   return withRole(request, ['owner', 'admin', 'member'], async (req, _session) => {
     try {
       const body = await req.json();
