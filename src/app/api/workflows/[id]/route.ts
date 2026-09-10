@@ -22,17 +22,26 @@ import {
   deleteWorkflow,
 } from '@/modules/workflows/services/workflow-crud';
 import type { WorkflowGraph, TriggerNodeConfig } from '@/modules/workflows/types';
+import {
+  workflowGraphSchema,
+  workflowTriggerListSchema,
+  workflowStatusSchema,
+  WorkflowShapeError,
+} from '@/modules/workflows/schemas/workflow-shape';
 
+// P-32 (T-039). `status: z.string().optional()` was the whole of the status
+// check, so `PUT { status: 'ACTVIE' }` returned 200, stored 'ACTVIE', and the
+// workflow was then invisible to `syncCronTriggers` (which registers a repeat
+// only for ACTIVE), to `processCronTriggerJob` (which refuses anything else)
+// and to `domain-event-worker` (which queries `{ status: 'ACTIVE' }`). It never
+// ran again, and nothing anywhere said so. The graph and trigger schemas were
+// the same unchecked `z.record` pair as the create route, followed by the same
+// two `as unknown as` assertions.
 const updateWorkflowSchema = z.object({
   name: z.string().min(1).optional(),
-  graph: z
-    .object({
-      nodes: z.array(z.record(z.string(), z.unknown())),
-      edges: z.array(z.record(z.string(), z.unknown())),
-    })
-    .optional(),
-  triggers: z.array(z.record(z.string(), z.unknown())).optional(),
-  status: z.string().optional(),
+  graph: workflowGraphSchema.optional(),
+  triggers: workflowTriggerListSchema.optional(),
+  status: workflowStatusSchema.optional(),
 });
 
 // --- Local scope resolver ---
@@ -106,12 +115,15 @@ export async function PUT(
 
         if (parsed.data.name) updates.name = parsed.data.name;
         if (parsed.data.status) updates.status = parsed.data.status;
-        if (parsed.data.graph) updates.graph = parsed.data.graph as unknown as WorkflowGraph;
-        if (parsed.data.triggers) updates.triggers = parsed.data.triggers as unknown as TriggerNodeConfig[];
+        if (parsed.data.graph) updates.graph = parsed.data.graph;
+        if (parsed.data.triggers) updates.triggers = parsed.data.triggers;
 
         const workflow = await updateWorkflow(id, updates, entityId);
         return success(workflow);
       } catch (err) {
+        if (err instanceof WorkflowShapeError) {
+          return error('VALIDATION_ERROR', err.message, 400);
+        }
         const message =
           err instanceof Error ? err.message : 'Failed to update workflow';
         if (message.includes('not found')) {

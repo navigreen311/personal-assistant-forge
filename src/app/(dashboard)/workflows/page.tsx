@@ -254,6 +254,16 @@ function InlineCreateWorkflowModal({
   const [description, setDescription] = useState('');
   const [entityId, setEntityId] = useState(selectedEntityId || '');
   const [triggerType, setTriggerType] = useState<string>('MANUAL');
+  // P-32 (T-039). The form used to send `[{ type: triggerType, config: {} }]`
+  // and nothing else. `createWorkflow` reads `t.triggerType`, not `t.type`, so
+  // the row stored `{ type: null, config: { type: 'TIME', config: {} } }` and
+  // `cronExpressionsOf` found neither a trigger type nor a cron expression --
+  // choosing "Scheduled (Time)" here produced a workflow that could never fire,
+  // and said nothing. The wrapper shape is normalised at the door now, and the
+  // one field that makes a TIME or EVENT trigger matchable is asked for here,
+  // because there was nowhere else in this form to put it.
+  const [cronExpression, setCronExpression] = useState('');
+  const [eventName, setEventName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -261,6 +271,14 @@ function InlineCreateWorkflowModal({
     e.preventDefault();
     if (!name.trim()) {
       setError('Workflow name is required');
+      return;
+    }
+    if (triggerType === 'TIME' && !cronExpression.trim()) {
+      setError('A scheduled workflow needs a cron expression, or it will never run');
+      return;
+    }
+    if (triggerType === 'EVENT' && !eventName.trim()) {
+      setError('An event-driven workflow needs an event name, or it will never run');
       return;
     }
     setSubmitting(true);
@@ -274,7 +292,14 @@ function InlineCreateWorkflowModal({
           name: name.trim(),
           description: description.trim(),
           entityId: entityId || 'default-entity',
-          triggers: [{ type: triggerType, config: {} }],
+          triggers: [
+            {
+              nodeType: 'TRIGGER',
+              triggerType,
+              ...(triggerType === 'TIME' ? { cronExpression: cronExpression.trim() } : {}),
+              ...(triggerType === 'EVENT' ? { eventName: eventName.trim() } : {}),
+            },
+          ],
           graph: { nodes: [], edges: [] },
           status: 'DRAFT',
         }),
@@ -385,10 +410,48 @@ function InlineCreateWorkflowModal({
                 <option value="MANUAL">Manual</option>
                 <option value="TIME">Scheduled (Time)</option>
                 <option value="EVENT">Event-Driven</option>
-                <option value="CONDITION">Condition-Based</option>
-                <option value="VOICE">Voice Trigger</option>
+                {/*
+                  P-32 (T-039). CONDITION and VOICE were offered here and are
+                  not offered any more. Nothing in this repository can fire
+                  either one: `conditionExpression` appears exactly once, in the
+                  type declaration, and no producer reads a VOICE trigger. They
+                  are still accepted by the API, because the type union declares
+                  them and a stored one will work the day a producer exists --
+                  but a dropdown that offers a user a trigger that provably
+                  cannot fire is the same lie in a friendlier font.
+                */}
               </select>
             </div>
+
+            {triggerType === 'TIME' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Cron Expression
+                </label>
+                <input
+                  type="text"
+                  value={cronExpression}
+                  onChange={(e) => setCronExpression(e.target.value)}
+                  placeholder="0 9 * * MON-FRI"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            )}
+
+            {triggerType === 'EVENT' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Event Name
+                </label>
+                <input
+                  type="text"
+                  value={eventName}
+                  onChange={(e) => setEventName(e.target.value)}
+                  placeholder="task.created"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            )}
           </div>
 
           {/* Actions */}
