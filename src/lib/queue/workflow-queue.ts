@@ -25,17 +25,38 @@ function getQueue(): Queue {
   return queue;
 }
 
+/**
+ * Queue one leg of a run.
+ *
+ * `resumeFromNodeId` (P-31) is part of the job id because the id identifies the
+ * WORK, not the run: "start execution E" and "continue execution E from node N"
+ * are different jobs, and a run can legitimately be queued more than once —
+ * once by the cron tick, again by each DELAY node that parks it, again by a
+ * human releasing an approval.
+ *
+ * `removeOnComplete: { count: 1000 }` keeps completed jobs in Redis, and BullMQ
+ * returns the EXISTING job for a duplicate `jobId` instead of queueing a second
+ * one. With a bare `wf-exec-<executionId>` for every leg, the second leg of any
+ * run was therefore dropped without an error and the run parked forever. Keying
+ * on the resume point keeps the de-duplication that id was for — enqueueing the
+ * same continuation twice is still a no-op — without collapsing distinct legs
+ * onto one id.
+ */
 export async function enqueueWorkflowExecution(
   executionId: string,
   workflowId: string,
   variables: Record<string, unknown>,
-  delay?: number
+  delay?: number,
+  resumeFromNodeId?: string
 ): Promise<string> {
+  const jobId = resumeFromNodeId
+    ? `wf-exec-${executionId}-from-${resumeFromNodeId}`
+    : `wf-exec-${executionId}`;
   const job = await getQueue().add(
     'execute-workflow',
     { executionId, workflowId, variables },
     {
-      jobId: `wf-exec-${executionId}`,
+      jobId,
       delay: delay ?? 0,
     }
   );

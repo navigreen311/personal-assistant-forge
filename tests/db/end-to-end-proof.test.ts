@@ -353,12 +353,34 @@ function graphThatReachesTheQueue(taskId: string) {
         },
         position: { x: 400, y: 0 },
         inputs: ['in'],
+        outputs: ['out'],
+      },
+      // P-31. THE NODE ON THE FAR SIDE OF THE QUEUE.
+      //
+      // The graph used to stop at the DELAY, so the only thing the worker could
+      // possibly be observed doing was writing rows about nodes the inline half
+      // had already run. This node runs ONLY in the worker: it is unreachable
+      // from the HTTP request, because the request's run parks at the delay.
+      // A `Task` at DONE is therefore a fact about the queue consumer and about
+      // nothing else in the platform.
+      {
+        id: 'n-after-delay',
+        type: 'ACTION',
+        label: 'Finish the task, on the far side of the queue',
+        config: {
+          nodeType: 'ACTION',
+          actionType: 'UPDATE_RECORD',
+          parameters: { model: 'task', id: taskId, data: { status: 'DONE' } },
+        },
+        position: { x: 600, y: 0 },
+        inputs: ['in'],
         outputs: [],
       },
     ],
     edges: [
       { id: 'e1', sourceNodeId: 'n-trigger', targetNodeId: 'n-action' },
       { id: 'e2', sourceNodeId: 'n-action', targetNodeId: 'n-delay' },
+      { id: 'e3', sourceNodeId: 'n-delay', targetNodeId: 'n-after-delay' },
     ],
   };
 }
@@ -656,7 +678,21 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     );
 
     // The inline half ran: the ACTION node reached the task this story created.
-    expect(execution.status).toBe('COMPLETED');
+    //
+    // P-31 — WHY THIS IS PAUSED AND NOT COMPLETED.
+    //
+    // It said COMPLETED, and that was the second lie on this leg. `scheduleDelay`
+    // handed the run to BullMQ for a five-second delay and then the walk carried
+    // straight on past the delay anyway, and `runWorkflow` stamped COMPLETED —
+    // so the row claimed the run had finished while a job for it was still
+    // sitting in Redis, and "wait five seconds" ran in zero. The queued job was
+    // a duplicate of the tail, not a continuation.
+    //
+    // A delay long enough to reach the queue now PARKS the run, using the same
+    // PAUSED state HUMAN_APPROVAL has always used for "stop here, something else
+    // will continue you". PAUSED is the honest answer to "is this run finished":
+    // no, and here is the node it is waiting at.
+    expect(execution.status).toBe('PAUSED');
     expect(
       (await db.task.findUniqueOrThrow({ where: { id: task.id } })).status
     ).toBe('IN_PROGRESS');
@@ -676,26 +712,91 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       (await db.actionLog.findMany()).map((r) => r.actionType)
     ).toEqual(['UPDATE_RECORD', 'UPDATE_RECORD']);
 
-    // The queue half: the DELAY node handed this same execution id to BullMQ,
-    // and the worker the container starts picked it up and wrote to Postgres.
-    // The wait condition is the row, not the job state — "the job completed" is
-    // a fact about Redis and proves nothing about the product.
-    const stepRows = await waitFor(
-      `WORKFLOW_STEP rows for execution ${execution.id} from the real worker`,
+    // -----------------------------------------------------------------------
+    // P-31 — WHAT THIS LEG USED TO ASSERT, AND WHY IT WAS A FALSE PASS.
+    //
+    // It waited for three `ActionLog` rows and asserted:
+    //
+    //     expect(stepRows.map((r) => r.actionType)).toEqual([
+    //       'WORKFLOW_STEP_TRIGGER', 'WORKFLOW_STEP_ACTION', 'WORKFLOW_STEP_DELAY',
+    //     ]);
+    //     expect(stepRows.every((r) => r.status === 'EXECUTED')).toBe(true);
+    //
+    // P-20's own note above is right as far as it goes — "the job completed" is
+    // a fact about Redis — and it stops one level short. THE ROW IS A FACT ABOUT
+    // THE LOGGER. `status: 'EXECUTED'` was a string literal in
+    // `processWorkflowJob`'s `ActionLog.create`, written before the node was
+    // dispatched, for a worker that dispatched no node at all: it walked the
+    // graph, wrote one row per node, updated `workflow.lastRun`, and never
+    // called a single action handler or touched the `WorkflowExecutionRecord` it
+    // was handed. Those three rows were produced by a worker that ran nothing,
+    // and they are exactly the rows the assertion demanded.
+    //
+    // So the leg proved a worker picked the job up and reached Postgres — which
+    // is genuinely valuable and is kept below — and then read that as proof of
+    // execution, which it never was.
+    //
+    // WHAT IT ASSERTS NOW: the EFFECT, the way leg 4 does. The workflow's fourth
+    // node sits on the far side of the delay and is unreachable from the HTTP
+    // request; the only way a task reaches DONE is a worker taking this job off
+    // Redis and putting it through the real executor's handler dispatch.
+    // -----------------------------------------------------------------------
+    const finishedTask = await waitFor(
+      `task ${task.id} to be finished by the node on the far side of the queue`,
       async () => {
-        const rows = await db.actionLog.findMany({
-          where: { target: { contains: `execution:${execution.id}` } },
-          orderBy: { timestamp: 'asc' },
-        });
-        return rows.length >= 3 ? rows : null;
+        const row = await db.task.findUniqueOrThrow({ where: { id: task.id } });
+        return row.status === 'DONE' ? row : null;
       }
     );
-    expect(stepRows.map((r) => r.actionType)).toEqual([
-      'WORKFLOW_STEP_TRIGGER',
-      'WORKFLOW_STEP_ACTION',
-      'WORKFLOW_STEP_DELAY',
+    expect(finishedTask.status).toBe('DONE');
+
+    // The run the HTTP request created is the run that finished. Not a second
+    // one: a worker that called `executeWorkflow` would have started its own and
+    // left this one PAUSED forever, which is the shape of the original bug.
+    const queueRun = await waitFor(
+      `execution ${execution.id} to reach a terminal state`,
+      async () => {
+        const row = await db.workflowExecutionRecord.findUniqueOrThrow({
+          where: { id: execution.id },
+        });
+        return row.status === 'COMPLETED' ? row : null;
+      }
+    );
+    expect(queueRun.completedAt).toBeInstanceOf(Date);
+    expect(queueRun.error).toBeNull();
+
+    // It resumed AFTER the delay rather than starting over. The trigger and the
+    // first ACTION appear once each, from the inline half; the post-delay node
+    // appears once, from the worker. A restart would show four more.
+    const queueSteps = queueRun.stepResults as { nodeId: string; status: string }[];
+    expect(queueSteps.map((r) => `${r.nodeId}:${r.status}`)).toEqual([
+      'n-trigger:COMPLETED',
+      'n-action:COMPLETED',
+      'n-delay:COMPLETED',
+      'n-after-delay:COMPLETED',
     ]);
-    expect(stepRows.every((r) => r.status === 'EXECUTED')).toBe(true);
+
+    // The audit trail, kept — but now derived from the step results instead of
+    // written ahead of them. One row, for the one node the worker actually ran,
+    // and `WORKFLOW_STEP_COMPLETED` because that is what the step returned. A
+    // node that had failed would be `WORKFLOW_STEP_FAILED` with `status:
+    // 'FAILED'`, which the old literal made impossible.
+    const stepRows = await db.actionLog.findMany({
+      where: { target: { contains: `execution:${execution.id}` } },
+      orderBy: { timestamp: 'asc' },
+    });
+    expect(stepRows.map((r) => `${r.actionType}/${r.status}`)).toEqual([
+      'WORKFLOW_STEP_COMPLETED/EXECUTED',
+    ]);
+    expect(stepRows[0].target).toBe(`execution:${execution.id}/node:n-after-delay`);
+
+    // And the handler behind that node left its own row, which is the thing the
+    // worker could never produce before: three UPDATE_RECORDs now — leg 4's
+    // event-driven run, leg 5's inline half, and leg 5's queue half.
+    expect(
+      (await db.actionLog.findMany({ where: { actionType: 'UPDATE_RECORD' } })).length
+    ).toBe(3);
+
     expect(
       (await db.workflow.findUniqueOrThrow({ where: { id: workflow.id } })).lastRun
     ).toBeInstanceOf(Date);
@@ -1104,7 +1205,11 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
       ),
       'trigger workflow after the check-in'
     );
-    expect(resumed.status).toBe('COMPLETED');
+    // P-31: PAUSED, not COMPLETED — this is the same workflow as leg 5, whose
+    // DELAY node parks the run for the queue. What leg 8b is asserting is that
+    // the trigger route accepted the run at all after the check-in, which the
+    // 423 above proves it would not have before.
+    expect(resumed.status).toBe('PAUSED');
     expect(resumed.id).not.toBe(execution.id);
     legs['8b. the agent STOPS'] = 'PASS';
 

@@ -9,7 +9,13 @@ export async function processWorkflowStepJob(
   const start = Date.now();
 
   try {
-    const execution = await prisma.workflow.findUnique({
+    // P-31. Was `prisma.workflow.findUnique({ where: { id: data.executionId } })`
+    // — a WORKFLOW looked up by an EXECUTION id. The two are never the same
+    // string, so this branch always returned "not found" and the WORKFLOW_STEP
+    // job type has never enqueued anything in the life of the repository. The
+    // failure was invisible because the miss is reported as `success: false`
+    // with a plausible message rather than thrown.
+    const execution = await prisma.workflowExecutionRecord.findUnique({
       where: { id: data.executionId },
     });
 
@@ -27,15 +33,20 @@ export async function processWorkflowStepJob(
       data.input
     );
 
+    // P-31. This row used to read "Executed workflow step <id>" with
+    // `status: 'EXECUTED'`, two lines below a call that only ENQUEUES one —
+    // the same defect as the worker this package was opened for, on the
+    // producer side. What happened here is that a step was queued; the row now
+    // says so, and stays PENDING until the consumer records an outcome.
     await prisma.actionLog.create({
       data: {
         actor: 'SYSTEM',
         actionType: 'WORKFLOW_STEP',
-        target: `workflow:${execution.id}/execution:${data.executionId}/node:${data.nodeId}`,
-        reason: `Executed workflow step ${data.nodeId}`,
+        target: `workflow:${execution.workflowId}/execution:${data.executionId}/node:${data.nodeId}`,
+        reason: `Queued workflow step ${data.nodeId} for execution`,
         blastRadius: 'LOW',
         reversible: true,
-        status: 'EXECUTED',
+        status: 'PENDING',
       },
     });
 

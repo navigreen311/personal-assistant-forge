@@ -149,8 +149,20 @@ async function waitFor<T>(
   );
 }
 
-/** A two-node graph: enough for the worker to walk an edge and log both nodes. */
-function twoNodeGraph(): WorkflowGraph {
+/**
+ * A two-node graph whose ACTION node has a REAL, observable effect.
+ *
+ * P-31. This fixture used to carry `actionType: 'CUSTOM'`, which no handler in
+ * `action-handlers.ts` implements -- and that was fine, because the worker
+ * dispatched no handler at all. It walked the graph writing one `ActionLog` row
+ * per node saying EXECUTED, so a node naming an action type that does not exist
+ * produced exactly the same rows as one naming an action type that does. The
+ * fixture could not tell the difference and neither could the assertion.
+ *
+ * `CREATE_TASK` writes a `Task` row. That row is not something a logger can
+ * produce, which is the entire point of asking for it.
+ */
+function twoNodeGraph(entityId: string, title: string): WorkflowGraph {
   return {
     nodes: [
       {
@@ -166,6 +178,44 @@ function twoNodeGraph(): WorkflowGraph {
         id: 'node-action',
         type: 'ACTION',
         label: 'Do the thing',
+        config: {
+          nodeType: 'ACTION',
+          actionType: 'CREATE_TASK',
+          parameters: { title, entityId, priority: 'P2' },
+        },
+        position: { x: 200, y: 0 },
+        inputs: ['in'],
+        outputs: [],
+      },
+    ],
+    edges: [{ id: 'edge-1', sourceNodeId: 'node-start', targetNodeId: 'node-action' }],
+  } as unknown as WorkflowGraph;
+}
+
+/**
+ * The same graph with an ACTION type no handler implements.
+ *
+ * Kept deliberately (P-31): the old fixture's `CUSTOM` action was an accident
+ * that proved nothing, and it becomes evidence the moment a real dispatcher is
+ * on the other end -- `getActionHandler` throws for it, so this is the fixture
+ * that asks what the worker writes down when a node FAILS.
+ */
+function graphWhoseActionCannotRun(): WorkflowGraph {
+  return {
+    nodes: [
+      {
+        id: 'node-start',
+        type: 'TRIGGER',
+        label: 'Start',
+        config: { nodeType: 'TRIGGER', triggerType: 'MANUAL', config: {} },
+        position: { x: 0, y: 0 },
+        inputs: [],
+        outputs: ['out'],
+      },
+      {
+        id: 'node-action',
+        type: 'ACTION',
+        label: 'Do a thing nothing implements',
         config: { nodeType: 'ACTION', actionType: 'CUSTOM', parameters: {} },
         position: { x: 200, y: 0 },
         inputs: ['in'],
@@ -176,7 +226,9 @@ function twoNodeGraph(): WorkflowGraph {
   } as unknown as WorkflowGraph;
 }
 
-async function createActiveWorkflow(): Promise<{ id: string; entityId: string }> {
+async function createActiveWorkflow(
+  graph?: WorkflowGraph
+): Promise<{ id: string; entityId: string }> {
   const user = await createUser();
   const entity = await createEntity(user.id);
   const workflow = await db.workflow.create({
@@ -185,10 +237,34 @@ async function createActiveWorkflow(): Promise<{ id: string; entityId: string }>
       entityId: entity.id,
       status: 'ACTIVE',
       triggers: [],
-      steps: twoNodeGraph() as unknown as object,
+      steps: (graph ?? twoNodeGraph(entity.id, 'created by the queue')) as unknown as object,
     },
   });
   return { id: workflow.id, entityId: entity.id };
+}
+
+/**
+ * A run row, written the way the only real producer writes one.
+ *
+ * P-31. Every test in this file used to enqueue an INVENTED execution id --
+ * `exec-${Date.now()}` -- for which no `WorkflowExecutionRecord` existed, and
+ * the assertions passed. They could only pass because the worker never read
+ * that table: it took the id, interpolated it into a `target` string, and left
+ * the row it named (which did not exist) alone. A worker that actually runs the
+ * run it was handed cannot accept an id for a run that was never created, so
+ * this mirrors `processCronTriggerJob`: the record first, then the job.
+ */
+async function createPendingExecution(workflowId: string): Promise<string> {
+  const record = await db.workflowExecutionRecord.create({
+    data: {
+      workflowId,
+      status: 'PENDING',
+      triggeredBy: 'SYSTEM',
+      triggerType: 'CRON',
+      variables: {},
+    },
+  });
+  return record.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,38 +317,101 @@ describe('queue workers actually consume', () => {
     ]);
   });
 
-  it('runs an enqueued workflow execution and writes its audit trail to Postgres', async () => {
+  it('runs an enqueued workflow execution -- the ACTION node reaches Postgres', async () => {
+    // P-31. WHAT THIS ASSERTED BEFORE, AND WHY IT PASSED ANYWAY.
+    //
+    // It enqueued an invented execution id, waited for two `ActionLog` rows,
+    // and asserted `WORKFLOW_STEP_TRIGGER` / `WORKFLOW_STEP_ACTION` with
+    // `status: 'EXECUTED'`. Every one of those assertions was true of a worker
+    // that dispatched no handler, touched no execution record, and ran nothing
+    // -- because all three are facts about the logger, not about the run. The
+    // graph's ACTION node named an action type no handler implements and the
+    // test could not tell.
+    //
+    // What is asserted now is the TASK ROW. `handleCreateTask` is the only
+    // thing in this platform that writes one, `executeNode` is the only thing
+    // that calls it, and neither is reachable unless a worker took this job off
+    // Redis and put it through the real executor.
     const workflow = await createActiveWorkflow();
-    const executionId = `exec-${Date.now()}`;
+    const executionId = await createPendingExecution(workflow.id);
 
     expect(await db.actionLog.count()).toBe(0);
+    expect(await db.task.count()).toBe(0);
     expect((await db.workflow.findUniqueOrThrow({ where: { id: workflow.id } })).lastRun).toBeNull();
 
     await enqueueWorkflowExecution(executionId, workflow.id, {});
 
-    // The worker logs one ActionLog row per node it walks. Two nodes, two rows.
-    const logs = await waitFor('two WORKFLOW_STEP rows from the workflow worker', async () => {
-      const rows = await db.actionLog.findMany({
-        where: { target: { contains: `execution:${executionId}` } },
-        orderBy: { timestamp: 'asc' },
-      });
-      return rows.length >= 2 ? rows : null;
-    });
+    // THE EFFECT. Not a row that says a step ran: the row the step created.
+    const task = await waitFor('the task the ACTION node creates', async () =>
+      db.task.findFirst({ where: { title: 'created by the queue' } })
+    );
+    expect(task.entityId).toBe(workflow.entityId);
+    expect(task.priority).toBe('P2');
 
-    expect(logs.map((l) => l.actionType)).toEqual([
-      'WORKFLOW_STEP_TRIGGER',
-      'WORKFLOW_STEP_ACTION',
+    // THE RUN REACHED A TERMINAL STATE. The record the producer wrote is the
+    // one that finished -- a second row would mean the worker started its own
+    // run and stranded this one, which is precisely what calling
+    // `executeWorkflow` from the worker would have done.
+    const record = await waitFor('the execution record to reach COMPLETED', async () => {
+      const row = await db.workflowExecutionRecord.findUniqueOrThrow({ where: { id: executionId } });
+      return row.status === 'COMPLETED' ? row : null;
+    });
+    expect(record.completedAt).toBeInstanceOf(Date);
+    expect(record.error).toBeNull();
+    expect(await db.workflowExecutionRecord.count()).toBe(1);
+
+    // The run recorded what each node produced, in order, on its own row.
+    const steps = record.stepResults as { nodeId: string; status: string }[];
+    expect(steps.map((s) => `${s.nodeId}:${s.status}`)).toEqual([
+      'node-start:COMPLETED',
+      'node-action:COMPLETED',
+    ]);
+
+    // And the audit trail, which is now DERIVED from those results rather than
+    // written ahead of them: the handler's own CREATE_TASK row, plus one step
+    // row per node the worker ran.
+    const logs = await db.actionLog.findMany({ orderBy: { timestamp: 'asc' } });
+    expect(logs.map((l) => l.actionType).sort()).toEqual([
+      'CREATE_TASK',
+      'WORKFLOW_STEP_COMPLETED',
+      'WORKFLOW_STEP_COMPLETED',
     ]);
     expect(logs.every((l) => l.actor === 'SYSTEM')).toBe(true);
-    expect(logs.every((l) => l.status === 'EXECUTED')).toBe(true);
 
     // ...and the worker's final write, which is not an audit row.
-    const after = await waitFor('workflow.lastRun to be stamped', async () => {
-      const row = await db.workflow.findUniqueOrThrow({ where: { id: workflow.id } });
-      return row.lastRun ? row : null;
-    });
+    const after = await db.workflow.findUniqueOrThrow({ where: { id: workflow.id } });
     expect(after.lastRun).toBeInstanceOf(Date);
   });
+
+  it('records a node that FAILED as failed, and does not report it EXECUTED', async () => {
+    // P-31, the assertion the old shape made impossible. `status: 'EXECUTED'`
+    // was a literal in the worker's `ActionLog.create`, so a node that could
+    // not run logged the same word as a node that did. Here the ACTION names an
+    // action type `getActionHandler` throws for.
+    const workflow = await createActiveWorkflow(graphWhoseActionCannotRun());
+    const executionId = await createPendingExecution(workflow.id);
+
+    await enqueueWorkflowExecution(executionId, workflow.id, {});
+
+    const record = await waitFor('the execution record to reach FAILED', async () => {
+      const row = await db.workflowExecutionRecord.findUniqueOrThrow({ where: { id: executionId } });
+      return row.status === 'FAILED' ? row : null;
+    });
+    expect(record.error).toContain('No handler registered for action type: CUSTOM');
+    expect(record.completedAt).toBeInstanceOf(Date);
+
+    const logs = await db.actionLog.findMany({ orderBy: { timestamp: 'asc' } });
+    expect(logs.map((l) => `${l.actionType}/${l.status}`)).toEqual([
+      'WORKFLOW_STEP_COMPLETED/EXECUTED',
+      'WORKFLOW_STEP_FAILED/FAILED',
+    ]);
+    // A failed step is not reversible and carries no rollback path, so
+    // `rollbackExecution` -- which selects on EXECUTED + reversible -- cannot
+    // try to undo something that never happened.
+    const failed = logs[1];
+    expect(failed.reversible).toBe(false);
+    expect(failed.rollbackPath).toBeNull();
+  }, 30_000);
 
   it('runs an enqueued BACKUP_RUN job through the shared job worker', async () => {
     const user = await createUser();
@@ -314,6 +453,18 @@ describe('queue workers actually consume', () => {
       return row.lastRun ? row : null;
     });
     expect(after.lastRun).toBeInstanceOf(Date);
+
+    // P-31. "Reached the workflow worker" was as far as this could go: the
+    // worker stamped `lastRun` and left the row it had just been handed
+    // PENDING forever, so the tick's own record never reached a terminal state
+    // and the workflow's ACTION node never ran. Both are asserted now, and the
+    // second one is a row only `handleCreateTask` can write.
+    const finished = await waitFor('the cron tick own record to reach COMPLETED', async () => {
+      const row = await db.workflowExecutionRecord.findUniqueOrThrow({ where: { id: record.id } });
+      return row.status === 'COMPLETED' ? row : null;
+    });
+    expect(finished.completedAt).toBeInstanceOf(Date);
+    expect(await db.task.findFirst({ where: { title: 'created by the queue' } })).not.toBeNull();
   });
 
   it('does not start a run for a workflow that is not ACTIVE', async () => {
@@ -325,7 +476,7 @@ describe('queue workers actually consume', () => {
         entityId: entity.id,
         status: 'DRAFT',
         triggers: [],
-        steps: twoNodeGraph() as unknown as object,
+        steps: twoNodeGraph(entity.id, 'a draft must never create this') as unknown as object,
       },
     });
 
@@ -340,6 +491,10 @@ describe('queue workers actually consume', () => {
     // completed.
     expect(await db.workflowExecutionRecord.count()).toBe(0);
     expect((await db.workflow.findUniqueOrThrow({ where: { id: draft.id } })).lastRun).toBeNull();
+    // P-31: and the effect the graph would have had. Before the worker
+    // dispatched handlers, "the draft did not run" and "the draft ran and did
+    // nothing, like every other workflow" left identical evidence.
+    expect(await db.task.count()).toBe(0);
   });
 
   it('executes the retry policy that has never had a consumer to execute it', async () => {
