@@ -20,7 +20,6 @@ import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   WorkflowGraph,
   WorkflowNode,
-  WorkflowEdge,
   WorkflowExecution,
   StepExecutionResult,
   ActionNodeConfig,
@@ -32,6 +31,7 @@ import type {
   ErrorHandlerNodeConfig,
   SubWorkflowNodeConfig,
 } from '@/modules/workflows/types';
+import { readWorkflowGraph } from '@/modules/workflows/schemas/workflow-shape';
 import { evaluateExpression } from './condition-evaluator';
 import { executeAction } from './action-handlers';
 import { executeAIDecision } from './ai-decision-service';
@@ -266,28 +266,22 @@ function startNodesOf(graph: WorkflowGraph): WorkflowNode[] {
 /**
  * Read a stored graph off a `Workflow.steps` column.
  *
- * P-31. There were two `steps as unknown as WorkflowGraph` casts in this
- * repository -- one here, one in `processWorkflowJob` -- over a column the
- * create route validates as `z.array(z.record(z.string(), z.unknown()))`. Both
- * are now this function, which is one cast instead of two and refuses a value
- * that is not a graph rather than silently walking zero nodes. The ELEMENT
- * shape is still unvalidated; that is P-32's package, and this is the single
- * place its schema has to be applied when it lands.
+ * P-31 collapsed the repository's two `steps as unknown as WorkflowGraph` casts
+ * -- one here, one in `processWorkflowJob` -- into this one function, and left
+ * a note that the ELEMENT shape was still unvalidated and that this was the
+ * single place P-32's schema would have to be applied on the read side.
+ *
+ * P-32. It is applied. `readWorkflowGraph` is the same module the create and
+ * update routes validate against, so the write side and the read side are one
+ * schema and not two opinions; the last two casts here are gone with it. It is
+ * deliberately weaker than the write-side parse -- a stored row cannot be
+ * migrated, and refusing to RUN somebody's automation over a missing `label`
+ * would be an outage -- and it refuses exactly the three things that make a
+ * dispatch wrong rather than incomplete. See the header of
+ * `@/modules/workflows/schemas/workflow-shape`.
  */
 function graphOf(steps: unknown, workflowId: string): WorkflowGraph {
-  if (typeof steps !== 'object' || steps === null || Array.isArray(steps)) {
-    throw new Error(`Workflow ${workflowId} has no nodes`);
-  }
-  const record: Record<string, unknown> = { ...steps };
-  const nodes = record.nodes;
-  const edges = record.edges;
-  if (!Array.isArray(nodes) || nodes.length === 0) {
-    throw new Error(`Workflow ${workflowId} has no nodes`);
-  }
-  return {
-    nodes: nodes as WorkflowNode[],
-    edges: Array.isArray(edges) ? (edges as WorkflowEdge[]) : [],
-  };
+  return readWorkflowGraph(steps, workflowId);
 }
 
 /** A run in one of these is finished; picking it up again would re-run it. */

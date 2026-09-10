@@ -656,7 +656,23 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
         method: 'POST',
         body: {
           name: 'On task created',
-          triggers: [{ triggerType: 'EVENT', config: { entity: 'task', event: 'created' } }],
+          // P-32 (T-039). THE FIXTURE WAS WRONG, NOT THE CODE.
+          //
+          // This said `{ triggerType: 'EVENT', config: { entity: 'task',
+          // event: 'created' } }`. `TriggerNodeConfig` declares `eventName`;
+          // there is no `config.entity`/`config.event` field anywhere, and
+          // `eventNamesOf` -- the only thing that reads an EVENT trigger --
+          // looks for `eventName` and nothing else. So this workflow declared
+          // itself event-driven and subscribed to nothing, forever. It stored
+          // without complaint, this file has asserted nine of nine over it
+          // since P-20, and nobody noticed, which is the whole shape of the bug
+          // P-32 fixes: a claimed shape that nothing checked.
+          //
+          // Leg 5 never depended on the trigger -- it starts this workflow by
+          // hand through POST /trigger and the workflow stays DRAFT, so the
+          // domain-event worker (ACTIVE only) does not pick it up. The trigger
+          // is now what the workflow's own name has always claimed it was.
+          triggers: [{ nodeType: 'TRIGGER', triggerType: 'EVENT', eventName: 'task.created' }],
           graph: graphThatReachesTheQueue(task.id),
         },
       })),

@@ -21,6 +21,11 @@ import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type { WorkflowGraph, TriggerNodeConfig } from '@/modules/workflows/types';
 import type { Workflow } from '@/shared/types';
 import { syncCronTriggers, cronExpressionsOf } from '@/lib/queue/scheduler';
+import {
+  parseWorkflowGraph,
+  parseWorkflowTriggers,
+  parseWorkflowStatus,
+} from '@/modules/workflows/schemas/workflow-shape';
 
 export interface CreateWorkflowParams {
   name: string;
@@ -118,11 +123,33 @@ async function reconcileSchedule(
   }
 }
 
+/**
+ * P-32 (T-039). WHY THE SERVICE PARSES AGAIN AFTER THE ROUTE ALREADY DID.
+ *
+ * A route-level schema only checks the callers that come through that route.
+ * This run has already found a bug of exactly that shape -- `handleCreateTask`
+ * was a third write path that skipped a check the other two performed -- and
+ * `createWorkflow` is exported from `@/modules/workflows`, so a server-side
+ * caller reaching it directly bypassed every check there was. Its parameters
+ * are TYPED as `WorkflowGraph` and `TriggerNodeConfig[]`, but a type is not a
+ * check: the route was handing it `as unknown as WorkflowGraph` over an object
+ * nothing had inspected, which is the entire defect this package exists for.
+ *
+ * The parse is idempotent, so paying for it twice on the request path costs a
+ * few microseconds and removes a whole class of "a new caller forgot".
+ *
+ * It also NORMALISES the trigger list -- the two browser create paths send the
+ * `{ type, config }` wrapper, not a `TriggerNodeConfig` -- so the `triggers.map`
+ * below can rely on `t.triggerType` being present, which is precisely what it
+ * could not rely on before.
+ */
 export async function createWorkflow(
   params: CreateWorkflowParams,
   entityId: VerifiedEntityId
 ): Promise<Workflow> {
-  const { name, graph, triggers } = params;
+  const { name } = params;
+  const graph = parseWorkflowGraph(params.graph);
+  const triggers = parseWorkflowTriggers(params.triggers);
 
   const triggerData = triggers.map((t) => ({
     type: t.triggerType,
@@ -172,12 +199,14 @@ export async function updateWorkflow(
   const data: Record<string, unknown> = {};
 
   if (updates.name !== undefined) data.name = updates.name;
-  if (updates.status !== undefined) data.status = updates.status;
+  // P-32 (T-039). `status` was `z.string().optional()` at the route and a bare
+  // `string` here, so `'ACTVIE'` stored and the workflow never ran again.
+  if (updates.status !== undefined) data.status = parseWorkflowStatus(updates.status);
   if (updates.graph !== undefined) {
-    data.steps = updates.graph as unknown as Prisma.InputJsonValue;
+    data.steps = parseWorkflowGraph(updates.graph) as unknown as Prisma.InputJsonValue;
   }
   if (updates.triggers !== undefined) {
-    data.triggers = updates.triggers.map((t) => ({
+    data.triggers = parseWorkflowTriggers(updates.triggers).map((t) => ({
       type: t.triggerType,
       config: t as unknown as Record<string, unknown>,
     })) as unknown as Prisma.InputJsonValue;
