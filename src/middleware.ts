@@ -92,12 +92,23 @@ export async function middleware(request: NextRequest) {
     response.headers.set('Access-Control-Max-Age', '86400');
   }
 
-  // Rate limit headers (informational -- actual rate limiting should be done at the infrastructure level)
-  if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth')) {
-    response.headers.set('X-RateLimit-Limit', '100');
-    response.headers.set('X-RateLimit-Remaining', '99');
-    response.headers.set('X-RateLimit-Reset', String(Math.floor(Date.now() / 1000) + 3600));
-  }
+  // P-18 / T-012. Three lines used to sit here setting `X-RateLimit-Limit: 100`,
+  // `X-RateLimit-Remaining: 99` and a computed reset on EVERY API response, as
+  // constants, above a comment conceding that "actual rate limiting should be
+  // done at the infrastructure level". Nothing counted anything. A client that
+  // trusted those headers was being handed a number nobody was keeping, and a
+  // reviewer grepping for "rate limit" found them and concluded it was handled.
+  //
+  // They are gone rather than corrected here, for a reason worth stating: this
+  // file is Next.js edge middleware, and the real limiter is Redis-backed
+  // (`ioredis` is a Node TCP client and does not run on the edge runtime). So
+  // this is structurally the wrong place to count. The limiter now runs inside
+  // the route handlers, which are Node, and it sets the three headers itself —
+  // if and only if a real count in Redis produced the numbers in them.
+  //
+  // See `src/shared/middleware/rate-limit.ts` for the tier table and for which
+  // routes are covered. A route not listed there emits no rate-limit headers,
+  // which is the honest report of "nothing is counting this one".
 
   return response;
 }

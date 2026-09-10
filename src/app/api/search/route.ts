@@ -3,6 +3,7 @@ import { withEntityScope } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { search, searchByType, getSearchSuggestions } from '@/lib/search';
 import type { SearchFilter } from '@/lib/search';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 // GET /api/search?q=search+terms&type=task&entityId=xxx&limit=20&offset=0&dateFrom=...&dateTo=...
 // GET /api/search?suggestions=true&q=par&entityId=xxx
@@ -20,7 +21,7 @@ import type { SearchFilter } from '@/lib/search';
 // `withEntityScope` preserves the intent while proving ownership. `entityId` is
 // now always defined inside the handler, which is what removes the unscoped
 // search entirely.
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   return withEntityScope(req, async (scopedReq, _session, entityId) => {
     const params = scopedReq.nextUrl.searchParams;
 
@@ -86,4 +87,20 @@ export async function GET(req: NextRequest) {
       return error('SEARCH_ERROR', message, 500);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "search".
+//
+// The limiter sits OUTSIDE the auth wrappers, so a refused request never reaches
+// the handler, the entity-ownership query, or the work itself. (On a user-keyed
+// tier the limiter does decrypt the session token -- that is what makes the
+// bucket unspoofable -- but nothing beyond that runs.) The tier, its budget and
+// the reason for that budget live in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function GET(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'search', handleGET);
 }

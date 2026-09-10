@@ -226,11 +226,34 @@ describe('unchanged middleware behaviour', () => {
     expect(res.status).toBe(401);
   });
 
-  it('sets rate-limit headers on authenticated API responses', async () => {
+  // P-18 / T-012. This case used to read:
+  //
+  //     it('sets rate-limit headers on authenticated API responses', ...)
+  //       expect(res.headers.get('X-RateLimit-Limit')).toBe('100');
+  //
+  // and it passed for as long as the middleware wrote `100` and `99` as string
+  // constants onto every API response with nothing counting anything. It is the
+  // exact shape this run keeps finding: a green assertion over a value the code
+  // makes up. Asserting a header value cannot distinguish a limiter from a
+  // literal, so the assertion is inverted -- this file now proves the platform
+  // does NOT claim a budget here -- and the real proof that a limit limits
+  // moved to `tests/db/rate-limit.test.ts`, where the (N+1)th request against a
+  // real Redis is actually refused.
+  it('claims no rate-limit budget it is not counting', async () => {
     signedIn();
 
     const res = await middleware(req('/api/tasks'));
 
-    expect(res.headers.get('X-RateLimit-Limit')).toBe('100');
+    expect(res.headers.get('X-RateLimit-Limit')).toBeNull();
+    expect(res.headers.get('X-RateLimit-Remaining')).toBeNull();
+    expect(res.headers.get('X-RateLimit-Reset')).toBeNull();
+  });
+
+  it('still sets the CORS headers it is actually responsible for', async () => {
+    signedIn();
+
+    const res = await middleware(req('/api/tasks'));
+
+    expect(res.headers.get('Access-Control-Allow-Methods')).toContain('PATCH');
   });
 });

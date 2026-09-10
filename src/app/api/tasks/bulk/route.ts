@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { bulkUpdateTasks } from '@/modules/tasks/services/task-crud';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const BulkUpdateSchema = z.object({
   taskIds: z.array(z.string()).min(1),
@@ -25,7 +26,7 @@ const BulkUpdateSchema = z.object({
  * `updated` count tells the caller how many of their OWN tasks moved, which is
  * also the honest answer to "did my request apply".
  */
-export async function PATCH(request: NextRequest) {
+async function handlePATCH(request: NextRequest) {
   return withRole(request, ['owner', 'admin'], () =>
     withEntityScope(request, async (req, _session, entityId) => {
       try {
@@ -48,4 +49,20 @@ export async function PATCH(request: NextRequest) {
       }
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "bulk".
+//
+// The limiter sits OUTSIDE the auth wrappers, so a refused request never reaches
+// the handler, the entity-ownership query, or the work itself. (On a user-keyed
+// tier the limiter does decrypt the session token -- that is what makes the
+// bucket unspoofable -- but nothing beyond that runs.) The tier, its budget and
+// the reason for that budget live in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function PATCH(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'bulk', handlePATCH);
 }

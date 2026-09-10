@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { conductResearch } from '@/modules/decisions/services/research-agent';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const ResearchRequestSchema = z.object({
   query: z.string().min(1).max(500),
@@ -12,7 +13,7 @@ const ResearchRequestSchema = z.object({
   maxSources: z.number().int().min(1).max(20),
 });
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   return withRole(request, ['owner', 'admin', 'member'], () =>
     withEntityScope(request, async (req, _session, entityId) => {
       try {
@@ -35,4 +36,20 @@ export async function POST(request: NextRequest) {
       }
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "ai".
+//
+// The limiter sits OUTSIDE the auth wrappers, so a refused request never reaches
+// the handler, the entity-ownership query, or the work itself. (On a user-keyed
+// tier the limiter does decrypt the session token -- that is what makes the
+// bucket unspoofable -- but nothing beyond that runs.) The tier, its budget and
+// the reason for that budget live in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'ai', handlePOST);
 }
