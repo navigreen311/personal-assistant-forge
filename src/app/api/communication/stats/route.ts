@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
       // Count drafts created today
       let draftsToday = 0;
       try {
-        draftsToday = await (prisma as any).message.count({
+        draftsToday = await prisma.message.count({
           where: {
             entityId,
             draftStatus: 'draft',
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
       // Count messages sent today
       let sentToday = 0;
       try {
-        sentToday = await (prisma as any).message.count({
+        sentToday = await prisma.message.count({
           where: {
             entityId,
             draftStatus: 'sent',
@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
       // Pending follow-ups: contacts where cadence is set and not overdue
       let pendingFollowups = 0;
       try {
-        const contacts = await (prisma as any).contact.findMany({
+        const contacts = await prisma.contact.findMany({
           where: {
             entityId,
             deletedAt: null,
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
       // Overdue follow-ups: contacts past cadence window
       let overdueFollowups = 0;
       try {
-        const contacts = await (prisma as any).contact.findMany({
+        const contacts = await prisma.contact.findMany({
           where: {
             entityId,
             deletedAt: null,

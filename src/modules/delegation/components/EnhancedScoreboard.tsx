@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import type { DelegationScore } from '../types';
 
 interface ScoreboardDelegate {
   id: string;
@@ -88,6 +89,9 @@ export default function EnhancedScoreboard({ entityId }: EnhancedScoreboardProps
 
   useEffect(() => {
     let cancelled = false;
+    // fetch-on-mount and on entityId change; a useState initial value only
+    // covers the mount case.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
 
@@ -104,7 +108,7 @@ export default function EnhancedScoreboard({ entityId }: EnhancedScoreboardProps
         if (!cancelled) {
           const scores = json.data ?? json;
           const payload: ScoreboardData = Array.isArray(scores) ? {
-            delegates: scores.map((s: any) => ({
+            delegates: scores.map((s: DelegationScore) => ({
               id: s.delegateeId,
               name: s.delegateeName,
               role: s.bestCategory ?? 'General',

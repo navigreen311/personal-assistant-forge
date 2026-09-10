@@ -12,6 +12,10 @@ export function ShadowNavButtonConnected() {
 
   useEffect(() => {
     if (!session?.startedAt || session.status !== 'active') {
+      // elapsed time is derived from the wall clock; computing it during
+      // render would trade this rule for react-hooks/purity (Date.now() in
+      // render).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDurationSeconds(0);
       return;
     }

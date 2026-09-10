@@ -475,8 +475,7 @@ export class SchedulingService {
     });
     const entityIds = entityId
       ? [entityId]
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      : userEntities.map((e: any) => e.id as string);
+      : userEntities.map((e) => e.id);
 
     const events = await prisma.calendarEvent.findMany({
       where: {
@@ -487,8 +486,7 @@ export class SchedulingService {
       orderBy: { startTime: 'asc' },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return events.map((e: any) => this.toCalendarEvent(e));
+    return events.map((e) => this.toCalendarEvent(e));
   }
 
   async getCalendarViewData(
@@ -506,8 +504,7 @@ export class SchedulingService {
       where: { id: { in: entityIds } },
       select: { id: true, name: true, brandKit: true },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entityMap = new Map(entities.map((e: any) => [e.id, e] as [string, any]));
+    const entityMap = new Map(entities.map((e) => [e.id, e] as const));
 
     // Fetch contact names for participants
     const allParticipantIds = [...new Set(events.flatMap((e) => e.participantIds))];
@@ -517,8 +514,7 @@ export class SchedulingService {
           select: { id: true, name: true },
         })
       : [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const contactMap = new Map(contacts.map((c: any) => [c.id, c.name] as [string, string]));
+    const contactMap = new Map(contacts.map((c) => [c.id, c.name] as [string, string]));
 
     // Get user prefs for focus blocks
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -851,8 +847,7 @@ export class SchedulingService {
 
     return prisma.calendarEvent.findMany({
       where: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        entityId: { in: userEntities.map((e: any) => e.id as string) },
+        entityId: { in: userEntities.map((e) => e.id) },
         OR: [
           { startTime: { gte: timeRange.start, lte: timeRange.end } },
           { endTime: { gte: timeRange.start, lte: timeRange.end } },

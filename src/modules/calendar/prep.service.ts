@@ -97,8 +97,7 @@ export class PrepPacketService {
       select: { name: true, email: true, tags: true, relationshipScore: true },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return contacts.map((c: any) => {
+    return contacts.map((c) => {
       const tags = c.tags.length > 0 ? ` [${c.tags.join(', ')}]` : '';
       return `${c.name} (${c.email ?? 'no email'}) - Relationship: ${c.relationshipScore}/100${tags}`;
     });
@@ -124,8 +123,7 @@ export class PrepPacketService {
       select: { subject: true, body: true, createdAt: true, channel: true },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return messages.map((m: any) => {
+    return messages.map((m) => {
       const subject = m.subject ? `"${m.subject}"` : 'No subject';
       const date = m.createdAt.toLocaleDateString();
       return `${date} via ${m.channel}: ${subject} - ${m.body.substring(0, 100)}`;
@@ -149,8 +147,7 @@ export class PrepPacketService {
       select: { title: true, priority: true, status: true, dueDate: true },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return tasks.map((t: any) => {
+    return tasks.map((t) => {
       const due = t.dueDate ? ` (due: ${t.dueDate.toLocaleDateString()})` : '';
       return `[${t.priority}] ${t.title} - ${t.status}${due}`;
     });

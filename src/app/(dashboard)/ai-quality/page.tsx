@@ -1,8 +1,8 @@
 'use client';
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
+import { ErrorBoundary } from '@/shared/components/ErrorBoundary';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,55 +41,97 @@ const PERIODS: { key: PeriodKey; label: string }[] = [
 // Dynamic Imports with Graceful Fallbacks
 // ---------------------------------------------------------------------------
 
-const EnhancedScorecardTab: any = dynamic(
+/** Props every AI-quality tab is rendered with. */
+interface AiQualityTabProps {
+  entityId?: string;
+  period: PeriodKey;
+}
+
+/**
+ * P-19. Each of the five `dynamic()` calls below used to fall back to a
+ * different, simpler component:
+ *
+ *   EnhancedScorecardTab    -> AccuracyScorecardCard({ scorecard })
+ *   EnhancedGoldenTestsTab  -> GoldenTestPanel({ suites })
+ *   EnhancedOverridesTab    -> OverrideAnalysisPanel({ analysis })
+ *   BiasTab                 -> BiasReportCard({ report })
+ *   ProvenanceTab           -> ProvenanceViewer({ chain })
+ *
+ * None of those five accepts `entityId`/`period`, and every one of them
+ * requires a data object the page does not have and cannot obtain -- so the
+ * fallback would have rendered with its required prop `undefined`.
+ * `AccuracyScorecardCard` reads `scorecard.triageAccuracy` and
+ * `OverrideAnalysisPanel` calls `Object.entries(analysis.byReason)`
+ * immediately: the "graceful fallback" was a TypeError. It was invisible
+ * because a file-level eslint-disable of no-explicit-any sat at the top of
+ * this file and every loader was cast away -- the same mechanism, at file
+ * scope, that hid the six phantom Prisma delegates.
+ *
+ * Since the page has no data to hand those components, the honest fallback is
+ * to say the tab is unavailable rather than to crash.
+ */
+function TabUnavailable({ label }: { label: string }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-6">
+      <p className="text-sm font-medium text-gray-700">
+        The {label} tab could not be loaded.
+      </p>
+      <p className="mt-1 text-sm text-gray-500">
+        Please refresh the page. If this keeps happening, contact support.
+      </p>
+    </div>
+  );
+}
+
+const EnhancedScorecardTab = dynamic<AiQualityTabProps>(
   () =>
-    import('@/modules/ai-quality/components/EnhancedScorecardTab').catch(
-      () => import('@/modules/ai-quality/components/AccuracyScorecardCard')
-    ) as any,
+    import('@/modules/ai-quality/components/EnhancedScorecardTab').catch(() => ({
+      default: () => <TabUnavailable label="Scorecard" />,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Scorecard" />,
   }
 );
 
-const EnhancedGoldenTestsTab: any = dynamic(
+const EnhancedGoldenTestsTab = dynamic<AiQualityTabProps>(
   () =>
-    import('@/modules/ai-quality/components/EnhancedGoldenTestsTab').catch(
-      () => import('@/modules/ai-quality/components/GoldenTestPanel')
-    ) as any,
+    import('@/modules/ai-quality/components/EnhancedGoldenTestsTab').catch(() => ({
+      default: () => <TabUnavailable label="Golden Tests" />,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Golden Tests" />,
   }
 );
 
-const EnhancedOverridesTab: any = dynamic(
+const EnhancedOverridesTab = dynamic<AiQualityTabProps>(
   () =>
-    import('@/modules/ai-quality/components/EnhancedOverridesTab').catch(
-      () => import('@/modules/ai-quality/components/OverrideAnalysisPanel')
-    ) as any,
+    import('@/modules/ai-quality/components/EnhancedOverridesTab').catch(() => ({
+      default: () => <TabUnavailable label="Overrides" />,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Overrides" />,
   }
 );
 
-const BiasTab: any = dynamic(
+const BiasTab = dynamic<AiQualityTabProps>(
   () =>
-    import('@/modules/ai-quality/components/BiasTab').catch(
-      () => import('@/modules/ai-quality/components/BiasReportCard')
-    ) as any,
+    import('@/modules/ai-quality/components/BiasTab').catch(() => ({
+      default: () => <TabUnavailable label="Bias" />,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Bias" />,
   }
 );
 
-const ProvenanceTab: any = dynamic(
+const ProvenanceTab = dynamic<AiQualityTabProps>(
   () =>
-    import('@/modules/ai-quality/components/ProvenanceTab').catch(
-      () => import('@/modules/ai-quality/components/ProvenanceViewer')
-    ) as any,
+    import('@/modules/ai-quality/components/ProvenanceTab').catch(() => ({
+      default: () => <TabUnavailable label="Provenance" />,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Provenance" />,
@@ -148,6 +190,13 @@ function PageLoadingSkeleton() {
 // Error Boundary Wrapper
 // ---------------------------------------------------------------------------
 
+/**
+ * P-19. This was a try/catch around `<>{children}</>`. Constructing JSX does
+ * not render it, so the catch could never fire and a tab that threw during
+ * render took the whole route down instead of showing the message below. The
+ * repo already ships a real boundary; this now delegates to it, with the same
+ * props and the same fallback markup.
+ */
 function SafeTabRender({
   children,
   tabName,
@@ -155,20 +204,22 @@ function SafeTabRender({
   children: React.ReactNode;
   tabName: string;
 }) {
-  try {
-    return <>{children}</>;
-  } catch {
-    return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-6">
-        <p className="text-sm font-medium text-red-800">
-          Something went wrong rendering the {tabName} tab.
-        </p>
-        <p className="mt-1 text-sm text-red-600">
-          Please try refreshing the page. If this issue persists, contact support.
-        </p>
-      </div>
-    );
-  }
+  return (
+    <ErrorBoundary
+      fallback={
+        <div className="rounded-lg border border-red-200 bg-red-50 p-6">
+          <p className="text-sm font-medium text-red-800">
+            Something went wrong rendering the {tabName} tab.
+          </p>
+          <p className="mt-1 text-sm text-red-600">
+            Please try refreshing the page. If this issue persists, contact support.
+          </p>
+        </div>
+      }
+    >
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 // =============================================================================

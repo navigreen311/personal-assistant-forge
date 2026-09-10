@@ -9,7 +9,9 @@ import { useState, useCallback } from 'react';
 interface EnhancedAddContactModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (contact: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onCreated?: (contact: unknown) => void;
   entities: Array<{ id: string; name: string }>;
 }
 

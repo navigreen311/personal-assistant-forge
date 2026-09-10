@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import type { Project, ProjectHealth, TaskStatus, Entity } from '@/shared/types';
+import type { Project, Milestone, ProjectHealth, TaskStatus, Entity } from '@/shared/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,8 +12,24 @@ import type { Project, ProjectHealth, TaskStatus, Entity } from '@/shared/types'
 type ViewMode = 'cards' | 'list' | 'board';
 type SortKey = 'health' | 'name' | 'dueDate' | 'updatedAt';
 
+/**
+ * A project exactly as this page receives it over HTTP.
+ *
+ * Two things the shared `Project` type does not say, both of which the page
+ * previously papered over with `as any` / `(m: any)`:
+ *   - GET /api/projects includes `entity: { select: { id, name } }`;
+ *   - `Milestone.dueDate` is declared `Date`, but this value has been through
+ *     JSON.stringify, so what actually arrives is an ISO string. Every consumer
+ *     here already treats it as one (`new Date(dueDate)`,
+ *     `ProjectCardGrid`'s `dueDate?: string`).
+ */
+type ProjectWithEntity = Omit<Project, 'milestones'> & {
+  entity?: { id: string; name: string };
+  milestones?: (Omit<Milestone, 'dueDate'> & { dueDate?: string })[];
+};
+
 interface ProjectSummary {
-  project: Project;
+  project: ProjectWithEntity;
   taskCounts: Record<TaskStatus, number>;
   completionPercent: number;
   health: ProjectHealth;
@@ -175,7 +191,12 @@ function InlineCardGrid({
               <div className="text-xs text-gray-500 border-t border-gray-100 pt-2">
                 Next: <span className="font-medium">{nextMilestone.title}</span>
                 <span className="ml-1 text-gray-400">
-                  ({new Date(nextMilestone.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})
+                  {/* `dueDate` is optional: `Project.milestones` is an unvalidated
+                      Json column, so an entry can arrive without one. `?? NaN`
+                      keeps this byte-identical to the previous
+                      `new Date(undefined)` -- both give an Invalid Date. Rendering
+                      something better is a UI change, not a lint fix. */}
+                  ({new Date(nextMilestone.dueDate ?? NaN).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})
                 </span>
               </div>
             )}
@@ -668,10 +689,10 @@ export default function ProjectsPage() {
                     name: s.project.name,
                     description: s.project.description ?? undefined,
                     entityId: s.project.entityId,
-                    entityName: (s.project as any).entity?.name,
+                    entityName: s.project.entity?.name,
                     health: s.health,
                     status: s.project.status,
-                    milestones: (s.project.milestones ?? []).map((m: any) => ({
+                    milestones: (s.project.milestones ?? []).map((m) => ({
                       id: m.id ?? m.title,
                       title: m.title,
                       dueDate: m.dueDate,
@@ -691,11 +712,11 @@ export default function ProjectsPage() {
               projects={sortedProjects.map((s) => ({
                 id: s.project.id,
                 name: s.project.name,
-                entityName: (s.project as any).entity?.name,
+                entityName: s.project.entity?.name,
                 health: s.health,
                 status: s.project.status,
                 tasks: { total: Object.values(s.taskCounts).reduce((a, b) => a + b, 0), completed: s.taskCounts.DONE ?? 0 },
-                targetDate: (s.project.milestones ?? []).find((m: any) => m.status !== 'DONE')?.dueDate?.toString(),
+                targetDate: (s.project.milestones ?? []).find((m) => m.status !== 'DONE')?.dueDate?.toString(),
                 updatedAt: s.project.updatedAt?.toString() ?? new Date().toISOString(),
               }))}
               sortBy={sortBy}
@@ -711,11 +732,11 @@ export default function ProjectsPage() {
                 id: s.project.id,
                 name: s.project.name,
                 description: s.project.description ?? undefined,
-                entityName: (s.project as any).entity?.name,
+                entityName: s.project.entity?.name,
                 health: s.health,
                 status: s.project.status,
                 tasks: { total: Object.values(s.taskCounts).reduce((a, b) => a + b, 0), completed: s.taskCounts.DONE ?? 0 },
-                targetDate: (s.project.milestones ?? []).find((m: any) => m.status !== 'DONE')?.dueDate?.toString(),
+                targetDate: (s.project.milestones ?? []).find((m) => m.status !== 'DONE')?.dueDate?.toString(),
                 updatedAt: s.project.updatedAt?.toString() ?? new Date().toISOString(),
               }))}
               onProjectClick={(id: string) => router.push(`/projects/${id}`)}

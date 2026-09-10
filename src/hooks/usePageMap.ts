@@ -66,7 +66,20 @@ export function subscribeToPageMap(listener: () => void): () => void {
 
 export function usePageMap(registration: PageMapRegistration) {
   const registrationRef = useRef(registration);
-  registrationRef.current = registration;
+
+  // P-19: this was `registrationRef.current = registration;` in the render
+  // body -- a ref written during render, which React forbids because render
+  // must be side-effect free and repeatable.
+  //
+  // Declared FIRST deliberately. Effects run in declaration order within a
+  // commit, and the registration effect below reads `registrationRef.current`;
+  // if this sync ran after it, a change of `registration.pageId` would register
+  // the *previous* registration. React also runs every cleanup for a commit
+  // before any effect, so the unmount/re-register cleanup still sees the value
+  // it captured on its own last run. Order preserved, behaviour unchanged.
+  useEffect(() => {
+    registrationRef.current = registration;
+  });
 
   // Register on mount, unregister on unmount
   useEffect(() => {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import { ErrorBoundary } from '@/shared/components/ErrorBoundary';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -16,6 +17,43 @@ interface TabDef {
 }
 
 type Period = 'today' | '7d' | '30d' | '90d';
+
+/**
+ * Every health tab -- the real module and its inline fallback alike -- takes
+ * exactly these props. Naming it lets `dynamic<HealthTabProps>` check that the
+ * lazily-loaded module and the fallback actually agree, which the previous
+ * `: any` / `as any` pair suppressed.
+ */
+interface HealthTabProps {
+  entityId?: string;
+  period?: string;
+}
+
+/** Shape of GET /api/health/energy. Every field optional: the fallback renders
+ *  whatever arrives and defaults the rest, so the type says so. */
+interface EnergyHour {
+  hour?: number;
+  energyLevel?: number;
+}
+
+interface EnergyForecast {
+  date?: string;
+  hourlyEnergy?: EnergyHour[];
+  peakHours?: number[];
+  troughHours?: number[];
+  recommendation?: string;
+}
+
+/** Shape of GET /api/health/medical rows, as consumed by the fallback. */
+interface MedicalRecordSummary {
+  id?: string;
+  title?: string;
+  provider?: string;
+  type?: string;
+  date?: string;
+  nextDate?: string;
+  notes?: string;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Tab definitions                                                    */
@@ -41,51 +79,51 @@ const PERIOD_OPTIONS: { value: Period; label: string }[] = [
 /*  Dynamic imports with crash-safe fallbacks                          */
 /* ------------------------------------------------------------------ */
 
-const HealthDashboardTab: any = dynamic(
+const HealthDashboardTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/HealthDashboardTab').catch(() => ({
       default: SafeDashboardFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const EnergyTab: any = dynamic(
+const EnergyTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/EnergyTab').catch(() => ({
       default: EnergyTabFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const MedicalTab: any = dynamic(
+const MedicalTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/MedicalTab').catch(() => ({
       default: MedicalTabFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const MedicationsTab: any = dynamic(
+const MedicationsTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/MedicationsTab').catch(() => ({
       default: MedicationsTabFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const AppointmentsTab: any = dynamic(
+const AppointmentsTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/AppointmentsTab').catch(() => ({
       default: AppointmentsTabFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
-const FitnessTab: any = dynamic(
+const FitnessTab = dynamic<HealthTabProps>(
   () =>
     import('@/modules/health/components/FitnessTab').catch(() => ({
       default: FitnessTabFallback,
-    })) as any,
+    })),
   { ssr: false, loading: () => <TabLoadingSkeleton /> },
 );
 
@@ -111,6 +149,18 @@ function TabLoadingSkeleton() {
 /*  Error boundary wrapper                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * P-19. This was a function component holding `const [hasError] = useState(false)`
+ * and an effect that reset it to `false` -- and **nothing anywhere ever called
+ * `setHasError(true)`**. The `if (hasError)` branch, the "Failed to load" card
+ * and the Retry button were unreachable: all six health tabs were wrapped in a
+ * boundary that could not catch anything. A function component cannot be an
+ * error boundary at all; only `getDerivedStateFromError` on a class can.
+ *
+ * Delegates to the real boundary the repo already ships, with the same fallback
+ * markup. The Retry button is dropped in favour of that component's own reset
+ * control, which is the one that can actually clear the error state.
+ */
 function TabErrorBoundary({
   children,
   tabName,
@@ -118,36 +168,26 @@ function TabErrorBoundary({
   children: React.ReactNode;
   tabName: string;
 }) {
-  const [hasError, setHasError] = useState(false);
-
-  useEffect(() => {
-    setHasError(false);
-  }, [tabName]);
-
-  if (hasError) {
-    return (
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6 text-center">
-        <p className="text-red-700 dark:text-red-400 font-medium">
-          Failed to load {tabName} tab
-        </p>
-        <button
-          onClick={() => setHasError(false)}
-          className="mt-3 px-4 py-2 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded hover:bg-red-200 dark:hover:bg-red-900/60 text-sm"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  return <>{children}</>;
+  return (
+    <ErrorBoundary
+      fallback={
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-6 text-center">
+          <p className="text-red-700 dark:text-red-400 font-medium">
+            Failed to load {tabName} tab
+          </p>
+        </div>
+      }
+    >
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 /* ------------------------------------------------------------------ */
 /*  Safe Dashboard Fallback (inline, no API calls)                     */
 /* ------------------------------------------------------------------ */
 
-function SafeDashboardFallback({ period }: { entityId?: string; period?: string }) {
+function SafeDashboardFallback({ period }: HealthTabProps) {
   const cards = [
     {
       title: 'Sleep Score',
@@ -237,8 +277,8 @@ function SafeDashboardFallback({ period }: { entityId?: string; period?: string 
 /*  Energy Tab Fallback                                                */
 /* ------------------------------------------------------------------ */
 
-function EnergyTabFallback({ period }: { entityId?: string; period?: string }) {
-  const [forecast, setForecast] = useState<any>(null);
+function EnergyTabFallback({ period }: HealthTabProps) {
+  const [forecast, setForecast] = useState<EnergyForecast | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -286,8 +326,8 @@ function EnergyTabFallback({ period }: { entityId?: string; period?: string }) {
         <>
           <div className="flex items-end gap-0.5 h-40">
             {hourlyEnergy
-              .filter((h: any) => (h?.hour ?? 0) >= 6 && (h?.hour ?? 0) <= 22)
-              .map((entry: any) => {
+              .filter((h) => (h?.hour ?? 0) >= 6 && (h?.hour ?? 0) <= 22)
+              .map((entry) => {
                 const hour = entry?.hour ?? 0;
                 const energyLevel = entry?.energyLevel ?? 0;
                 const isPeak = peakHours.includes(hour);
@@ -336,8 +376,8 @@ function EnergyTabFallback({ period }: { entityId?: string; period?: string }) {
 /*  Medical Tab Fallback                                               */
 /* ------------------------------------------------------------------ */
 
-function MedicalTabFallback({ period }: { entityId?: string; period?: string }) {
-  const [records, setRecords] = useState<any[]>([]);
+function MedicalTabFallback({ period }: HealthTabProps) {
+  const [records, setRecords] = useState<MedicalRecordSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -390,7 +430,7 @@ function MedicalTabFallback({ period }: { entityId?: string; period?: string }) 
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">Medical Records</h3>
       <div className="space-y-2">
-        {records.map((record: any, idx: number) => (
+        {records.map((record, idx) => (
           <div key={record?.id ?? idx} className="border dark:border-gray-700 rounded-lg p-3">
             <div className="flex justify-between items-start">
               <div>
@@ -429,7 +469,7 @@ function MedicalTabFallback({ period }: { entityId?: string; period?: string }) 
 /*  Medications Tab Fallback (inline placeholder)                      */
 /* ------------------------------------------------------------------ */
 
-function MedicationsTabFallback({ period }: { entityId?: string; period?: string }) {
+function MedicationsTabFallback({ period }: HealthTabProps) {
   const demoMedications = [
     { name: 'Vitamin D3', dosage: '2000 IU', frequency: 'Daily', status: 'Active' },
     { name: 'Omega-3', dosage: '1000 mg', frequency: 'Daily', status: 'Active' },
@@ -479,7 +519,7 @@ function MedicationsTabFallback({ period }: { entityId?: string; period?: string
 /*  Appointments Tab Fallback (inline placeholder)                     */
 /* ------------------------------------------------------------------ */
 
-function AppointmentsTabFallback({ period }: { entityId?: string; period?: string }) {
+function AppointmentsTabFallback({ period }: HealthTabProps) {
   const demoAppointments = [
     { title: 'Annual Physical', provider: 'Dr. Smith', date: '2026-03-15', type: 'Check-up' },
     { title: 'Dental Cleaning', provider: 'Dr. Johnson', date: '2026-04-02', type: 'Dental' },
@@ -539,7 +579,7 @@ function AppointmentsTabFallback({ period }: { entityId?: string; period?: strin
 /*  Fitness Tab Fallback (inline placeholder)                          */
 /* ------------------------------------------------------------------ */
 
-function FitnessTabFallback({ period }: { entityId?: string; period?: string }) {
+function FitnessTabFallback({ period }: HealthTabProps) {
   const demoStats = [
     { label: 'Steps Today', value: '8,432', target: '10,000', pct: 84 },
     { label: 'Calories Burned', value: '1,847', target: '2,200', pct: 84 },

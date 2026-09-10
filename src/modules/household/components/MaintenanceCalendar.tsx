@@ -158,9 +158,16 @@ export default function MaintenanceCalendar({ tasks, onAddTask }: MaintenanceCal
 
   // -- Selected day tasks ---------------------------------------------------
 
+  // P-19: this called `getTasksForDate(selectedDate)`, a plain function
+  // recreated on every render, so the compiler inferred a dependency on that
+  // identity and could not reconcile it with the declared
+  // `[selectedDate, tasksByDay]`. The helper only ever reads `tasksByDay`, so
+  // the declared list was right; inlining its two lines makes the inferred and
+  // declared dependencies agree without changing the result.
   const selectedDayTasks = useMemo(() => {
     if (!selectedDate) return [];
-    return getTasksForDate(selectedDate);
+    const key = `${selectedDate.getFullYear()}-${selectedDate.getMonth()}-${selectedDate.getDate()}`;
+    return tasksByDay.get(key) ?? [];
   }, [selectedDate, tasksByDay]);
 
   // -- Prev / Next month labels ---------------------------------------------

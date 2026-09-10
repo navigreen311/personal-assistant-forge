@@ -1146,6 +1146,13 @@ function AccessLogPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [dateRange, setDateRange] = useState('all');
+  // P-19: the date-window filter below called `Date.now()` three times during
+  // render, which makes the render non-idempotent -- two renders of identical
+  // props can disagree about which rows are in the window. Reading the clock
+  // once, in a lazy initializer, matches how `entries` itself is produced:
+  // `generateMockAccessLog` stamps its rows relative to mount, so the window
+  // was always anchored to mount in substance.
+  const [nowMs] = useState(() => Date.now());
 
   const toggleRule = useCallback((ruleId: string) => {
     setRules((prev) => prev.map((r) => r.id === ruleId ? { ...r, enabled: !r.enabled } : r));
@@ -1165,11 +1172,11 @@ function AccessLogPanel() {
     const matchesSeverity = !severityFilter || entry.status === severityFilter;
     let matchesDate = true;
     if (dateRange === '24h') {
-      matchesDate = Date.now() - new Date(entry.time).getTime() < 86400000;
+      matchesDate = nowMs - new Date(entry.time).getTime() < 86400000;
     } else if (dateRange === '7d') {
-      matchesDate = Date.now() - new Date(entry.time).getTime() < 7 * 86400000;
+      matchesDate = nowMs - new Date(entry.time).getTime() < 7 * 86400000;
     } else if (dateRange === '30d') {
-      matchesDate = Date.now() - new Date(entry.time).getTime() < 30 * 86400000;
+      matchesDate = nowMs - new Date(entry.time).getTime() < 30 * 86400000;
     }
     return matchesSearch && matchesSeverity && matchesDate;
   });

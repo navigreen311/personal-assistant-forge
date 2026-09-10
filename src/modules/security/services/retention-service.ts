@@ -27,10 +27,20 @@ type PrismaModelName =
   | 'Call'
   | 'KnowledgeEntry';
 
-/** Common Prisma delegate shape for dynamic model access */
+/**
+ * Common Prisma delegate shape for dynamic model access.
+ *
+ * P-19: `findMany` returned `Promise<Array<any>>`. `unknown` is the honest type
+ * -- seven different models are addressed through this interface, so the rows
+ * genuinely have no single static shape, and callers must narrow. Unlike `any`,
+ * `unknown` makes them.
+ */
 interface PrismaDelegate {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  findMany(args?: Record<string, unknown>): Promise<Array<any>>;
+  // `unknown[]`, not `any[]`: seven different models are addressed through
+  // this one interface, so there is genuinely no single static row type. The
+  // two call sites cast to the shape their own `select` asked for, which is
+  // a claim you can read and check; `any` was a claim about nothing.
+  findMany(args?: Record<string, unknown>): Promise<Array<unknown>>;
   deleteMany(args?: Record<string, unknown>): Promise<{ count: number }>;
   updateMany(args?: Record<string, unknown>): Promise<{ count: number }>;
 }
@@ -336,10 +346,10 @@ export class RetentionService {
       }
 
       // Fetch candidate records
-      const records: Array<{ id: string }> = await delegate.findMany({
+      const records = (await delegate.findMany({
           where,
           select: { id: true },
-        });
+        })) as Array<{ id: string }>;
 
       // Filter out records under active legal hold
       const eligible: string[] = [];
@@ -444,11 +454,11 @@ export class RetentionService {
       where['sensitivity'] = policy.classification;
     }
 
-    const records: Array<{ id: string; createdAt: Date }> = await delegate.findMany({
+    const records = (await delegate.findMany({
       where,
       select: { id: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
-    });
+    })) as Array<{ id: string; createdAt: Date }>;
 
     // Count legal hold conflicts (best-effort)
     let legalHoldConflicts = 0;

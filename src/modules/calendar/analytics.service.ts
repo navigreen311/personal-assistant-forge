@@ -45,8 +45,7 @@ export class CalendarAnalyticsService {
       where: { userId },
       select: { id: true },
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const entityIds = entityId ? [entityId] : userEntities.map((e: any) => e.id as string);
+    const entityIds = entityId ? [entityId] : userEntities.map((e) => e.id);
 
     const rawEvents = await prisma.calendarEvent.findMany({
       where: {
@@ -57,8 +56,7 @@ export class CalendarAnalyticsService {
       orderBy: { startTime: 'asc' },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const events: CalendarEvent[] = rawEvents.map((e: any) => ({
+    const events: CalendarEvent[] = rawEvents.map((e) => ({
       id: e.id,
       title: e.title,
       entityId: e.entityId,
@@ -67,7 +65,10 @@ export class CalendarAnalyticsService {
       endTime: e.endTime,
       bufferBefore: e.bufferBefore ?? undefined,
       bufferAfter: e.bufferAfter ?? undefined,
-      prepPacket: e.prepPacket as CalendarEvent['prepPacket'],
+      // Json column: Prisma types it JsonValue and nothing validates its shape
+      // on write. An explicit cast at this one boundary, rather than `e: any`
+      // leaving every field of the mapper unchecked.
+      prepPacket: e.prepPacket as unknown as CalendarEvent['prepPacket'],
       meetingNotes: e.meetingNotes ?? undefined,
       recurrence: e.recurrence ?? undefined,
       createdAt: e.createdAt,

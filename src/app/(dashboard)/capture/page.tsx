@@ -23,6 +23,35 @@ interface EntityOption {
   name: string;
 }
 
+/* Props of the three lazily-loaded Enhanced* components. Declared here because
+   the modules do not export their prop interfaces and `dynamic()` needs a type
+   argument; each mirrors the interface in the module it loads. */
+
+interface EnhancedQuickCaptureBarProps {
+  onCapture: (params: {
+    rawContent: string;
+    source: CaptureSource;
+    contentType: CaptureContentType;
+    entityId?: string;
+  }) => void;
+  entities?: EntityOption[];
+  selectedEntityId?: string;
+}
+
+interface EnhancedCaptureTableProps {
+  captures: CaptureItem[];
+  entities?: EntityOption[];
+  onApproveRouting: (id: string) => void;
+  onArchive: (ids: string[]) => void;
+  onReroute: (id: string) => void;
+  onDelete?: (ids: string[]) => void;
+}
+
+interface EnhancedCaptureStatsSidebarProps {
+  metrics: CaptureLatencyMetrics[];
+  captures: CaptureItem[];
+}
+
 interface CaptureStats {
   total: number;
   pending: number;
@@ -41,17 +70,19 @@ interface SlaStatus {
 // Dynamic imports — Enhanced components with fallback to existing ones
 // ---------------------------------------------------------------------------
 
-const EnhancedQuickCaptureBar = dynamic(
+const EnhancedQuickCaptureBar = dynamic<EnhancedQuickCaptureBarProps>(
   () =>
     import('@/modules/capture/components/EnhancedQuickCaptureBar').catch(() => {
       return {
-        default: ({ onCapture }: any) => <QuickCaptureBar onCapture={onCapture} />,
+        default: ({ onCapture }: EnhancedQuickCaptureBarProps) => (
+          <QuickCaptureBar onCapture={onCapture} />
+        ),
       };
     }),
   { ssr: false },
 );
 
-const EnhancedCaptureTable = dynamic(
+const EnhancedCaptureTable = dynamic<EnhancedCaptureTableProps>(
   () =>
     import('@/modules/capture/components/EnhancedCaptureTable').catch(() => {
       return {
@@ -60,7 +91,7 @@ const EnhancedCaptureTable = dynamic(
           onApproveRouting,
           onArchive,
           onReroute,
-        }: any) => (
+        }: EnhancedCaptureTableProps) => (
           <CaptureInbox
             captures={captures}
             onApproveRouting={onApproveRouting}
@@ -73,12 +104,12 @@ const EnhancedCaptureTable = dynamic(
   { ssr: false },
 );
 
-const EnhancedCaptureStatsSidebar = dynamic(
+const EnhancedCaptureStatsSidebar = dynamic<EnhancedCaptureStatsSidebarProps>(
   () =>
     import('@/modules/capture/components/EnhancedCaptureStatsSidebar').catch(
       () => {
         return {
-          default: ({ metrics, captures }: any) => (
+          default: ({ metrics, captures }: EnhancedCaptureStatsSidebarProps) => (
             <CaptureMetricsDashboard metrics={metrics} captures={captures} />
           ),
         };
