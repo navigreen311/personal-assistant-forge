@@ -212,9 +212,24 @@ function getRedis(): Redis {
       // as an open handle; nothing here needs two seconds to hang up.
       disconnectTimeout: 500,
     });
-    redis.on('error', () => {
+    const client = redis;
+    client.on('error', () => {
       // Handled per request in checkRateLimit. An unhandled 'error' event on an
       // ioredis client is a process-level unhandled exception.
+    });
+    // The limiter's connection is a long-lived singleton with no close point --
+    // a Next.js route handler never "finishes" the way a script does -- so
+    // nothing ever disconnects it, by design. `unref` says the one thing that
+    // is therefore true of it: this socket must not, on its own, keep the
+    // process alive. Under a server that changes nothing, because the HTTP
+    // listener holds the loop open. Under a test runner or a CLI it is the
+    // difference between exiting and hanging: `tests/db/search.test.ts` calls a
+    // limited route, which creates this client, and that suite has no way to
+    // close a singleton it does not own -- so without this the whole
+    // `test:db` job passed 826 tests and then hung until CI cancelled it.
+    // Re-armed on every 'connect' because a reconnect brings a new socket.
+    client.on('connect', () => {
+      client.stream.unref();
     });
   }
   return redis;
