@@ -129,7 +129,17 @@ export function EnhancedDelegationInbox({ entityId, onDelegated }: EnhancedDeleg
       if (!res.ok) throw new Error(`Failed to load suggestions (${res.status})`);
       const json = await res.json();
       const items = Array.isArray(json) ? json : (json.data ?? []);
-      const data: DelegationSuggestion[] = items.map((item: any) => ({
+      // The row shape GET /api/delegation/inbox returns.
+      interface SuggestionRow {
+        taskId: string;
+        taskTitle: string;
+        priority?: string;
+        estimatedTimeSavedMinutes?: number;
+        reason: string;
+        suggestedDelegatee?: string;
+        confidence?: number;
+      }
+      const data: DelegationSuggestion[] = items.map((item: SuggestionRow) => ({
         taskId: item.taskId,
         taskTitle: item.taskTitle,
         entityId: entityId ?? '',

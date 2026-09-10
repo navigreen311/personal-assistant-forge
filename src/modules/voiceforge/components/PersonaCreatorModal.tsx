@@ -9,7 +9,9 @@ import { useState, useEffect } from 'react';
 interface PersonaCreatorModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (persona: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onCreated?: (persona: unknown) => void;
   editPersona?: {
     id: string;
     name: string;

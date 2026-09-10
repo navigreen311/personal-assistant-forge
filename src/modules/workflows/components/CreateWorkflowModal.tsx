@@ -15,7 +15,9 @@ import { useState, useEffect } from 'react';
 interface CreateWorkflowModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (workflow: any) => void;
+  // The created workflow as POST /api/workflows returned it, unvalidated --
+  // so `unknown`. Callers that use it must narrow it first.
+  onCreated?: (workflow: unknown) => void;
 }
 
 type CreationMethod = 'template' | 'blank' | 'ai';
@@ -128,7 +130,7 @@ export default function CreateWorkflowModal({
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
           setEntities(
-            json.data.map((e: any) => ({
+            json.data.map((e: EntityOption) => ({
               id: e.id,
               name: e.name,
             })),
@@ -216,7 +218,7 @@ export default function CreateWorkflowModal({
     setSubmitError('');
 
     try {
-      const body: Record<string, any> = {
+      const body: Record<string, unknown> = {
         name: name.trim() || undefined,
         entityId,
         description: description.trim() || undefined,

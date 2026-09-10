@@ -307,12 +307,36 @@ export default function ActiveDelegationsTab({
         REJECTED: 'Blocked',
         COMPLETED: 'Complete',
       };
-      const list: ActiveDelegation[] = raw.map((item: any) => ({
+      // The row shape GET /api/delegation returns. Every field is optional
+      // because the mapper below already supplies a fallback for each one --
+      // which is exactly what the `any` was concealing.
+      interface DelegationRow {
+        id: string;
+        taskId?: string;
+        task?: string;
+        delegatedTo?: string;
+        assignee?: string;
+        entityId?: string;
+        entity?: string;
+        status?: string;
+        completedAt?: string;
+        dueDate?: string;
+        delegatedAt?: string;
+        progress?: number;
+        contextPack?: {
+          summary?: string;
+          relevantDocuments?: string[];
+          notes?: string;
+        };
+      }
+      const list: ActiveDelegation[] = raw.map((item: DelegationRow) => ({
         id: item.id,
         task: item.taskId ?? item.task ?? 'Untitled Task',
         assignee: item.delegatedTo ?? item.assignee ?? 'Unknown',
         entity: item.entityId ?? item.entity ?? '',
-        status: STATUS_MAP[item.status] ?? item.status ?? 'Not Started',
+        // `?? ''` only satisfies the index signature: at runtime an absent
+        // status already resolved to a miss, so this is the same lookup.
+        status: STATUS_MAP[item.status ?? ''] ?? item.status ?? 'Not Started',
         dueDate: item.completedAt ?? item.dueDate ?? item.delegatedAt ?? new Date().toISOString(),
         progress: item.status === 'COMPLETED' ? 100 : item.status === 'APPROVED' ? 50 : item.progress ?? 0,
         contextPack: item.contextPack ? {

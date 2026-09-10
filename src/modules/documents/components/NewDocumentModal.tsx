@@ -10,7 +10,10 @@ import type { DocumentTemplate, TemplateVariable } from '../types';
 interface NewDocumentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (doc: any) => void;
+  // The created document, straight from the POST /api/documents response
+  // body. Unvalidated here, so `unknown`: today's only callers ignore it,
+  // and any that do not have to narrow it first.
+  onCreated?: (doc: unknown) => void;
 }
 
 type CreationMethod = 'template' | 'ai' | 'blank' | 'existing';
@@ -35,6 +38,15 @@ interface ProjectOption {
 interface ExistingDocument {
   id: string;
   title: string;
+  type: string;
+}
+
+/** A document row as GET /api/documents returns it. `title` and `name` are both
+ *  optional because the mapper below already falls back from one to the other. */
+interface ExistingDocumentPayload {
+  id: string;
+  title?: string;
+  name?: string;
   type: string;
 }
 
@@ -150,7 +162,7 @@ export default function NewDocumentModal({
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
           setEntities(
-            json.data.map((e: any) => ({
+            json.data.map((e: EntityOption) => ({
               id: e.id,
               name: e.name,
               brandKit: e.brandKit,
@@ -171,7 +183,7 @@ export default function NewDocumentModal({
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
           setProjects(
-            json.data.map((p: any) => ({
+            json.data.map((p: ProjectOption) => ({
               id: p.id,
               name: p.name,
             })),
@@ -208,17 +220,17 @@ export default function NewDocumentModal({
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
           setExistingDocs(
-            json.data.map((d: any) => ({
+            json.data.map((d: ExistingDocumentPayload) => ({
               id: d.id,
-              title: d.title || d.name,
+              title: d.title || d.name || '',
               type: d.type,
             })),
           );
         } else if (Array.isArray(json)) {
           setExistingDocs(
-            json.map((d: any) => ({
+            json.map((d: ExistingDocumentPayload) => ({
               id: d.id,
-              title: d.title || d.name,
+              title: d.title || d.name || '',
               type: d.type,
             })),
           );
@@ -304,7 +316,7 @@ export default function NewDocumentModal({
     try {
       const brandKit = resolveBrandKit();
 
-      const body: Record<string, any> = {
+      const body: Record<string, unknown> = {
         title: title.trim(),
         entityId,
         projectId: projectId || undefined,

@@ -6,19 +6,26 @@ import { useState, useRef, useEffect } from 'react';
 // Types
 // ---------------------------------------------------------------------------
 
+interface ContactFilters {
+  tier?: string;
+  cadenceStatus?: string;
+  scoreMin?: number;
+  scoreMax?: number;
+  tags?: string[];
+  lastTouch?: string;
+  hasCommitments?: string;
+}
+
 interface ContactFilterPanelProps {
   isOpen: boolean;
-  filters: {
-    tier?: string;
-    cadenceStatus?: string;
-    scoreMin?: number;
-    scoreMax?: number;
-    tags?: string[];
-    lastTouch?: string;
-    hasCommitments?: string;
-  };
+  filters: ContactFilters;
   availableTags: string[];
-  onFilterChange: (key: string, value: any) => void;
+  /** Key/value of one filter. Naming the value union means a call site that
+   *  sends a number for `tags` no longer type-checks; `any` allowed it. */
+  onFilterChange: <K extends keyof ContactFilters>(
+    key: K,
+    value: ContactFilters[K],
+  ) => void;
   onClear: () => void;
   onApply: () => void;
 }

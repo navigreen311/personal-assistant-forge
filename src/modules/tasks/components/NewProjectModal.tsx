@@ -9,7 +9,9 @@ import { useState, useEffect } from 'react';
 interface NewProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated?: (project: any) => void;
+  /** The created record straight from the API response, unvalidated -- so
+   *  `unknown` rather than `any`. Callers must narrow before using it. */
+  onCreated?: (project: unknown) => void;
   preSelectedTemplate?: string;
 }
 

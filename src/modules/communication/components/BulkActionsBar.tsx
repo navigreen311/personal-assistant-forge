@@ -10,8 +10,17 @@ interface BulkActionsBarProps {
   selectedCount: number;
   selectedIds: string[];
   entities: Array<{ id: string; name: string }>;
-  onAction: (action: string, data?: any) => void;
+  /** Payload of a bulk action. Every call site in this file sends
+   *  `contactIds` plus at most one of the three optional fields. */
+  onAction: (action: string, data?: BulkActionPayload) => void;
   onClearSelection: () => void;
+}
+
+interface BulkActionPayload {
+  contactIds: string[];
+  tag?: string;
+  cadence?: string;
+  entityId?: string;
 }
 
 type ActiveDropdown = 'tag' | 'cadence' | 'entity' | null;

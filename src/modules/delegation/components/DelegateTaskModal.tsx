@@ -28,6 +28,23 @@ interface EntityOption {
   name: string;
 }
 
+/** A task row from GET /api/tasks. The mapper below already falls back from
+ *  `title` to `name`, so both are optional. */
+interface TaskSearchResult {
+  id: string;
+  title?: string;
+  name?: string;
+}
+
+/** A contact row from GET /api/contacts. Same story: `name` or the two
+ *  name parts, whichever the endpoint supplies. */
+interface ContactSearchResult {
+  id: string;
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+}
+
 type Priority = 'P0' | 'P1' | 'P2';
 
 interface FormErrors {
@@ -91,9 +108,9 @@ export default function DelegateTaskModal({
       .then((res) => res.json())
       .then((json) => {
         if (json.success && Array.isArray(json.data)) {
-          setEntities(json.data.map((e: any) => ({ id: e.id, name: e.name })));
+          setEntities(json.data.map((e: EntityOption) => ({ id: e.id, name: e.name })));
         } else if (Array.isArray(json)) {
-          setEntities(json.map((e: any) => ({ id: e.id, name: e.name })));
+          setEntities(json.map((e: EntityOption) => ({ id: e.id, name: e.name })));
         }
       })
       .catch(() => {})
@@ -113,7 +130,7 @@ export default function DelegateTaskModal({
         .then((res) => res.json())
         .then((json) => {
           const data = json.success && Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-          setTaskResults(data.map((t: any) => ({ id: t.id, title: t.title || t.name })));
+          setTaskResults(data.map((t: TaskSearchResult) => ({ id: t.id, title: t.title || t.name || '' })));
           setShowTaskDropdown(true);
         })
         .catch(() => { setTaskResults([]); setShowTaskDropdown(true); })
@@ -135,7 +152,7 @@ export default function DelegateTaskModal({
         .then((res) => res.json())
         .then((json) => {
           const data = json.success && Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-          const contacts: ContactOption[] = data.map((c: any) => ({
+          const contacts: ContactOption[] = data.map((c: ContactSearchResult) => ({
             id: c.id,
             name: c.name || `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim(),
             type: 'contact' as const,
@@ -183,7 +200,7 @@ export default function DelegateTaskModal({
     setIsSubmitting(true);
     setSubmitError('');
     try {
-      const body: Record<string, any> = {
+      const body: Record<string, unknown> = {
         taskId: selectedTask?.id ?? undefined,
         newTaskTitle: isCreatingNewTask ? newTaskTitle.trim() : undefined,
         delegatedTo: selectedAssignee!.id,
