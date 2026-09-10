@@ -81,6 +81,76 @@ setupTestDatabase();
 // The sweep invokes ~500 route handlers twice over against a real Postgres.
 jest.setTimeout(300_000);
 
+/**
+ * Import a route module, catching any repeating timer it arms at load.
+ *
+ * A FINDING, not a convenience. `src/modules/shadow/safety/auth-manager.ts`
+ * ends with
+ *
+ *     if (typeof setInterval !== 'undefined') setInterval(cleanExpiredCodes, 60_000);
+ *
+ * at module scope, un-`unref`ed and with nothing holding the handle. Importing
+ * `/api/shadow/auth/send-sms-code` therefore arms a 60-second repeating timer
+ * that can never be stopped — the reference is not saved anywhere. In a
+ * long-lived server that is merely untidy; in any process that wants to EXIT it
+ * is fatal, and it is the second reason the CI database job was cancelled at
+ * its fifteen-minute ceiling with every test already passed.
+ *
+ * The product fix is one word (`.unref()`), and it is under `src/`, which this
+ * package may not touch. So the sweep records what its imports arm and clears
+ * it afterwards. `setInterval` is patched only around the `import` itself, so
+ * nothing a handler does at request time is affected, and jest's own timers are
+ * never in scope.
+ */
+const timersArmedAtImport: NodeJS.Timeout[] = [];
+
+async function importRouteModule(file: string): Promise<Record<string, unknown>> {
+  const realSetInterval = globalThis.setInterval;
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const handle = realSetInterval(...args);
+    timersArmedAtImport.push(handle);
+    return handle;
+  }) as typeof setInterval;
+
+  try {
+    return (await import(file)) as Record<string, unknown>;
+  } finally {
+    globalThis.setInterval = realSetInterval;
+  }
+}
+
+/**
+ * Close what calling five hundred route handlers opens.
+ *
+ * This is not tidiness. Every other file here touches a handful of routes; this
+ * one touches all of them, so it is the only file that opens the rate limiter's
+ * Redis client AND the three BullMQ queues in the same process. Each is a lazy
+ * module-level singleton that nothing in the sweep owns, and any one of them
+ * left open holds the Node event loop after the last assertion.
+ *
+ * Measured, and the reason this block exists: with them open, `npm run test:db`
+ * finished its 849 tests in 374 seconds and then sat there. On CI that is not a
+ * warning — the job has `timeout-minutes: 15`, so the run was CANCELLED eight
+ * minutes after the tests had all passed, and the PR showed a cancelled job
+ * rather than a test result. Nothing here can use `--forceExit`; the jest
+ * configs are not this package's to edit, and a suite that needs to be killed
+ * to exit is hiding whatever else it leaked.
+ */
+afterAll(async () => {
+  for (const handle of timersArmedAtImport) clearInterval(handle);
+  timersArmedAtImport.length = 0;
+
+  const { _closeRedis } = await import('@/shared/middleware/rate-limit');
+  await _closeRedis();
+
+  const queues = await Promise.all([
+    import('@/lib/queue/workflow-queue').then((m) => m.getQueue()),
+    import('@/lib/queue/jobs/registry').then((m) => m.getJobQueue()),
+    import('@/lib/queue/scheduler').then((m) => m.getSchedulerQueue()),
+  ]);
+  await Promise.all(queues.map((q) => q.close().catch(() => undefined)));
+}, 30_000);
+
 // ---------------------------------------------------------------------------
 // THE FINDINGS, RECORDED
 // ---------------------------------------------------------------------------
@@ -130,7 +200,7 @@ const PREDICTED_UNSCOPED = [
  * The last two are the argument for having a behavioural sweep at all. Neither
  * appears in the audit's list of five. `PUT /api/shadow/playbooks/[id]` is in
  * the structural set below but is invisible to a reader of that set, because
- * twenty-five other members of it are harmless. And `POST
+ * twenty-six other members of it are harmless. And `POST
  * /api/shadow/receipts/[id]/rollback` is NOT in the structural set: it reads
  * `session.userId` and passes it onward, which is exactly what a correctly
  * user-scoped route does — it simply never checks the receipt. No static rule
@@ -407,22 +477,34 @@ describe('T-035 — the route inventory is read off the filesystem', () => {
   });
 
   it('strips comments before classifying, or every route looks correct', () => {
-    // The instrument checking itself, on a real example.
+    // The instrument checking itself, on two real examples and one synthetic
+    // one — and every part of this test has already failed for real.
     //
-    // `src/app/api/travel/visa/route.ts` contains the line "Deliberately
-    // `withAuth` and not `withEntityScope`" — in a comment, explaining why it is
-    // NOT scoped. A classifier reading raw source calls it scoped on the
-    // strength of the sentence saying it is not, and this codebase documents
-    // the tenancy pattern inside route files often enough that the same trick
-    // would clear three routes silently. Two of them are in the unscoped set
-    // below; if this ever passes without the strip, that set shrinks by three
-    // and nobody notices.
-    const file = routeFile('src/app/api/travel/visa/route.ts');
-    const raw = readFileSync(file, 'utf8');
+    // BLOCK COMMENT. `src/app/api/travel/visa/route.ts` says "Deliberately
+    // `withAuth` and not `withEntityScope`" in its header, explaining why it is
+    // NOT scoped. A classifier reading raw source clears it on the strength of
+    // the sentence saying it is not.
+    const visa = routeFile('src/app/api/travel/visa/route.ts');
+    expect(readFileSync(visa, 'utf8')).toContain('withEntityScope');
+    expect(classify(visa).scopes).toBe(false);
 
-    expect(raw).toContain('withEntityScope');
-    expect(stripComments(raw)).not.toContain('withEntityScope');
-    expect(classify(file).scopes).toBe(false);
+    // LINE COMMENT. `src/app/api/safety/throttle/route.ts` says
+    // "`withAuditedRole` is a separate helper from `withAuditedRoleEntityScope`"
+    // on a `//` line. This one is not hypothetical: the first version of
+    // stripComments split on '\n' without normalising CRLF, so on a Windows
+    // checkout every line kept a trailing '\r', `.` does not match '\r', and
+    // the line-comment strip matched nothing at all. This route was cleared by
+    // that comment, the recorded set below was one route short, and the suite
+    // was green locally and red in CI — with CI right.
+    const throttle = routeFile('src/app/api/safety/throttle/route.ts');
+    expect(readFileSync(throttle, 'utf8')).toContain('withAuditedRoleEntityScope');
+    expect(classify(throttle).scopes).toBe(false);
+
+    // And the mechanism directly, so the reading cannot depend on the checkout:
+    // the same source with either line ending must strip identically.
+    const sample = '// withEntityScope in a comment\nconst x = 1;\n';
+    expect(stripComments(sample)).not.toContain('withEntityScope');
+    expect(stripComments(sample.replace(/\n/g, '\r\n'))).not.toContain('withEntityScope');
   });
 
   it('counts P-10 audited wrappers as scoping, so audited routes are not accused', () => {
@@ -451,7 +533,7 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     }
   });
 
-  it('reports the whole set, which is larger than five', () => {
+  it('reports the whole set — twenty-seven routes, not five', () => {
     const unscoped = unscopedAuthenticatedRoutes();
     const patterns = unscoped.map((r) => r.urlPattern);
 
@@ -473,6 +555,7 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/safety/email-headers',
       '/api/safety/fraud-check',
       '/api/safety/injection-check',
+      '/api/safety/throttle',
       '/api/settings/api-keys',
       '/api/shadow/config/voice-personas',
       '/api/shadow/config/voice-personas/[id]/preview',
@@ -487,9 +570,10 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/travel/visa',
     ]);
 
-    // Ten of the twenty-six are under src/modules/shadow/, the directory no
-    // tenancy package owned. That is not a coincidence and it is the finding
-    // behind the finding.
+    // Eight of the twenty-seven are under /api/shadow/, backed by
+    // src/modules/shadow/ — the directory no tenancy package owned. That is not
+    // a coincidence, and it is the finding behind the finding: the five routes
+    // that actually leak are all in the same eight.
     expect(patterns.filter((p) => p.startsWith('/api/shadow/')).length).toBe(8);
   });
 });
@@ -538,7 +622,7 @@ async function sweep(): Promise<SweepResult> {
     // the credentials provider directly.
     if (route.isNextAuthCatchAll) continue;
 
-    const mod = (await import(route.file)) as Record<string, unknown>;
+    const mod = await importRouteModule(route.file);
     const ranked = candidateRowIds(route, rowIds);
 
     for (const method of HTTP_METHODS) {
@@ -734,7 +818,7 @@ describe('T-035 — the leaks are writes as well as reads, where the route allow
     );
 
     for (const route of routes) {
-      const mod = (await import(route.file)) as Record<string, unknown>;
+      const mod = await importRouteModule(route.file);
       for (const method of HTTP_METHODS) {
         if (method === 'GET') continue;
         const fn = mod[method] as Handler | undefined;

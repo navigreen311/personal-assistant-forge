@@ -116,7 +116,22 @@ export interface RouteInfo {
  * a correct tokenizer.
  */
 export function stripComments(source: string): string {
-  const withoutBlocks = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Normalise line endings FIRST, and this is not cosmetic.
+  //
+  // On a Windows checkout with core.autocrlf, every file here ends its lines
+  // with CRLF. `split('\n')` then leaves a trailing '\r' on each line, and
+  // JavaScript's `.` does not match '\r' — so `/\/\/.*$/` cannot reach the end
+  // of a CRLF line and matches NOTHING. The line-comment strip silently became
+  // a no-op on Windows and kept working on Linux.
+  //
+  // That is worth spelling out because of what it did rather than what it is:
+  // the classifier read prose, `src/app/api/safety/throttle/route.ts` was
+  // cleared by a COMMENT reading "`withAuditedRole` is a separate helper from
+  // `withAuditedRoleEntityScope`", and the recorded inventory was one route
+  // short — locally green, red in CI, with the CI answer being the correct one.
+  // An instrument whose reading depends on the checkout is not an instrument.
+  const normalised = source.replace(/\r\n?/g, '\n');
+  const withoutBlocks = normalised.replace(/\/\*[\s\S]*?\*\//g, '');
   return withoutBlocks
     .split('\n')
     .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'))
