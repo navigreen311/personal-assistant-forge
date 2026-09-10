@@ -4,25 +4,112 @@
 // rate limiting, and voicemail generation.
 // ============================================================================
 
+// P-33: the three `trustedDevices` Maps are now the `ShadowTrustedDevice`
+// table, so these modules reach Prisma for the first time.
+//
+// The delegate below is a fake table rather than `jest.fn()` stubs. Every
+// trusted-device test in this file is a seed-then-exercise round trip, and
+// stubbing `findFirst` to a fixed value would have replaced the thing under
+// test -- "does an unverified device authenticate?" has to be answered by the
+// query's own filter, not by what a stub was told to return. So the fake
+// implements the three predicates the code actually uses (`isActive`,
+// `phoneNumber` exact / not-null, `userId`) and nothing else.
+//
+// This proves the LOOKUP. It cannot prove persistence, which is proved against
+// real Postgres across a `jest.resetModules()` restart in
+// `tests/db/store-persistence.test.ts`.
+interface FakeDeviceRow {
+  id: string;
+  userId: string;
+  deviceType: string;
+  phoneNumber: string | null;
+  name: string;
+  isActive: boolean;
+  verifiedAt: Date;
+  lastUsedAt: Date | null;
+}
+
+interface FakeDeviceWhere {
+  isActive?: boolean;
+  userId?: string;
+  phoneNumber?: string | { not: null };
+}
+
+const fakeDeviceRows: FakeDeviceRow[] = [];
+
+function matchesDevice(row: FakeDeviceRow, where: FakeDeviceWhere = {}): boolean {
+  if (where.isActive !== undefined && row.isActive !== where.isActive) return false;
+  if (where.userId !== undefined && row.userId !== where.userId) return false;
+  if (where.phoneNumber !== undefined) {
+    if (typeof where.phoneNumber === 'string') {
+      if (row.phoneNumber !== where.phoneNumber) return false;
+    } else if (row.phoneNumber === null) {
+      return false;
+    }
+  }
+  return true;
+}
+
+jest.mock('@/lib/db', () => ({
+  prisma: {
+    shadowTrustedDevice: {
+      findFirst: jest.fn(async ({ where, orderBy }: { where?: FakeDeviceWhere; orderBy?: { verifiedAt: 'asc' | 'desc' } } = {}) => {
+        const hits = fakeDeviceRows.filter((row) => matchesDevice(row, where));
+        if (orderBy?.verifiedAt) {
+          hits.sort((a, b) =>
+            orderBy.verifiedAt === 'asc'
+              ? a.verifiedAt.getTime() - b.verifiedAt.getTime()
+              : b.verifiedAt.getTime() - a.verifiedAt.getTime()
+          );
+        }
+        return hits[0] ? { ...hits[0] } : null;
+      }),
+      findMany: jest.fn(async ({ where }: { where?: FakeDeviceWhere } = {}) =>
+        fakeDeviceRows.filter((row) => matchesDevice(row, where)).map((row) => ({ ...row }))
+      ),
+      create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const row: FakeDeviceRow = {
+          id: `dev_${fakeDeviceRows.length + 1}`,
+          userId: data.userId as string,
+          deviceType: data.deviceType as string,
+          phoneNumber: (data.phoneNumber as string | undefined) ?? null,
+          name: data.name as string,
+          isActive: (data.isActive as boolean | undefined) ?? true,
+          verifiedAt: new Date(Date.now() + fakeDeviceRows.length),
+          lastUsedAt: null,
+        };
+        fakeDeviceRows.push(row);
+        return { ...row };
+      }),
+      deleteMany: jest.fn(async () => {
+        const count = fakeDeviceRows.length;
+        fakeDeviceRows.length = 0;
+        return { count };
+      }),
+    },
+  },
+}));
+
 import { TwiMLBuilder, createTwiMLBuilder } from '@/modules/shadow/interfaces/twiml-builder';
 import {
   PhoneInboundHandler,
   _resetStores as resetInboundStores,
-  _addTrustedDevice as addInboundTrustedDevice,
   _getSession,
 } from '@/modules/shadow/interfaces/phone-inbound';
 import {
   PhoneOutboundHandler,
   _resetStores as resetOutboundStores,
-  _addTrustedDevice as addOutboundTrustedDevice,
   _addCallLogEntry,
 } from '@/modules/shadow/interfaces/phone-outbound';
 import {
   ShadowSMS,
   _resetStores as resetSmsStores,
-  _addTrustedDevice as addSmsTrustedDevice,
   _getSmsLog,
 } from '@/modules/shadow/interfaces/sms';
+import {
+  _addTrustedPhoneDevice,
+  _resetTrustedPhoneDevices,
+} from '@/modules/shadow/interfaces/trusted-devices';
 import type { TrustedDevice, TwilioConfig } from '@/modules/shadow/interfaces/phone-types';
 
 // ─── Test Fixtures ─────────────────────────────────────────────────────────
@@ -241,14 +328,15 @@ describe('TwiMLBuilder', () => {
 describe('PhoneInboundHandler', () => {
   let handler: PhoneInboundHandler;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await _resetTrustedPhoneDevices();
     resetInboundStores();
     handler = new PhoneInboundHandler(TEST_CONFIG);
   });
 
   describe('authenticateCaller()', () => {
     it('should authenticate a known trusted device', async () => {
-      addInboundTrustedDevice(createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await handler.authenticateCaller('+15559876543');
 
@@ -267,7 +355,7 @@ describe('PhoneInboundHandler', () => {
     });
 
     it('should require step-up auth for unverified devices', async () => {
-      addInboundTrustedDevice(createTrustedDevice({ verified: false }));
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice({ verified: false }));
 
       const result = await handler.authenticateCaller('+15559876543');
 
@@ -276,7 +364,7 @@ describe('PhoneInboundHandler', () => {
     });
 
     it('should normalize phone numbers for matching', async () => {
-      addInboundTrustedDevice(createTrustedDevice({ phoneNumber: '+15559876543' }));
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice({ phoneNumber: '+15559876543' }));
 
       // Test without + prefix
       const result = await handler.authenticateCaller('15559876543');
@@ -290,7 +378,7 @@ describe('PhoneInboundHandler', () => {
 
   describe('handleIncomingCall()', () => {
     it('should greet authenticated callers by name', async () => {
-      addInboundTrustedDevice(createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const twiml = await handler.handleIncomingCall({
         callSid: 'CA_test_1',
@@ -319,7 +407,7 @@ describe('PhoneInboundHandler', () => {
     });
 
     it('should create a session for authenticated callers', async () => {
-      addInboundTrustedDevice(createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       await handler.handleIncomingCall({
         callSid: 'CA_test_3',
@@ -335,7 +423,7 @@ describe('PhoneInboundHandler', () => {
     });
 
     it('should return valid TwiML XML structure', async () => {
-      addInboundTrustedDevice(createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const twiml = await handler.handleIncomingCall({
         callSid: 'CA_test_4',
@@ -351,7 +439,7 @@ describe('PhoneInboundHandler', () => {
 
   describe('handleSpeechInput()', () => {
     beforeEach(async () => {
-      addInboundTrustedDevice(createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
       await handler.handleIncomingCall({
         callSid: 'CA_speech_test',
         from: '+15559876543',
@@ -434,7 +522,8 @@ describe('PhoneInboundHandler', () => {
 describe('PhoneOutboundHandler', () => {
   let handler: PhoneOutboundHandler;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await _resetTrustedPhoneDevices();
     resetOutboundStores();
   });
 
@@ -683,7 +772,7 @@ describe('PhoneOutboundHandler', () => {
         },
       });
 
-      addOutboundTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       // This will likely be outside the 9-10am window
       try {
@@ -703,7 +792,7 @@ describe('PhoneOutboundHandler', () => {
   describe('handleVoicemail()', () => {
     it('should generate voicemail TwiML under 30 seconds', async () => {
       handler = new PhoneOutboundHandler({ config: TEST_CONFIG });
-      addOutboundTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const twiml = await handler.handleVoicemail({
         callSid: 'CA_vm_1',
@@ -722,7 +811,7 @@ describe('PhoneOutboundHandler', () => {
 
     it('should truncate long voicemail content', async () => {
       handler = new PhoneOutboundHandler({ config: TEST_CONFIG });
-      addOutboundTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const longContent = Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ');
 
@@ -774,7 +863,8 @@ describe('PhoneOutboundHandler', () => {
 describe('ShadowSMS', () => {
   let sms: ShadowSMS;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await _resetTrustedPhoneDevices();
     resetSmsStores();
     // Use config without real Twilio so it falls back to mock mode
     sms = new ShadowSMS({
@@ -787,7 +877,7 @@ describe('ShadowSMS', () => {
 
   describe('sendSMS()', () => {
     it('should send SMS to a user\'s trusted device', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.sendSMS({
         userId: 'user-1',
@@ -799,7 +889,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should append deep link to message body', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       await sms.sendSMS({
         userId: 'user-1',
@@ -847,7 +937,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle status command', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -859,7 +949,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle help command', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -871,7 +961,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle remind command', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -883,7 +973,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle task command', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -895,7 +985,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle callback request', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -907,7 +997,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle conversational yes/confirm', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -919,7 +1009,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle conversational no/cancel', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -931,7 +1021,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should handle free-form messages', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       const result = await sms.handleInboundSMS({
         from: '+15559876543',
@@ -945,7 +1035,7 @@ describe('ShadowSMS', () => {
 
   describe('sendCallSummary()', () => {
     it('should send formatted call summary with action items', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       await sms.sendCallSummary({
         userId: 'user-1',
@@ -969,7 +1059,7 @@ describe('ShadowSMS', () => {
     });
 
     it('should send summary without action items section when empty', async () => {
-      addSmsTrustedDevice('user-1', createTrustedDevice());
+      await _addTrustedPhoneDevice('user-1', createTrustedDevice());
 
       await sms.sendCallSummary({
         userId: 'user-1',

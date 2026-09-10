@@ -7,16 +7,21 @@
 import { TwiMLBuilder } from './twiml-builder';
 import type {
   CallerAuthResult,
-  TrustedDevice,
   PhoneCallSession,
   TranscriptEntry,
   TwilioConfig,
 } from './phone-types';
 import { getTwilioConfig, isTwilioConfigured } from './phone-types';
+import { findActiveDeviceByPhone, findPhoneForUser } from './trusted-devices';
 
 // ─── In-Memory Stores (production: replace with DB/Redis) ──────────────────
+//
+// P-33: `trustedDevices` used to be here as `Map<normalizedPhone,
+// TrustedDevice>`. It is now the `ShadowTrustedDevice` table, read through
+// `./trusted-devices` — see that module's header for why the Map was worse
+// than volatile. The two Maps below are per-call state and are classified in
+// docs/store-classification.md, not silently left behind.
 
-const trustedDevices = new Map<string, TrustedDevice>();
 const activeSessions = new Map<string, PhoneCallSession>();
 const pendingVerificationCodes = new Map<string, { code: string; expiresAt: Date; userId: string }>();
 
@@ -28,15 +33,9 @@ function generateId(prefix: string): string {
 // ─── Store Management (for testing) ────────────────────────────────────────
 
 export function _resetStores(): void {
-  trustedDevices.clear();
   activeSessions.clear();
   pendingVerificationCodes.clear();
   idCounter = 0;
-}
-
-export function _addTrustedDevice(device: TrustedDevice): void {
-  const normalizedPhone = normalizePhoneNumber(device.phoneNumber);
-  trustedDevices.set(normalizedPhone, { ...device, phoneNumber: normalizedPhone });
 }
 
 export function _getSession(callSid: string): PhoneCallSession | undefined {
@@ -160,8 +159,8 @@ export class PhoneInboundHandler {
   async authenticateCaller(phoneNumber: string): Promise<CallerAuthResult> {
     const normalized = normalizePhoneNumber(phoneNumber);
 
-    // Check trusted devices store
-    const device = trustedDevices.get(normalized);
+    // Check the trusted device table
+    const device = await findActiveDeviceByPhone(normalized);
 
     if (device && device.verified) {
       return {
@@ -241,7 +240,7 @@ export class PhoneInboundHandler {
     // If there's a companion SMS (link, follow-up), send it
     if (response.companionSms && session.userId) {
       await this.sendCompanionSMS(
-        this.getPhoneForUser(session.userId),
+        await this.getPhoneForUser(session.userId),
         response.companionSms,
       );
     }
@@ -488,12 +487,7 @@ export class PhoneInboundHandler {
   /**
    * Look up a user's phone number from trusted devices.
    */
-  private getPhoneForUser(userId: string): string {
-    for (const device of trustedDevices.values()) {
-      if (device.userId === userId && device.verified) {
-        return device.phoneNumber;
-      }
-    }
-    return '';
+  private async getPhoneForUser(userId: string): Promise<string> {
+    return findPhoneForUser(userId);
   }
 }

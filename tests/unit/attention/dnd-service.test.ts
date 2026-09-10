@@ -1,9 +1,46 @@
+// P-33: `dndStore` (a module-level Map) is now the `DNDConfig` table. This
+// delegate is a fake table rather than `jest.fn()` stubs so the round trips
+// these tests already perform -- set then read back, enable then check active
+// -- keep testing the service's logic instead of a stub's return value.
+//
+// A Map inside a mock factory proves logic, never persistence. Persistence is
+// proved against real Postgres across a `jest.resetModules()` restart in
+// `tests/db/store-persistence.test.ts`.
+function makeDndConfigDelegate() {
+  const rows = new Map<string, Record<string, unknown>>();
+  return {
+    __rows: rows,
+    findUnique: jest.fn(async ({ where }: { where: { userId: string } }) => {
+      const row = rows.get(where.userId);
+      return row ? { ...row } : null;
+    }),
+    upsert: jest.fn(
+      async ({ where, create, update }: {
+        where: { userId: string };
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => {
+        const existing = rows.get(where.userId);
+        const row = existing ? { ...existing, ...update } : { ...create };
+        rows.set(where.userId, row);
+        return { ...row };
+      }
+    ),
+    deleteMany: jest.fn(async () => {
+      const count = rows.size;
+      rows.clear();
+      return { count };
+    }),
+  };
+}
+
 jest.mock('@/lib/db', () => ({
   prisma: {
     user: {
       findUnique: jest.fn().mockResolvedValue({ id: 'user-1', preferences: {} }),
       update: jest.fn().mockResolvedValue({}),
     },
+    dNDConfig: makeDndConfigDelegate(),
   },
 }));
 
@@ -17,11 +54,11 @@ import {
   setQuietHours,
   addException,
   shouldSuppress,
-  dndStore,
+  _resetDNDStore,
 } from '@/modules/attention/services/dnd-service';
 
-beforeEach(() => {
-  dndStore.clear();
+beforeEach(async () => {
+  await _resetDNDStore();
   jest.clearAllMocks();
 });
 

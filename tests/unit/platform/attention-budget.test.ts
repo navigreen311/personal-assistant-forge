@@ -4,6 +4,35 @@ const _budgetStore = new Map<string, any>();
 jest.mock('@/lib/db', () => {
   return {
     prisma: {
+      // P-33: `dndStore` is now the `DNDConfig` table; a fake table keeps the
+      // set -> read-back round trips in this file testing the service rather
+      // than a stub. Real persistence is proved in tests/db/store-persistence.
+      dNDConfig: (() => {
+        const rows = new Map<string, Record<string, unknown>>();
+        return {
+          findUnique: jest.fn(async ({ where }: { where: { userId: string } }) => {
+            const row = rows.get(where.userId);
+            return row ? { ...row } : null;
+          }),
+          upsert: jest.fn(
+            async ({ where, create, update }: {
+              where: { userId: string };
+              create: Record<string, unknown>;
+              update: Record<string, unknown>;
+            }) => {
+              const existing = rows.get(where.userId);
+              const row = existing ? { ...existing, ...update } : { ...create };
+              rows.set(where.userId, row);
+              return { ...row };
+            }
+          ),
+          deleteMany: jest.fn(async () => {
+            const count = rows.size;
+            rows.clear();
+            return { count };
+          }),
+        };
+      })(),
       attentionBudget: {
         findUnique: jest.fn().mockImplementation((args: { where: Record<string, unknown> }) => {
           const compound = args.where.userId_date as { userId: string; date: Date } | undefined;
@@ -53,7 +82,7 @@ jest.mock('@/lib/db', () => {
 
 
 import { getBudget, consumeBudget, setBudget, resetBudget } from '@/modules/attention/services/attention-budget-service';
-import { isDNDActive, checkVIPBreakthrough, setDND, dndStore } from '@/modules/attention/services/dnd-service';
+import { isDNDActive, checkVIPBreakthrough, setDND, _resetDNDStore } from '@/modules/attention/services/dnd-service';
 import { routeNotification, notificationStore } from '@/modules/attention/services/priority-router';
 
 jest.mock('@/lib/ai', () => ({
@@ -81,9 +110,9 @@ jest.mock('@/modules/attention/services/attention-budget-service', () => {
   };
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   _budgetStore.clear();
-  dndStore.clear();
+  await _resetDNDStore();
   notificationStore.clear();
   jest.clearAllMocks();
 });

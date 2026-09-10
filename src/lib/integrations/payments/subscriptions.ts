@@ -135,42 +135,76 @@ export const PLANS: Plan[] = [
   },
 ];
 
-// --- In-Memory Usage Store ---
+// --- Plan Usage Meters (durable) ---
 //
-// P-07 (T-018) INVESTIGATED THIS AND ESCALATED IT RATHER THAN CLOSING IT.
-// Recording the finding here so the next person does not repeat the analysis.
+// P-07 (T-018) INVESTIGATED THIS AND ESCALATED IT RATHER THAN CLOSING IT, and
+// left the recipe in place of the store. P-33 followed it. The original comment
+// claimed usage lived in memory "because there is no dedicated UsageMeter
+// Prisma model"; P-07 showed that premise was wrong -- `UsageRecord` is an
+// append-only per-entity usage ledger and `src/engines/cost/usage-metering.ts`
+// already stores arbitrary metric types in it via `model` + `metadata`. The
+// blocker P-07 named was not the schema but `getUsageSummary`'s SYNCHRONOUS
+// signature, and the payments test's Prisma mock, both of which are in scope
+// here.
 //
-// The comment this replaces said usage is in memory "because there is no
-// dedicated UsageMeter Prisma model". That premise is wrong in one direction and
-// the fix is blocked in another:
+// So a plan meter is now a SUM over that ledger inside the subscription's
+// current period, written under a reserved `module` namespace so it cannot
+// collide with the cost engine's rows in the same table.
 //
-//  1. A durable model already exists and needs no migration. `UsageRecord`
-//     (prisma/schema.prisma) is an append-only per-entity usage ledger, and
-//     `src/engines/cost/usage-metering.ts` already stores arbitrary metric types
-//     in it via `model` + `metadata`. A plan meter is a SUM over that ledger
-//     within the subscription's current period. So the schema is not the
-//     obstacle, and nothing here needs the frozen schema changed.
+// Two things improve on the way past, beyond surviving a restart:
 //
-//  2. What blocks it is the shape of `getUsageSummary` below, which is
-//     SYNCHRONOUS. Reading a ledger makes it async, and `recordUsage` and
-//     `isWithinLimits` would each acquire a `prisma.usageRecord` call. The only
-//     importer of this module in the entire repository is
-//     `tests/unit/payments/subscriptions.test.ts`, whose Prisma mock declares a
-//     `subscription` delegate and nothing else, and which awaits none of the
-//     summary calls. Persisting usage therefore fails three currently-green
-//     tests in a file outside P-07's allowed file list.
-//
-//  3. Worth knowing before scheduling it: that same grep says NOTHING in `src/`
-//     imports this module. `/api/billing/usage` meters through
-//     `@/engines/cost/usage-metering`, which is already durable. So the volatile
-//     store is unreachable from any route today -- the defect is real but not
-//     currently live, which is why P-07 judged it wrong to break the board for.
-//
-// Closing it is one small commit for whoever owns the payments tests: make
-// `getUsageSummary` async, sum `UsageRecord` rows between
-// `sub.currentPeriodStart` and `sub.currentPeriodEnd` under a reserved `module`
-// namespace, and add the `usageRecord` delegate to that test's mock.
-const usageStore = new Map<string, UsageMeter[]>();
+//   * The old code reset a meter only when `recordUsage` happened to notice
+//     `now > meter.periodEnd`. A metric nobody recorded during a new period
+//     kept the PREVIOUS period's count, so `isWithinLimits` could refuse a
+//     customer who had spent nothing this month. Summing rows inside
+//     [currentPeriodStart, currentPeriodEnd] makes the period boundary
+//     structural -- there is nothing to remember to reset.
+//   * The counter no longer resets to zero on deploy, which was the direction
+//     that costs money: every restart handed every entity its full plan
+//     allowance again.
+
+/**
+ * Reserved `UsageRecord.module` value for plan-limit meters.
+ *
+ * `engines/cost/usage-metering.ts` writes rows to the same table with
+ * `module = <caller-supplied source>`; this namespace keeps the two ledgers
+ * from summing into each other.
+ */
+const PLAN_METER_MODULE = 'plan-meter';
+
+/**
+ * Fold this entity's plan-meter rows for the current billing period into
+ * `UsageMeter[]`.
+ *
+ * `findMany` + fold rather than `groupBy` deliberately: it is the shape
+ * `engines/cost/usage-metering.ts` already uses against this table.
+ */
+async function loadMeters(sub: Subscription): Promise<UsageMeter[]> {
+  const plan = getPlan(sub.planId);
+  const limits = (plan?.limits ?? {}) as Record<string, number>;
+
+  const rows = await prisma.usageRecord.findMany({
+    where: {
+      entityId: sub.entityId,
+      module: PLAN_METER_MODULE,
+      createdAt: { gte: sub.currentPeriodStart, lte: sub.currentPeriodEnd },
+    },
+  });
+
+  const byMetric = new Map<string, number>();
+  for (const row of rows) {
+    byMetric.set(row.model, (byMetric.get(row.model) ?? 0) + row.inputTokens);
+  }
+
+  return Array.from(byMetric.entries()).map(([metric, count]) => ({
+    entityId: sub.entityId,
+    metric,
+    count,
+    limit: limits[metric] ?? 0,
+    periodStart: sub.currentPeriodStart,
+    periodEnd: sub.currentPeriodEnd,
+  }));
+}
 
 // --- DB <-> Local Mapping Helpers ---
 
@@ -201,10 +235,12 @@ function _normalizeStatusForDb(status: string): string {
   return status === 'cancelled' ? 'canceled' : status;
 }
 
-/** Exposed for testing: clears subscriptions from DB (test env only) and in-memory usage. */
+/** Exposed for testing: clears subscriptions and plan-meter usage rows (test env only). */
 export async function _resetStore(): Promise<void> {
   await prisma.subscription.deleteMany();
-  usageStore.clear();
+  // Only this module's namespace -- the cost engine's rows live in the same
+  // table and are not ours to delete.
+  await prisma.usageRecord.deleteMany({ where: { module: PLAN_METER_MODULE } });
 }
 
 // --- Plan Lookup ---
@@ -383,14 +419,14 @@ export async function isWithinLimits(entityId: string, metric: string): Promise<
   const limit = (plan.limits as Record<string, number>)[metric];
   if (limit === undefined) return true; // unknown metric, allow
 
-  const meters = usageStore.get(entityId) ?? [];
+  const meters = await loadMeters(sub);
   const meter = meters.find((m) => m.metric === metric);
   if (!meter) return true; // no usage recorded yet
 
   return meter.count < limit;
 }
 
-// --- Usage Metering (in-memory) ---
+// --- Usage Metering (UsageRecord ledger) ---
 
 export async function recordUsage(params: {
   entityId: string;
@@ -407,39 +443,43 @@ export async function recordUsage(params: {
   const plan = getPlan(sub.planId);
   const limit = plan ? (plan.limits as Record<string, number>)[metric] ?? 0 : 0;
 
-  let meters = usageStore.get(entityId);
-  if (!meters) {
-    meters = [];
-    usageStore.set(entityId, meters);
-  }
+  // Append to the ledger. `inputTokens` carries the count because it is the
+  // table's Int quantity column; `metadata` keeps the plan-meter reading
+  // self-describing for anyone reading rows directly.
+  await prisma.usageRecord.create({
+    data: {
+      entityId,
+      model: metric,
+      inputTokens: count,
+      outputTokens: 0,
+      cost: 0,
+      module: PLAN_METER_MODULE,
+      metadata: { metric, count },
+    },
+  });
 
-  let meter = meters.find((m) => m.metric === metric);
-  if (!meter) {
-    meter = {
+  const meters = await loadMeters(sub);
+  return (
+    meters.find((m) => m.metric === metric) ?? {
       entityId,
       metric,
-      count: 0,
+      count,
       limit,
       periodStart: sub.currentPeriodStart,
       periodEnd: sub.currentPeriodEnd,
-    };
-    meters.push(meter);
-  }
-
-  // Reset if current period has expired
-  const now = new Date();
-  if (now > meter.periodEnd) {
-    meter.count = 0;
-    meter.periodStart = sub.currentPeriodStart;
-    meter.periodEnd = sub.currentPeriodEnd;
-  }
-
-  meter.count += count;
-  meter.limit = limit;
-
-  return meter;
+    }
+  );
 }
 
-export function getUsageSummary(entityId: string): UsageMeter[] {
-  return usageStore.get(entityId) ?? [];
+/**
+ * Plan meters for this entity's CURRENT billing period.
+ *
+ * Async since P-33: it reads the `UsageRecord` ledger rather than a Map, which
+ * is the whole point -- a synchronous answer could only ever come from process
+ * memory.
+ */
+export async function getUsageSummary(entityId: string): Promise<UsageMeter[]> {
+  const sub = await getSubscription(entityId);
+  if (!sub) return [];
+  return loadMeters(sub);
 }

@@ -15,17 +15,78 @@ import {
 
 // --- Prisma Mock ---
 
-jest.mock('@/lib/db', () => ({
-  prisma: {
-    subscription: {
-      create: jest.fn(),
-      findFirst: jest.fn(),
-      findMany: jest.fn(),
-      update: jest.fn(),
-      deleteMany: jest.fn(),
+// P-33: `usageStore` (a module-level Map) is now the `UsageRecord` table, so
+// this mock declares the `usageRecord` delegate P-07's note said it lacked.
+//
+// The delegate is a fake table rather than bare `jest.fn()` stubs: the two
+// usage tests below were a real record -> read-back round trip against the Map,
+// and stubbing `findMany` to a fixed array would have turned them into
+// assertions about the stub. `rows` gives them the same round trip, and the
+// added assertion on the `create` call pins the row that is actually written.
+//
+// A Map inside a mock factory cannot prove persistence -- that is the exact
+// thing being fixed. Persistence is proved against real Postgres, across a
+// `jest.resetModules()` restart, in `tests/db/store-persistence.test.ts`.
+jest.mock('@/lib/db', () => {
+  const usageRows: Array<{
+    entityId: string;
+    model: string;
+    module: string;
+    inputTokens: number;
+    createdAt: Date;
+  }> = [];
+  return {
+    prisma: {
+      subscription: {
+        create: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+        deleteMany: jest.fn(),
+      },
+      usageRecord: {
+        __rows: usageRows,
+        create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const row = {
+            entityId: data.entityId as string,
+            model: data.model as string,
+            module: data.module as string,
+            inputTokens: data.inputTokens as number,
+            createdAt: new Date(),
+          };
+          usageRows.push(row);
+          return row;
+        }),
+        findMany: jest.fn(
+          async ({ where }: {
+            where: {
+              entityId: string;
+              module: string;
+              createdAt: { gte: Date; lte: Date };
+            };
+          }) =>
+            usageRows.filter(
+              (r) =>
+                r.entityId === where.entityId &&
+                r.module === where.module &&
+                r.createdAt >= where.createdAt.gte &&
+                r.createdAt <= where.createdAt.lte
+            )
+        ),
+        deleteMany: jest.fn(async ({ where }: { where?: { module?: string } } = {}) => {
+          let count = 0;
+          for (let i = usageRows.length - 1; i >= 0; i--) {
+            if (!where?.module || usageRows[i].module === where.module) {
+              usageRows.splice(i, 1);
+              count++;
+            }
+          }
+          return { count };
+        }),
+      },
     },
-  },
-}));
+  };
+});
 
 import { prisma } from '@/lib/db';
 
@@ -35,6 +96,12 @@ const mockPrisma = prisma as unknown as {
     findFirst: jest.Mock;
     findMany: jest.Mock;
     update: jest.Mock;
+    deleteMany: jest.Mock;
+  };
+  usageRecord: {
+    __rows: unknown[];
+    create: jest.Mock;
+    findMany: jest.Mock;
     deleteMany: jest.Mock;
   };
 };
@@ -65,6 +132,9 @@ function makeDbSubscription(overrides: Record<string, unknown> = {}) {
 describe('Subscriptions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // The fake usageRecord table is module-scoped in the mock factory; empty it
+    // between tests the way a real per-test database truncation would.
+    mockPrisma.usageRecord.__rows.length = 0;
     mockPrisma.subscription.deleteMany.mockResolvedValue({ count: 0 });
   });
 
@@ -377,11 +447,48 @@ describe('Subscriptions', () => {
       mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
 
       await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 5 });
-      const summary = getUsageSummary('entity-1');
+      const summary = await getUsageSummary('entity-1');
 
       expect(summary).toHaveLength(1);
       expect(summary[0].count).toBe(5);
       expect(summary[0].metric).toBe('apiCallsPerMonth');
+
+      // P-33: and the count came from a ROW, under the reserved namespace that
+      // keeps plan meters out of the cost engine's rows in the same table.
+      expect(mockPrisma.usageRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          entityId: 'entity-1',
+          model: 'apiCallsPerMonth',
+          module: 'plan-meter',
+          inputTokens: 5,
+        }),
+      });
+    });
+
+    it('should sum repeated records for the same metric within the period', async () => {
+      const dbRecord = makeDbSubscription();
+      mockPrisma.subscription.findFirst.mockResolvedValue(dbRecord);
+
+      await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 5 });
+      await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 3 });
+      const summary = await getUsageSummary('entity-1');
+
+      expect(summary).toHaveLength(1);
+      expect(summary[0].count).toBe(8);
+    });
+
+    it('should not leak another entity usage into a summary', async () => {
+      mockPrisma.subscription.findFirst.mockResolvedValue(makeDbSubscription());
+      await recordUsage({ entityId: 'entity-1', metric: 'apiCallsPerMonth', count: 5 });
+
+      mockPrisma.subscription.findFirst.mockResolvedValue(
+        makeDbSubscription({ id: 'sub-2', entityId: 'entity-2' })
+      );
+      await recordUsage({ entityId: 'entity-2', metric: 'apiCallsPerMonth', count: 2 });
+
+      const summary = await getUsageSummary('entity-2');
+      expect(summary).toHaveLength(1);
+      expect(summary[0].count).toBe(2);
     });
 
     it('should throw when entity has no subscription', async () => {
@@ -400,7 +507,13 @@ describe('Subscriptions', () => {
       await _resetStore();
 
       expect(mockPrisma.subscription.deleteMany).toHaveBeenCalledTimes(1);
-      expect(getUsageSummary('any-entity')).toEqual([]);
+      // P-33: only this module's namespace is deleted -- the cost engine writes
+      // rows to the same table and they are not ours to remove.
+      expect(mockPrisma.usageRecord.deleteMany).toHaveBeenCalledWith({
+        where: { module: 'plan-meter' },
+      });
+      mockPrisma.subscription.findFirst.mockResolvedValue(null);
+      expect(await getUsageSummary('any-entity')).toEqual([]);
     });
   });
 
