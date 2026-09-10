@@ -20,6 +20,7 @@ import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import type {
   WorkflowGraph,
   WorkflowNode,
+  WorkflowEdge,
   WorkflowExecution,
   StepExecutionResult,
   ActionNodeConfig,
@@ -185,10 +186,7 @@ async function runWorkflow(
     throw new Error(`Workflow ${workflowId} not found`);
   }
 
-  const graph = workflow.steps as unknown as WorkflowGraph;
-  if (!graph || !graph.nodes || graph.nodes.length === 0) {
-    throw new Error(`Workflow ${workflowId} has no nodes`);
-  }
+  const graph = graphOf(workflow.steps, workflowId);
 
   const row = await prisma.workflowExecutionRecord.create({
     data: {
@@ -205,18 +203,30 @@ async function runWorkflow(
   execution.variables = initialVariables ?? {};
   execution.stepResults = [];
 
+  await driveExecution(execution, graph, entityId, startNodesOf(graph));
+
+  return execution;
+}
+
+/**
+ * Drive a run from a set of nodes to a terminal (or deliberately parked) state.
+ *
+ * P-31. Extracted from `runWorkflow` so that resuming a run out of the queue is
+ * the SAME walk, the same error path, the same halt gate and the same
+ * persistence policy as starting one -- and not a second implementation of all
+ * four. `processWorkflowJob` had a second implementation of all four; it
+ * dispatched no handler, and the divergence went unnoticed for the life of the
+ * repository because both halves wrote plausible-looking rows.
+ */
+async function driveExecution(
+  execution: WorkflowExecution,
+  graph: WorkflowGraph,
+  entityId: string,
+  fromNodes: WorkflowNode[]
+): Promise<void> {
   try {
-    // Find start nodes (no incoming edges)
-    const nodesWithIncoming = new Set(graph.edges.map((e) => e.targetNodeId));
-    const startNodes = graph.nodes.filter((n) => !nodesWithIncoming.has(n.id));
-
-    if (startNodes.length === 0) {
-      startNodes.push(graph.nodes[0]);
-    }
-
-    // Execute from each start node
-    for (const startNode of startNodes) {
-      await walkGraph(execution, graph, startNode, entityId);
+    for (const node of fromNodes) {
+      await walkGraph(execution, graph, node, entityId);
     }
 
     // Only mark completed if not paused/cancelled by a step
@@ -229,7 +239,7 @@ async function runWorkflow(
 
     // Update workflow last run and success rate
     await prisma.workflow.updateMany({
-      where: { id: workflowId, entityId },
+      where: { id: execution.workflowId, entityId },
       data: {
         lastRun: new Date(),
         successRate: calculateSuccessRate(execution),
@@ -241,8 +251,228 @@ async function runWorkflow(
     execution.completedAt = new Date();
     await persistExecution(execution);
   }
+}
 
-  return execution;
+/** The nodes a run starts at: those with no incoming edge, else the first. */
+function startNodesOf(graph: WorkflowGraph): WorkflowNode[] {
+  const nodesWithIncoming = new Set(graph.edges.map((e) => e.targetNodeId));
+  const startNodes = graph.nodes.filter((n) => !nodesWithIncoming.has(n.id));
+  if (startNodes.length === 0) {
+    startNodes.push(graph.nodes[0]);
+  }
+  return startNodes;
+}
+
+/**
+ * Read a stored graph off a `Workflow.steps` column.
+ *
+ * P-31. There were two `steps as unknown as WorkflowGraph` casts in this
+ * repository -- one here, one in `processWorkflowJob` -- over a column the
+ * create route validates as `z.array(z.record(z.string(), z.unknown()))`. Both
+ * are now this function, which is one cast instead of two and refuses a value
+ * that is not a graph rather than silently walking zero nodes. The ELEMENT
+ * shape is still unvalidated; that is P-32's package, and this is the single
+ * place its schema has to be applied when it lands.
+ */
+function graphOf(steps: unknown, workflowId: string): WorkflowGraph {
+  if (typeof steps !== 'object' || steps === null || Array.isArray(steps)) {
+    throw new Error(`Workflow ${workflowId} has no nodes`);
+  }
+  const record: Record<string, unknown> = { ...steps };
+  const nodes = record.nodes;
+  const edges = record.edges;
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    throw new Error(`Workflow ${workflowId} has no nodes`);
+  }
+  return {
+    nodes: nodes as WorkflowNode[],
+    edges: Array.isArray(edges) ? (edges as WorkflowEdge[]) : [],
+  };
+}
+
+/** A run in one of these is finished; picking it up again would re-run it. */
+const TERMINAL_STATUSES: ReadonlySet<WorkflowExecution['status']> = new Set([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'ROLLED_BACK',
+]);
+
+/** What one queue-driven resume actually did, for the caller's audit trail. */
+export interface ResumedExecution {
+  execution: WorkflowExecution;
+  /** The steps THIS resume ran -- not the ones already on the record. */
+  steps: StepExecutionResult[];
+  /** Set when the run was not resumed, and why. */
+  skipped?: 'ALREADY_TERMINAL';
+}
+
+/**
+ * Continue an existing `WorkflowExecutionRecord`, which is what a job on the
+ * `workflow-execution` queue means.
+ *
+ * TRUSTED PROVENANCE ONLY: the execution id must have come from a BullMQ job,
+ * which got it from a row that a producer wrote (the cron tick, a DELAY node,
+ * or `resumeExecution`). There is no `VerifiedEntityId` here because there is
+ * no request; the entity is read off the parent workflow, the same lookup
+ * `entityOfExecution` does, and the halt gate at every node boundary uses it.
+ *
+ * WHY THIS EXISTS RATHER THAN THE WORKER CALLING `executeWorkflow`:
+ * `executeWorkflow` and `executeWorkflowForEntityOwner` both CREATE a run. The
+ * job already carries one -- `processCronTriggerJob` writes the record BEFORE
+ * the enqueue precisely so a crash between the two leaves a visible PENDING row
+ * -- so calling either would strand that row PENDING forever while a second row
+ * claimed the work. That stranding was the bug.
+ *
+ * WHERE IT RESUMES: `currentNodeId` is null on a fresh record (start nodes) and
+ * set on a run parked at a DELAY that re-enqueued or a HUMAN_APPROVAL a person
+ * released (the nodes after it). Restarting at the start nodes in the second
+ * case would re-run every completed node -- and, for a DELAY, re-enter the
+ * delay and re-enqueue itself forever.
+ */
+export async function resumeQueuedExecution(
+  executionId: string,
+  variables?: Record<string, unknown>
+): Promise<ResumedExecution> {
+  const row = await prisma.workflowExecutionRecord.findUnique({
+    where: { id: executionId },
+  });
+  if (!row) {
+    // Producer and consumer disagree about which runs exist. That is worth
+    // failing the job over -- BullMQ's attempts and dead-letter queue are the
+    // report -- and it is exactly the case the old worker could not detect,
+    // because it never read this table.
+    throw new Error(`Execution ${executionId} not found`);
+  }
+
+  const execution = toExecution(row as ExecutionRow);
+
+  // A duplicate delivery, or a run someone cancelled while the job sat in
+  // Redis. Re-running it would repeat every side effect it already had.
+  if (TERMINAL_STATUSES.has(execution.status)) {
+    return { execution, steps: [], skipped: 'ALREADY_TERMINAL' };
+  }
+
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: execution.workflowId },
+  });
+  if (!workflow) {
+    throw new Error(`Workflow ${execution.workflowId} not found`);
+  }
+
+  const graph = graphOf(workflow.steps, execution.workflowId);
+  const fromNodes = resumePointOf(graph, execution);
+
+  // The job's variables are the ones the producer wanted this leg to start
+  // with; the record's are what previous legs left behind. Merged, not
+  // replaced: `scheduleDelay` and the cron tick both enqueue `{}`, and
+  // replacing would erase every variable the first half of the run produced.
+  execution.variables = { ...execution.variables, ...(variables ?? {}) };
+  execution.status = 'RUNNING';
+  execution.error = undefined;
+  await persistExecution(execution);
+
+  const before = execution.stepResults.length;
+  await driveExecution(execution, graph, workflow.entityId, fromNodes);
+
+  return { execution, steps: execution.stepResults.slice(before) };
+}
+
+/** Where a resumed run picks up: after `currentNodeId`, or at the start. */
+function resumePointOf(
+  graph: WorkflowGraph,
+  execution: WorkflowExecution
+): WorkflowNode[] {
+  const parkedAt = execution.currentNodeId;
+  if (parkedAt === undefined) return startNodesOf(graph);
+
+  const node = graph.nodes.find((n) => n.id === parkedAt);
+  if (!node) {
+    // The graph was edited under a parked run. Silently starting over would
+    // repeat side effects; silently completing would skip the rest of the
+    // workflow and call it done. Neither is a thing to do quietly.
+    throw new Error(
+      `Execution ${execution.id} is parked at node ${parkedAt}, which is no longer in workflow ${execution.workflowId}`
+    );
+  }
+
+  // A CONDITION picks its branch from the result it already recorded, so a
+  // resume follows the same edge the run would have followed had it not parked.
+  let conditionResult: boolean | undefined;
+  if (node.config.nodeType === 'CONDITION') {
+    const last = [...execution.stepResults]
+      .reverse()
+      .find((s) => s.nodeId === parkedAt);
+    const recorded = last?.output.result;
+    conditionResult = typeof recorded === 'boolean' ? recorded : undefined;
+  }
+
+  return getNextNodes(graph, parkedAt, conditionResult);
+}
+
+/**
+ * Run one node of an existing run, which is what an `execute-step` job means.
+ *
+ * Same trusted-provenance rule as `resumeQueuedExecution`, and the same reason
+ * it exists: the step worker used to write an ActionLog row saying EXECUTED and
+ * execute nothing.
+ */
+export async function executeQueuedStep(
+  executionId: string,
+  nodeId: string,
+  input: Record<string, unknown>
+): Promise<StepExecutionResult> {
+  const row = await prisma.workflowExecutionRecord.findUnique({
+    where: { id: executionId },
+  });
+  if (!row) {
+    throw new Error(`Execution ${executionId} not found`);
+  }
+
+  const execution = toExecution(row as ExecutionRow);
+
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: execution.workflowId },
+  });
+  if (!workflow) {
+    throw new Error(`Workflow ${execution.workflowId} not found`);
+  }
+
+  const graph = graphOf(workflow.steps, execution.workflowId);
+  const node = graph.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    throw new Error(`Node ${nodeId} is not in workflow ${execution.workflowId}`);
+  }
+
+  // The halt is checked here rather than left to `walkGraph`, which this path
+  // does not go through. A single node is still an action a stopped tenant must
+  // not take.
+  if (await isEntityHalted(workflow.entityId)) {
+    const skipped: StepExecutionResult = {
+      nodeId,
+      status: 'SKIPPED',
+      startedAt: new Date(),
+      completedAt: new Date(),
+      input,
+      output: { reason: `Entity ${workflow.entityId} is halted` },
+      retryCount: 0,
+    };
+    return skipped;
+  }
+
+  execution.variables = { ...execution.variables, ...input };
+  execution.currentNodeId = nodeId;
+
+  const result = await executeNode(execution, node, workflow.entityId);
+  execution.stepResults.push(result);
+  if (result.status === 'FAILED') {
+    execution.status = 'FAILED';
+    execution.error = result.error;
+    execution.completedAt = new Date();
+  }
+  await persistExecution(execution);
+
+  return result;
 }
 
 async function walkGraph(
@@ -372,10 +602,27 @@ export async function executeNode(
         const delayResult = await scheduleDelay(
           node.config as DelayNodeConfig,
           execution.id,
-          execution.workflowId
+          execution.workflowId,
+          node.id
         );
         result.output = delayResult;
         result.status = 'COMPLETED';
+
+        // P-31. A delay long enough to be handed to the queue PARKS the run.
+        //
+        // Before this, `scheduleDelay` re-enqueued and the walk carried
+        // straight on to the nodes after the delay, and `runWorkflow` stamped
+        // COMPLETED -- so the queued job was a duplicate of the tail rather
+        // than a resume, and the row said the run had finished while a job for
+        // it was still sitting in Redis. "Wait five minutes" ran in zero.
+        //
+        // PAUSED is the mechanism HUMAN_APPROVAL already uses for exactly this
+        // -- stop here, something else will continue you -- so a delayed run
+        // and a run waiting on a person are the same shape: a non-terminal row
+        // with a `currentNodeId`. `resumeQueuedExecution` continues both.
+        if (delayResult.requeued === true) {
+          execution.status = 'PAUSED';
+        }
         break;
       }
 
@@ -545,7 +792,8 @@ async function requestHumanApproval(
 async function scheduleDelay(
   config: DelayNodeConfig,
   executionId: string,
-  workflowId: string
+  workflowId: string,
+  nodeId: string
 ): Promise<Record<string, unknown>> {
   if (config.delayType === 'FIXED' && config.delayMs) {
     // For short delays, wait inline
@@ -554,7 +802,7 @@ async function scheduleDelay(
       return { delayed: true, delayMs: config.delayMs };
     }
     // For longer delays, re-enqueue for later
-    await enqueueWorkflowExecution(executionId, workflowId, {}, config.delayMs);
+    await enqueueWorkflowExecution(executionId, workflowId, {}, config.delayMs, nodeId);
     return { delayed: true, delayMs: config.delayMs, requeued: true };
   }
 
@@ -562,7 +810,7 @@ async function scheduleDelay(
     const targetTime = new Date(config.delayUntil);
     const delayMs = targetTime.getTime() - Date.now();
     if (delayMs > 0) {
-      await enqueueWorkflowExecution(executionId, workflowId, {}, delayMs);
+      await enqueueWorkflowExecution(executionId, workflowId, {}, delayMs, nodeId);
       return { delayed: true, until: config.delayUntil, requeued: true };
     }
     return { delayed: false, reason: 'Target time is in the past' };
@@ -649,8 +897,17 @@ export async function resumeExecution(
     where: { id: executionId },
     data: { status: 'RUNNING' },
   });
-  // Re-enqueue for continued processing
-  await enqueueWorkflowExecution(executionId, execution.workflowId, execution.variables);
+  // Re-enqueue for continued processing. The parked node is part of the job id
+  // (P-31): the run has already had one job under `wf-exec-<id>`, and BullMQ
+  // silently returns the existing job for a duplicate id rather than queueing
+  // a second one, so without this a resume is dropped and the run parks forever.
+  await enqueueWorkflowExecution(
+    executionId,
+    execution.workflowId,
+    execution.variables,
+    undefined,
+    execution.currentNodeId
+  );
 }
 
 export async function cancelExecution(

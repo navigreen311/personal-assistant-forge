@@ -28,19 +28,32 @@
 //
 // `processCronTriggerJob` writes a PENDING `WorkflowExecutionRecord` and hands
 // the id to `workflow-execution`. This file calls `executeWorkflowForEntityOwner`
-// instead, and the difference is not stylistic: `processWorkflowJob` in
-// `workflow-worker.ts` walks the graph writing one ActionLog row per node and
-// never dispatches a single action handler — no UPDATE_RECORD, no CREATE_TASK,
-// nothing — and never touches the execution record it was given. A workflow
-// started that way logs that it ran and does not run. (Reported as a separate
-// finding; not fixed here, because P-20's leg 5 asserts that worker's current
-// behaviour and this package does not get to change an assertion it did not
-// come to change.)
+// instead, and when it was written the difference was not stylistic:
+// `processWorkflowJob` in `workflow-worker.ts` walked the graph writing one
+// ActionLog row per node, dispatched no action handler — no UPDATE_RECORD, no
+// CREATE_TASK, nothing — and never touched the execution record it was given. A
+// workflow started that way logged that it ran and did not run. Routing around
+// it was the only way an event could actually cause anything. (Reported as a
+// separate finding; not fixed there, because P-20's leg 5 asserted that
+// worker's behaviour and that package did not get to change an assertion it had
+// not come to change.)
 //
-// So the event path uses the real executor, which dispatches real handlers,
-// honours the halt at every node, and persists the run's status. It is already
-// off the request path and inside a queue worker, which is what "executes
-// through the queue" asks for.
+// P-31 (T-039) FIXED THAT WORKER. The original reason for this indirection is
+// therefore gone: `workflow-execution` now runs the real executor against the
+// record it was handed, so re-enqueueing would execute the workflow for real.
+//
+// It is kept anyway, and the reasons are now trade-offs rather than a
+// workaround. FOR staying inline: this is already a queue worker, off the
+// request path, so a second hop buys no isolation; the run ids are known
+// synchronously and go back in `DomainEventResult.started`, which is what makes
+// the seam assertable without polling; and the matched workflows run in the
+// `createdAt` order the query establishes. AGAINST: a crash partway through the
+// loop loses the runs not yet started, where one job per match would make each
+// independently durable and let a slow workflow stop blocking the others.
+//
+// If that durability is wanted, the change is now a small one — write the
+// record and call `enqueueWorkflowExecution`, exactly as the cron tick does —
+// and it is a decision about this seam, not a repair.
 // ============================================================================
 
 import { Worker, type Job } from 'bullmq';
