@@ -658,6 +658,7 @@ One row per merge. Appended by the coordinator at merge time.
 | — | coordinator: `.dockerignore` recursive test patterns | — | `d58e936` | 0 | 321/321 | 5346/5346 | 849/849 | fixed a red master |
 | — | coordinator: db job ceiling 15 -> 30 min | — | `f2c87bf` | 0 | 321/321 | 5346/5346 | 849/849 | **none** |
 | 21 | P-29 entity switching | [#81](https://github.com/navigreen311/personal-assistant-forge/pull/81) | `eaca9eb` | 0 | 321/321 | **5348/5348** | **863/863** | **none** |
+| 22 | P-28 observability (T-013 + T-025) | [#82](https://github.com/navigreen311/personal-assistant-forge/pull/82) | `e3ddaff` | 0 | **328/328** | **5440/5440** | **887/887** | **none** |
 
 ---
 
@@ -786,6 +787,41 @@ P-19 deleted the dead code and the hole it was covering became visible. **The
 repair did not introduce the bug; it disclosed it.** Dead code that mentions the
 right variable is indistinguishable from live code that uses it — to a grep, to
 an instrument, and to a human reading the file.
+
+# THE FINDING THAT REFRAMES 5,440 PASSING TESTS — P-28
+
+P-28 shipped the check that would have caught all ten phantom-delegate bugs
+before merge, with no database, no traffic and no vendor account. Injecting
+`prisma.attentionEvent.findMany({})` into any route now fails
+`tests/unit/observability/phantom-delegates.test.ts` with the file and line. It
+reads delegate names out of the DMMF, so it stays correct after the next
+migration with nothing to keep in step.
+
+**Why the four gates this repository already had all missed them:**
+
+  * `tsc --noEmit` passes at zero — and passed then, because 173 `as any` casts
+    stood between the Prisma client and the type checker.
+  * `eslint src` reports zero errors; no lint rule knows what a schema contains.
+  * **186 of the unit suite's 320 files call `jest.mock('@/lib/db')`. A mocked
+    delegate returns whatever the test told it to, so a mocked
+    `prisma.attentionEvent.findMany` PROVES THE OPPOSITE of what is true in
+    production: it proves the delegate exists.**
+  * The real-database suite would catch it, but only for a route someone wrote a
+    case for.
+
+That third point is the one to carry forward. For any Prisma-touching route, a
+large part of this suite was confirming its own fixtures. **A mock is a claim
+about an interface, and nothing here was checking the claim.**
+
+`src/lib/monitoring/` already existed: 350 typed lines, **zero importers**, and
+`@sentry/nextjs` absent — a no-op *even with a DSN configured*. Monitoring that
+was itself a phantom.
+
+Zero dependencies added; `package.json`, `next.config.ts` and `ci.yml` untouched
+despite being permitted. Sentry is reached over its documented envelope ingest
+API rather than `@sentry/nextjs`, because that SDK is build-time-active and
+**Docker Build runs only on master** — the same blind spot that took master red
+four commits earlier, reasoned about correctly this time.
 
 # THE ELEVENTH PHANTOM — P-29, and why Decision 1 could not have shipped without it
 
