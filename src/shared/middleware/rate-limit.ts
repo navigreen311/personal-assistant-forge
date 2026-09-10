@@ -427,10 +427,13 @@ function publishHeaders(response: Response, result: RateLimitResult): Response {
  *       return withRateLimit(request, 'bulk', (req) => withRole(req, ...));
  *     }
  *
- * Placed OUTSIDE the auth wrappers on purpose: an unauthenticated flood should
- * be refused before it costs a JWT decrypt and a database round trip. The one
- * consequence worth knowing is that a 429 can be returned to a caller who was
- * never authenticated, so a 429 does not imply a valid session.
+ * Placed OUTSIDE the auth wrappers on purpose: a refused request never reaches
+ * the handler, the entity-ownership query, or the work itself. On a user-keyed
+ * tier the limiter DOES decrypt the session token -- that is what makes the
+ * bucket unspoofable -- so the saving is the database round trip and the work,
+ * not the crypto. Two consequences worth naming: a 429 can be returned to a
+ * caller who was never authenticated, so a 429 does not imply a valid session;
+ * and an anonymous flood against a user-keyed route is bucketed by address.
  */
 export async function withRateLimit(
   request: NextRequest,

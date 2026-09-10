@@ -157,9 +157,11 @@ async function handlePOST(request: NextRequest) {
 // ---------------------------------------------------------------------------
 // P-18 / T-012 — rate limit: tier "bulk".
 //
-// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
-// costs a JWT decrypt and a database round trip. The tier, its budget and the
-// reason for that budget are in RATE_LIMIT_POLICY in
+// The limiter sits OUTSIDE the auth wrappers, so a refused request never reaches
+// the handler, the entity-ownership query, or the work itself. (On a user-keyed
+// tier the limiter does decrypt the session token -- that is what makes the
+// bucket unspoofable -- but nothing beyond that runs.) The tier, its budget and
+// the reason for that budget live in RATE_LIMIT_POLICY in
 // src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
 // so no route can quietly hold a different number from the published table.
 // ---------------------------------------------------------------------------
