@@ -83,3 +83,35 @@ migration since P-00 froze the schema.
   most existing tests establish scope via `?entityId=` or a body field. Whether
   those become refusals is the central migration question and must be decided
   with measurement, not preference.
+
+## MEASURED BLAST RADIUS — and why it is smaller than it looks
+
+`src/app/api/**` contains **49 local `with<Thing>Scope` helpers across 49 route
+files**, and **47 of them pass the addressed row's OWN `entityId` into
+`withEntityScope` as its explicit third argument**: `withWorkflowScope`,
+`withEventScope`, `withDocumentScope`, `withContactScope`, `withRunbookScope`,
+`withDecisionScope`, `withCallScope`, `withExecutionScope` and forty more. P-04
+wrote `withTaskScope` as the reference implementation and every module copied it,
+exactly as intended at the time.
+
+Under Decision 1 all 47 are wrong in the same way: they adopt the row's entity as
+the scope, so addressing a row by id silently moves the caller into whatever
+entity owns it.
+
+**They do not need 47 edits.** `withEntityScope`'s precedence is
+`explicitEntityId` -> `?entityId=` -> body -> `session.activeEntityId`, and every
+one of the 47 arrives as `explicitEntityId`. A single rule in the frozen file —
+refuse when the resolved candidate is not the session's active entity — corrects
+all 47 **by construction**, with no change to any of them. The helpers keep doing
+exactly what they do now: resolving which entity owns the row. What changes is
+that resolving it is no longer the same thing as being allowed into it.
+
+That is the argument for putting the rule in `withEntityScope` rather than in the
+routes, and it is why this work is one package rather than a fan-out.
+
+**Open design question for the owning package:** when the addressed row belongs
+to a different entity of the same user, is the answer 403 or 404? 403 is honest;
+404 refuses to confirm the row exists. The caller owns both entities, so the
+existence leak is mild — but the `[id]` helpers already 404 for a missing row,
+and matching that shape means a caller cannot distinguish "no such row" from "not
+in this scope", which is the more defensible boundary.
