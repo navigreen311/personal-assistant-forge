@@ -88,6 +88,11 @@ jest.mock('@/lib/db', () => ({
     get workflowExecutionRecord() {
       return mockExecutionRecordDelegate();
     },
+    // P-27 (T-038): the executor consults the execution-gate table for a halt
+    // before a run starts and at every node boundary. `null` is "not halted".
+    executionGateRule: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     actionLog: {
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
     },

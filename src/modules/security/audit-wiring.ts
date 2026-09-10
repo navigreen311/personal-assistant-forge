@@ -91,6 +91,14 @@ export interface AuditOptions {
    * param, say). 'N/A' when the request is not about one record.
    */
   resourceId?: string;
+  /**
+   * The 404 body used when a `ResolveOwningEntity` reports no such record.
+   *
+   * Here rather than as another positional argument because this bag is already
+   * where a route says what it is about, and a route that resolves its tenant
+   * from a row is the only kind that can 404 before the handler runs.
+   */
+  notFoundMessage?: string;
 }
 
 /** What the wrapped handler managed to establish before responding. */
@@ -98,6 +106,79 @@ interface Established {
   session?: AuthSession;
   entityId?: VerifiedEntityId;
   resourceId?: string;
+}
+
+/**
+ * Handed to a handler so it can name the record it acted on (P-27).
+ *
+ * `Established.resourceId` was read by `recordAround` from the day it was
+ * written and never assigned by anything, so every row's `resourceId` was a
+ * value fixed before the request ran or the literal 'N/A'. That is fine for a
+ * route addressing a record by a path param, and useless for a CREATE — the
+ * audit's own example of "the action" is a task creation, and a row saying a
+ * task was created without saying which one is a row an auditor cannot use.
+ *
+ * Passed as an extra, LAST parameter to the existing handler signature, so the
+ * thirty route files whose handlers take three arguments keep compiling and
+ * keep behaving identically. A handler that wants it names it; one that does
+ * not, does not.
+ */
+export type ReportResource = (resourceId: string) => void;
+
+/**
+ * P-27 (T-037) — HOW A RESOURCE-SCOPED ROUTE NAMES ITS TENANT.
+ *
+ * A `[id]` route does not carry its entity in the request at all: the entity is
+ * a property of the row being addressed, so it can only be learned by reading
+ * that row. `src/app/api/tasks/[id]/route.ts` documents the ordering this
+ * forces, and the ordering is not stylistic:
+ *
+ *   1. authenticate FIRST, so an anonymous caller never causes a database read
+ *      and cannot use response timing to probe which ids exist;
+ *   2. THEN look up which entity owns the row, selecting the id only;
+ *   3. THEN hand that entity to `withEntityScope` as its explicit argument.
+ *
+ * `explicitEntityId` as a plain string cannot express that -- a value has to be
+ * computed BEFORE the call, which means before authentication. So the two
+ * wrappers below accept a FUNCTION there as well, run after the session is
+ * proved. Returning null means "no such record" and produces a 404 that is
+ * itself audited, filed under UNRESOLVED_ENTITY because no tenant was ever
+ * established.
+ *
+ * A function rather than a new `withAuditedResourceScope` helper on purpose.
+ * The authorisation is identical -- role, then entity scope -- and only the
+ * PROVENANCE of the id differs, which is exactly what this parameter already
+ * meant. It also keeps these routes recognisable to `tests/helpers/routes.ts`'s
+ * `SCOPE_PRIMITIVES`, the platform's own registry of what counts as proving
+ * ownership: a scoped route wrapped in a name that list has never heard of
+ * reads as an UNSCOPED route to the cross-tenant sweep, and a security sweep
+ * that quietly mis-classifies a route it is meant to police is worse than one
+ * that does not run.
+ */
+export type ResolveOwningEntity = (
+  req: NextRequest,
+  session: AuthSession,
+) => Promise<string | null>;
+
+/** The explicit tenant for a request: a known id, or how to find one. */
+export type ExplicitEntity = string | ResolveOwningEntity;
+
+/** Narrow an `ExplicitEntity` to an id, or to the 404 the absence produces. */
+async function settleEntity(
+  entity: ExplicitEntity | undefined,
+  req: NextRequest,
+  session: AuthSession,
+  options: AuditOptions,
+): Promise<{ entityId?: string; refusal?: Response }> {
+  if (typeof entity !== 'function') return { entityId: entity };
+
+  const owner = await entity(req, session);
+  if (owner === null) {
+    return {
+      refusal: error('NOT_FOUND', options.notFoundMessage ?? 'Resource not found', 404),
+    };
+  }
+  return { entityId: owner };
 }
 
 function clientIp(req: NextRequest): string | undefined {
@@ -198,20 +279,36 @@ export async function withAuditedEntityScope(
     req: NextRequest,
     session: AuthSession,
     entityId: VerifiedEntityId,
+    report: ReportResource,
   ) => Promise<Response>,
-  explicitEntityId?: string,
+  explicitEntityId?: ExplicitEntity,
 ): Promise<Response> {
-  return recordAround(request, options, async (established) =>
+  const run = (established: Established, req: NextRequest, entity?: string) =>
     withEntityScope(
-      request,
-      async (req, session, entityId) => {
+      req,
+      async (scopedReq, session, entityId) => {
         established.session = session;
         established.entityId = entityId;
-        return handler(req, session, entityId);
+        return handler(scopedReq, session, entityId, (resourceId) => {
+          established.resourceId = resourceId;
+        });
       },
-      explicitEntityId,
-    ),
-  );
+      entity,
+    );
+
+  return recordAround(request, options, async (established) => {
+    // The plain-id path is what it always was, so the thirty routes already
+    // using this wrapper do not gain a second token decode.
+    if (typeof explicitEntityId !== 'function') {
+      return run(established, request, explicitEntityId);
+    }
+    return withAuth(request, async (authedReq, session) => {
+      established.session = session;
+      const settled = await settleEntity(explicitEntityId, authedReq, session, options);
+      if (settled.refusal) return settled.refusal;
+      return run(established, authedReq, settled.entityId);
+    });
+  });
 }
 
 /**
@@ -252,8 +349,9 @@ export async function withAuditedRoleEntityScope(
     req: NextRequest,
     session: AuthSession,
     entityId: VerifiedEntityId,
+    report: ReportResource,
   ) => Promise<Response>,
-  explicitEntityId?: string,
+  explicitEntityId?: ExplicitEntity,
 ): Promise<Response> {
   return recordAround(request, options, async (established) =>
     withAuth(request, async (authedReq, session) => {
@@ -261,13 +359,20 @@ export async function withAuditedRoleEntityScope(
       if (!roles.includes(session.role)) {
         return error('FORBIDDEN', 'Insufficient permissions', 403);
       }
+      // The lookup runs after the role check as well as after authentication: a
+      // caller who may not touch this kind of record should not be able to learn
+      // which ids exist by timing the 403 against the 404.
+      const settled = await settleEntity(explicitEntityId, authedReq, session, options);
+      if (settled.refusal) return settled.refusal;
       return withEntityScope(
         authedReq,
         async (req, scopedSession, entityId) => {
           established.entityId = entityId;
-          return handler(req, scopedSession, entityId);
+          return handler(req, scopedSession, entityId, (resourceId) => {
+            established.resourceId = resourceId;
+          });
         },
-        explicitEntityId,
+        settled.entityId,
       );
     }),
   );

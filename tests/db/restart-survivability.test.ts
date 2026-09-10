@@ -40,10 +40,21 @@ import { PrismaClient } from '@prisma/client';
 import type { NextRequest } from 'next/server';
 
 import { db, setupTestDatabase } from '../helpers/db';
+import { closeDomainEventQueue } from '@/lib/queue/domain-events';
 import { readJson, requestAs, anonymousRequest, sessionTokenFor } from '../helpers/session';
 import { createTenant, type Tenant } from '../helpers/factories';
 
 setupTestDatabase();
+
+// P-27: `POST /api/tasks` publishes `task.created`, which opens a producer
+// connection to Redis the first time any test in this file creates a task. It
+// belongs to the process, not to a test, so it is closed here -- otherwise jest
+// reports "did not exit one second after the test run has completed" and the
+// run hangs rather than failing.
+afterAll(async () => {
+  await closeDomainEventQueue();
+});
+
 jest.setTimeout(120_000);
 
 /**
@@ -437,7 +448,12 @@ describe('T-033 — the story continues across a restart', () => {
       tasks: 1,
       workflows: 1,
       switches: 1,
-      audit: 1,
+      // P-27 (T-037): TWO audit rows now, not one. The dead-man-switch POST has
+      // always written one; `POST /api/tasks` writes the other, because task
+      // creation -- the audit's own example of "the action" -- was one of the
+      // routes the log did not reach. Raising this number is the whole of that
+      // change being visible here.
+      audit: 2,
     });
   });
 });

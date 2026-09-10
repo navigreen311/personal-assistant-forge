@@ -25,6 +25,7 @@ import { success } from '@/shared/utils/api-response';
 import type { NextRequest } from 'next/server';
 
 import { db, listTruncatableTables, resetDatabase, setupTestDatabase } from '../helpers/db';
+import { closeDomainEventQueue } from '@/lib/queue/domain-events';
 import {
   createContact,
   createEntity,
@@ -43,6 +44,15 @@ import {
 } from '../helpers/session';
 
 setupTestDatabase();
+
+// P-27: `POST /api/tasks` publishes `task.created`, which opens a producer
+// connection to Redis the first time any test in this file creates a task. It
+// belongs to the process, not to a test, so it is closed here -- otherwise jest
+// reports "did not exit one second after the test run has completed" and the
+// run hangs rather than failing.
+afterAll(async () => {
+  await closeDomainEventQueue();
+});
 
 /** Stand-in for a route handler, so the middleware can be exercised alone. */
 const OK_AUTH = (req: NextRequest) => withAuth(req, async (_r, session) => success(session));

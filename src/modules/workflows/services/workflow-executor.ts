@@ -36,6 +36,7 @@ import { executeAction } from './action-handlers';
 import { executeAIDecision } from './ai-decision-service';
 import { requestApproval } from './approval-service';
 import { enqueueWorkflowExecution } from '@/lib/queue/workflow-queue';
+import { assertNotHalted, isEntityHalted } from '@/modules/execution/services/execution-gate';
 
 // --- Row <-> interface reconciliation ---
 
@@ -163,6 +164,18 @@ async function runWorkflow(
   entityId: string,
   initialVariables?: Record<string, unknown>
 ): Promise<WorkflowExecution> {
+  // P-27 (T-038). The first of THREE independent halt checks -- here, at every
+  // node boundary in `walkGraph`, and in `processWorkflowJob` -- because there
+  // are three doors into a run and a gate on one of them is not a gate.
+  //
+  // This one throws rather than recording a cancelled run: a run that never
+  // began should leave no row claiming it did. The refusal is the event, and it
+  // is already in the audit log of whichever route asked.
+  //
+  // BEFORE the workflow lookup, so a halted tenant cannot even use this path to
+  // learn whether a workflow id exists.
+  await assertNotHalted(entityId);
+
   // The scope is in the WHERE: another tenant's workflow is simply not found.
   const workflow = await prisma.workflow.findFirst({
     where: { id: workflowId, entityId },
@@ -239,6 +252,28 @@ async function walkGraph(
   entityId: string
 ): Promise<void> {
   if (execution.status === 'CANCELLED' || execution.status === 'PAUSED') {
+    return;
+  }
+
+  // P-27 (T-038). The second of the three halt checks, at the node boundary.
+  //
+  // A long workflow can be minutes between its first node and its last, and the
+  // switch can fire in the middle of that. Checking only at the start would mean
+  // a run that began one second before the halt carries on sending messages
+  // after it -- which is precisely the case a dead man switch exists for.
+  //
+  // The run is CANCELLED in place rather than thrown out of, so the row records
+  // where it stopped and why. `runWorkflow` only promotes RUNNING to COMPLETED,
+  // so this status survives to the end of the call.
+  //
+  // What this does NOT do: interrupt a node already executing. `executeAction`
+  // is not re-entrant and an email that has been sent cannot be unsent by a row
+  // appearing. The boundary is the finest granularity this honestly has.
+  if (await isEntityHalted(entityId)) {
+    execution.status = 'CANCELLED';
+    execution.error = `Execution halted for entity ${entityId} before node ${node.id}`;
+    execution.completedAt = new Date();
+    await persistExecution(execution);
     return;
   }
 

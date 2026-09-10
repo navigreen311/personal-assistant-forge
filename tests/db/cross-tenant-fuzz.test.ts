@@ -143,6 +143,14 @@ afterAll(async () => {
   const { _closeRedis } = await import('@/shared/middleware/rate-limit');
   await _closeRedis();
 
+  // P-27 adds a fourth: `insertTask` publishes `task.created`, so every
+  // `POST /api/tasks` the sweep makes opens the domain-event producer. Closed
+  // through its own helper rather than `getDomainEventQueue().close()` because
+  // that helper also clears the cached handle -- see the note on `globalThis`
+  // in src/lib/queue/domain-events.ts.
+  const { closeDomainEventQueue } = await import('@/lib/queue/domain-events');
+  await closeDomainEventQueue().catch(() => undefined);
+
   const queues = await Promise.all([
     import('@/lib/queue/workflow-queue').then((m) => m.getQueue()),
     import('@/lib/queue/jobs/registry').then((m) => m.getJobQueue()),

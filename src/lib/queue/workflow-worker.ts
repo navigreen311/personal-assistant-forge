@@ -6,6 +6,7 @@
 import { Worker, Job } from 'bullmq';
 import { getRedisUrl } from './connection';
 import { prisma } from '@/lib/db';
+import { isEntityHalted } from '@/modules/execution/services/execution-gate';
 import type { WorkflowGraph, WorkflowNode } from '@/modules/workflows/types';
 
 interface WorkflowJobData {
@@ -29,6 +30,23 @@ async function processWorkflowJob(job: Job<WorkflowJobData>): Promise<void> {
 
   if (!workflow) {
     throw new Error(`Workflow ${workflowId} not found`);
+  }
+
+  // P-27 (T-038). The third place a run can start, and it does not go through
+  // `runWorkflow` at all -- a DELAY node re-enqueues here, and so does the cron
+  // tick. A halt that only the executor honoured would be lifted by any
+  // workflow that happened to contain a delay, which is the failure mode of a
+  // gate placed at one of several doors.
+  //
+  // Returning rather than throwing: a halted tenant is a correct, expected
+  // state, not a job failure. Throwing would burn three BullMQ attempts with
+  // exponential backoff and then dead-letter the job, turning "stopped" into
+  // "stopped and reported as broken".
+  if (await isEntityHalted(workflow.entityId)) {
+    console.warn(
+      `[workflow-worker] execution ${executionId} skipped: entity ${workflow.entityId} is halted`
+    );
+    return;
   }
 
   const graph = workflow.steps as unknown as WorkflowGraph;

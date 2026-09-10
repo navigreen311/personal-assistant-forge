@@ -135,6 +135,14 @@ jest.mock('@/lib/db', () => ({
     get workflowExecutionRecord() {
       return mockExecutionRecordDelegate();
     },
+    // P-27 (T-038): the workflow executor now asks the execution-gate table
+    // whether this entity is halted, before a run starts and at every node
+    // boundary. `null` is "not halted", which is what these tests assume.
+    // The mock is deliberately a real delegate rather than a permissive bag:
+    // a name that does not exist must still fail here.
+    executionGateRule: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     actionLog: {
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
     },
