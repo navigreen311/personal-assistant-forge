@@ -34,10 +34,29 @@ logs
 *.log
 
 # Tests
+#
+# These patterns must be recursive. A bare `__tests__` matches only a TOP-LEVEL
+# entry, so `src/modules/**/__tests__/` was copied into the builder while the
+# top-level `tests/` it imports from was not -- and
+# src/modules/voiceforge/__tests__/outbound-agent-sentiment.test.ts imports
+# `../../../../tests/helpers/factories`. That is TS2307 inside the image and
+# nowhere else. It was invisible for the life of this repository because
+# `next.config.ts` carried `ignoreBuildErrors: true` (removed by P-19) and
+# because the Docker Build job does not run on pull requests -- so master is the
+# only place it can appear.
+#
+# It is also a correctness fix in its own right: without these, all 39 test
+# files under src/ ship inside the production image.
 tests
 __tests__
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
 coverage
 jest.config.ts
+jest*.config.ts
 
 # Documentation (not needed in image)
 docs
