@@ -39,10 +39,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: 'npm'
@@ -59,9 +59,16 @@ jobs:
       - name: Run database migrations
         run: npx prisma migrate deploy
 
+      # P-19/T-010. This carried `continue-on-error: true`, so `npx eslint src`
+      # reported 142 errors and 68 warnings on every run and failed nothing.
+      # The 142 errors are now 0 -- 115 of them `@typescript-eslint/no-explicit-any`,
+      # the rule that would have caught every one of the phantom-Prisma-delegate
+      # bugs this run found -- so the step gates for real. Nine narrowly-scoped
+      # `eslint-disable-next-line` exceptions remain, each with a written reason
+      # and each listed in the P-19 PR; there is no file-level or rule-level
+      # suppression anywhere in src/.
       - name: Lint
         run: npx eslint src
-        continue-on-error: true
 
       - name: Type check
         run: npx tsc --noEmit
@@ -71,7 +78,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-report
           path: coverage/
@@ -83,12 +90,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    # Deliberately NOT gated on lint-typecheck-test. That job is red on the 67
-    # standing type errors until P-19, and gating this behind it would mean the
-    # real-database lane never executes for the entire parallel run -- so every
-    # cross-tenant test P-04..P-14 add would be collected by nobody. This job
-    # provisions its own Postgres and runs its own migrations; it needs nothing
-    # from the unit job.
+    # Deliberately NOT gated on lint-typecheck-test. Originally because that job
+    # was red on the standing type errors, and gating this behind it would have
+    # meant the real-database lane never executed for the entire parallel run --
+    # so every cross-tenant test P-04..P-14 add would have been collected by
+    # nobody. That reason expired with P-02 (tsc 0) and P-19 (lint 0), but the
+    # second one has not: this job provisions its own Postgres and runs its own
+    # migrations, so it needs nothing from the unit job, and keeping the two
+    # lanes independent means a lint regression cannot hide a tenancy
+    # regression.
 
     # P-00: this job exists because the audit found 186 of 320 test files calling
     # jest.mock('@/lib/db'), and zero tests touching a real database. A suite that
@@ -144,10 +154,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: 'npm'
@@ -192,10 +202,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: 'npm'
@@ -220,10 +230,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: 'npm'
@@ -247,7 +257,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

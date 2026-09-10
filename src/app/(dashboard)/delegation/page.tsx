@@ -37,45 +37,71 @@ const DEFAULT_STATS: DelegationStats = {
 // Dynamic Imports with Graceful Fallbacks
 // ---------------------------------------------------------------------------
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-const EnhancedDelegationInbox: any = dynamic(
+/** Props the delegation tabs are rendered with. */
+interface DelegationTabProps {
+  entityId?: string;
+  onDelegated?: () => void;
+  onRefreshStats?: () => void;
+}
+
+/** Props the delegate-task modal is rendered with. */
+interface DelegateTaskModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onDelegated?: () => void;
+}
+
+const EnhancedDelegationInbox = dynamic<DelegationTabProps>(
   () =>
-    import('@/modules/delegation/components/EnhancedDelegationInbox').catch(
-      () => import('@/modules/delegation/components/DelegationInbox').then(m => ({ default: m.DelegationInbox }))
-    ) as any,
+    import('@/modules/delegation/components/EnhancedDelegationInbox').catch(() =>
+      import('@/modules/delegation/components/DelegationInbox').then((m) => ({
+        // P-19: this used to hand `m.DelegationInbox` straight to `dynamic`,
+        // so the fallback would have been rendered with {entityId, onDelegated}
+        // -- and `DelegationInbox` takes {items, onDelegate} and opens with
+        // `items.length`. The "graceful fallback" was a TypeError on undefined.
+        // The page has no suggestions to give it, so it renders the component's
+        // own empty state, which is what it shows for `items: []`.
+        default: () => <m.DelegationInbox items={[]} onDelegate={() => {}} />,
+      })),
+    ),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Delegation Inbox" />,
   }
 );
 
-const ActiveDelegationsTab: any = dynamic(
+const ActiveDelegationsTab = dynamic<DelegationTabProps>(
   () =>
     import('@/modules/delegation/components/ActiveDelegationsTab').catch(() => ({
       default: ActiveDelegationsTabFallback,
-    })) as any,
+    })),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Active Delegations" />,
   }
 );
 
-const EnhancedScoreboard: any = dynamic(
+const EnhancedScoreboard = dynamic<DelegationTabProps>(
   () =>
-    import('@/modules/delegation/components/EnhancedScoreboard').catch(
-      () => import('@/modules/delegation/components/DelegationScoring').then(m => ({ default: m.DelegationScoring }))
-    ) as any,
+    import('@/modules/delegation/components/EnhancedScoreboard').catch(() =>
+      import('@/modules/delegation/components/DelegationScoring').then((m) => ({
+        // P-19: same defect as the inbox above -- `DelegationScoring` takes
+        // {scores} and opens with `scores.length`, and was being handed
+        // {entityId}. Rendering its empty state is what it does for `[]`.
+        default: () => <m.DelegationScoring scores={[]} />,
+      })),
+    ),
   {
     ssr: false,
     loading: () => <TabLoadingSkeleton label="Scoreboard" />,
   }
 );
 
-const DelegateTaskModal: any = dynamic(
+const DelegateTaskModal = dynamic<DelegateTaskModalProps>(
   () =>
     import('@/modules/delegation/components/DelegateTaskModal').catch(() => ({
       default: DelegateTaskModalFallback,
-    })) as any,
+    })),
   {
     ssr: false,
     loading: () => (

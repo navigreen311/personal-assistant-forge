@@ -128,6 +128,13 @@ function VariantCard({ variant, channel, onSend, sendingId }: VariantCardProps) 
   };
 
   const handleSaveEdit = () => {
+    // REAL BUG, see PR: this mutates the `variant` prop in place. It is
+    // load-bearing -- `onSend(variant)` is how the edited body reaches the
+    // parent, so simply removing the write would silently send the unedited
+    // draft. Fixing it properly means lifting the variants into the parent's
+    // state and passing an onEdit callback, which is a change to this
+    // module's contract, not a lint fix.
+    // eslint-disable-next-line react-hooks/immutability
     variant.body = editedBody;
     setIsEditing(false);
   };

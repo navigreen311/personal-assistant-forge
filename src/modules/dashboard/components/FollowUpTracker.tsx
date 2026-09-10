@@ -24,6 +24,27 @@ function getDaysBadgeClasses(daysWaiting: number): string {
   }
 }
 
+/**
+ * NOT IMPLEMENTED -- resolved as a finding by P-19/T-030, not as code.
+ *
+ * The "Nudge" button below is a live, enabled control wired to this function,
+ * and this function writes to the console and returns. From a user's side the
+ * button does nothing, silently, every time.
+ *
+ * The endpoint it needs exists and works: `POST /api/inbox/draft`
+ * (`src/app/api/inbox/draft/route.ts`, `withRole` + `withEntityScope`,
+ * 201 with the generated draft). Its request body is `draftRequestSchema`
+ * (`src/modules/inbox/inbox.validation.ts`): `messageId` (required -- this
+ * component already has it as `followUp.messageId`), optional `entityId`, and
+ * an optional `tone` enum.
+ *
+ * So the remaining work is entirely in this component: call the endpoint, and
+ * give the button the pending / success / failure states it currently has no
+ * way to show. That is a feature with UI states and error handling, not a lint
+ * fix, and P-19 is a gate package -- wiring it here would be a behaviour change
+ * smuggled in under a lint pass. Handed to the coordinator with everything it
+ * needs, and left doing exactly what it did before.
+ */
 function handleNudge(followUp: FollowUp): void {
   console.log('Nudge follow-up:', {
     id: followUp.id,
@@ -31,7 +52,6 @@ function handleNudge(followUp: FollowUp): void {
     recipientName: followUp.recipientName,
     subject: followUp.subject,
   });
-  // TODO: POST to /api/inbox/draft to generate follow-up message
 }
 
 export default function FollowUpTracker({ followUps }: FollowUpTrackerProps) {

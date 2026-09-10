@@ -340,6 +340,10 @@ export default function RenewalsPage() {
   );
 
   useEffect(() => {
+    // fetchRenewals() opens with setLoading(true) before awaiting the
+    // network. Hoisting that into useState only covers mount, not a change of
+    // selectedEntity.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchRenewals(selectedEntity);
   }, [selectedEntity, fetchRenewals]);
 

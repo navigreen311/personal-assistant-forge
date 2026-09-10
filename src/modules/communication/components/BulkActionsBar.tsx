@@ -273,6 +273,11 @@ export default function BulkActionsBar({
   // Close everything when selection clears
   useEffect(() => {
     if (!isVisible) {
+      // the bar stays mounted and is hidden with opacity/pointer-events, so
+      // this state must be reset explicitly; deriving it in render would
+      // leave a stale dropdown open the next time a selection makes the bar
+      // visible again.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setActiveDropdown(null);
       setShowDeleteConfirm(false);
     }

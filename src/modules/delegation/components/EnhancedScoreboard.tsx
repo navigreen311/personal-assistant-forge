@@ -89,6 +89,9 @@ export default function EnhancedScoreboard({ entityId }: EnhancedScoreboardProps
 
   useEffect(() => {
     let cancelled = false;
+    // fetch-on-mount and on entityId change; a useState initial value only
+    // covers the mount case.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
 

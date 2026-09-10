@@ -235,8 +235,8 @@ export class VoiceFormFill {
     // "<day>/<month>/<year>" or "<month>/<day>/<year>" (US format)
     const slashMatch = lower.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
     if (slashMatch) {
-      let month = parseInt(slashMatch[1], 10) - 1; // US format: month first
-      let day = parseInt(slashMatch[2], 10);
+      const month = parseInt(slashMatch[1], 10) - 1; // US format: month first
+      const day = parseInt(slashMatch[2], 10);
       let year = parseInt(slashMatch[3], 10);
       if (year < 100) year += 2000;
       // Validate

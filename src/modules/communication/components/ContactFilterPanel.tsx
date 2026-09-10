@@ -184,6 +184,10 @@ export default function ContactFilterPanel({
 
   useEffect(() => {
     if (contentRef.current) {
+      // this measures scrollHeight off a committed DOM node to drive the
+      // expand/collapse transition. A measurement is only available after
+      // layout, so it cannot be computed during render by construction.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMaxHeight(isOpen ? contentRef.current.scrollHeight : 0);
     }
   }, [isOpen, filters, availableTags]);
