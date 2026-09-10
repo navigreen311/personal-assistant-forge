@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
       }> = [];
 
       try {
-        const contacts = await (prisma as any).contact.findMany({
+        const contacts = await prisma.contact.findMany({
           where: {
             entityId,
             deletedAt: null,

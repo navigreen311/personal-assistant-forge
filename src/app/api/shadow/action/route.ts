@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
           content: `Action response: ${userResponse}`,
           contentType: 'TEXT',
           channel: voiceSession.currentChannel,
-          actionsTaken: [{ actionId, response: userResponse, respondedAt: new Date().toISOString() }] as any,
+          actionsTaken: [{ actionId, response: userResponse, respondedAt: new Date().toISOString() }],
         },
       });
 
