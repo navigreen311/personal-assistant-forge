@@ -234,7 +234,23 @@ async function dataOf<T>(res: Response, what: string): Promise<T> {
  * trigger into the queue — not a hand-rolled `queue.add` that would prove only
  * that BullMQ works.
  */
-function graphThatReachesTheQueue(taskId: string, untilMs: number) {
+/**
+ * How long the DELAY node defers the run for.
+ *
+ * `scheduleDelay` waits INLINE for a FIXED delay of 5000ms or less and only
+ * re-enqueues above that, so this must exceed 5000 or the leg silently stops
+ * testing the queue and starts testing `setTimeout`.
+ *
+ * FIXED rather than UNTIL deliberately. An `UNTIL` target is wall-clock, fixed
+ * when the workflow is CREATED and evaluated when the node RUNS — so on a slow
+ * runner the target can already be in the past by then, `scheduleDelay` returns
+ * "Target time is in the past", nothing is enqueued, and the test fails 30
+ * seconds later on a wait for a job that was never made. A FIXED delay is
+ * measured from the moment the node runs and cannot expire in transit.
+ */
+const QUEUE_HANDOFF_DELAY_MS = 5_001;
+
+function graphThatReachesTheQueue(taskId: string) {
   return {
     nodes: [
       {
@@ -265,8 +281,8 @@ function graphThatReachesTheQueue(taskId: string, untilMs: number) {
         label: 'Hand off to the queue',
         config: {
           nodeType: 'DELAY',
-          delayType: 'UNTIL',
-          delayUntil: new Date(untilMs).toISOString(),
+          delayType: 'FIXED',
+          delayMs: QUEUE_HANDOFF_DELAY_MS,
         },
         position: { x: 400, y: 0 },
         inputs: ['in'],
@@ -415,7 +431,7 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
           name: 'On task created',
           entityId: entityA.id,
           triggers: [{ triggerType: 'EVENT', config: { entity: 'task', event: 'created' } }],
-          graph: graphThatReachesTheQueue(task.id, Date.now() + 1500),
+          graph: graphThatReachesTheQueue(task.id),
         },
       })),
       'create workflow'
@@ -441,6 +457,17 @@ describe('T-033 — the audit scenario, as one continuous story', () => {
     expect(
       (await db.task.findUniqueOrThrow({ where: { id: task.id } })).status
     ).toBe('IN_PROGRESS');
+
+    // Nothing has reached the queue's CONSUMER yet: the job is sitting in Redis
+    // under a five-second delay. Asserting that first is what makes the wait
+    // below evidence of a worker rather than of the inline run, which has
+    // already finished — and the distinction is sharp, because the inline run
+    // did leave a row: `handleUpdateRecord` logs UPDATE_RECORD for the task it
+    // just changed. Only `WORKFLOW_STEP_*` rows come from
+    // src/lib/queue/workflow-worker.ts, and there are none of those yet.
+    expect(
+      (await db.actionLog.findMany()).map((r) => r.actionType)
+    ).toEqual(['UPDATE_RECORD']);
 
     // The queue half: the DELAY node handed this same execution id to BullMQ,
     // and the worker the container starts picked it up and wrote to Postgres.
