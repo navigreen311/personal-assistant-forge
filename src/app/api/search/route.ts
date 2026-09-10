@@ -62,10 +62,11 @@ export async function GET(req: NextRequest) {
     const dateFromStr = params.get('dateFrom');
     const dateToStr = params.get('dateTo');
 
-    // `entityId` is the verified scope and is set unconditionally -- there is no
-    // longer a code path that reaches the search layer without one.
+    // P-26: the scope is no longer a FIELD on this bag at all
+    // (tenancy-pattern.md §2). The bag is caller-supplied and nothing else;
+    // `entityId` travels as its own leading argument below, typed
+    // `VerifiedEntityId`, so a route that forgot it would not compile.
     const filters: SearchFilter = {
-      entityId,
       model: type ?? undefined,
       dateFrom: dateFromStr ? new Date(dateFromStr) : undefined,
       dateTo: dateToStr ? new Date(dateToStr) : undefined,
@@ -75,8 +76,8 @@ export async function GET(req: NextRequest) {
 
     try {
       const result = type
-        ? await searchByType({ query: q, type, filters, limit, offset })
-        : await search({ query: q, filters, limit, offset });
+        ? await searchByType(entityId, { query: q, type, filters, limit, offset })
+        : await search(entityId, { query: q, filters, limit, offset });
 
       return success(result);
     } catch (err) {

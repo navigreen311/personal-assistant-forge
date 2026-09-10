@@ -823,9 +823,9 @@ describe('GET /api/search', () => {
   });
 
   /**
-   * A FINDING, not a fix, and not caused by this package.
+   * WAS a P-23 FINDING, pinned rather than repaired. FIXED BY P-26.
    *
-   * `getSearchSuggestions` in `src/lib/search/index.ts` issues
+   * `getSearchSuggestions` in `src/lib/search/index.ts` issued
    *
    *     SELECT DISTINCT title FROM "Task"
    *     WHERE "entityId" = $1 AND title ILIKE $2
@@ -833,22 +833,30 @@ describe('GET /api/search', () => {
    *
    * which Postgres rejects outright: 42P10, "for SELECT DISTINCT, ORDER BY
    * expressions must appear in select list". `GET /api/search?suggestions=true`
-   * has therefore never worked against a real database, for any tenant, and the
-   * route does not catch it -- the rejection escapes the handler rather than
+   * had therefore never worked against a real database, for any tenant, and the
+   * route did not catch it -- the rejection escaped the handler rather than
    * becoming a 4xx/5xx response body.
    *
    * It was invisible because `tests/unit/search/unified.test.ts` mocks
-   * `prisma.$queryRawUnsafe` and returns rows, so the invalid SQL is never sent.
-   * The suite is green and the endpoint is dead.
+   * `prisma.$queryRawUnsafe` and returns rows, so the invalid SQL was never
+   * sent. The suite was green and the endpoint was dead.
    *
-   * `src/lib/search/index.ts` is outside the P-23 file list, so this pins the
-   * behaviour rather than repairing it. Change the assertion to a 200 when the
-   * query is fixed -- the tenancy half above already passes and is independent.
+   * `src/lib/search/index.ts` was outside the P-23 file list, so P-23 pinned
+   * the behaviour and left the instruction: "change the assertion to a 200 when
+   * the query is fixed". P-26 owns that file, rewrote the statement as
+   * `GROUP BY title ORDER BY MAX("updatedAt") DESC`, and this is that change --
+   * the ONLY line P-26 altered in this file. The full repair, including the
+   * ordering and distinctness the old query was reaching for, is proved in
+   * `tests/db/search.test.ts`.
    */
-  it('FINDING: an owner-scoped suggestions query is broken in Postgres (pre-existing)', async () => {
-    await expect(
-      searchGET(requestAs(tenantA, '/api/search?suggestions=true&q=Alpha'))
-    ).rejects.toThrow(/SELECT DISTINCT/);
+  it('an owner-scoped suggestions query works (P-23 finding, repaired by P-26)', async () => {
+    const res = await searchGET(
+      requestAs(tenantA, '/api/search?suggestions=true&q=Alpha')
+    );
+
+    expect(res.status).toBe(200);
+    const body = await readJson<OkBody<{ suggestions: string[] }>>(res);
+    expect(body.data.suggestions).toContain('Alpha quarterly review');
   });
 
   it('a session with NO active entity gets a refusal, not a global search', async () => {

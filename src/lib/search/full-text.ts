@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 // ---------------------------------------------------------------------------
 // Searchable Model Registry
@@ -10,6 +11,13 @@ export interface SearchableModel {
   searchFields: string[];
   titleField: string;
   weights: Record<string, 'A' | 'B' | 'C' | 'D'>;
+  /**
+   * Whether the table has a `deletedAt` column. Four of the five do;
+   * `KnowledgeEntry` does not, and asking for a column that is not there is
+   * error 42703 -- the same class of never-worked defect this package exists
+   * to remove, so the flag is per-model rather than assumed.
+   */
+  softDelete: boolean;
 }
 
 export const SEARCHABLE_MODELS: SearchableModel[] = [
@@ -19,6 +27,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['title', 'description'],
     titleField: 'title',
     weights: { title: 'A', description: 'B' },
+    softDelete: true,
   },
   {
     model: 'message',
@@ -26,6 +35,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['subject', 'body'],
     titleField: 'subject',
     weights: { subject: 'A', body: 'B' },
+    softDelete: true,
   },
   {
     model: 'document',
@@ -33,6 +43,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['title', 'content'],
     titleField: 'title',
     weights: { title: 'A', content: 'C' },
+    softDelete: true,
   },
   {
     model: 'knowledgeEntry',
@@ -40,6 +51,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['content'],
     titleField: 'content',
     weights: { content: 'B' },
+    softDelete: false,
   },
   {
     model: 'contact',
@@ -47,6 +59,7 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
     searchFields: ['name', 'email'],
     titleField: 'name',
     weights: { name: 'A', email: 'C' },
+    softDelete: true,
   },
 ];
 
@@ -54,13 +67,29 @@ export const SEARCHABLE_MODELS: SearchableModel[] = [
 // Search Types
 // ---------------------------------------------------------------------------
 
+/**
+ * The caller-supplied filter bag. It has NO `entityId`, deliberately.
+ *
+ * tenancy-pattern.md §2: a filter bag parsed wholesale off the query string
+ * must not carry the scope as a field, or the caller supplies their own scope
+ * again. Every entry point below therefore takes `entityId: VerifiedEntityId`
+ * as its own required argument, which a raw request value cannot satisfy.
+ */
 export interface SearchFilter {
-  entityId?: string;
   model?: string;
   dateFrom?: Date;
   dateTo?: Date;
   status?: string;
   priority?: string;
+}
+
+/**
+ * What was actually applied, echoed back to the client. `entityId` is a plain
+ * `string` here on purpose: this is an outbound DTO, not something a caller can
+ * feed back into a query builder.
+ */
+export interface AppliedSearchFilter extends SearchFilter {
+  entityId: string;
 }
 
 export interface SearchResult {
@@ -79,7 +108,7 @@ export interface SearchResponse {
   results: SearchResult[];
   total: number;
   query: string;
-  filters: SearchFilter;
+  filters: AppliedSearchFilter;
   searchTimeMs: number;
 }
 
@@ -262,11 +291,17 @@ export function buildResultUrl(model: string, id: string, entityId: string): str
 export function buildSearchQuery(params: {
   model: SearchableModel;
   query: string;
+  /**
+   * The verified tenant scope. Required, and branded: a value read off a
+   * request is a plain `string` and will not compile here. There is no code
+   * path through this builder that emits a WHERE without it.
+   */
+  entityId: VerifiedEntityId;
   filters: SearchFilter;
   limit: number;
   offset: number;
 }): { sql: string; params: unknown[] } {
-  const { model, query, filters, limit, offset } = params;
+  const { model, query, entityId, filters, limit, offset } = params;
   const tsquery = parseSearchQuery(query);
 
   if (!tsquery) {
@@ -288,13 +323,6 @@ export function buildSearchQuery(params: {
   conditions.push(`(${tsvector}) @@ to_tsquery('english', $${paramIndex})`);
   sqlParams.push(tsquery);
   paramIndex++;
-
-  // Entity filter
-  if (filters.entityId) {
-    conditions.push(`"entityId" = $${paramIndex}`);
-    sqlParams.push(filters.entityId);
-    paramIndex++;
-  }
 
   // Date range
   if (filters.dateFrom) {
@@ -321,6 +349,20 @@ export function buildSearchQuery(params: {
     sqlParams.push(filters.priority);
     paramIndex++;
   }
+
+  // Soft-deleted rows are not searchable. Every other list surface in the repo
+  // filters `deletedAt: null` (64 sites); search did not, so a "deleted"
+  // document was still readable in full through /api/search and still offered
+  // by autocomplete. See the PR -- this is a deliberate behaviour change.
+  if (model.softDelete) {
+    conditions.push(`"deletedAt" IS NULL`);
+  }
+
+  // The scope goes on LAST and UNCONDITIONALLY (tenancy-pattern.md §3), so no
+  // combination of the filters above can widen it.
+  conditions.push(`"entityId" = $${paramIndex}`);
+  sqlParams.push(entityId);
+  paramIndex++;
 
   const whereClause = conditions.join(' AND ');
 
@@ -358,9 +400,10 @@ export function buildSearchQuery(params: {
 function buildCountQuery(params: {
   model: SearchableModel;
   query: string;
+  entityId: VerifiedEntityId;
   filters: SearchFilter;
 }): { sql: string; params: unknown[] } {
-  const { model, query, filters } = params;
+  const { model, query, entityId, filters } = params;
   const tsquery = parseSearchQuery(query);
 
   if (!tsquery) {
@@ -381,11 +424,6 @@ function buildCountQuery(params: {
   sqlParams.push(tsquery);
   paramIndex++;
 
-  if (filters.entityId) {
-    conditions.push(`"entityId" = $${paramIndex}`);
-    sqlParams.push(filters.entityId);
-    paramIndex++;
-  }
   if (filters.dateFrom) {
     conditions.push(`"createdAt" >= $${paramIndex}`);
     sqlParams.push(filters.dateFrom);
@@ -407,6 +445,15 @@ function buildCountQuery(params: {
     paramIndex++;
   }
 
+  if (model.softDelete) {
+    conditions.push(`"deletedAt" IS NULL`);
+  }
+
+  // Scope last and unconditional, exactly as in the data query.
+  conditions.push(`"entityId" = $${paramIndex}`);
+  sqlParams.push(entityId);
+  paramIndex++;
+
   const sql = `SELECT COUNT(*)::int AS count FROM ${model.table} WHERE ${conditions.join(' AND ')}`;
   return { sql, params: sqlParams };
 }
@@ -418,18 +465,19 @@ function buildCountQuery(params: {
 export async function searchModel(params: {
   model: SearchableModel;
   query: string;
+  entityId: VerifiedEntityId;
   filters: SearchFilter;
   limit?: number;
   offset?: number;
 }): Promise<{ results: SearchResult[]; total: number }> {
-  const { model, query, filters, limit = 20, offset = 0 } = params;
+  const { model, query, entityId, filters, limit = 20, offset = 0 } = params;
 
-  const built = buildSearchQuery({ model, query, filters, limit, offset });
+  const built = buildSearchQuery({ model, query, entityId, filters, limit, offset });
   if (!built.sql) {
     return { results: [], total: 0 };
   }
 
-  const countBuilt = buildCountQuery({ model, query, filters });
+  const countBuilt = buildCountQuery({ model, query, entityId, filters });
 
   const [rows, countRows] = await Promise.all([
     prisma.$queryRawUnsafe(built.sql, ...built.params) as Promise<Record<string, unknown>[]>,

@@ -13,6 +13,14 @@ import {
   SEARCHABLE_MODELS,
   type SearchableModel,
 } from '@/lib/search/full-text';
+import { verifiedEntityIdForTest } from '../../helpers/factories';
+
+// P-26: the builder now REQUIRES a VerifiedEntityId. Every case below used to
+// be able to pass `filters: {}` and get SQL with no WHERE on "entityId" at all.
+// That was not a gap in the tests -- it was the tests recording, accurately,
+// that an unscoped query was constructible. It no longer is: a caller without
+// a scope does not compile.
+const SCOPE = verifiedEntityIdForTest('entity-123');
 
 // ---------------------------------------------------------------------------
 // parseSearchQuery
@@ -85,6 +93,7 @@ describe('Full-Text Search', () => {
       const { sql, params } = buildSearchQuery({
         model: taskModel,
         query: 'important',
+        entityId: SCOPE,
         filters: {},
         limit: 20,
         offset: 0,
@@ -97,17 +106,44 @@ describe('Full-Text Search', () => {
       expect(params[0]).toBe('important');
     });
 
-    it('should include entity filter when provided', () => {
+    // WAS: 'should include entity filter when provided'. "When provided" was
+    // the defect in four words -- the scope was optional, and an omitted one
+    // produced a query across every tenant. It is not provided any more; it is
+    // structural, so the assertion is that it is ALWAYS there.
+    it('scopes to the entity even when the filter bag is empty', () => {
       const { sql, params } = buildSearchQuery({
         model: taskModel,
         query: 'test',
-        filters: { entityId: 'entity-123' },
+        entityId: SCOPE,
+        filters: {},
         limit: 20,
         offset: 0,
       });
 
       expect(sql).toContain('"entityId"');
       expect(params).toContain('entity-123');
+    });
+
+    it('cannot be widened by any combination of the other filters', () => {
+      for (const filters of [
+        {},
+        { status: 'TODO' },
+        { priority: 'P0' },
+        { dateFrom: new Date('2024-01-01') },
+        { status: 'TODO', priority: 'P0', dateTo: new Date('2024-12-31') },
+      ]) {
+        const { sql, params } = buildSearchQuery({
+          model: taskModel,
+          query: 'test',
+          entityId: SCOPE,
+          filters,
+          limit: 20,
+          offset: 0,
+        });
+
+        expect(sql).toContain('"entityId"');
+        expect(params).toContain('entity-123');
+      }
     });
 
     it('should include date range filters', () => {
@@ -117,6 +153,7 @@ describe('Full-Text Search', () => {
       const { sql, params } = buildSearchQuery({
         model: taskModel,
         query: 'test',
+        entityId: SCOPE,
         filters: { dateFrom, dateTo },
         limit: 20,
         offset: 0,
@@ -132,6 +169,7 @@ describe('Full-Text Search', () => {
       const { sql, params } = buildSearchQuery({
         model: taskModel,
         query: 'test',
+        entityId: SCOPE,
         filters: {},
         limit: 10,
         offset: 5,
@@ -147,7 +185,8 @@ describe('Full-Text Search', () => {
       const { sql, params } = buildSearchQuery({
         model: taskModel,
         query: "'; DROP TABLE Task;--",
-        filters: { entityId: "'; DELETE FROM Entity;--" },
+        entityId: verifiedEntityIdForTest("'; DELETE FROM Entity;--"),
+        filters: {},
         limit: 20,
         offset: 0,
       });
@@ -163,6 +202,7 @@ describe('Full-Text Search', () => {
       const { sql } = buildSearchQuery({
         model: taskModel,
         query: '',
+        entityId: SCOPE,
         filters: {},
         limit: 20,
         offset: 0,
