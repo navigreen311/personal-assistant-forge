@@ -915,3 +915,35 @@ attached.
     `Task.completedAt`; `NotificationPreference`; `VafFallbackEvent`.
 12. T-013 Sentry and T-025 metrics — never dispatched. The platform still has no
     error reporting and no metrics.
+
+
+---
+
+# STEP 6 SCOPING — the "64 in-memory stores" number, measured properly
+
+A raw grep for `new Map<` / `new Set<` in `src/` returns **198**. That number is
+useless, and quoting it would be the fourth time a naive count on this repository
+has been reported as a finding.
+
+  * **77 are function-local** — an ordinary data structure inside a function
+    body. Not a store, nothing to persist, no defect.
+  * **69 are module-level**, which is the real surface (the audit's "64", plus
+    packages merged since).
+  * **4 of those 69 are `src/lib/observability/`** — P-28's recorder, which is
+    process-local **by design and documented as such**, because the schema is
+    frozen and there is no table to write to. Fixing them would be wrong.
+
+Spread across ~25 areas: `modules/shadow` 11, `modules/knowledge` 11,
+`modules/analytics` 11, `lib/integrations` 11, `modules/attention` 9,
+`modules/tasks` 8, `modules/ai-quality` 8, `modules/finance` 7, then a long tail.
+
+**So this is not one package and must not be dispatched as one.** It touches
+every module, which means it conflicts with everything, and a bulk "persist all
+the Maps" pass would convert deliberate caches into schema requests.
+
+The scoping criterion is not the count. It is: **does losing this on restart
+change what a user sees?** A cache that repopulates is correct as it stands; a
+store holding the only copy of a user's state is a data-loss bug. Those two look
+identical to a grep and must be separated by reading each one. That separation is
+the first deliverable of whoever takes Step 6 — before any persistence is written,
+and it will need a schema window, since the schema has been frozen since P-00.
