@@ -10,14 +10,15 @@ import type {
   SmsInboundParams,
   SmsInboundResult,
   CallSummaryParams,
-  TrustedDevice,
   TwilioConfig,
 } from './phone-types';
 import { getTwilioConfig, isTwilioConfigured } from './phone-types';
+import { findActiveDeviceByPhone, findPhoneForUser } from './trusted-devices';
 
 // ─── In-Memory Stores (production: replace with DB/Redis) ──────────────────
 
-const trustedDevices = new Map<string, TrustedDevice[]>();
+// P-33: `trustedDevices` (Map<userId, TrustedDevice[]>) is now the
+// `ShadowTrustedDevice` table, read through `./trusted-devices`.
 const smsLog: Array<{
   messageSid: string;
   to: string;
@@ -34,15 +35,8 @@ function generateId(prefix: string): string {
 // ─── Store Management (for testing) ────────────────────────────────────────
 
 export function _resetStores(): void {
-  trustedDevices.clear();
   smsLog.length = 0;
   idCounter = 0;
-}
-
-export function _addTrustedDevice(userId: string, device: TrustedDevice): void {
-  const existing = trustedDevices.get(userId) ?? [];
-  existing.push(device);
-  trustedDevices.set(userId, existing);
 }
 
 export function _getSmsLog(): typeof smsLog {
@@ -77,7 +71,7 @@ export class ShadowSMS {
     const { userId, to, body, deepLink } = params;
 
     // Resolve recipient phone number
-    const recipient = to ? normalizePhoneNumber(to) : this.getPhoneForUser(userId);
+    const recipient = to ? normalizePhoneNumber(to) : await this.getPhoneForUser(userId);
     if (!recipient) {
       throw new Error(`No phone number found for user ${userId}`);
     }
@@ -162,7 +156,7 @@ export class ShadowSMS {
     });
 
     // Identify the sender
-    const sender = this.findUserByPhone(normalizedFrom);
+    const sender = await this.findUserByPhone(normalizedFrom);
     if (!sender) {
       return {
         response: 'Sorry, I don\'t recognize this number. Please set up your device in Shadow settings first.',
@@ -207,24 +201,16 @@ export class ShadowSMS {
   /**
    * Get the primary phone number for a user from trusted devices.
    */
-  private getPhoneForUser(userId: string): string {
-    const devices = trustedDevices.get(userId) ?? [];
-    const verified = devices.find((d) => d.verified);
-    return verified?.phoneNumber ?? '';
+  private async getPhoneForUser(userId: string): Promise<string> {
+    return findPhoneForUser(userId);
   }
 
   /**
    * Find a user by their phone number across all trusted devices.
    */
-  private findUserByPhone(phone: string): { userId: string; label: string } | null {
-    for (const [userId, devices] of trustedDevices.entries()) {
-      for (const device of devices) {
-        if (normalizePhoneNumber(device.phoneNumber) === phone && device.verified) {
-          return { userId, label: device.label };
-        }
-      }
-    }
-    return null;
+  private async findUserByPhone(phone: string): Promise<{ userId: string; label: string } | null> {
+    const device = await findActiveDeviceByPhone(phone);
+    return device ? { userId: device.userId, label: device.label } : null;
   }
 
   /**

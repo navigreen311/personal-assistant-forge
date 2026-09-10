@@ -59,6 +59,70 @@ jest.mock('@/lib/db', () => ({
     shadowAuthEvent: {
       create: jest.fn(),
     },
+    // P-33: `smsCodeStore` (a module-level Map) is now the `ShadowSmsCode`
+    // table. The five SMS tests below were a real send -> verify round trip
+    // against that Map, and replacing it with `jest.fn()` stubs would have
+    // turned them into assertions about the mock. So the delegate is a fake
+    // table with the semantics the code depends on -- `cacheKey` uniqueness,
+    // an `attempts` counter that persists between calls, and delete-on-read --
+    // and the tests keep testing expiry, single-use and the attempt lockout at
+    // full strength.
+    //
+    // The fake proves the LOGIC. It cannot prove PERSISTENCE, because a Map
+    // inside a mock factory is exactly the thing that was wrong. That half is
+    // proved against real Postgres, across a `jest.resetModules()` restart, in
+    // `tests/db/store-persistence.test.ts`.
+    shadowSmsCode: (() => {
+      const rows = new Map<string, { cacheKey: string; code: string; attempts: number; expiresAt: Date }>();
+      return {
+        __rows: rows,
+        upsert: jest.fn(
+          async ({ where, create, update }: {
+            where: { cacheKey: string };
+            create: { cacheKey: string; code: string; attempts: number; expiresAt: Date };
+            update: { code: string; attempts: number; expiresAt: Date };
+          }) => {
+            const existing = rows.get(where.cacheKey);
+            const row = existing ? { ...existing, ...update } : { ...create };
+            rows.set(where.cacheKey, row);
+            return row;
+          }
+        ),
+        findUnique: jest.fn(async ({ where }: { where: { cacheKey: string } }) => {
+          const row = rows.get(where.cacheKey);
+          return row ? { ...row } : null;
+        }),
+        update: jest.fn(
+          async ({ where, data }: {
+            where: { cacheKey: string };
+            data: { attempts?: { increment: number } };
+          }) => {
+            const row = rows.get(where.cacheKey);
+            if (!row) throw new Error('Record to update not found.');
+            if (data.attempts?.increment) row.attempts += data.attempts.increment;
+            return { ...row };
+          }
+        ),
+        deleteMany: jest.fn(
+          async ({ where }: {
+            where?: { cacheKey?: string; expiresAt?: { lt: Date } };
+          } = {}) => {
+            if (where?.cacheKey !== undefined) {
+              return { count: rows.delete(where.cacheKey) ? 1 : 0 };
+            }
+            const cutoff = where?.expiresAt?.lt;
+            let count = 0;
+            for (const [key, row] of rows) {
+              if (!cutoff || row.expiresAt.getTime() < cutoff.getTime()) {
+                rows.delete(key);
+                count++;
+              }
+            }
+            return { count };
+          }
+        ),
+      };
+    })(),
     shadowConsentReceipt: {
       create: jest.fn(),
       findMany: jest.fn(),

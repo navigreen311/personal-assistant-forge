@@ -16,6 +16,7 @@ import type {
   TwilioConfig,
 } from './phone-types';
 import { getTwilioConfig, isTwilioConfigured } from './phone-types';
+import { findActiveDeviceForUser } from './trusted-devices';
 
 // ─── Default Configuration ─────────────────────────────────────────────────
 
@@ -34,7 +35,8 @@ const DEFAULT_RATE_LIMIT: CallRateLimitConfig = {
 
 // ─── In-Memory Stores (production: replace with DB/Redis) ──────────────────
 
-const trustedDevices = new Map<string, TrustedDevice[]>();
+// P-33: `trustedDevices` (Map<userId, TrustedDevice[]>) is now the
+// `ShadowTrustedDevice` table, read through `./trusted-devices`.
 const outboundCallLog = new Map<string, { timestamp: Date; callSid: string }[]>();
 const activeOutboundSessions = new Map<string, PhoneCallSession>();
 
@@ -46,16 +48,9 @@ function generateId(prefix: string): string {
 // ─── Store Management (for testing) ────────────────────────────────────────
 
 export function _resetStores(): void {
-  trustedDevices.clear();
   outboundCallLog.clear();
   activeOutboundSessions.clear();
   idCounter = 0;
-}
-
-export function _addTrustedDevice(userId: string, device: TrustedDevice): void {
-  const existing = trustedDevices.get(userId) ?? [];
-  existing.push(device);
-  trustedDevices.set(userId, existing);
 }
 
 export function _addCallLogEntry(userId: string, entry: { timestamp: Date; callSid: string }): void {
@@ -93,7 +88,7 @@ export class PhoneOutboundHandler {
     const { userId, reason, priority, content, sessionId } = params;
 
     // 1. Look up trusted device for user
-    const device = this.getTrustedDevice(userId);
+    const device = await this.getTrustedDevice(userId);
     if (!device) {
       throw new Error(`No trusted phone number found for user ${userId}`);
     }
@@ -208,7 +203,7 @@ export class PhoneOutboundHandler {
     builder.hangup();
 
     // Send SMS follow-up with full details
-    const device = this.getTrustedDevice(userId);
+    const device = await this.getTrustedDevice(userId);
     if (device) {
       await this.sendVoicemailSMS(device.phoneNumber, content);
     }
@@ -306,7 +301,7 @@ export class PhoneOutboundHandler {
       case 'failed':
       case 'canceled':
         // Send SMS notification that we tried to call
-        const device = this.getTrustedDevice(userId);
+        const device = await this.getTrustedDevice(userId);
         if (device && callStatus !== 'failed') {
           await this.sendMissedCallSMS(device.phoneNumber, callStatus);
         }
@@ -379,10 +374,8 @@ export class PhoneOutboundHandler {
   /**
    * Get the primary trusted device for a user.
    */
-  private getTrustedDevice(userId: string): TrustedDevice | null {
-    const devices = trustedDevices.get(userId) ?? [];
-    const verified = devices.find((d) => d.verified);
-    return verified ?? null;
+  private async getTrustedDevice(userId: string): Promise<TrustedDevice | null> {
+    return findActiveDeviceForUser(userId);
   }
 
   /**

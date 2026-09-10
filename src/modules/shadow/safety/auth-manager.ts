@@ -75,12 +75,6 @@ export interface VerifyVoiceprintForActionResult {
   antiSpoofPassed: boolean;
 }
 
-interface StoredSmsCode {
-  code: string;
-  expiresAt: number;
-  attempts: number;
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -103,27 +97,73 @@ const BLAST_RADIUS_ORDER: Record<BlastRadiusScope, number> = {
 };
 
 // ---------------------------------------------------------------------------
-// In-memory SMS code store (production would use Redis or Prisma temp table)
+// SMS code storage
 // ---------------------------------------------------------------------------
-
-const smsCodeStore = new Map<string, StoredSmsCode>();
+//
+// P-33: this was `const smsCodeStore = new Map<string, StoredSmsCode>()`, with a
+// comment reading "production would use Redis or Prisma temp table" and a
+// `setInterval(cleanExpiredCodes, 60_000)` sweeper beside it.
+//
+// The Prisma table it was asking for already exists, and has since P-00. Its
+// doc-comment in the schema names this exact line:
+//
+//     /// T-007 - replaces shadow/safety/auth-manager.ts:109.
+//     /// In-flight second factors vanishing on restart strand a user
+//     /// mid-verification.
+//     model ShadowSmsCode { cacheKey @unique, code, attempts, expiresAt, ... }
+//
+// P-00 shipped eleven `T-007 - replaces ...` models. Ten of them are wired
+// (`executionGateRule`, `queuedAction`, `rollbackPlan`, `workflowApproval`,
+// `deadManSwitch`, `role`, `userRoleAssignment`, `eSignRequest`,
+// `workflowExecutionRecord`, `runbookExecution` all appear in `src/`).
+// `prisma.shadowSmsCode` appeared ZERO times -- the one that was left behind is
+// the second factor. The table was provably always empty, and
+// `tests/db/control-plane-schema.test.ts` was green over it because it only
+// asserts the table can be counted.
+//
+// This class already writes `shadowSafetyConfig`, `shadowTrustedDevice`,
+// `shadowAuthEvent` and `vafIntegrationConfig`, so it was never a module
+// without database access -- it was one Map left in an otherwise-persisted
+// service.
+//
+// Consequences that are now closed:
+//   - any deploy, crash, or serverless cold start between send and verify
+//     invalidated every outstanding code (`verifySmsCode` returns false, which
+//     is indistinguishable from a wrong code);
+//   - the SMS_MAX_ATTEMPTS=3 brute-force lockout reset to zero on the same
+//     event, so an attacker could reset their attempt budget at will if they
+//     could provoke a restart -- and on a multi-instance deploy did not even
+//     need to, because each instance had its own Map and its own counter.
+//
+// `@@index([expiresAt])` replaces the 60-second sweeper: expiry is enforced on
+// read, and `purgeExpiredSmsCodes()` below is the sweep, callable by a job
+// rather than by a module-load timer that also kept the process alive.
 
 /**
- * Clean up expired SMS codes periodically.
- * In production, use Redis TTL or a cron job against Prisma.
+ * Delete a user's outstanding code, tolerating its absence.
+ *
+ * `deleteMany` rather than `delete` on purpose: `delete` throws P2025 when the
+ * row is already gone, and two concurrent verifies (a double-tapped submit) can
+ * both reach the delete. `Map.delete` was idempotent, so using `delete` here
+ * would have quietly traded a Map for a 500 on the 2FA endpoint.
  */
-function cleanExpiredCodes(): void {
-  const now = Date.now();
-  for (const [key, entry] of smsCodeStore.entries()) {
-    if (entry.expiresAt < now) {
-      smsCodeStore.delete(key);
-    }
-  }
+async function consumeSmsCode(userId: string): Promise<void> {
+  await prisma.shadowSmsCode.deleteMany({ where: { cacheKey: userId } });
 }
 
-// Run cleanup every 60 seconds
-if (typeof setInterval !== 'undefined') {
-  setInterval(cleanExpiredCodes, 60_000);
+/**
+ * Expired codes are rejected on read; this is the optional bulk sweep.
+ *
+ * It has no caller yet, and that is deliberate rather than an oversight: this
+ * is the seam a maintenance job should use, and correctness does not depend on
+ * it running. Expiry is enforced in `verifySmsCode` against `expiresAt`, so an
+ * unswept row is already unusable — the sweep only reclaims space.
+ */
+export async function purgeExpiredSmsCodes(now: Date = new Date()): Promise<number> {
+  const { count } = await prisma.shadowSmsCode.deleteMany({
+    where: { expiresAt: { lt: now } },
+  });
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +218,10 @@ export class ShadowAuthManager {
    * Generate and "send" a 6-digit SMS verification code.
    * In production, this would integrate with Twilio. Currently mocked.
    *
-   * The code is stored in an in-memory Map with a 5-minute TTL.
+   * The code is written to `ShadowSmsCode` with a 5-minute TTL, keyed by
+   * `cacheKey = userId`. `cacheKey` is `@unique`, so a re-send replaces the
+   * outstanding code rather than leaving two live -- an `upsert`, which also
+   * resets `attempts` to 0 for the new code.
    */
   async sendSmsCode(userId: string): Promise<{ sent: boolean; expiresIn: number }> {
     // Generate a cryptographically random 6-digit code
@@ -186,21 +229,26 @@ export class ShadowAuthManager {
     const codeNum = codeBuffer.readUInt32BE(0) % 1_000_000;
     const code = codeNum.toString().padStart(SMS_CODE_LENGTH, '0');
 
-    const expiresAt = Date.now() + SMS_CODE_TTL_MS;
+    const expiresAt = new Date(Date.now() + SMS_CODE_TTL_MS);
 
-    smsCodeStore.set(userId, {
-      code,
-      expiresAt,
-      attempts: 0,
+    await prisma.shadowSmsCode.upsert({
+      where: { cacheKey: userId },
+      create: { cacheKey: userId, code, attempts: 0, expiresAt },
+      update: { code, attempts: 0, expiresAt },
     });
 
     // In production: send via Twilio
     // const device = await this.getPrimarySmsDevice(userId);
     // await twilioClient.messages.create({ to: device.phoneNumber, body: `Your code: ${code}` });
 
-    // Log the auth event
+    // Log the auth event.
+    // P-33: `userId` is passed now. It was in scope and omitted, which made the
+    // security audit trail unattributable -- `ShadowAuthEvent.userId` is
+    // nullable and `@@index([userId])`, so the column exists precisely to be
+    // queried by user. `continuous-voiceprint.ts` already fills it in.
     await prisma.shadowAuthEvent.create({
       data: {
+        userId,
         method: 'sms_code_sent',
         result: 'sent',
         riskLevel: 'info',
@@ -219,37 +267,47 @@ export class ShadowAuthManager {
    * Returns false if the code is expired, incorrect, or max attempts exceeded.
    */
   async verifySmsCode(userId: string, code: string): Promise<boolean> {
-    const stored = smsCodeStore.get(userId);
+    const stored = await prisma.shadowSmsCode.findUnique({
+      where: { cacheKey: userId },
+    });
 
     if (!stored) {
       return false;
     }
 
     // Check expiration
-    if (Date.now() > stored.expiresAt) {
-      smsCodeStore.delete(userId);
+    if (Date.now() > stored.expiresAt.getTime()) {
+      await consumeSmsCode(userId);
       return false;
     }
 
     // Check max attempts
     if (stored.attempts >= SMS_MAX_ATTEMPTS) {
-      smsCodeStore.delete(userId);
+      await consumeSmsCode(userId);
       return false;
     }
 
-    // Increment attempt count
-    stored.attempts += 1;
+    // Increment attempt count.
+    // The Map version mutated `stored.attempts` in place, which only counted
+    // because every attempt shared one object. A row has to be written back, or
+    // the lockout never advances past 1.
+    await prisma.shadowSmsCode.update({
+      where: { cacheKey: userId },
+      data: { attempts: { increment: 1 } },
+    });
 
     // Constant-time comparison to prevent timing attacks
     const isValid = timingSafeEqual(code, stored.code);
 
     if (isValid) {
-      smsCodeStore.delete(userId); // One-time use
+      // One-time use
+      await consumeSmsCode(userId);
     }
 
-    // Log the auth event
+    // Log the auth event (see sendSmsCode for why `userId` is filled in)
     await prisma.shadowAuthEvent.create({
       data: {
+        userId,
         method: 'sms_code_verify',
         result: isValid ? 'success' : 'failure',
         riskLevel: isValid ? 'info' : 'warning',
