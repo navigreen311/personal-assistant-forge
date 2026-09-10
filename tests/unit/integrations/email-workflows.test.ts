@@ -1,3 +1,23 @@
+import { FakeTable } from '../../fakes/prisma-table';
+
+// P-36 (ESC-3): `suppressedEmails` and `unsubscribeRecords` are now
+// `CommunicationOptOut` rows. A fake TABLE rather than stubs, because these
+// cases round-trip: record a bounce, then ask whether the address is
+// suppressed. The fake also reproduces Postgres's NULLS DISTINCT behaviour, so
+// the platform-wide hard-bounce rows behave here as they do in the database --
+// see tests/fakes/prisma-table.ts.
+//
+// It proves nothing about persistence. That is
+// tests/db/migration-window-01.test.ts, across a restart, on real Postgres.
+jest.mock('@/lib/db', () => ({ prisma: { communicationOptOut: makeOptOutTable() } }));
+
+function makeOptOutTable() {
+  return new FakeTable({
+    uniques: { channel_address_entityId_scope: ['channel', 'address', 'entityId', 'scope'] },
+    defaults: () => ({ entityId: null, scope: 'all', reason: null, optedOutAt: new Date() }),
+  });
+}
+
 import {
   scheduleEmail,
   cancelScheduledEmail,
@@ -19,8 +39,8 @@ jest.mock('@/lib/integrations/email/client', () => ({
 import { sendEmail } from '@/lib/integrations/email/client';
 const mockSendEmail = sendEmail as jest.MockedFunction<typeof sendEmail>;
 
-beforeEach(() => {
-  _resetStores();
+beforeEach(async () => {
+  await _resetStores();
   mockSendEmail.mockClear();
   mockSendEmail.mockResolvedValue(true);
 });
@@ -214,7 +234,7 @@ describe('Email Workflows', () => {
         reason: 'User not found',
       });
 
-      expect(isEmailSuppressed('hard@example.com')).toBe(true);
+      expect(await isEmailSuppressed('hard@example.com')).toBe(true);
     });
 
     it('should record soft bounce without suppressing', async () => {
@@ -224,7 +244,7 @@ describe('Email Workflows', () => {
         reason: 'Mailbox full',
       });
 
-      expect(isEmailSuppressed('soft@example.com')).toBe(false);
+      expect(await isEmailSuppressed('soft@example.com')).toBe(false);
     });
   });
 
@@ -233,11 +253,11 @@ describe('Email Workflows', () => {
   describe('isEmailSuppressed', () => {
     it('should return true for hard-bounced emails', async () => {
       await handleBounce({ email: 'test@example.com', type: 'hard', reason: 'Not found' });
-      expect(isEmailSuppressed('test@example.com')).toBe(true);
+      expect(await isEmailSuppressed('test@example.com')).toBe(true);
     });
 
-    it('should return false for non-bounced emails', () => {
-      expect(isEmailSuppressed('clean@example.com')).toBe(false);
+    it('should return false for non-bounced emails', async () => {
+      expect(await isEmailSuppressed('clean@example.com')).toBe(false);
     });
   });
 
@@ -250,7 +270,7 @@ describe('Email Workflows', () => {
         entityId: 'entity-1',
       });
 
-      expect(isUnsubscribed('user@example.com', 'entity-1')).toBe(true);
+      expect(await isUnsubscribed('user@example.com', 'entity-1')).toBe(true);
     });
 
     it('should check unsubscribe status correctly', async () => {
@@ -260,9 +280,9 @@ describe('Email Workflows', () => {
       });
 
       // Different entity should not be affected
-      expect(isUnsubscribed('user@example.com', 'entity-2')).toBe(false);
+      expect(await isUnsubscribed('user@example.com', 'entity-2')).toBe(false);
       // Different email should not be affected
-      expect(isUnsubscribed('other@example.com', 'entity-1')).toBe(false);
+      expect(await isUnsubscribed('other@example.com', 'entity-1')).toBe(false);
     });
 
     it('should handle category-specific unsubscribes', async () => {
@@ -272,8 +292,8 @@ describe('Email Workflows', () => {
         categories: ['marketing'],
       });
 
-      expect(isUnsubscribed('user@example.com', 'entity-1', 'marketing')).toBe(true);
-      expect(isUnsubscribed('user@example.com', 'entity-1', 'transactional')).toBe(false);
+      expect(await isUnsubscribed('user@example.com', 'entity-1', 'marketing')).toBe(true);
+      expect(await isUnsubscribed('user@example.com', 'entity-1', 'transactional')).toBe(false);
     });
   });
 
@@ -285,7 +305,7 @@ describe('Email Workflows', () => {
       await handleBounce({ email: 'b@example.com', type: 'soft', reason: 'Full' });
       await handleUnsubscribe({ email: 'c@example.com', entityId: 'entity-1' });
 
-      const stats = getDeliverabilityStats('entity-1');
+      const stats = await getDeliverabilityStats('entity-1');
 
       expect(stats.totalBounces).toBe(2);
       expect(stats.hardBounces).toBe(1);

@@ -103,7 +103,7 @@ let tenantA: Tenant;
 let tenantB: Tenant;
 
 beforeEach(async () => {
-  _resetStore();
+  await _resetStore();
   const pair = await createTwoTenants();
   tenantA = pair.tenantA;
   tenantB = pair.tenantB;

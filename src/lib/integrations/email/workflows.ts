@@ -1,7 +1,41 @@
 // Email Workflows - Scheduling, batching, bounce handling, and unsubscribe management
 
+import {
+  hasOptedOut,
+  listOptOuts,
+  recordOptOut,
+  _resetOptOuts,
+} from '@/lib/integrations/communication/opt-outs';
 import { sendEmail } from '@/lib/integrations/email/client';
 import { getEmailTemplate, renderTemplate } from '@/lib/integrations/email/templates';
+
+// P-36 (ESC-3, migration window 01): `suppressedEmails` (:53) and
+// `unsubscribeRecords` (:54) are now `CommunicationOptOut` rows, reached
+// through lib/integrations/communication/opt-outs.ts. That file carries the
+// reasoning, including why `Contact.preferences` cannot hold a suppression list
+// and why the authorized @@unique does not constrain the platform-wide rows.
+//
+// `isEmailSuppressed` and `isUnsubscribed` are consequently ASYNC. They were
+// synchronous only because a Set is; a suppression check that has to be right
+// after a restart is a database read, and the signature should say so.
+//
+// STILL VOLATILE, deliberately and visibly: `bounceRecords` (:52). It is a
+// bounce LOG, not a suppression list -- it records soft bounces, which must NOT
+// suppress -- and the authorized model cannot hold it: a soft bounce followed
+// by a hard bounce for one address collides on
+// `@@unique([channel, address, entityId, scope])`, so storing both would either
+// throw or force a scope value invented to dodge the constraint. The durable
+// half is the part that gates a send: a hard bounce writes a
+// `source: 'hard_bounce'` row and `isEmailSuppressed` reads it. The log needs
+// its own table and is escalated rather than smuggled into this one.
+//
+// NOT FIXED HERE, and named so it is not mistaken for fixed: `sendBatchEmails`
+// checks `isEmailSuppressed` (hard bounces) and never calls `isUnsubscribed`.
+// A durable unsubscribe list that no send path consults is still a violation.
+// The fix is a real `entityId` on the send path, not an optional parameter no
+// caller passes -- an advertised control that does nothing is worse than an
+// absent one, which is the argument P-18 used when it deleted the constant
+// X-RateLimit headers rather than persisting them. See the PR body.
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -50,8 +84,6 @@ export interface UnsubscribeRecord {
 
 const scheduledEmails = new Map<string, ScheduledEmail>();
 const bounceRecords: BounceRecord[] = [];
-const suppressedEmails = new Set<string>();
-const unsubscribeRecords: UnsubscribeRecord[] = [];
 const batchJobs = new Map<string, BatchEmailJob>();
 
 // ─── ID Generator ──────────────────────────────────────────────────────────────
@@ -63,13 +95,12 @@ function generateId(prefix: string): string {
 
 // ─── Store Reset (for testing) ─────────────────────────────────────────────────
 
-export function _resetStores(): void {
+export async function _resetStores(): Promise<void> {
   scheduledEmails.clear();
   bounceRecords.length = 0;
-  suppressedEmails.clear();
-  unsubscribeRecords.length = 0;
   batchJobs.clear();
   idCounter = 0;
+  await _resetOptOuts();
 }
 
 // ─── Delay Utility ─────────────────────────────────────────────────────────────
@@ -212,7 +243,7 @@ export async function sendBatchEmails(params: {
     const results = await Promise.allSettled(
       chunk.map(async (recipient) => {
         // Skip suppressed emails
-        if (isEmailSuppressed(recipient.email)) {
+        if (await isEmailSuppressed(recipient.email)) {
           return false;
         }
 
@@ -263,14 +294,28 @@ export async function handleBounce(params: {
 
   bounceRecords.push(record);
 
-  // Hard bounces permanently suppress the email
+  // Hard bounces permanently suppress the email, platform-wide: the mailbox
+  // does not exist, so no entity may send to it. `entityId: null` is that.
   if (params.type === 'hard') {
-    suppressedEmails.add(params.email);
+    await recordOptOut({
+      channel: 'email',
+      address: params.email,
+      entityId: null,
+      scope: 'all',
+      source: 'hard_bounce',
+      reason: params.reason,
+    });
   }
 }
 
-export function isEmailSuppressed(email: string): boolean {
-  return suppressedEmails.has(email);
+export async function isEmailSuppressed(email: string): Promise<boolean> {
+  return hasOptedOut({
+    channel: 'email',
+    address: email,
+    entityId: null,
+    scopes: ['all'],
+    source: 'hard_bounce',
+  });
 }
 
 // ─── Unsubscribe Handling ──────────────────────────────────────────────────────
@@ -281,42 +326,66 @@ export async function handleUnsubscribe(params: {
   categories?: string[];
   reason?: string;
 }): Promise<void> {
-  const record: UnsubscribeRecord = {
-    email: params.email,
-    entityId: params.entityId,
-    reason: params.reason,
-    unsubscribedAt: new Date(),
-    categories: params.categories ?? ['all'],
-  };
-
-  unsubscribeRecords.push(record);
+  // One row per category. `scope` IS the category, so a marketing unsubscribe
+  // and a transactional one are separately expressible and separately
+  // revocable, which one `categories[]` array on one record was not.
+  const categories = params.categories ?? ['all'];
+  for (const scope of categories) {
+    await recordOptOut({
+      channel: 'email',
+      address: params.email,
+      entityId: params.entityId,
+      scope,
+      source: 'unsubscribe',
+      reason: params.reason,
+    });
+  }
 }
 
-export function isUnsubscribed(email: string, entityId: string, category?: string): boolean {
-  return unsubscribeRecords.some(
-    (r) =>
-      r.email === email &&
-      r.entityId === entityId &&
-      (r.categories.includes('all') || (category ? r.categories.includes(category) : false))
-  );
+export async function isUnsubscribed(
+  email: string,
+  entityId: string,
+  category?: string
+): Promise<boolean> {
+  return hasOptedOut({
+    channel: 'email',
+    address: email,
+    entityId,
+    scopes: category ? ['all', category] : ['all'],
+    source: 'unsubscribe',
+  });
 }
 
 // ─── Deliverability Stats ──────────────────────────────────────────────────────
 
-export function getDeliverabilityStats(entityId: string): {
+/**
+ * P-33 recorded a defect here that this package has NOT closed:
+ * `totalBounces` / `hardBounces` / `softBounces` ignore `entityId` entirely, so
+ * cross-entity figures are returned under a per-entity signature. They still
+ * do, because `BounceRecord` has no `entityId` field to filter on and adding
+ * one is a change to the bounce log, which has no table yet. `unsubscribes` and
+ * `suppressedAddresses` are now correct and durable; the bounce counts are
+ * still process-local and still platform-wide. Both facts are stated here
+ * rather than only in a commit message, because this is where someone will
+ * read them.
+ */
+export async function getDeliverabilityStats(entityId: string): Promise<{
   totalBounces: number;
   hardBounces: number;
   softBounces: number;
   unsubscribes: number;
   suppressedAddresses: string[];
-} {
-  const entityUnsubs = unsubscribeRecords.filter((r) => r.entityId === entityId);
+}> {
+  const [unsubs, suppressed] = await Promise.all([
+    listOptOuts({ channel: 'email', entityId, source: 'unsubscribe' }),
+    listOptOuts({ channel: 'email', entityId: null, source: 'hard_bounce' }),
+  ]);
 
   return {
     totalBounces: bounceRecords.length,
     hardBounces: bounceRecords.filter((r) => r.type === 'hard').length,
     softBounces: bounceRecords.filter((r) => r.type === 'soft').length,
-    unsubscribes: entityUnsubs.length,
-    suppressedAddresses: Array.from(suppressedEmails),
+    unsubscribes: unsubs.length,
+    suppressedAddresses: suppressed.map((r) => r.address),
   };
 }

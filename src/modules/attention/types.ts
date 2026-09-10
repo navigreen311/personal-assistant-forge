@@ -44,6 +44,15 @@ export interface DNDConfig {
   vipContactIds: string[];
   startTime?: string;
   endTime?: string;
+  /**
+   * P-36 (ESC-5): when a timed do-not-disturb ends. This used to exist only
+   * inside `reason` as `JSON.stringify({ expiresAt })`, with no column to store
+   * it and no reader to enforce it, so no timed DND had ever expired. It is now
+   * a real column and `getDNDConfig` enforces it on read.
+   */
+  expiresAt?: Date;
+  /** Kept for the existing callers. Now DERIVED from `expiresAt` on read, so it
+   *  survives a restart instead of being returned once and lost. */
   reason?: string;
 }
 

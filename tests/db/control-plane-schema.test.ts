@@ -110,3 +110,121 @@ describe('P-00 control-plane schema', () => {
     await prisma.queuedAction.delete({ where: { id: first.id } });
   });
 });
+
+// ===========================================================================
+// P-36 — EXISTENCE IS NOT THE ASSERTION. REFERENCE IS.
+// ===========================================================================
+//
+// Everything above this line asserts that a table exists and can be counted.
+// That is the weakest useful thing, and it was the right first assertion: at
+// the time it was written, nothing in this repository touched Postgres at all.
+//
+// It is also how five of the 75 models shipped, stayed green, and were used by
+// nothing for an entire build. P-33 found them: `VoicePersona`, `PluginRecord`,
+// `PluginReview`, `DNDConfig`, `ShadowSmsCode`. `ShadowSmsCode`'s own
+// doc-comment named the line it was written to replace --
+// "T-007 - replaces shadow/safety/auth-manager.ts:109" -- and the second factor
+// stayed in a Map anyway. P-00 shipped eleven such models; ten got wired.
+// `await prisma.shadowSmsCode.count()` resolved to 0 the whole time, and 0 is a
+// successful query.
+//
+// So this block asserts the thing the count cannot: that every model in the
+// schema is REACHED by the product code. A model nobody uses now fails CI.
+//
+// WHY A KNOWN-ORPHAN LIST RATHER THAN A CLEAN PASS OR A DELETION.
+//
+// Three models are unreferenced TODAY. Deleting them is a product decision this
+// test may not make on its own -- `PluginRecord` and `PluginReview` are
+// near-exact fits for `plugin-service :: pluginStore` and
+// `security-review-service :: reviewStore`, which currently keep plugins as
+// `Document` rows with the manifest JSON-stuffed into `Document.content`, so
+// the right move is probably to WIRE them, not to drop them. Recording them
+// here names them, dates them, and makes the next package's choice explicit.
+//
+// The list is guarded in both directions: an unlisted orphan fails, AND a
+// listed model that has since been wired fails, so the list cannot quietly
+// become the place unused models go to be forgiven.
+//
+// WHY THE MATCH IS `prisma.<delegate>` AND NOT A BARE GREP.
+//
+// A bare grep for `voicePersona` matches `config.voicePersona` in the Shadow
+// voice pipeline, which is a settings field and not the table. A grep that
+// counts comments matches every doc-comment that names a delegate it does not
+// call -- including the ones in this very file. Both were checked, and both
+// produce a green result over an orphan. Comments are stripped, and the match
+// requires a client on the left.
+
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * Unreferenced as of P-36 (migration window 01), recorded for a decision
+ * rather than deleted or hidden. See the note above.
+ */
+const KNOWN_ORPHANS = ['VoicePersona', 'PluginRecord', 'PluginReview'];
+
+/** Prisma's delegate name for a model: first character lower-cased. */
+function delegateName(model: string): string {
+  return model.charAt(0).toLowerCase() + model.slice(1);
+}
+
+function collectSourceFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      collectSourceFiles(full, out);
+    } else if (full.endsWith('.ts') || full.endsWith('.tsx')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/** Comments are prose. Prose that names a delegate does not call it. */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+describe('P-36 — every model in the schema is reached by src/', () => {
+  const schema = readFileSync(join(process.cwd(), 'prisma', 'schema.prisma'), 'utf8');
+  const models = Array.from(schema.matchAll(/^model\s+(\w+)\s*\{/gm)).map((m) => m[1]);
+
+  const productCode = collectSourceFiles(join(process.cwd(), 'src'))
+    .map((file) => stripComments(readFileSync(file, 'utf8')))
+    .join('\n');
+
+  function isReferenced(model: string): boolean {
+    const delegate = delegateName(model).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b(?:prisma|db|tx|client)\\s*\\.\\s*${delegate}\\b`).test(productCode);
+  }
+
+  it('finds the models (a parse failure would make every case below vacuous)', () => {
+    expect(models.length).toBeGreaterThan(70);
+    expect(models).toContain('AuditLogEntry');
+    expect(models).toContain('InboundWebhookEvent');
+  });
+
+  it('references every model except the three recorded orphans', () => {
+    const unreferenced = models.filter((m) => !isReferenced(m));
+    expect(unreferenced.sort()).toEqual([...KNOWN_ORPHANS].sort());
+  });
+
+  it('the four models added by migration window 01 are read and written by src/', () => {
+    // The specific regression this package must not repeat. Each of these is
+    // additionally proved across a restart in tests/db/migration-window-01.test.ts,
+    // which is the assertion that a reference is a USE and not an import.
+    for (const model of [
+      'InboundWebhookEvent',
+      'StoredDocument',
+      'StoredDocumentVersion',
+      'CommunicationOptOut',
+    ]) {
+      expect({ model, referenced: isReferenced(model) }).toEqual({ model, referenced: true });
+    }
+  });
+
+  it('keeps the orphan list honest: a listed model that got wired must be removed from it', () => {
+    const wired = KNOWN_ORPHANS.filter((m) => isReferenced(m));
+    expect(wired).toEqual([]);
+  });
+});
