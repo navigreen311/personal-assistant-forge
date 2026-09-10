@@ -659,6 +659,7 @@ One row per merge. Appended by the coordinator at merge time.
 | — | coordinator: db job ceiling 15 -> 30 min | — | `f2c87bf` | 0 | 321/321 | 5346/5346 | 849/849 | **none** |
 | 21 | P-29 entity switching | [#81](https://github.com/navigreen311/personal-assistant-forge/pull/81) | `eaca9eb` | 0 | 321/321 | **5348/5348** | **863/863** | **none** |
 | 22 | P-28 observability (T-013 + T-025) | [#82](https://github.com/navigreen311/personal-assistant-forge/pull/82) | `e3ddaff` | 0 | **328/328** | **5440/5440** | **887/887** | **none** |
+| 23 | P-27 the three joins | [#83](https://github.com/navigreen311/personal-assistant-forge/pull/83) | `7269ff9` | 0 | 328/328 | **5446/5446** | 887/887 | **none** |
 
 ---
 
@@ -947,3 +948,79 @@ store holding the only copy of a user's state is a data-loss bug. Those two look
 identical to a grep and must be separated by reading each one. That separation is
 the first deliverable of whoever takes Step 6 — before any persistence is written,
 and it will need a schema window, since the schema has been frozen since P-00.
+
+
+---
+
+# EIGHT OF NINE — P-27 connected the three joins
+
+```
+PASS  1. register            PASS  5. executes through the queue
+PASS  2. two entities        PASS  6. audit row for the action
+PASS  3. task via API        FAIL  7. entity A refused entity B
+PASS  4. workflow triggers ON THE TASK
+PASS  8a. switch fires and is audited
+PASS  8b. the agent STOPS
+```
+
+Printed by the coordinator from the merged tree. **Leg 7 is the only one left**,
+and it is Decision 1's enforcement half.
+
+The scoreboard is now self-enforcing: `expect(passed).toBe(8)` **plus**
+`expect(legs['7...']).toBe('FAIL')`, so closing leg 7 forces the next package to
+come back and say which leg it changed. A single loose `toBeGreaterThan` would
+have let a regression in leg 4 hide behind a fix in leg 7.
+
+**Leg 4** publishes `task.created` from `insertTask` — the private write both
+public entry points already share — onto a BullMQ `domain-events` queue, matched
+against ACTIVE workflows' stored triggers by a new worker. The in-process SSE
+emitter in `src/lib/realtime/events.ts` was rejected because it dies with the
+process and the workflow engine is a *different* process. An outbox row is the
+correct answer and needs a table the frozen schema lacks — escalated with the
+exact model rather than worked around. The residual window is stated: Redis
+unreachable at that instant means the task commits and the event is lost, loudly.
+
+**Leg 6** extends P-10's wrappers. Collection GET is deliberately NOT audited,
+because `logAuditEntry` takes a per-entity advisory lock and auditing a polled
+list would serialise the whole tenant.
+
+**Leg 8b** writes an `ExecutionGateRule` with `expression: 'false'`, one per
+entity the user owns, enforced at three doors and lifted by `checkIn`. Queue-pause
+and worker-shutdown were rejected because both turn one user's contingency plan
+into everyone's outage.
+
+## THE BUG THIS FOUND, WHICH NEEDS ITS OWN PACKAGE
+
+**`processWorkflowJob` executes nothing and abandons its run record.** It walks
+the graph writing one `ActionLog` row per node, dispatches **no action handler**,
+and never touches the `WorkflowExecutionRecord` it was given. **Every
+cron-started workflow logs that it ran, runs nothing, and stays `PENDING`
+forever.**
+
+Deliberately not fixed in P-27, because P-20's leg 5 asserts that worker's
+current output — which is exactly why the new event consumer calls the real
+executor instead of re-enqueueing. This is the most serious finding since the ten
+phantom delegates and it is the same shape: a plausible trace of work that did
+not happen.
+
+Also found: `POST /api/workflows` accepts any object as a trigger (`z.record`),
+so `type` becomes undefined and it matches nothing forever — **P-20's own proof
+file contained exactly such a trigger**; `PUT /api/workflows/[id]` accepts any
+string as `status`, so `'ACTVIE'` stores fine and never runs; `handleCreateTask`
+is a third task-write path using `prisma.task.create` directly and skipping the
+project-scope check, despite `task-crud.ts` stating "there is no third way in";
+and `Established.resourceId` in `audit-wiring.ts` was read and never assigned, so
+every audit row's resourceId was a constant or `'N/A'` (fixed).
+
+## A THIRD HANG OF THE SAME SHAPE, CAUGHT BEFORE CI
+
+The producer's queue cache was a module-level `let` — one cache per *module
+registry*. `restart-survivability` calls `jest.resetModules()` six times, so six
+Queues opened and one was closed, and jest hung with every test passing. Moved to
+`globalThis`, the pattern `src/lib/db` already uses, which also fixes the same
+leak under Next.js hot reload.
+
+That is the third hang of this shape in this run — after P-18's Redis singleton
+and P-20's `setInterval` — and **the first one a package caught in its own work
+before it reached CI**. "Suite passes, process hangs" now has three instances and
+one cause: a long-lived handle with no close point.
