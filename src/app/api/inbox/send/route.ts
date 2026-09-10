@@ -5,10 +5,11 @@ import { withRole, withEntityScope } from '@/shared/middleware/auth';
 
 import { InboxService } from '@/modules/inbox';
 import { sendDraftSchema } from '@/modules/inbox/inbox.validation';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const inboxService = new InboxService();
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   // Authenticate first: an anonymous caller must not reach the database.
   // RBAC (P-15): sending is irreversible and speaks in the entity's name.
   return withRole(request, ['owner', 'admin'], async (authedReq) => {
@@ -55,4 +56,18 @@ export async function POST(request: NextRequest) {
       owner.entityId
     );
   });
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "send".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'send', handlePOST);
 }

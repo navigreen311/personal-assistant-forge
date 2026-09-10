@@ -4,10 +4,11 @@ import { withEntityScope, withRole } from '@/shared/middleware/auth';
 
 import { TriageService } from '@/modules/inbox';
 import { batchTriageSchema } from '@/modules/inbox/inbox.validation';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const triageService = new TriageService();
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   return withRole(request, ['owner', 'admin'], () =>
     withEntityScope(request, async (req, _session, entityId) => {
       try {
@@ -33,4 +34,18 @@ export async function POST(request: NextRequest) {
       }
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "bulk".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'bulk', handlePOST);
 }

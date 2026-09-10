@@ -3,6 +3,7 @@ import { withAuth } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import type { AuthSession } from '@/lib/auth/types';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 // ---------------------------------------------------------------------------
 // GET /api/contacts/search?q=
@@ -59,6 +60,20 @@ async function handleGet(req: NextRequest, session: AuthSession): Promise<Respon
 // Route exports
 // ---------------------------------------------------------------------------
 
-export async function GET(req: NextRequest): Promise<Response> {
+async function handleGET(req: NextRequest): Promise<Response> {
   return withAuth(req, handleGet);
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "search".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function GET(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'search', handleGET);
 }

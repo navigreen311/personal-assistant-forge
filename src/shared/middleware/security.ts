@@ -1,10 +1,31 @@
 // ============================================================================
-// Security Middleware — Audit logging, input sanitization, rate limiting
+// Security Middleware — Audit logging and input sanitization
 // Worker 15: Security, Privacy & Compliance
 // ============================================================================
+//
+// P-18 / T-012 — THE SECOND RATE LIMITER USED TO LIVE HERE AND IS NOW GONE.
+//
+// This file held an in-memory `Map`-based sliding-window limiter
+// (`rateLimitStore`, `getRateLimitKey`, `checkRateLimit`, `withRateLimit`, and
+// the `rateLimit` option on `withSecurity`). P-00 established it was dead
+// middleware: no route imported it, so nothing it did was ever observed
+// outside its own unit tests.
+//
+// It is deleted rather than wired up, because it could not be the real one:
+//   * a `Map` in one process is not a rate limit on a deployment with more than
+//     one instance, and it resets to empty on every restart and redeploy — so
+//     it would have been a third thing that reports a budget it cannot keep;
+//   * it duplicated the responsibility of `src/shared/middleware/rate-limit.ts`,
+//     which is Redis-backed and therefore survives both. Three limiters is
+//     worse than one, because the next reader cannot tell which is
+//     authoritative.
+//
+// `src/shared/middleware/rate-limit.ts` is now the only rate limiter in the
+// repository. `withSecurity` no longer takes a `rateLimit` option; compose the
+// route with `withRateLimit(req, tier, handler)` from that module instead.
 
 import { NextRequest, NextResponse } from 'next/server';
-import type { DataClassification, RateLimitConfig, RateLimitResult } from '@/modules/security/types';
+import type { DataClassification } from '@/modules/security/types';
 import { auditService } from '@/modules/security/services/audit-service';
 import { resolveActor, resolveVerifiedEntityId } from '@/shared/middleware/auth';
 
@@ -42,78 +63,6 @@ const NOSQL_INJECTION_PATTERNS = [
 const HTML_TAG_REGEX = /<[^>]*>/g;
 
 const DEFAULT_MAX_INPUT_LENGTH = 10000;
-
-// --- Rate Limiter Store ---
-
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-  burstUsed: number;
-}
-
-const rateLimitStore = new Map<string, RateLimitEntry>();
-
-async function getRateLimitKey(
-  req: NextRequest,
-  keyGenerator: RateLimitConfig['keyGenerator']
-): Promise<string> {
-  switch (keyGenerator) {
-    case 'IP':
-      return req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown-ip';
-    case 'USER': {
-      // P-00/T-003: was req.headers.get('x-user-id'), which let a caller
-      // pick its own rate-limit bucket. Read the verified JWT instead.
-      const who = await resolveActor(req);
-      return who?.actorId ?? 'anonymous';
-    }
-    case 'API_KEY':
-      return req.headers.get('x-api-key') || 'no-key';
-    case 'ENTITY':
-      return (await resolveVerifiedEntityId(req)) ?? 'no-entity';
-    default:
-      return 'unknown';
-  }
-}
-
-function checkRateLimit(key: string, config: RateLimitConfig): RateLimitResult {
-  const now = Date.now();
-  const fullKey = `${config.endpoint}:${key}`;
-  let entry = rateLimitStore.get(fullKey);
-
-  if (!entry || now >= entry.resetAt) {
-    entry = { count: 0, resetAt: now + config.windowMs, burstUsed: 0 };
-    rateLimitStore.set(fullKey, entry);
-  }
-
-  entry.count++;
-
-  const effectiveMax = config.maxRequests + (config.burstAllowance || 0);
-
-  if (entry.count <= config.maxRequests) {
-    return {
-      allowed: true,
-      remaining: config.maxRequests - entry.count,
-      resetAt: new Date(entry.resetAt),
-    };
-  }
-
-  if (config.burstAllowance && entry.count <= effectiveMax) {
-    entry.burstUsed++;
-    return {
-      allowed: true,
-      remaining: effectiveMax - entry.count,
-      resetAt: new Date(entry.resetAt),
-    };
-  }
-
-  const retryAfterMs = entry.resetAt - now;
-  return {
-    allowed: false,
-    remaining: 0,
-    resetAt: new Date(entry.resetAt),
-    retryAfterMs,
-  };
-}
 
 // --- Input Sanitization Helpers ---
 
@@ -325,67 +274,16 @@ export function withInputSanitization(
 }
 
 /**
- * API rate limiting middleware.
- * Tracks requests per window per key. Returns 429 when exceeded.
- */
-export function withRateLimit(
-  handler: NextApiHandler,
-  config: RateLimitConfig
-): NextApiHandler {
-  return async (req: NextRequest, context?: Record<string, unknown>) => {
-    const key = await getRateLimitKey(req, config.keyGenerator);
-    const result = checkRateLimit(key, config);
-
-    if (!result.allowed) {
-      const retryAfterSeconds = Math.ceil((result.retryAfterMs || 0) / 1000);
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'RATE_LIMIT_EXCEEDED',
-            message: 'Too many requests. Please try again later.',
-            details: {
-              retryAfterMs: result.retryAfterMs,
-              resetAt: result.resetAt.toISOString(),
-            },
-          },
-          meta: { timestamp: new Date().toISOString() },
-        },
-        {
-          status: 429,
-          headers: {
-            'Retry-After': String(retryAfterSeconds),
-            'X-RateLimit-Limit': String(config.maxRequests),
-            'X-RateLimit-Remaining': '0',
-            'X-RateLimit-Reset': result.resetAt.toISOString(),
-          },
-        }
-      );
-    }
-
-    const response = await handler(req, context);
-
-    // Add rate limit headers to successful responses
-    const headers = new Headers(response.headers);
-    headers.set('X-RateLimit-Limit', String(config.maxRequests));
-    headers.set('X-RateLimit-Remaining', String(result.remaining));
-    headers.set('X-RateLimit-Reset', result.resetAt.toISOString());
-
-    return new NextResponse(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  };
-}
-
-/**
- * Combined security middleware. Applies sanitization, rate limiting, and audit logging.
+ * Combined security middleware. Applies sanitization and audit logging.
+ *
+ * P-18: the `rateLimit` option is gone with the limiter it drove. Rate limiting
+ * is a separate wrapper now — `withRateLimit(req, tier, handler)` from
+ * `@/shared/middleware/rate-limit` — because it is Redis-backed and async in a
+ * way this handler-in/handler-out shape cannot express honestly.
  */
 export function withSecurity(
   handler: NextApiHandler,
   options?: {
-    rateLimit?: RateLimitConfig;
     sensitivityLevel?: DataClassification;
     sanitize?: boolean;
     audit?: boolean;
@@ -400,10 +298,6 @@ export function withSecurity(
     });
   }
 
-  if (options?.rateLimit) {
-    wrappedHandler = withRateLimit(wrappedHandler, options.rateLimit);
-  }
-
   if (options?.sanitize !== false) {
     wrappedHandler = withInputSanitization(wrappedHandler);
   }
@@ -412,10 +306,4 @@ export function withSecurity(
 }
 
 // Export for testing
-export {
-  checkRateLimit,
-  containsInjectionPattern,
-  stripHtmlTags,
-  checkInputLength,
-  rateLimitStore,
-};
+export { containsInjectionPattern, stripHtmlTags, checkInputLength };

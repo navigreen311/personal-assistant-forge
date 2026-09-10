@@ -3,12 +3,7 @@
 // ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  withInputSanitization,
-  withRateLimit,
-  withAuditLog,
-  rateLimitStore,
-} from '@/shared/middleware/security';
+import { withInputSanitization, withAuditLog } from '@/shared/middleware/security';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -78,7 +73,6 @@ const okHandler = jest.fn().mockImplementation(() =>
 describe('Security Middleware', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    rateLimitStore.clear();
   });
 
   // -----------------------------------------------------------------------
@@ -174,133 +168,17 @@ describe('Security Middleware', () => {
   });
 
   // -----------------------------------------------------------------------
-  // withRateLimit
+  // withRateLimit -- REMOVED, P-18 / T-012
+  //
+  // These cases exercised the in-memory `Map` limiter this file used to
+  // export. It was dead middleware (no route imported it), and a `Map` in one
+  // process is not a rate limit across instances or across a restart, so it
+  // could never have been the real one. It is deleted; the surviving limiter
+  // is `src/shared/middleware/rate-limit.ts`, proved against a real Redis in
+  // `tests/db/rate-limit.test.ts` where the (N+1)th request is actually
+  // refused.
   // -----------------------------------------------------------------------
-  describe('withRateLimit', () => {
-    const baseLimitConfig = {
-      endpoint: '/api/test',
-      windowMs: 60_000,
-      maxRequests: 3,
-      keyGenerator: 'IP' as const,
-    };
 
-    it('should allow requests within the limit', async () => {
-      const handler = jest.fn().mockImplementation(() =>
-        NextResponse.json({ ok: true }, { status: 200 }),
-      );
-      const wrapped = withRateLimit(handler, { ...baseLimitConfig, maxRequests: 3 });
-
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '127.0.0.1' },
-      });
-
-      const res1 = await wrapped(req);
-      const res2 = await wrapped(req);
-
-      expect(res1.status).toBe(200);
-      expect(res2.status).toBe(200);
-      expect(handler).toHaveBeenCalledTimes(2);
-    });
-
-    it('should return 429 when rate limit is exceeded', async () => {
-      const handler = jest.fn().mockImplementation(() =>
-        NextResponse.json({ ok: true }, { status: 200 }),
-      );
-      const wrapped = withRateLimit(handler, { ...baseLimitConfig, maxRequests: 3 });
-
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '10.0.0.1' },
-      });
-
-      await wrapped(req); // 1
-      await wrapped(req); // 2
-      await wrapped(req); // 3
-      const res4 = await wrapped(req); // 4 — should be blocked
-
-      expect(res4.status).toBe(429);
-      const body = await res4.json();
-      expect(body.error.code).toBe('RATE_LIMIT_EXCEEDED');
-    });
-
-    it('should include Retry-After header on 429 response', async () => {
-      const handler = jest.fn().mockImplementation(() =>
-        NextResponse.json({ ok: true }, { status: 200 }),
-      );
-      const wrapped = withRateLimit(handler, { ...baseLimitConfig, maxRequests: 1 });
-
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '10.0.0.2' },
-      });
-
-      await wrapped(req); // 1 — allowed
-      const res2 = await wrapped(req); // 2 — blocked
-
-      expect(res2.status).toBe(429);
-      expect(res2.headers.get('Retry-After')).toBeDefined();
-      const retryAfter = Number(res2.headers.get('Retry-After'));
-      expect(retryAfter).toBeGreaterThan(0);
-    });
-
-    it('should reset after the window expires', async () => {
-      jest.useFakeTimers();
-
-      const handler = jest.fn().mockImplementation(() =>
-        NextResponse.json({ ok: true }, { status: 200 }),
-      );
-      const wrapped = withRateLimit(handler, {
-        ...baseLimitConfig,
-        maxRequests: 1,
-        windowMs: 10_000,
-      });
-
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '10.0.0.3' },
-      });
-
-      const res1 = await wrapped(req); // 1 — allowed
-      expect(res1.status).toBe(200);
-
-      const res2 = await wrapped(req); // 2 — blocked
-      expect(res2.status).toBe(429);
-
-      // Advance time past the window
-      jest.advanceTimersByTime(11_000);
-
-      const res3 = await wrapped(req); // Should be allowed after window reset
-      expect(res3.status).toBe(200);
-
-      jest.useRealTimers();
-    });
-
-    it('should support burst allowance', async () => {
-      const handler = jest.fn().mockImplementation(() =>
-        NextResponse.json({ ok: true }, { status: 200 }),
-      );
-      const wrapped = withRateLimit(handler, {
-        ...baseLimitConfig,
-        maxRequests: 2,
-        burstAllowance: 1,
-      });
-
-      const req = createMockRequest({
-        headers: { 'x-forwarded-for': '10.0.0.4' },
-      });
-
-      const res1 = await wrapped(req); // 1 — normal
-      const res2 = await wrapped(req); // 2 — normal
-      const res3 = await wrapped(req); // 3 — burst
-      const res4 = await wrapped(req); // 4 — over burst, should be blocked
-
-      expect(res1.status).toBe(200);
-      expect(res2.status).toBe(200);
-      expect(res3.status).toBe(200);
-      expect(res4.status).toBe(429);
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // withAuditLog
-  // -----------------------------------------------------------------------
   describe('withAuditLog', () => {
     it('should log request details after handler completes', async () => {
       const handler = jest.fn().mockImplementation(() =>

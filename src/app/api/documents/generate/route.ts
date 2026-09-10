@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { generateDocument } from '@/modules/documents/services/document-generation-service';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const generateSchema = z.object({
   templateId: z.string().min(1),
@@ -19,7 +20,7 @@ const generateSchema = z.object({
   citationsEnabled: z.boolean().default(false),
 });
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   return withRole(request, ['owner', 'admin', 'member'], () =>
     withEntityScope(request, async (req, _session, entityId) => {
       try {
@@ -36,4 +37,18 @@ export async function POST(request: NextRequest) {
       }
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "ai".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'ai', handlePOST);
 }

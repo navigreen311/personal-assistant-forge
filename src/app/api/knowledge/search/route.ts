@@ -3,8 +3,9 @@ import { success, error } from '@/shared/utils/api-response';
 import { search } from '@/modules/knowledge/services/search-service';
 import { withEntityScope } from '@/shared/middleware/auth';
 import type { CaptureType } from '@/modules/knowledge/types';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   return withEntityScope(request, async (req, _session, entityId) => {
     try {
       const { searchParams } = req.nextUrl;
@@ -41,4 +42,18 @@ export async function GET(request: NextRequest) {
       return error('INTERNAL_ERROR', 'Failed to search knowledge entries', 500);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "search".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function GET(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'search', handleGET);
 }

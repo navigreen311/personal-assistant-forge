@@ -3,6 +3,7 @@ import { withRole } from '@/shared/middleware/auth';
 
 import { success, error } from '@/shared/utils/api-response';
 import type { AuthSession } from '@/lib/auth/types';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 // --- Types ---
 
@@ -41,6 +42,20 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
 
 // --- Route Exports ---
 
-export async function POST(req: NextRequest): Promise<Response> {
+async function handlePOST(req: NextRequest): Promise<Response> {
   return withRole(req, ['owner', 'admin'], handlePost);
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "bulk".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'bulk', handlePOST);
 }

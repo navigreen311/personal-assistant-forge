@@ -6,6 +6,7 @@ import { withRole } from '@/shared/middleware/auth';
 import { prisma } from '@/lib/db';
 import { sessionManager } from '@/modules/shadow/interfaces/session-manager';
 import type { AgentResponse, SessionChannel } from '@/modules/shadow/interfaces/types';
+import { withRateLimit } from '@/shared/middleware/rate-limit';
 
 const ChatMessageSchema = z.object({
   message: z.string().min(1, 'Message is required'),
@@ -74,7 +75,7 @@ async function processWithAgent(params: {
   };
 }
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
   return withRole(request, ['owner', 'admin', 'member'], async (req, authSession) => {
     try {
       const body = await req.json();
@@ -177,4 +178,18 @@ export async function POST(request: NextRequest) {
       return error('CHAT_FAILED', message, 500);
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// P-18 / T-012 — rate limit: tier "ai".
+//
+// The limiter sits OUTSIDE the auth wrappers so a flood is refused before it
+// costs a JWT decrypt and a database round trip. The tier, its budget and the
+// reason for that budget are in RATE_LIMIT_POLICY in
+// src/shared/middleware/rate-limit.ts; nothing about the limit is decided here,
+// so no route can quietly hold a different number from the published table.
+// ---------------------------------------------------------------------------
+
+export async function POST(request: NextRequest): Promise<Response> {
+  return withRateLimit(request, 'ai', handlePOST);
 }

@@ -29,12 +29,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   withAuditLog,
   withInputSanitization,
-  withRateLimit,
-  checkRateLimit,
   containsInjectionPattern,
   stripHtmlTags,
   checkInputLength,
-  rateLimitStore,
 } from '@/shared/middleware/security';
 import { auditService } from '@/modules/security/services/audit-service';
 
@@ -65,7 +62,6 @@ function createMockRequest(
 describe('security middleware', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    rateLimitStore.clear();
   });
 
   describe('stripHtmlTags', () => {
@@ -170,68 +166,13 @@ describe('security middleware', () => {
     });
   });
 
-  describe('withRateLimit', () => {
-    const rateLimitConfig = {
-      endpoint: '/api/test',
-      windowMs: 60000,
-      maxRequests: 3,
-      keyGenerator: 'IP' as const,
-    };
-
-    it('should allow requests within the limit', async () => {
-      const handler = jest.fn().mockResolvedValue(NextResponse.json({ ok: true }));
-      const middleware = withRateLimit(handler, rateLimitConfig);
-
-      const req = createMockRequest('http://localhost/api/test', {
-        headers: { 'x-forwarded-for': '1.2.3.4' },
-      });
-
-      // First 3 requests should succeed
-      for (let i = 0; i < 3; i++) {
-        const response = await middleware(req);
-        expect(response.status).toBe(200);
-      }
-
-      expect(handler).toHaveBeenCalledTimes(3);
-    });
-
-    it('should return 429 when rate limit is exceeded', async () => {
-      const handler = jest.fn().mockResolvedValue(NextResponse.json({ ok: true }));
-      const middleware = withRateLimit(handler, rateLimitConfig);
-
-      const req = createMockRequest('http://localhost/api/test', {
-        headers: { 'x-forwarded-for': '5.6.7.8' },
-      });
-
-      // Exhaust the limit
-      for (let i = 0; i < 3; i++) {
-        await middleware(req);
-      }
-
-      // 4th request should be rate limited
-      const response = await middleware(req);
-
-      expect(response.status).toBe(429);
-      const body = await response.json();
-      expect(body.error.code).toBe('RATE_LIMIT_EXCEEDED');
-      expect(response.headers.get('Retry-After')).toBeTruthy();
-    });
-
-    it('should add rate limit headers to successful responses', async () => {
-      const handler = jest.fn().mockResolvedValue(NextResponse.json({ ok: true }));
-      const middleware = withRateLimit(handler, rateLimitConfig);
-
-      const req = createMockRequest('http://localhost/api/test', {
-        headers: { 'x-forwarded-for': '10.0.0.1' },
-      });
-
-      const response = await middleware(req);
-
-      expect(response.headers.get('X-RateLimit-Limit')).toBe('3');
-      expect(response.headers.get('X-RateLimit-Remaining')).toBeTruthy();
-      expect(response.headers.get('X-RateLimit-Reset')).toBeTruthy();
-    });
-  });
+  // P-18 / T-012: the `withRateLimit` block that stood here tested the in-memory
+  // `Map` limiter this file used to export. That limiter was dead middleware --
+  // P-00 established no route imported it -- and a `Map` in one process is not a
+  // rate limit on a deployment with more than one instance, nor across a
+  // restart. It is deleted, so its tests go with it. The one surviving limiter,
+  // `src/shared/middleware/rate-limit.ts`, is proved against a real Redis in
+  // `tests/db/rate-limit.test.ts`, where the (N+1)th request is actually refused.
 
   describe('withAuditLog', () => {
     it('should log request details via auditService after handler completes', async () => {
