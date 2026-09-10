@@ -1,11 +1,17 @@
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _adoptionStore = new Map<string, any>();
+/**
+ * P-35: the store was `Map<string, any>` behind an unexplained
+ * `eslint-disable`. `data` is the JSON column the assertions read, so it is
+ * named; the rest of the row is opaque to this fake and stays that way.
+ */
+type AdoptionRow = Record<string, unknown> & { data: Record<string, unknown> };
+
+const _adoptionStore = new Map<string, AdoptionRow>();
 
 jest.mock('@/lib/db', () => {
   return {
     prisma: {
       adoptionProgress: {
-        upsert: jest.fn().mockImplementation((args: { where: { userId: string }; create: Record<string, unknown>; update: Record<string, unknown> }) => {
+        upsert: jest.fn().mockImplementation((args: { where: { userId: string }; create: AdoptionRow; update: Partial<AdoptionRow> }) => {
           const existing = _adoptionStore.get(args.where.userId);
           if (existing) {
             const updated = { ...existing, ...args.update, updatedAt: new Date() };
@@ -184,7 +190,7 @@ describe('aha-moment-service', () => {
 
       const record = _adoptionStore.get('mark-user');
       expect(record).toBeDefined();
-      expect(record.data.ahaMomentActions).toContain('first_auto_draft_approved');
+      expect(record!.data.ahaMomentActions).toContain('first_auto_draft_approved');
     });
 
     it('should not duplicate an already completed action', async () => {
@@ -192,7 +198,7 @@ describe('aha-moment-service', () => {
       await markAhaMomentCompleted('dup-user', 'voice_call_handled');
 
       const record = _adoptionStore.get('dup-user');
-      const actions = record.data.ahaMomentActions as string[];
+      const actions = record!.data.ahaMomentActions as string[];
       const count = actions.filter((a: string) => a === 'voice_call_handled').length;
       expect(count).toBe(1);
     });
@@ -202,7 +208,7 @@ describe('aha-moment-service', () => {
       await markAhaMomentCompleted('multi-user', 'first_workflow_triggered');
 
       const record = _adoptionStore.get('multi-user');
-      expect(record.data.ahaMomentActions).toEqual([
+      expect(record!.data.ahaMomentActions).toEqual([
         'first_auto_draft_approved',
         'first_workflow_triggered',
       ]);
@@ -223,8 +229,8 @@ describe('aha-moment-service', () => {
       await markAhaMomentCompleted('preserve-user', 'first_autonomous_task');
 
       const record = _adoptionStore.get('preserve-user');
-      expect(record.data.someOtherField).toBe('should persist');
-      expect(record.data.ahaMomentActions).toEqual([
+      expect(record!.data.someOtherField).toBe('should persist');
+      expect(record!.data.ahaMomentActions).toEqual([
         'time_saved_one_hour',
         'first_autonomous_task',
       ]);

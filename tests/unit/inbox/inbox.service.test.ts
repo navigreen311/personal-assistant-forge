@@ -46,8 +46,22 @@ jest.mock('uuid', () => ({
 }));
 
 import { prisma } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
 
-const mockedPrisma = prisma as jest.Mocked<typeof prisma>;
+/**
+ * P-35: was `prisma as jest.Mocked<typeof prisma>`, which does not do what it
+ * looks like it does. `Db` is the `$extends`ed client
+ * (`DynamicClientExtensionThis`), and `jest.Mocked` leaves its delegate methods
+ * as the real Prisma signatures rather than mocks -- so `.mockResolvedValue`
+ * did not exist on any of them and every use in this file needed a second cast.
+ * The author reached for `(mockedPrisma as any).followUpReminder`, which then
+ * removed delegate checking too.
+ *
+ * `asMockedPrisma` is the type that was wanted: the delegate and method NAMES
+ * still come from `Db`, only the signatures are widened to `jest.Mock`. See
+ * tests/support/prisma-mock.ts.
+ */
+const mockedPrisma = asMockedPrisma(prisma);
 
 const mockMessageRow = {
   id: 'msg-1',
@@ -72,9 +86,14 @@ const mockMessageRow = {
   contact: null,
 };
 
-// Helper to cast prisma model mocks
-const mockFollowUpReminder = () => (mockedPrisma as any).followUpReminder;
-const mockCannedResponse = () => (mockedPrisma as any).cannedResponse;
+// P-35: these two were `(mockedPrisma as any).followUpReminder` and
+// `.cannedResponse`. Both models are in schema.prisma, so the cast bought
+// nothing and cost the one check worth having here -- that the delegate the
+// service queries is a delegate the client has. Read off the typed client, a
+// model deleted by a future migration breaks this file at compile time instead
+// of returning `undefined` into a swallowed catch.
+const mockFollowUpReminder = () => mockedPrisma.followUpReminder;
+const mockCannedResponse = () => mockedPrisma.cannedResponse;
 
 // P-06: InboxService now takes a VerifiedEntityId for the entity in scope and
 // the authenticated userId for rows it owns. A unit test cannot mint the brand,

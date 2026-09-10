@@ -43,6 +43,23 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
+// P-35 — the ONE suppression this package adds, and `var` is load-bearing.
+//
+// `jest.mock` factories are hoisted above this declaration and run while the
+// import at line 13 is being resolved, i.e. BEFORE the module body reaches
+// here. `var` is hoisted and initialised to `undefined`, so the factory below
+// can assign to it. `let` and `const` are hoisted into the temporal dead zone,
+// so the same assignment throws. Measured, not assumed -- switching this one
+// word to `let` produces:
+//
+//   ReferenceError: Cannot access 'mockGetCallStatus' before initialization
+//     at tests/unit/voiceforge/outbound-agent.test.ts:50:20
+//     at Object.<anonymous> (src/modules/voiceforge/services/outbound-agent.ts:8:1)
+//
+// and the whole suite fails to run. This is the documented jest idiom for
+// reaching a mock created inside a factory; the rule simply does not know
+// about factory hoisting.
+// eslint-disable-next-line no-var
 var mockGetCallStatus: jest.Mock;
 
 // Mock voice provider

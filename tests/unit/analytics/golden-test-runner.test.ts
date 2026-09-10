@@ -25,15 +25,28 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated insight'),
 }));
 
-const { generateJSON } = require('@/lib/ai');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
+
+import { v4 } from 'uuid';
+
+/**
+ * P-35: `jest.mocked(v4)` resolves `v4`'s LAST overload, `v4(options, buf)`,
+ * which returns a `Uint8Array` -- so `.mockReturnValueOnce('suite-1')` would
+ * not compile even though the production call under test is the no-argument
+ * `v4(): string`. Naming that overload is the honest type, and it still checks
+ * what matters: a service that started calling `v4` with a buffer, or a mock
+ * that started returning a non-string, is a compile error here.
+ */
+const mockV4 = v4 as unknown as jest.MockedFunction<() => string>;
 
 describe('runTestSuite (AI-powered)', () => {
   beforeEach(() => {
     _getSuiteStore().clear();
     jest.clearAllMocks();
     // Reset uuid mock counter
-    const uuid = require('uuid');
-    uuid.v4
+    mockV4
       .mockReturnValueOnce('suite-1')
       .mockReturnValueOnce('case-1')
       .mockReturnValueOnce('case-2');

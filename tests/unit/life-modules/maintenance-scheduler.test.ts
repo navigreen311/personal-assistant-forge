@@ -1,9 +1,45 @@
 import { v4 as uuidv4 } from 'uuid';
 
-// In-memory store for tasks used by the mock
-const taskStore = new Map<string, any>();
+import type { MockedDelegates } from '../../support/prisma-mock';
 
-const mockPrisma = {
+/**
+ * P-35: this fake's delegate names, method names and `mockImplementation` args
+ * were all `any`. `MockedDelegates` binds the names to the real client (see
+ * tests/support/prisma-mock.ts) and the types below name the Task columns this
+ * fake actually stores -- the same ones it stored before, now written down.
+ */
+
+/** The Task columns this fake stores and returns. */
+interface TaskRow {
+  id: string;
+  title: string;
+  description: string | null;
+  entityId: string;
+  priority: string;
+  status: string;
+  dueDate: Date | null;
+  tags: string[];
+  createdFrom: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  deletedAt: Date | null;
+}
+
+/** The columns the service supplies on create/update. */
+type TaskInput = Partial<Omit<TaskRow, 'id' | 'createdAt' | 'updatedAt'>>;
+
+/** The `where` shapes the service builds. */
+interface TaskWhere {
+  id?: string;
+  entityId?: string;
+  deletedAt?: Date | null;
+  tags?: { has?: string };
+}
+
+// In-memory store for tasks used by the mock
+const taskStore = new Map<string, TaskRow>();
+
+const mockPrisma: MockedDelegates<'task'> = {
   task: {
     create: jest.fn(),
     findMany: jest.fn(),
@@ -50,18 +86,18 @@ beforeEach(() => {
   const { generateJSON } = jest.requireMock('@/lib/ai');
   (generateJSON as jest.Mock).mockRejectedValue(new Error('AI not available'));
 
-  mockPrisma.task.create.mockImplementation(async ({ data }: any) => {
+  mockPrisma.task.create!.mockImplementation(async ({ data }: { data: TaskInput }) => {
     const id = uuidv4();
-    const task = {
+    const task: TaskRow = {
       id,
-      title: data.title,
+      title: data.title ?? '',
       description: data.description ?? null,
-      entityId: data.entityId,
-      priority: data.priority,
-      status: data.status,
-      dueDate: data.dueDate,
-      tags: data.tags,
-      createdFrom: data.createdFrom,
+      entityId: data.entityId ?? '',
+      priority: data.priority ?? '',
+      status: data.status ?? '',
+      dueDate: data.dueDate ?? null,
+      tags: data.tags ?? [],
+      createdFrom: data.createdFrom ?? null,
       createdAt: new Date(),
       updatedAt: new Date(),
       deletedAt: null,
@@ -70,26 +106,26 @@ beforeEach(() => {
     return task;
   });
 
-  mockPrisma.task.findUnique.mockImplementation(async ({ where }: any) => {
+  mockPrisma.task.findUnique!.mockImplementation(async ({ where }: { where: { id: string } }) => {
     return taskStore.get(where.id) ?? null;
   });
 
   // The service moved from findUnique to scoped finders. A mock without them
   // returns undefined and the test passes for the wrong reason (trap 1).
-  const scopedFind = async ({ where }: any) => {
+  const scopedFind = async ({ where }: { where: TaskWhere & { id: string } }) => {
     const task = taskStore.get(where.id);
     if (!task) return null;
     if (where.entityId && task.entityId !== where.entityId) return null;
     return task;
   };
-  mockPrisma.task.findFirst.mockImplementation(scopedFind);
-  mockPrisma.task.findFirstOrThrow.mockImplementation(async (args: any) => {
+  mockPrisma.task.findFirst!.mockImplementation(scopedFind);
+  mockPrisma.task.findFirstOrThrow!.mockImplementation(async (args: { where: TaskWhere & { id: string } }) => {
     const task = await scopedFind(args);
     if (!task) throw new Error(`Task ${args.where.id} not found`);
     return task;
   });
 
-  mockPrisma.task.updateMany.mockImplementation(async ({ where, data }: any) => {
+  mockPrisma.task.updateMany!.mockImplementation(async ({ where, data }: { where: TaskWhere & { id: string }; data: TaskInput }) => {
     const existing = taskStore.get(where.id);
     if (!existing || (where.entityId && existing.entityId !== where.entityId)) {
       return { count: 0 };
@@ -100,7 +136,7 @@ beforeEach(() => {
     return { count: 1 };
   });
 
-  mockPrisma.task.update.mockImplementation(async ({ where, data }: any) => {
+  mockPrisma.task.update!.mockImplementation(async ({ where, data }: { where: { id: string }; data: TaskInput }) => {
     const existing = taskStore.get(where.id);
     if (!existing) throw new Error(`Task ${where.id} not found`);
     const updated = { ...existing, ...data, updatedAt: new Date() };
@@ -109,8 +145,8 @@ beforeEach(() => {
     return updated;
   });
 
-  mockPrisma.task.findMany.mockImplementation(async ({ where }: any) => {
-    const results: any[] = [];
+  mockPrisma.task.findMany!.mockImplementation(async ({ where }: { where?: TaskWhere }) => {
+    const results: TaskRow[] = [];
     for (const [, task] of taskStore) {
       if (where?.entityId && task.entityId !== where.entityId) continue;
       if (where?.deletedAt === null && task.deletedAt !== null) continue;

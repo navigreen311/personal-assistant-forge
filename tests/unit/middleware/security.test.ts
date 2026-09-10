@@ -35,6 +35,15 @@ import {
 } from '@/shared/middleware/security';
 import { auditService } from '@/modules/security/services/audit-service';
 
+/**
+ * P-35: these calls carried `init as any`. The real incompatibility is one
+ * field -- the DOM `RequestInit` types `signal` as `AbortSignal | null |
+ * undefined` and Next narrows it to `AbortSignal | undefined` -- so `any` was
+ * discarding every other field's type to paper over `signal`. Naming Next's
+ * own init type checks `method`, `headers` and `body` again.
+ */
+type NextRequestInit = NonNullable<ConstructorParameters<typeof NextRequest>[1]>;
+
 const mockLogAuditEntry = auditService.logAuditEntry as jest.MockedFunction<
   typeof auditService.logAuditEntry
 >;
@@ -47,7 +56,7 @@ function createMockRequest(
     body?: string;
   }
 ): NextRequest {
-  const init: RequestInit = {
+  const init: NextRequestInit = {
     method: options?.method || 'GET',
     headers: options?.headers || {},
   };
@@ -56,7 +65,7 @@ function createMockRequest(
     if (!init.headers) init.headers = {};
     (init.headers as Record<string, string>)['Content-Type'] = 'application/json';
   }
-  return new NextRequest(url, init as any);
+  return new NextRequest(url, init);
 }
 
 describe('security middleware', () => {

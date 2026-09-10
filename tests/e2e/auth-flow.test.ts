@@ -63,6 +63,7 @@ jest.mock('@/modules/security/services/audit-service', () => ({
 }));
 
 import { NextRequest } from 'next/server';
+import type { Session } from 'next-auth';
 import { POST as registerHandler } from '@/app/api/auth/register/route';
 import { GET as profileGetHandler, PATCH as profilePatchHandler } from '@/app/api/auth/profile/route';
 import { POST as switchEntityHandler } from '@/app/api/auth/switch-entity/route';
@@ -966,9 +967,14 @@ describe('Auth Flow E2E Tests', () => {
         trigger: 'update' as never,
         newSession: undefined as never,
         user: session.user as never,
-      } as any);
+      } as Parameters<NonNullable<typeof sessionCallback>>[0]);
 
-      const resultUser = result.user as any;
+      // P-35: was `result.user as any`. `Session['user']` is a union -- the
+      // augmented shape in src/lib/auth/types.ts and next-auth's DefaultSession
+      // one -- and only the augmented arm carries `id`/`role`/`activeEntityId`,
+      // which is exactly what the three assertions below are about. Naming the
+      // arm keeps them checked instead of unchecked.
+      const resultUser = result.user as Session['user'];
       expect(resultUser.id).toBe('session-user-1');
       expect(resultUser.role).toBe('owner');
       expect(resultUser.activeEntityId).toBe('session-entity-1');

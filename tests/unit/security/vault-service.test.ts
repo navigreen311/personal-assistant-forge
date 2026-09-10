@@ -520,12 +520,26 @@ describe('VaultService — Named Secrets (Prisma-backed)', () => {
 // Master Key Validation
 // ---------------------------------------------------------------------------
 
+/**
+ * P-35: was `(process.env as any).NODE_ENV = x` at four sites.
+ *
+ * `NODE_ENV` is declared `readonly` on `ProcessEnv` because Next.js inlines it
+ * at build time, so assigning to it needs a widening somewhere. `any` was the
+ * wrong one: it discards the value type as well as the readonly-ness, so a
+ * typo like `producton` -- which is what this suite is testing the vault
+ * refuses -- would have compiled. This narrows the widening to exactly the
+ * readonly-ness and keeps the value checked.
+ */
+function setNodeEnv(value: string | undefined): void {
+  (process.env as { NODE_ENV?: string }).NODE_ENV = value;
+}
+
 describe('VaultService — Master Key Validation', () => {
   const originalEnv = process.env.NODE_ENV;
   const originalKey = process.env.VAULT_MASTER_KEY;
 
   afterEach(() => {
-    (process.env as any).NODE_ENV = originalEnv;
+    setNodeEnv(originalEnv);
     if (originalKey !== undefined) {
       process.env.VAULT_MASTER_KEY = originalKey;
     } else {
@@ -535,7 +549,7 @@ describe('VaultService — Master Key Validation', () => {
 
   it('throws in production if VAULT_MASTER_KEY is not set', () => {
     delete process.env.VAULT_MASTER_KEY;
-    (process.env as any).NODE_ENV = 'production';
+    setNodeEnv('production');
 
     expect(() => new VaultService()).toThrow(
       'VAULT_MASTER_KEY environment variable is required in production',
@@ -544,7 +558,7 @@ describe('VaultService — Master Key Validation', () => {
 
   it('allows construction in development without VAULT_MASTER_KEY (with warning)', () => {
     delete process.env.VAULT_MASTER_KEY;
-    (process.env as any).NODE_ENV = 'development';
+    setNodeEnv('development');
 
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
 
@@ -559,7 +573,7 @@ describe('VaultService — Master Key Validation', () => {
 
   it('allows construction in test without VAULT_MASTER_KEY', () => {
     delete process.env.VAULT_MASTER_KEY;
-    (process.env as any).NODE_ENV = 'test';
+    setNodeEnv('test');
 
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
     const service = new VaultService();

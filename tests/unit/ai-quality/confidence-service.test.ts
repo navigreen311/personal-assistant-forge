@@ -11,7 +11,10 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
-const { prisma } = require('@/lib/db');
+import { prisma as prismaImpl } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+const prisma = asMockedPrisma(prismaImpl);
 
 describe('ConfidenceService', () => {
   beforeEach(() => {

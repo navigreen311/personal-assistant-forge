@@ -21,7 +21,10 @@ jest.mock('@/modules/crisis/services/detection-service', () => ({
   }),
 }));
 
-const { getCrisisById, updateCrisis } = require('@/modules/crisis/services/detection-service');
+import { getCrisisById as getCrisisByIdImpl, updateCrisis as updateCrisisImpl } from '@/modules/crisis/services/detection-service';
+
+const getCrisisById = jest.mocked(getCrisisByIdImpl);
+const updateCrisis = jest.mocked(updateCrisisImpl);
 
 function createMockCrisis(overrides: Partial<CrisisEvent> = {}): CrisisEvent {
   const defaultPlaybook: CrisisPlaybook = {

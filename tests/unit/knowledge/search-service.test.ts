@@ -426,7 +426,7 @@ describe('search-service', () => {
         makeEntry({ id: '3', title: 'React component patterns', body: 'Advanced react patterns and hooks usage', tags: ['react', 'patterns'], entityId: 'entity-1' }),
       ]);
 
-      const results = await termSimilaritySearch(ENTITY_1, 'react hooks patterns') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks patterns');
       expect(results.length).toBeGreaterThan(0);
 
       // Results should be sorted by similarity descending
@@ -442,7 +442,7 @@ describe('search-service', () => {
       ]);
 
       // Use high threshold to filter most results
-      const results = await termSimilaritySearch(ENTITY_1, 'react hooks', { threshold: 0.9 }) as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks', { threshold: 0.9 });
       // All returned results should be above threshold
       for (const r of results) {
         expect(r.similarity).toBeGreaterThanOrEqual(0.9);
@@ -464,7 +464,7 @@ describe('search-service', () => {
         makeEntry({ id: '1', title: 'React hooks guide', body: 'React hooks are patterns', tags: ['react'], entityId: 'entity-1' }),
       ]);
 
-      const results = await termSimilaritySearch(ENTITY_1, 'react hooks') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks');
       if (results.length > 0) {
         expect(results[0]).toHaveProperty('entry');
         expect(results[0]).toHaveProperty('similarity');
@@ -483,7 +483,7 @@ describe('search-service', () => {
         makeEntry({ id: '2', title: 'Something completely unrelated xyz', body: 'Nothing matching at all zzz qqq', tags: ['other'], entityId: 'entity-1' }),
       ]);
 
-      const results = await termSimilaritySearch(ENTITY_1, 'react hooks') as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'react hooks');
       // All returned results should be above default threshold of 0.1
       for (const r of results) {
         expect(r.similarity).toBeGreaterThanOrEqual(0.1);
@@ -503,12 +503,12 @@ describe('search-service', () => {
         makeEntry({ id: '2', title: 'Biology cells', body: 'Biology cells mitochondria nucleus', tags: [], entityId: 'entity-1' }),
       ]);
 
-      const results = await termSimilaritySearch(ENTITY_1, 'JavaScript React frameworks', { threshold: 0.01 }) as Array<{ entry: any; similarity: number }>;
+      const results = await termSimilaritySearch(ENTITY_1, 'JavaScript React frameworks', { threshold: 0.01 });
 
       // JavaScript entry should have higher similarity than biology entry
       if (results.length >= 2) {
-        const jsResult = results.find((r: any) => r.entry.id === '1');
-        const bioResult = results.find((r: any) => r.entry.id === '2');
+        const jsResult = results.find((r) => r.entry.id === '1');
+        const bioResult = results.find((r) => r.entry.id === '2');
         if (jsResult && bioResult) {
           expect(jsResult.similarity).toBeGreaterThan(bioResult.similarity);
         }

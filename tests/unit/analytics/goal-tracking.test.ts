@@ -81,8 +81,13 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated insight'),
 }));
 
-const { prisma } = require('@/lib/db');
-const { generateJSON } = require('@/lib/ai');
+import { prisma as prismaImpl } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+const prisma = asMockedPrisma(prismaImpl);
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 beforeEach(() => {
   jest.useFakeTimers({ now: FIXED_NOW });

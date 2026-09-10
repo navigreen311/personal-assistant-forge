@@ -1,5 +1,7 @@
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _budgetStore = new Map<string, any>();
+/** P-35: was `Map<string, any>` behind an unexplained
+ * `eslint-disable`. The store holds hand-built rows the fake below writes and
+ * reads; nothing needs their shape, but nothing needs `any` either. */
+const _budgetStore = new Map<string, Record<string, unknown>>();
 
 jest.mock('@/lib/db', () => {
   return {

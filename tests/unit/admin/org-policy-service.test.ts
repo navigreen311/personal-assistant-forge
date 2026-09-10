@@ -1,9 +1,33 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { MockedDelegates } from '../../support/prisma-mock';
+
+/** The row shape this fake stores and the service reads back. */
+interface StoredRule {
+  id: string;
+  name: string;
+  scope: string;
+  entityId: string;
+  condition: unknown;
+  action: unknown;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** The subset of a rule's columns the service supplies on create/update. */
+type RuleInput = Partial<Omit<StoredRule, 'id' | 'createdAt' | 'updatedAt'>>;
 
 // In-memory store for rules used by the mock
-const ruleStore = new Map<string, any>();
+const ruleStore = new Map<string, StoredRule>();
 
-const mockPrisma = {
+/**
+ * P-35: the delegate/method names in the literal below were unconstrained, and
+ * the `mockImplementation` args were `any`. `MockedDelegates` binds the names
+ * to the real client (see tests/support/prisma-mock.ts) and the arg types name
+ * the fields this fake actually reads, so the mock states an interface instead
+ * of asserting nothing.
+ */
+const mockPrisma: MockedDelegates<'rule' | 'actionLog'> = {
   rule: {
     create: jest.fn(),
     findMany: jest.fn(),
@@ -35,17 +59,17 @@ describe('OrgPolicyService', () => {
     ruleStore.clear();
     jest.clearAllMocks();
 
-    mockPrisma.rule.create.mockImplementation(async ({ data }: any) => {
+    mockPrisma.rule.create!.mockImplementation(async ({ data }: { data: RuleInput }) => {
       const id = uuidv4();
       const now = new Date();
-      const rule = {
+      const rule: StoredRule = {
         id,
-        name: data.name,
-        scope: data.scope,
-        entityId: data.entityId,
+        name: data.name ?? '',
+        scope: data.scope ?? '',
+        entityId: data.entityId ?? '',
         condition: data.condition,
         action: data.action,
-        isActive: data.isActive,
+        isActive: data.isActive ?? true,
         createdAt: now,
         updatedAt: now,
       };
@@ -53,8 +77,8 @@ describe('OrgPolicyService', () => {
       return rule;
     });
 
-    mockPrisma.rule.findMany.mockImplementation(async ({ where }: any) => {
-      const results: any[] = [];
+    mockPrisma.rule.findMany!.mockImplementation(async ({ where }: { where?: Partial<StoredRule> }) => {
+      const results: StoredRule[] = [];
       for (const [, rule] of ruleStore) {
         if (where?.scope && rule.scope !== where.scope) continue;
         if (where?.entityId && rule.entityId !== where.entityId) continue;
@@ -63,11 +87,11 @@ describe('OrgPolicyService', () => {
       return results;
     });
 
-    mockPrisma.rule.findUnique.mockImplementation(async ({ where }: any) => {
+    mockPrisma.rule.findUnique!.mockImplementation(async ({ where }: { where: { id: string } }) => {
       return ruleStore.get(where.id) ?? null;
     });
 
-    mockPrisma.rule.update.mockImplementation(async ({ where, data }: any) => {
+    mockPrisma.rule.update!.mockImplementation(async ({ where, data }: { where: { id: string }; data: RuleInput }) => {
       const existing = ruleStore.get(where.id);
       if (!existing) throw new Error(`Rule ${where.id} not found`);
       const updated = {

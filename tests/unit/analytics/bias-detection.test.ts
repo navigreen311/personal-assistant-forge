@@ -37,8 +37,13 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated insight'),
 }));
 
-const { generateJSON } = require('@/lib/ai');
-const { prisma } = require('@/lib/db');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
+import { prisma as prismaImpl } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+const prisma = asMockedPrisma(prismaImpl);
 
 describe('detectBias (AI-powered)', () => {
   beforeEach(() => {

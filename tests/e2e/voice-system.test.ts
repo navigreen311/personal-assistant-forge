@@ -30,7 +30,9 @@ import { verifiedEntityIdForTest } from '../helpers/factories';
 /** The scope, minted once. Unit tests cannot obtain the brand any other way. */
 const ENTITY = verifiedEntityIdForTest('entity-1');
 
-const { generateJSON } = require('@/lib/ai') as { generateJSON: jest.Mock };
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 const basePersonaData = {
   entityId: ENTITY, name: 'Sales Agent', description: 'Pro sales voice',
@@ -316,7 +318,25 @@ describe('Voice System E2E', () => {
       ], startNodeId: 'g' });
 
       const script = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
-      const e = startExecution((script as any).id, 'call-lc', script.startNodeId);
+      // ---------------------------------------------------------------
+      // P-35 FINDING — LEFT AS IT BEHAVES, DELIBERATELY.
+      //
+      // This line was `startExecution((script as any).id, ...)`. Typed, the
+      // cast turns out to have been hiding a real hole: `generateScriptWithAI`
+      // returns a `ScriptDraft`, and `ScriptDraft` is
+      // `Omit<CallScript, 'id' | 'entityId' | 'version' | ...>` -- the id is
+      // explicitly NOT on it, because a draft has not been persisted yet. So
+      // `script.id` is `undefined` at runtime and always has been, and this
+      // "Full Voice Lifecycle" case starts an execution whose `scriptId` is
+      // `undefined`. It passes because it only ever asserts `currentNodeId`.
+      //
+      // The fix is to persist the draft with `createScript` first and execute
+      // the returned `CallScript`. That changes what this test exercises, and a
+      // lint package may not do that -- so the behaviour is untouched and the
+      // cast is merely made honest and greppable. Reported in the P-35 PR.
+      // ---------------------------------------------------------------
+      const draftScriptId = (script as Partial<CallScript>).id as string;
+      const e = startExecution(draftScriptId, 'call-lc', script.startNodeId);
       expect(e.currentNodeId).toBe('g');
 
       const s1 = advanceNode(e, 'I am interested', script.nodes);

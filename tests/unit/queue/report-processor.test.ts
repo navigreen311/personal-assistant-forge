@@ -29,7 +29,7 @@ const mockMessageFindMany = prisma.message.findMany as jest.MockedFunction<
 const mockTaskFindMany = prisma.task.findMany as jest.MockedFunction<
   typeof prisma.task.findMany
 >;
-const mockInvoiceFindMany = (prisma as any).financialRecord.findMany as jest.MockedFunction<
+const mockInvoiceFindMany = prisma.financialRecord.findMany as jest.MockedFunction<
   typeof prisma.financialRecord.findMany
 >;
 
