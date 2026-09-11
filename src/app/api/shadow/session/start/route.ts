@@ -52,8 +52,7 @@ export async function POST(request: NextRequest) {
         return error('VALIDATION_ERROR', parsed.error.message, 400);
       }
 
-      const voiceSession = await sessionManager.startSession({
-        userId: session.userId,
+      const voiceSession = await sessionManager.forUser(session.userId).startSession({
         channel: parsed.data.channel,
         entityId,
         currentPage: parsed.data.currentPage,

@@ -31,7 +31,10 @@ jest.mock('@/lib/db', () => ({
 }));
 
 import { prisma } from '@/lib/db';
-import { SessionManager } from '@/modules/shadow/interfaces/session-manager';
+import {
+  SessionManager,
+  type ShadowSessionScope,
+} from '@/modules/shadow/interfaces/session-manager';
 
 const mockSession = prisma.shadowVoiceSession as jest.Mocked<typeof prisma.shadowVoiceSession>;
 const mockMessage = prisma.shadowMessage as jest.Mocked<typeof prisma.shadowMessage>;
@@ -40,7 +43,12 @@ const mockConsent = prisma.shadowConsentReceipt as jest.Mocked<typeof prisma.sha
 const mockAuthEvent = prisma.shadowAuthEvent as jest.Mocked<typeof prisma.shadowAuthEvent>;
 
 describe('SessionManager', () => {
+  // P-41. `manager` is now only the factory and the one platform-wide sweep;
+  // every method that addresses a session by id lives on the per-user scope, so
+  // the subject under test is `sessions`, which is bound to `userId` and cannot
+  // be asked about anybody else's row.
   let manager: SessionManager;
+  let sessions: ShadowSessionScope;
 
   const userId = 'user-123';
   const sessionId = 'session-abc';
@@ -72,6 +80,7 @@ describe('SessionManager', () => {
     jest.useFakeTimers();
     jest.setSystemTime(now);
     manager = new SessionManager();
+    sessions = manager.forUser(userId);
   });
 
   afterEach(() => {
@@ -85,8 +94,7 @@ describe('SessionManager', () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
       (mockSession.create as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const result = await manager.startSession({
-        userId,
+      const result = await sessions.startSession({
         channel: 'web',
         entityId: 'entity-1',
         currentPage: '/dashboard',
@@ -113,8 +121,7 @@ describe('SessionManager', () => {
     it('should return existing active session instead of creating a new one', async () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const result = await manager.startSession({
-        userId,
+      const result = await sessions.startSession({
         channel: 'phone',
       });
 
@@ -132,7 +139,7 @@ describe('SessionManager', () => {
         currentPage: null,
       });
 
-      await manager.startSession({ userId, channel: 'mobile' });
+      await sessions.startSession({ channel: 'mobile' });
 
       expect(mockSession.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
@@ -150,7 +157,7 @@ describe('SessionManager', () => {
     it('should return active session if one exists', async () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const result = await manager.getActiveSession(userId);
+      const result = await sessions.getActiveSession();
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe(sessionId);
@@ -160,7 +167,7 @@ describe('SessionManager', () => {
     it('should return null if no active session exists', async () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await manager.getActiveSession(userId);
+      const result = await sessions.getActiveSession();
 
       expect(result).toBeNull();
     });
@@ -169,22 +176,33 @@ describe('SessionManager', () => {
   // --- getSession ---
 
   describe('getSession', () => {
-    it('should return session by ID', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+    // THIS CASE USED TO ENCODE THE DEFECT. It read:
+    //
+    //     const result = await manager.getSession(sessionId);
+    //     expect(mockSession.findUnique).toHaveBeenCalledWith({
+    //       where: { id: sessionId },
+    //     });
+    //     expect(result).not.toBeNull();
+    //
+    // "fetch a session by id and assert it comes back" passes just as well
+    // against a version with no tenancy at all -- it asserted the bug. It now
+    // asserts the owner is in the filter, which is the thing that can regress.
+    it('should return session by ID, filtered by its owner', async () => {
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const result = await manager.getSession(sessionId);
+      const result = await sessions.getSession(sessionId);
 
-      expect(mockSession.findUnique).toHaveBeenCalledWith({
-        where: { id: sessionId },
+      expect(mockSession.findFirst).toHaveBeenCalledWith({
+        where: { id: sessionId, userId },
       });
       expect(result).not.toBeNull();
       expect(result!.id).toBe(sessionId);
     });
 
     it('should return null if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      const result = await manager.getSession('nonexistent');
+      const result = await sessions.getSession('nonexistent');
 
       expect(result).toBeNull();
     });
@@ -194,7 +212,7 @@ describe('SessionManager', () => {
 
   describe('handoffChannel', () => {
     it('should update channel and append to channel history', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         currentChannel: 'phone',
@@ -204,10 +222,10 @@ describe('SessionManager', () => {
         ],
       });
 
-      const result = await manager.handoffChannel(sessionId, 'phone');
+      const result = await sessions.handoffChannel(sessionId, 'phone');
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           currentChannel: 'phone',
           channelHistory: expect.arrayContaining([
@@ -220,21 +238,21 @@ describe('SessionManager', () => {
     });
 
     it('should throw if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
       await expect(
-        manager.handoffChannel('nonexistent', 'phone'),
+        sessions.handoffChannel('nonexistent', 'phone'),
       ).rejects.toThrow('Session nonexistent not found');
     });
 
     it('should throw if session is not active', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'paused',
       });
 
       await expect(
-        manager.handoffChannel(sessionId, 'phone'),
+        sessions.handoffChannel(sessionId, 'phone'),
       ).rejects.toThrow('Cannot handoff channel on a paused session');
     });
   });
@@ -243,16 +261,16 @@ describe('SessionManager', () => {
 
   describe('pauseSession', () => {
     it('should pause an active session', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'paused',
       });
 
-      const result = await manager.pauseSession(sessionId);
+      const result = await sessions.pauseSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           status: 'paused',
         }),
@@ -262,44 +280,44 @@ describe('SessionManager', () => {
 
     it('should return already-paused session without update', async () => {
       const pausedSession = { ...baseDbSession, status: 'paused' };
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(pausedSession);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(pausedSession);
 
-      const result = await manager.pauseSession(sessionId);
+      const result = await sessions.pauseSession(sessionId);
 
       expect(mockSession.update).not.toHaveBeenCalled();
       expect(result.status).toBe('paused');
     });
 
     it('should throw if session is ended', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'ended',
       });
 
-      await expect(manager.pauseSession(sessionId)).rejects.toThrow(
+      await expect(sessions.pauseSession(sessionId)).rejects.toThrow(
         'Cannot pause an ended session',
       );
     });
 
     it('should throw if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await expect(manager.pauseSession('nonexistent')).rejects.toThrow(
+      await expect(sessions.pauseSession('nonexistent')).rejects.toThrow(
         'Session nonexistent not found',
       );
     });
 
     it('should close the current channel history entry on pause', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'paused',
       });
 
-      await manager.pauseSession(sessionId);
+      await sessions.pauseSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           channelHistory: expect.arrayContaining([
             expect.objectContaining({
@@ -317,17 +335,17 @@ describe('SessionManager', () => {
   describe('resumeSession', () => {
     it('should resume a paused session', async () => {
       const pausedSession = { ...baseDbSession, status: 'paused' };
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(pausedSession);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(pausedSession);
       (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'active',
       });
 
-      const result = await manager.resumeSession(sessionId);
+      const result = await sessions.resumeSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           status: 'active',
         }),
@@ -337,7 +355,7 @@ describe('SessionManager', () => {
 
     it('should resume with a different channel if provided', async () => {
       const pausedSession = { ...baseDbSession, status: 'paused' };
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(pausedSession);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(pausedSession);
       (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
@@ -345,10 +363,10 @@ describe('SessionManager', () => {
         currentChannel: 'phone',
       });
 
-      const result = await manager.resumeSession(sessionId, 'phone');
+      const result = await sessions.resumeSession(sessionId, 'phone');
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           currentChannel: 'phone',
         }),
@@ -358,14 +376,14 @@ describe('SessionManager', () => {
 
     it('should end other active sessions before resuming (one-active rule)', async () => {
       const pausedSession = { ...baseDbSession, status: 'paused' };
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(pausedSession);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(pausedSession);
       (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'active',
       });
 
-      await manager.resumeSession(sessionId);
+      await sessions.resumeSession(sessionId);
 
       expect(mockSession.updateMany).toHaveBeenCalledWith({
         where: {
@@ -381,21 +399,21 @@ describe('SessionManager', () => {
     });
 
     it('should return already-active session without update', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const result = await manager.resumeSession(sessionId);
+      const result = await sessions.resumeSession(sessionId);
 
       expect(mockSession.update).not.toHaveBeenCalled();
       expect(result.status).toBe('active');
     });
 
     it('should throw if session is ended', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'ended',
       });
 
-      await expect(manager.resumeSession(sessionId)).rejects.toThrow(
+      await expect(sessions.resumeSession(sessionId)).rejects.toThrow(
         'Cannot resume an ended session',
       );
     });
@@ -407,7 +425,7 @@ describe('SessionManager', () => {
     it('should end a session and calculate duration', async () => {
       const startTime = new Date('2026-02-23T11:30:00.000Z');
       const activeSession = { ...baseDbSession, startedAt: startTime };
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(activeSession);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(activeSession);
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...activeSession,
         status: 'ended',
@@ -415,10 +433,10 @@ describe('SessionManager', () => {
         totalDurationSeconds: 1800, // 30 minutes
       });
 
-      const result = await manager.endSession(sessionId);
+      const result = await sessions.endSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           status: 'ended',
           endedAt: expect.any(Date),
@@ -430,29 +448,29 @@ describe('SessionManager', () => {
     });
 
     it('should return already-ended session without update', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'ended',
         endedAt: now,
       });
 
-      const result = await manager.endSession(sessionId);
+      const result = await sessions.endSession(sessionId);
 
       expect(mockSession.update).not.toHaveBeenCalled();
       expect(result.status).toBe('ended');
     });
 
     it('should close the current channel history entry on end', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'ended',
       });
 
-      await manager.endSession(sessionId);
+      await sessions.endSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           channelHistory: expect.arrayContaining([
             expect.objectContaining({
@@ -465,9 +483,9 @@ describe('SessionManager', () => {
     });
 
     it('should throw if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await expect(manager.endSession('nonexistent')).rejects.toThrow(
+      await expect(sessions.endSession('nonexistent')).rejects.toThrow(
         'Session nonexistent not found',
       );
     });
@@ -481,25 +499,24 @@ describe('SessionManager', () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
       (mockSession.create as jest.Mock).mockResolvedValue({ ...baseDbSession });
 
-      const started = await manager.startSession({
-        userId,
+      const started = await sessions.startSession({
         channel: 'web',
         entityId: 'entity-1',
       });
       expect(started.status).toBe('active');
 
       // Step 2: Pause
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'paused',
       });
 
-      const paused = await manager.pauseSession(sessionId);
+      const paused = await sessions.pauseSession(sessionId);
       expect(paused.status).toBe('paused');
 
       // Step 3: Resume
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'paused',
       });
@@ -509,11 +526,11 @@ describe('SessionManager', () => {
         status: 'active',
       });
 
-      const resumed = await manager.resumeSession(sessionId);
+      const resumed = await sessions.resumeSession(sessionId);
       expect(resumed.status).toBe('active');
 
       // Step 4: End
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockSession.update as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         status: 'ended',
@@ -521,7 +538,7 @@ describe('SessionManager', () => {
         totalDurationSeconds: 600,
       });
 
-      const ended = await manager.endSession(sessionId);
+      const ended = await sessions.endSession(sessionId);
       expect(ended.status).toBe('ended');
       expect(ended.endedAt).toBeTruthy();
     });
@@ -531,16 +548,16 @@ describe('SessionManager', () => {
 
   describe('touchSession', () => {
     it('should increment messageCount and update lastActivityAt', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         messageCount: 5,
       });
       (mockSession.update as jest.Mock).mockResolvedValue({});
 
-      await manager.touchSession(sessionId);
+      await sessions.touchSession(sessionId);
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           messageCount: 6,
           lastActivityAt: expect.any(Date),
@@ -549,19 +566,19 @@ describe('SessionManager', () => {
     });
 
     it('should merge allowed field updates', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         messageCount: 3,
       });
       (mockSession.update as jest.Mock).mockResolvedValue({});
 
-      await manager.touchSession(sessionId, {
+      await sessions.touchSession(sessionId, {
         currentPage: '/contacts',
         currentWorkflowId: 'wf-1',
       });
 
       expect(mockSession.update).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
         data: expect.objectContaining({
           messageCount: 4,
           currentPage: '/contacts',
@@ -571,13 +588,13 @@ describe('SessionManager', () => {
     });
 
     it('should ignore disallowed field updates', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
         ...baseDbSession,
         messageCount: 0,
       });
       (mockSession.update as jest.Mock).mockResolvedValue({});
 
-      await manager.touchSession(sessionId, {
+      await sessions.touchSession(sessionId, {
         status: 'ended', // Not allowed
         userId: 'hacker', // Not allowed
         currentPage: '/safe-page', // Allowed
@@ -590,9 +607,9 @@ describe('SessionManager', () => {
     });
 
     it('should throw if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await expect(manager.touchSession('nonexistent')).rejects.toThrow(
+      await expect(sessions.touchSession('nonexistent')).rejects.toThrow(
         'Session nonexistent not found',
       );
     });
@@ -602,11 +619,11 @@ describe('SessionManager', () => {
 
   describe('listSessions', () => {
     it('should list sessions with pagination', async () => {
-      const sessions = [baseDbSession, { ...baseDbSession, id: 'session-2' }];
-      (mockSession.findMany as jest.Mock).mockResolvedValue(sessions);
+      const rows = [baseDbSession, { ...baseDbSession, id: 'session-2' }];
+      (mockSession.findMany as jest.Mock).mockResolvedValue(rows);
       (mockSession.count as jest.Mock).mockResolvedValue(2);
 
-      const result = await manager.listSessions(userId, { limit: 10, offset: 0 });
+      const result = await sessions.listSessions({ limit: 10, offset: 0 });
 
       expect(result.sessions).toHaveLength(2);
       expect(result.total).toBe(2);
@@ -622,7 +639,7 @@ describe('SessionManager', () => {
       (mockSession.findMany as jest.Mock).mockResolvedValue([]);
       (mockSession.count as jest.Mock).mockResolvedValue(0);
 
-      await manager.listSessions(userId, { status: 'ended' });
+      await sessions.listSessions({ status: 'ended' });
 
       expect(mockSession.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -635,7 +652,7 @@ describe('SessionManager', () => {
       (mockSession.findMany as jest.Mock).mockResolvedValue([]);
       (mockSession.count as jest.Mock).mockResolvedValue(0);
 
-      await manager.listSessions(userId);
+      await sessions.listSessions();
 
       expect(mockSession.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -649,7 +666,7 @@ describe('SessionManager', () => {
       (mockSession.findMany as jest.Mock).mockResolvedValue([]);
       (mockSession.count as jest.Mock).mockResolvedValue(0);
 
-      await manager.listSessions(userId, { limit: 500 });
+      await sessions.listSessions({ limit: 500 });
 
       expect(mockSession.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -663,14 +680,14 @@ describe('SessionManager', () => {
 
   describe('deleteSession', () => {
     it('should delete session and all related records', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 5 });
       (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 1 });
       (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
       (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
       (mockSession.delete as jest.Mock).mockResolvedValue({});
 
-      await manager.deleteSession(sessionId);
+      await sessions.deleteSession(sessionId);
 
       expect(mockMessage.deleteMany).toHaveBeenCalledWith({
         where: { sessionId },
@@ -685,16 +702,96 @@ describe('SessionManager', () => {
         where: { sessionId },
       });
       expect(mockSession.delete).toHaveBeenCalledWith({
-        where: { id: sessionId },
+        where: { id: sessionId, userId },
       });
     });
 
     it('should throw if session not found', async () => {
-      (mockSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await expect(manager.deleteSession('nonexistent')).rejects.toThrow(
+      await expect(sessions.deleteSession('nonexistent')).rejects.toThrow(
         'Session nonexistent not found',
       );
+    });
+  });
+
+  // --- the guard that covers every case above ---
+
+  describe('P-41: no session is ever addressed by id alone', () => {
+    // `findUnique` is still in the `@/lib/db` mock on purpose. It is the only
+    // ShadowVoiceSession method whose `where` cannot be a filter-only object in
+    // the old code's style, and it was the delegate all seven by-id reads used.
+    // Asserting it is never reached makes this a claim about the module rather
+    // than about the twelve call sites the cases above happen to visit: a new
+    // method that reaches for it fails here even if nobody writes a case for
+    // it.
+    it('never calls findUnique on shadowVoiceSession, in any lifecycle method', async () => {
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.update as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockSession.findMany as jest.Mock).mockResolvedValue([]);
+      (mockSession.count as jest.Mock).mockResolvedValue(0);
+      (mockSession.create as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.delete as jest.Mock).mockResolvedValue({});
+      (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+
+      await sessions.getSession(sessionId);
+      await sessions.getActiveSession();
+      await sessions.listSessions();
+      await sessions.touchSession(sessionId);
+      await sessions.handoffChannel(sessionId, 'phone');
+      await sessions.pauseSession(sessionId);
+      await sessions.deleteSession(sessionId);
+      // `resumeSession` needs a paused row to get past its early return.
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({
+        ...baseDbSession,
+        status: 'paused',
+      });
+      await sessions.resumeSession(sessionId);
+      await sessions.endSession(sessionId);
+
+      expect(mockSession.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('puts the owner in every where clause that names an id', async () => {
+      (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.update as jest.Mock).mockResolvedValue({ ...baseDbSession });
+      (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockSession.delete as jest.Mock).mockResolvedValue({});
+      (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+
+      await sessions.touchSession(sessionId);
+      await sessions.handoffChannel(sessionId, 'phone');
+      await sessions.pauseSession(sessionId);
+      await sessions.endSession(sessionId);
+      await sessions.deleteSession(sessionId);
+
+      const calls = [
+        ...(mockSession.findFirst as jest.Mock).mock.calls,
+        ...(mockSession.update as jest.Mock).mock.calls,
+        ...(mockSession.delete as jest.Mock).mock.calls,
+      ].map((call) => call[0].where as Record<string, unknown>);
+
+      // Every single one of them, not "at least one": a filter that names an
+      // id and omits the owner is the whole defect, and it only takes one.
+      expect(calls.length).toBeGreaterThan(0);
+      for (const where of calls) {
+        if (where.id === undefined) continue;
+        expect(where).toEqual({ id: sessionId, userId });
+      }
+    });
+
+    it('refuses to build a store with no owner rather than filtering on undefined', () => {
+      // `where: { userId: undefined }` is not an error in Prisma -- it is "no
+      // filter", which is exactly the cross-tenant read this package closed. So
+      // an empty user id has to fail at construction, not at query time.
+      expect(() => manager.forUser('')).toThrow('non-empty userId');
     });
   });
 
