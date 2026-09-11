@@ -1285,3 +1285,63 @@ P-37 gave it a route) **and** known-false ones (barrel re-exports, types, test
 helpers) before it gates anything. **If it cannot be made clean, it ships as a
 report, not a gate** — a noisy gate teaches people to disable gates, which is how
 `continue-on-error` got there in the first place.
+
+---
+
+## P-38 — built, and it gates. The count moved, and the move is the lesson.
+
+`tests/support/reachability.ts` resolves imports through the TypeScript AST
+instead of grepping for the name; `tests/unit/architecture/service-reachability.test.ts`
+is the gate, with a `KNOWN_DEAD` list guarded in both directions exactly as
+P-36's `KNOWN_ORPHANS` is.
+
+**Scope, stated with the number, because this repository has now produced ten
+counts that misled.** Subjects are `export const x = new Y()` at module scope in
+`src/**`, excluding `new Map()`/`new Set()` and friends. Callers are every
+non-test file in `src/**` and `scripts/**`.
+
+```
+49 -> 42 subjects      30/19 -> 29 live / 13 dead
+```
+
+Both differences are the reason the AST was worth it:
+
+- **`retentionService` is declared twice** — `security/services/retention-service.ts`
+  (dead) and `shadow/compliance/retention.ts` (live, via its route and the
+  retention queue). Keyed by name, the live one forgave the dead one. It is the
+  tenth misleading count, and it was inside the measurement of the other nine.
+- **Seven of the nineteen were `new Map()`** — `dlpStore`, `exportStore`,
+  `policyStore`, `ssoStore`, `toolStore`, `importStore`, `wizardStore` — exported
+  only as a test seam, in modules whose functions routes call perfectly well
+  (`/api/admin/dlp` calls `getDLPRules`). Listing a store beside `vaultService`
+  is how a gate earns its first "oh, ignore that one".
+
+**Validated against the trees where the answer is already known**, since a check
+nobody watched reject anything is prose: `notificationEscalator`,
+`digestOptimizer` (which owns `addToDigest`), `redactionPipeline` and
+`adaptiveChannelService` all read `dead` at `53d0caf` (master before P-16);
+`redactionPipeline` still `dead` at `4ffb406` (before P-17); `breakGlassRevoke`
+`dead` at `2efebaa` (before P-37); all four read `live` on master today. Zero
+false positives across 13 of 13 hand-checked findings on master and 19 of 19 at
+pre-P-16 master.
+
+**The three the coordinator asked about are all genuinely dead, and two of them
+are a hole P-36's check cannot see.** `vaultService` is the only code in `src/`
+that touches `prisma.vaultEntry`, `vaultSecret` and `vaultKey`, and there is no
+`/api/vault` route at all; `provenanceService` is the sole toucher of
+`prisma.provenanceRecord`. Those four models pass
+`tests/db/control-plane-schema.test.ts` — they *are* referenced — and no row can
+ever be written to them. `usageTracker` is worse still: `src/lib/ai/usage.ts` is
+imported by nothing, not even re-exported by `lib/ai/index.ts`, so every
+Anthropic call this platform makes is unmetered.
+
+**Scope 2 was measured and refused, and must not be rebuilt.** 773 exported
+functions under `src/modules/<m>/services/`, 291 live, 482 dead. Twenty hand
+checked, nineteen true — and the twentieth,
+`workflows/services/action-handlers.ts :: handleLogFinancial`, runs in
+production, reached through the `ACTION_HANDLERS` dispatch table in its own file
+by an `executeAction` that `workflow-executor.ts` imports. 122 of the 482 are
+referenced a second time inside their own file, so each needs an intra-file call
+graph before its verdict means anything. `fixtureDispatchTable()` reproduces the
+miss in six lines and the suite asserts it, so the dead end is executable rather
+than prose that drifts.
