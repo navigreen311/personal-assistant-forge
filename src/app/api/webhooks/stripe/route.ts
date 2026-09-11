@@ -142,30 +142,33 @@ export async function POST(req: NextRequest): Promise<Response> {
           `${result.retryable ? 'asking Stripe to retry' : 'retry budget spent'}:`,
         result.error
       );
-
-      return NextResponse.json(
-        {
-          // `received` is the claim that this endpoint has taken the event off
-          // Stripe's hands. On a retryable failure it has not.
-          received: !result.retryable,
-          status: 'failed',
-          eventId: webhookEvent.id,
-          attempts: result.attempts,
-          retryable: result.retryable,
-          error: result.error,
-        },
-        // 500 asks for the redelivery. 200 withdraws the request once the
-        // attempt budget is gone; the row stays `failed` for an operator.
-        { status: result.retryable ? 500 : 200 }
-      );
     }
 
-    return NextResponse.json({
-      received: true,
-      status: result.status,
-      eventId: webhookEvent.id,
-      attempts: result.attempts,
-    });
+    // ONE mapping, over `retryable` alone, for every outcome.
+    //
+    // Written this way because of a mutation test: with the status code chosen
+    // inside an `if (result.status === 'failed')` branch, marking a DUPLICATE
+    // retryable changed nothing observable at this endpoint, because the branch
+    // never ran for one. That mutant survived every route-level case and only a
+    // unit test caught it. `retryable` is the contract and this is the only
+    // place it is read, so anything the module ever marks retryable is a 500
+    // here.
+    return NextResponse.json(
+      {
+        // `received` is the claim that this endpoint has taken the event off
+        // Stripe's hands. On a retryable failure it has not.
+        received: !result.retryable,
+        status: result.status,
+        eventId: webhookEvent.id,
+        attempts: result.attempts,
+        retryable: result.retryable,
+        ...(result.status === 'failed' ? { error: result.error } : {}),
+      },
+      // 500 asks for the redelivery. 200 withdraws the request — because the
+      // work is done, because nothing would act on another delivery, or because
+      // the attempt budget is gone and the row is waiting for an operator.
+      { status: result.retryable ? 500 : 200 }
+    );
   } catch (err) {
     console.error('[stripe-webhook] Unexpected error:', (err as Error).message);
     // An unexpected throw means this endpoint does not know whether the work

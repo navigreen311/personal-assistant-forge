@@ -109,6 +109,9 @@ describe('POST /api/webhooks/stripe — success is 200', () => {
       received: true,
       status: 'processed',
       attempts: 1,
+      // The endpoint is not asking for another delivery. The route's status
+      // code is derived from this one field and nothing else.
+      retryable: false,
     });
 
     const stored = await row('evt_p42_ok');
@@ -126,7 +129,11 @@ describe('POST /api/webhooks/stripe — success is 200', () => {
 
     // Redelivery cannot register a handler, so asking for one would be a lie.
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({ received: true, status: 'ignored' });
+    await expect(res.json()).resolves.toMatchObject({
+      received: true,
+      status: 'ignored',
+      retryable: false,
+    });
     expect((await row('evt_p42_unknown'))!.status).toBe('ignored');
   });
 
@@ -143,7 +150,11 @@ describe('POST /api/webhooks/stripe — success is 200', () => {
     // A DUPLICATE IS A SUCCESS. This is the line that says the fix did not turn
     // idempotency into a failure: the second delivery is 200, not 500.
     expect(second.status).toBe(200);
-    await expect(second.json()).resolves.toMatchObject({ received: true, status: 'ignored' });
+    await expect(second.json()).resolves.toMatchObject({
+      received: true,
+      status: 'ignored',
+      retryable: false,
+    });
     expect(runs).toBe(1);
 
     const stored = await row('evt_p42_twice');
