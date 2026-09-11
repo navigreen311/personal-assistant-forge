@@ -86,3 +86,70 @@ not a persistence question, and nothing today enforces limits on them either way
 `/api/safety/throttle` disappearing is an API removal. It has no UI consumer and
 its answer was never true, but it is a public route and its removal belongs in a
 changelog.
+
+---
+
+# AMENDMENT — 2026-09-10, same day. The stated reason was wrong.
+
+**The decision stands. The argument for it does not, and the correction matters
+more than the decision.**
+
+Above, this document claims `ShadowProactiveConfig` "is enforced" at
+`notification-escalator.ts:239/:255`. The code is there and it is correct. **It
+does not run.**
+
+```
+notificationEscalator singleton  ->  0 callers anywhere in src/
+```
+
+The class is defined, instantiated at module scope as `notificationEscalator`,
+re-exported by `proactive/index.ts` — and **no code calls a method on it.**
+
+## How the coordinator got it wrong, recorded because the mechanism repeats
+
+The check was `grep -rln "shadow/proactive'" src/` plus a second grep for
+`from '@/modules/shadow/proactive`. The second matched four route files, and that
+was read as "four routes import the barrel".
+
+**It was a prefix match.** Those four routes import
+`@/modules/shadow/proactive/morning-briefing`,
+`…/entity-persona` and `…/suggestion-engine` — *specific files*. **Not one of
+them imports the barrel, and not one imports `notification-escalator`.**
+
+That is the eighth scope-dependent measurement error on this repository, and the
+first one the coordinator made rather than caught. It is also precisely the
+distinction P-35 flagged when it declined to ship its factory-scan: **import-
+granular reachability is not function-granular reachability.** A module can be
+imported, re-exported, and still have no live caller.
+
+## What changes
+
+`throttle-service.ts` is still deleted — an in-memory duplicate with incoherent
+defaults and no callers. That part was never in doubt.
+
+But the reason is not "the real control already works". It is:
+
+**Of the two implementations of per-user action limits, one is in-memory with
+defaults that cannot fire, and the other counts durable rows and is correct by
+construction. Neither is wired. Delete the first and WIRE THE SECOND.**
+
+Wiring `notification-escalator` is not follow-up tidying — it is Sprint 5's
+listed deliverable *"Escalation state machine (notify -> call -> SMS -> phone
+tree)"* (issue #24), and it is what makes `maxCallsPerDay`, `maxCallsPerHour`,
+quiet hours and the VIP breakout real. **Until it is wired, every anti-spam
+control the Shadow settings page offers is a stored preference nothing reads** —
+the same shape as the twelve phantoms, one level up: not a fake result, but a
+correct implementation with no caller.
+
+It belongs to P-16 and is stated in that package's card.
+
+## The general lesson, since this run keeps paying for it
+
+**"It exists" and "it is imported" are both weaker than "it is called".** This
+codebase has now produced all three failure modes:
+
+- a table that exists and nothing queries (`ShadowSmsCode`, five models)
+- a module that is imported and whose functions nobody calls (`notification-escalator`)
+- code that runs and reports success for work it did not do (twelve phantoms)
+
+`control-plane-schema.test.ts` now catches the first. Nothing catches the second.
