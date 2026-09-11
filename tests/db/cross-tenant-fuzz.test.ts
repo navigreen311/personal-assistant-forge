@@ -761,12 +761,22 @@ async function sweep(): Promise<SweepResult> {
 describe('T-035 — every route, called by tenant A while naming tenant B', () => {
   it('seeds a canary row in nearly every tenanted table', async () => {
     const { rowIds, seedSkipped } = await sweep();
-    // 33 models carry an entityId; `Message` needs a real sender/recipient User
+    // 35 models carry an entityId; `Message` needs a real sender/recipient User
     // relation that cannot be filled from the model definition alone. If that
     // number grows, the sweep has quietly narrowed and this fails.
-    expect(TENANTED_MODELS.length).toBe(33);
+    //
+    // P-36: was 33/32. Migration window 01 added `StoredDocument` and
+    // `CommunicationOptOut`, both entity-scoped, and this assertion is what
+    // noticed -- which is the behaviour it was written for. Both seed
+    // generically from the model definition, so the sweep covers them without
+    // anyone adding a fixture; `seedSkipped` is unchanged, which is the proof
+    // that they seeded rather than being silently skipped. `StoredDocument` is
+    // the one that matters: it is the metadata `POST /api/uploads` used to keep
+    // in a Map, so before this window there was no tenanted row for the fuzz to
+    // reach at all.
+    expect(TENANTED_MODELS.length).toBe(35);
     expect(seedSkipped).toEqual(['Message']);
-    expect(rowIds.size).toBe(32);
+    expect(rowIds.size).toBe(34);
   });
 
   it('exercises the whole surface, not a sample of it', async () => {

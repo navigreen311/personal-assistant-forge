@@ -1,3 +1,23 @@
+import { FakeTable } from '../../fakes/prisma-table';
+
+// P-36 (ESC-3): `optOutRecords` and `optOutIndex` are now
+// `CommunicationOptOut` rows. A fake TABLE rather than stubs, because these
+// cases round-trip: opt a number out, then send to it and expect the send
+// to be refused. The fake also reproduces Postgres's NULLS DISTINCT behaviour, so
+// the platform-wide hard-bounce rows behave here as they do in the database --
+// see tests/fakes/prisma-table.ts.
+//
+// It proves nothing about persistence. That is
+// tests/db/migration-window-01.test.ts, across a restart, on real Postgres.
+jest.mock('@/lib/db', () => ({ prisma: { communicationOptOut: makeOptOutTable() } }));
+
+function makeOptOutTable() {
+  return new FakeTable({
+    uniques: { channel_address_entityId_scope: ['channel', 'address', 'entityId', 'scope'] },
+    defaults: () => ({ entityId: null, scope: 'all', reason: null, optedOutAt: new Date() }),
+  });
+}
+
 import {
   sendTemplatedSms,
   updateDeliveryStatus,
@@ -18,8 +38,8 @@ jest.mock('@/lib/integrations/sms/client', () => ({
 import { sendSMS } from '@/lib/integrations/sms/client';
 const mockSendSMS = sendSMS as jest.MockedFunction<typeof sendSMS>;
 
-beforeEach(() => {
-  _resetStores();
+beforeEach(async () => {
+  await _resetStores();
   mockSendSMS.mockClear();
   mockSendSMS.mockResolvedValue('SM_mock_sid_123');
 });
@@ -127,7 +147,7 @@ describe('SMS Workflows', () => {
         entityId: 'entity-1',
       });
 
-      expect(isOptedOut('+1234567890', 'entity-1')).toBe(true);
+      expect(await isOptedOut('+1234567890', 'entity-1')).toBe(true);
     });
 
     it('should block sends after opt-out', async () => {
@@ -158,7 +178,7 @@ describe('SMS Workflows', () => {
         entityId: 'entity-1',
       });
 
-      expect(isOptedOut('+1234567890', 'entity-1')).toBe(false);
+      expect(await isOptedOut('+1234567890', 'entity-1')).toBe(false);
 
       const result = await sendTemplatedSms({
         to: '+1234567890',
@@ -181,11 +201,11 @@ describe('SMS Workflows', () => {
         entityId: 'entity-1',
       });
 
-      expect(isOptedOut('+1111111111', 'entity-1')).toBe(true);
+      expect(await isOptedOut('+1111111111', 'entity-1')).toBe(true);
     });
 
-    it('should return false for active numbers', () => {
-      expect(isOptedOut('+2222222222', 'entity-1')).toBe(false);
+    it('should return false for active numbers', async () => {
+      expect(await isOptedOut('+2222222222', 'entity-1')).toBe(false);
     });
 
     it('should scope opt-out to entity', async () => {
@@ -194,8 +214,8 @@ describe('SMS Workflows', () => {
         entityId: 'entity-1',
       });
 
-      expect(isOptedOut('+1111111111', 'entity-1')).toBe(true);
-      expect(isOptedOut('+1111111111', 'entity-2')).toBe(false);
+      expect(await isOptedOut('+1111111111', 'entity-1')).toBe(true);
+      expect(await isOptedOut('+1111111111', 'entity-2')).toBe(false);
     });
   });
 
@@ -249,7 +269,7 @@ describe('SMS Workflows', () => {
       await handleOptOut({ phoneNumber: '+2222222222', entityId: 'entity-1' });
       await handleOptOut({ phoneNumber: '+3333333333', entityId: 'entity-2' }); // different entity
 
-      const stats = getOptOutStats('entity-1');
+      const stats = await getOptOutStats('entity-1');
 
       expect(stats.totalOptOuts).toBe(2);
       expect(stats.optedOutNumbers).toContain('+1111111111');

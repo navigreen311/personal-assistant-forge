@@ -1,3 +1,26 @@
+import { FakeTable } from '../../fakes/prisma-table';
+
+// P-36 (ESC-1): the idempotency guard was `new Set<string>()` and is now the
+// `InboundWebhookEvent` table. A fake TABLE rather than `jest.fn()` stubs,
+// because these cases already round-trip -- process an event, then process it
+// again and expect `ignored` -- and that round trip is the thing worth keeping.
+//
+// The fake reproduces the unique constraint, so `claimEvent` takes its P2002
+// branch here exactly as it does against Postgres. It reproduces nothing about
+// PERSISTENCE: a Map in a mock factory is the very thing this package removed.
+// Persistence, and a genuine duplicate INSERT rejected by a real index, are in
+// tests/db/migration-window-01.test.ts.
+jest.mock('@/lib/db', () => ({
+  prisma: { inboundWebhookEvent: makeInboundWebhookEventTable() },
+}));
+
+function makeInboundWebhookEventTable() {
+  return new FakeTable({
+    uniques: { provider_eventId: ['provider', 'eventId'] },
+    defaults: () => ({ status: 'received', attempts: 0, error: null, processedAt: null }),
+  });
+}
+
 import { createHmac } from 'crypto';
 import {
   verifyWebhookSignature,
@@ -13,8 +36,8 @@ import {
 import type { WebhookEvent } from '@/lib/integrations/payments/webhooks';
 
 describe('Stripe Webhooks', () => {
-  beforeEach(() => {
-    _resetState();
+  beforeEach(async () => {
+    await _resetState();
   });
 
   // Helper to create a valid Stripe signature
@@ -94,7 +117,7 @@ describe('Stripe Webhooks', () => {
 
       // Process once
       await processWebhookEvent(event);
-      expect(isEventProcessed('evt_dup_1')).toBe(true);
+      expect(await isEventProcessed('evt_dup_1')).toBe(true);
 
       // Process again
       const result = await processWebhookEvent({ ...event, status: 'received' });
@@ -117,6 +140,54 @@ describe('Stripe Webhooks', () => {
       const result = await processWebhookEvent(event);
       expect(result.status).toBe('failed');
       expect(result.error).toBe('Handler crashed');
+    });
+
+    // P-36: this is the defect P-33 found and left for the schema window.
+    //
+    // The old code called `markEventProcessed(event.id)` on the FAILURE branch,
+    // and the route returns 200 unconditionally so Stripe stops retrying. A
+    // handler failure on `invoice.paid` was therefore dropped permanently, and
+    // Stripe's retry -- the one mechanism that could have recovered it -- was
+    // answered `ignored`. There was no third state to record, because a Set is
+    // a boolean. `status` is that third state.
+    it('does not mark a FAILED event as processed, and lets a retry run it', async () => {
+      let attempts = 0;
+      registerHandler('invoice.paid', async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('downstream unavailable');
+      });
+
+      const event: WebhookEvent = {
+        id: 'evt_retry_after_failure',
+        type: 'invoice.paid',
+        data: { id: 'inv_retry' },
+        status: 'received',
+      };
+
+      expect((await processWebhookEvent(event)).status).toBe('failed');
+      // The critical assertion: a failure is NOT terminal.
+      expect(await isEventProcessed('evt_retry_after_failure')).toBe(false);
+
+      const retry = await processWebhookEvent({ ...event, status: 'received' });
+      expect(retry.status).toBe('processed');
+      expect(attempts).toBe(2);
+      expect(await isEventProcessed('evt_retry_after_failure')).toBe(true);
+    });
+
+    it('still refuses a second delivery of an event that SUCCEEDED', async () => {
+      const handlerFn = jest.fn().mockResolvedValue(undefined);
+      registerHandler('payment_intent.succeeded', handlerFn);
+
+      const event: WebhookEvent = {
+        id: 'evt_once_only',
+        type: 'payment_intent.succeeded',
+        data: { id: 'pi_once' },
+        status: 'received',
+      };
+
+      expect((await processWebhookEvent(event)).status).toBe('processed');
+      expect((await processWebhookEvent({ ...event, status: 'received' })).status).toBe('ignored');
+      expect(handlerFn).toHaveBeenCalledTimes(1);
     });
   });
 

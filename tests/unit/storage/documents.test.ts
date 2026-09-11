@@ -1,3 +1,30 @@
+import { FakeTable } from '../../fakes/prisma-table';
+
+// P-36 (ESC-2): `documentStore` (a Map) is now `StoredDocument` +
+// `StoredDocumentVersion`. Fake TABLES rather than stubs, because every case
+// below is a round trip -- create then read back, add a version then count the
+// version list -- and stubbing those would test the stub.
+//
+// A Map inside a mock factory proves the logic and cannot prove persistence.
+// Persistence is proved across a restart, against real Postgres, in
+// tests/db/migration-window-01.test.ts.
+jest.mock('@/lib/db', () => makeDocumentTables());
+
+function makeDocumentTables() {
+  const versions = new FakeTable({
+    uniques: { documentId_version: ['documentId', 'version'] },
+    defaults: () => ({ uploadedAt: new Date(), changelog: null }),
+  });
+  const documents = new FakeTable({
+    touch: ['updatedAt'],
+    defaults: () => ({ description: null, tags: [], currentVersion: 1, deletedAt: null }),
+    relations: {
+      versions: { table: () => versions, foreignKey: 'documentId', cascade: true },
+    },
+  });
+  return { prisma: { storedDocument: documents, storedDocumentVersion: versions } };
+}
+
 import {
   createDocument,
   addDocumentVersion,
@@ -21,8 +48,8 @@ jest.mock('@/lib/integrations/storage/client', () => ({
 }));
 
 describe('Document Storage', () => {
-  beforeEach(() => {
-    _resetStore();
+  beforeEach(async () => {
+    await _resetStore();
   });
 
   const sampleFile = {

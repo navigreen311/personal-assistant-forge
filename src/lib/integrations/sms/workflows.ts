@@ -1,7 +1,33 @@
 // SMS Workflows - Delivery tracking, opt-out handling, and segment calculation
 
+import {
+  hasOptedOut,
+  listOptOuts,
+  recordOptOut,
+  removeOptOut,
+  _resetOptOuts,
+} from '@/lib/integrations/communication/opt-outs';
 import { sendSMS } from '@/lib/integrations/sms/client';
 import { getSmsTemplate, renderSmsTemplate } from '@/lib/integrations/sms/templates';
+
+// P-36 (ESC-3, migration window 01): `optOutRecords` (:30) and `optOutIndex`
+// (:31) are now `CommunicationOptOut` rows, reached through
+// lib/integrations/communication/opt-outs.ts, which carries the reasoning.
+//
+// This is the channel where the volatility was sharpest. `sendTemplatedSms`
+// DOES consult `isOptedOut` before every send -- unlike the email path, which
+// never consults its unsubscribe list -- so the check was real and the store
+// under it was a `Set` that a deploy emptied. A STOP reply is the legal
+// instruction; forgetting it on restart and texting the person again is the
+// TCPA violation itself, not a precursor to one. Nothing has been sent through
+// this module in production (it has no importers outside its own tests), which
+// is the only reason this is latent rather than live.
+//
+// `isOptedOut` is consequently ASYNC. It was synchronous because a Set is.
+//
+// `deliveryRecords` (:29) stays in memory: it is a delivery LOG, the authorized
+// window covers opt-outs only, and it is escalated rather than forced into a
+// table that means something else.
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,8 +53,6 @@ export interface SmsOptOutRecord {
 // ─── In-Memory Stores ──────────────────────────────────────────────────────────
 
 const deliveryRecords = new Map<string, SmsDeliveryRecord>();
-const optOutRecords: SmsOptOutRecord[] = [];
-const optOutIndex = new Set<string>(); // "phone:entityId" keys for fast lookup
 
 // ─── ID Generator ──────────────────────────────────────────────────────────────
 
@@ -39,11 +63,10 @@ function generateId(prefix: string): string {
 
 // ─── Store Reset (for testing) ─────────────────────────────────────────────────
 
-export function _resetStores(): void {
+export async function _resetStores(): Promise<void> {
   deliveryRecords.clear();
-  optOutRecords.length = 0;
-  optOutIndex.clear();
   idCounter = 0;
+  await _resetOptOuts();
 }
 
 // ─── GSM-7 Character Detection ─────────────────────────────────────────────────
@@ -95,8 +118,9 @@ export async function sendTemplatedSms<TData extends Record<string, unknown>>(pa
     segments: 0,
   };
 
-  // Check opt-out before sending
-  if (isOptedOut(params.to, params.entityId)) {
+  // Check opt-out before sending. This is the one send gate in either
+  // communication module that actually reads its suppression list.
+  if (await isOptedOut(params.to, params.entityId)) {
     record.status = 'failed';
     record.failureReason = 'Recipient has opted out';
     deliveryRecords.set(record.id, record);
@@ -173,58 +197,52 @@ export function getDeliveryHistory(phoneNumber: string, limit: number = 50): Sms
 
 // ─── Opt-Out / Opt-In ──────────────────────────────────────────────────────────
 
-function optOutKey(phoneNumber: string, entityId: string): string {
-  return `${phoneNumber}:${entityId}`;
-}
-
 export async function handleOptOut(params: {
   phoneNumber: string;
   entityId: string;
   reason?: string;
 }): Promise<void> {
-  const key = optOutKey(params.phoneNumber, params.entityId);
-  if (optOutIndex.has(key)) return; // Already opted out
-
-  const record: SmsOptOutRecord = {
-    phoneNumber: params.phoneNumber,
+  // `recordOptOut` is idempotent, so the "already opted out" early return the
+  // `optOutIndex` needed is gone: a repeated STOP leaves one row.
+  await recordOptOut({
+    channel: 'sms',
+    address: params.phoneNumber,
     entityId: params.entityId,
-    optedOutAt: new Date(),
+    scope: 'all',
+    source: 'opt_out_keyword',
     reason: params.reason,
-  };
-
-  optOutRecords.push(record);
-  optOutIndex.add(key);
+  });
 }
 
 export async function handleOptIn(params: {
   phoneNumber: string;
   entityId: string;
 }): Promise<void> {
-  const key = optOutKey(params.phoneNumber, params.entityId);
-  optOutIndex.delete(key);
-
-  // Remove from records array
-  const idx = optOutRecords.findIndex(
-    (r) => r.phoneNumber === params.phoneNumber && r.entityId === params.entityId
-  );
-  if (idx !== -1) {
-    optOutRecords.splice(idx, 1);
-  }
+  await removeOptOut({
+    channel: 'sms',
+    address: params.phoneNumber,
+    entityId: params.entityId,
+  });
 }
 
-export function isOptedOut(phoneNumber: string, entityId: string): boolean {
-  return optOutIndex.has(optOutKey(phoneNumber, entityId));
+export async function isOptedOut(phoneNumber: string, entityId: string): Promise<boolean> {
+  return hasOptedOut({
+    channel: 'sms',
+    address: phoneNumber,
+    entityId,
+    scopes: ['all'],
+  });
 }
 
 // ─── Opt-Out Stats ─────────────────────────────────────────────────────────────
 
-export function getOptOutStats(entityId: string): {
+export async function getOptOutStats(entityId: string): Promise<{
   totalOptOuts: number;
   optedOutNumbers: string[];
-} {
-  const entityOptOuts = optOutRecords.filter((r) => r.entityId === entityId);
+}> {
+  const optOuts = await listOptOuts({ channel: 'sms', entityId });
   return {
-    totalOptOuts: entityOptOuts.length,
-    optedOutNumbers: entityOptOuts.map((r) => r.phoneNumber),
+    totalOptOuts: optOuts.length,
+    optedOutNumbers: optOuts.map((r) => r.address),
   };
 }

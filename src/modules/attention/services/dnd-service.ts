@@ -23,13 +23,19 @@ import type { DNDConfig } from '../types';
 // that could not be recovered. It is replaced here rather than kept in
 // parallel -- two writers and no reader is how the state drifted.
 //
-// NOT persisted, deliberately and visibly: `DNDConfig.reason`, which
-// `enableDND` fills with `JSON.stringify({ expiresAt })` for a timed DND. The
-// Prisma model has no column for it, and a repo-wide grep finds no reader --
-// nothing ever expires a timed DND. Stuffing it into `vipContactIds` (the only
-// Json column) would be the "wrong field on the right model" move this package
-// exists to argue against, so it stays a returned-but-unstored field and is
-// raised as an escalation instead.
+// P-36 (ESC-5, migration window 01) closes the escalation P-33 raised here.
+//
+// `enableDND` filled `reason` with `JSON.stringify({ expiresAt })` for a timed
+// do-not-disturb. There was no column for it and a repo-wide grep found no
+// reader, so the honest description of "snooze notifications for an hour" was:
+// notifications were snoozed, and the hour never ended. The one nullable column
+// `expiresAt DateTime?` is the whole fix, and enforcement is on the READ
+// (`getDNDConfig`) rather than in a sweeper -- the same shape P-33 used for
+// `ShadowSmsCode`, and for the same reason: a `setInterval` armed at module
+// load is state in the process, which is what this whole exercise is removing.
+//
+// `reason` is kept, and is now DERIVED from the column on read, so the field
+// that used to be returned-once-and-lost survives a restart with the config.
 
 /** Row shape as read back from `prisma.dNDConfig`. */
 interface DndRow {
@@ -38,6 +44,7 @@ interface DndRow {
   mode: string;
   startTime: string | null;
   endTime: string | null;
+  expiresAt: Date | null;
   vipBreakthroughEnabled: boolean;
   vipContactIds: unknown;
 }
@@ -53,7 +60,7 @@ function getDefaultDND(userId: string): DNDConfig {
 }
 
 function rowToConfig(row: DndRow): DNDConfig {
-  return {
+  const config: DNDConfig = {
     userId: row.userId,
     isActive: row.isActive,
     mode: row.mode as DNDConfig['mode'],
@@ -62,11 +69,41 @@ function rowToConfig(row: DndRow): DNDConfig {
     startTime: row.startTime ?? undefined,
     endTime: row.endTime ?? undefined,
   };
+  if (row.expiresAt) {
+    config.expiresAt = row.expiresAt;
+    config.reason = JSON.stringify({ expiresAt: row.expiresAt.toISOString() });
+  }
+  return config;
 }
 
+/**
+ * Read the config, expiring a timed do-not-disturb that has run out.
+ *
+ * Enforcement lives here rather than only in `isDNDActive` so that every reader
+ * agrees: `GET /api/attention/dnd` would otherwise keep answering
+ * `isActive: true` for a DND that `isDNDActive` had already decided was over,
+ * and a UI showing an indefinite "Do Not Disturb" badge over an expired one is
+ * the same class of bug as the missing column.
+ *
+ * The clearing write is an `updateMany` guarded on `expiresAt: { lte: now }`,
+ * so it is atomic and idempotent: concurrent readers cannot double-clear, and a
+ * DND re-enabled a millisecond later is not clobbered.
+ */
 export async function getDNDConfig(userId: string): Promise<DNDConfig> {
   const row = await prisma.dNDConfig.findUnique({ where: { userId } });
-  return row ? rowToConfig(row as DndRow) : getDefaultDND(userId);
+  if (!row) return getDefaultDND(userId);
+
+  const typed = row as DndRow;
+  const now = new Date();
+  if (typed.expiresAt && typed.expiresAt.getTime() <= now.getTime()) {
+    await prisma.dNDConfig.updateMany({
+      where: { userId, expiresAt: { lte: now } },
+      data: { isActive: false, expiresAt: null },
+    });
+    return rowToConfig({ ...typed, isActive: false, expiresAt: null });
+  }
+
+  return rowToConfig(typed);
 }
 
 export async function setDND(userId: string, config: Partial<DNDConfig>): Promise<DNDConfig> {
@@ -79,6 +116,7 @@ export async function setDND(userId: string, config: Partial<DNDConfig>): Promis
     mode: updated.mode,
     startTime: updated.startTime ?? null,
     endTime: updated.endTime ?? null,
+    expiresAt: updated.expiresAt ?? null,
     vipBreakthroughEnabled: updated.vipBreakthroughEnabled,
     vipContactIds: updated.vipContactIds,
   };
@@ -92,6 +130,9 @@ export async function setDND(userId: string, config: Partial<DNDConfig>): Promis
 }
 
 export async function isDNDActive(userId: string): Promise<boolean> {
+  // `getDNDConfig` has already expired a timed DND whose `expiresAt` has passed
+  // -- it comes back `isActive: false` -- so every branch below sees the
+  // post-expiry state. Before P-36 there was no column to expire.
   const config = await getDNDConfig(userId);
 
   switch (config.mode) {
@@ -145,15 +186,11 @@ export async function enableDND(
     updated.vipContactIds = [...new Set([...updated.vipContactIds, ...config.exceptions])];
   }
 
-  // Store expiresAt in reason field as metadata if duration provided.
-  //
-  // P-33: `reason` is RETURNED but NOT STORED — `DNDConfig` has no column for
-  // it, and nothing in the repo reads it, so no timed DND has ever expired.
-  // See ESC-5 in docs/store-classification.md: add `expiresAt DateTime?` and
-  // enforce it, or delete the field. Putting it in `vipContactIds` (the only
-  // Json column on the model) would be the wrong field on the right model.
+  // P-36: `expiresAt` is now a column, so a timed DND actually ends. `reason`
+  // keeps the shape its existing callers read, derived from the same value.
   if (config?.durationMinutes) {
     const expiresAt = new Date(Date.now() + config.durationMinutes * 60 * 1000);
+    updated.expiresAt = expiresAt;
     updated.reason = JSON.stringify({ expiresAt: expiresAt.toISOString() });
   }
 
@@ -166,6 +203,7 @@ export async function disableDND(userId: string): Promise<DNDConfig> {
   const updated: DNDConfig = {
     ...current,
     isActive: false,
+    expiresAt: undefined,
     reason: undefined,
   };
   await setDND(userId, updated);

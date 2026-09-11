@@ -94,6 +94,7 @@ model Entity {
   shadowRetentionConfig    ShadowRetentionConfig?
   voiceforgeCallPlaybooks  VoiceforgeCallPlaybook[]
   voiceforgeConsentConfigs VoiceforgeConsentConfig[]
+  storedDocuments          StoredDocument[]
 
   @@index([userId])
 }
@@ -784,18 +785,23 @@ model PluginReview {
 }
 
 model DNDConfig {
-  id                     String   @id @default(cuid())
-  userId                 String   @unique
-  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  isActive               Boolean  @default(false)
-  mode                   String   @default("MANUAL")
+  id                     String    @id @default(cuid())
+  userId                 String    @unique
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isActive               Boolean   @default(false)
+  mode                   String    @default("MANUAL")
   startTime              String?
   endTime                String?
-  vipBreakthroughEnabled Boolean  @default(false)
-  vipContactIds          Json     @default("[]")
-  calendarIntegration    Boolean  @default(false)
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  /// P-36 (ESC-5) - the column `enableDND`'s timed do-not-disturb never had.
+  /// It wrote `reason = JSON.stringify({ expiresAt })`, which no column stored
+  /// and no reader consulted, so no timed DND has ever expired. `isDNDActive`
+  /// now enforces this.
+  expiresAt              DateTime?
+  vipBreakthroughEnabled Boolean   @default(false)
+  vipContactIds          Json      @default("[]")
+  calendarIntegration    Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 }
 
 model PermissionGrant {
@@ -1567,4 +1573,132 @@ model ShadowCallAttempt {
 
   @@index([contactId, attemptedAt])
   @@index([attemptedAt])
+}
+
+// ============================================================================
+// === P-36 — MIGRATION WINDOW 01 ===
+//
+// The schema was frozen after P-00's migration for thirty-five packages. Ivan
+// authorized one second window for four of P-33's five escalations; the
+// authorization and its scope are docs/parallel-build/migration-window-01.md.
+// ESC-4 (`ActionThrottleCounter`) is deliberately NOT here — `checkThrottle`'s
+// only caller is the route that reports its own status, so persisting its
+// counters would make a decorative control durable and convincing.
+//
+// THE RULE THIS BLOCK IS WRITTEN UNDER: a model is not done when it exists.
+// P-00 shipped eleven `T-007 - replaces …` models and ten got wired; the one
+// left behind was the second factor, and control-plane-schema.test.ts stayed
+// green over it for the whole run because it only asserted the table could be
+// COUNTED. Every model below is read and written by the code path named in its
+// doc-comment, and each is proved across a `jest.resetModules()` restart in
+// tests/db/migration-window-01.test.ts. `control-plane-schema.test.ts` now
+// asserts REFERENCE as well as existence, so a model added here and left unused
+// fails CI.
+// ============================================================================
+
+/// P-36 (ESC-1) - replaces lib/integrations/payments/webhooks.ts:28
+/// (`processedEventIds`, a Set) and :29 (`eventHistory`, an array).
+///
+/// THE @@unique IS THE IDEMPOTENCY GUARANTEE. Idempotency without a unique
+/// index is a read-then-write race: two concurrent deliveries of one Stripe
+/// event both pass `isEventProcessed` and both run the handler. The claim is
+/// therefore an INSERT, and the duplicate is a P2002 from Postgres — not a read.
+///
+/// `status` is what made the failure-branch defect expressible: the old code
+/// called `markEventProcessed` on the FAILURE branch, so a handler failure on
+/// `invoice.paid` was dropped permanently and every Stripe retry answered
+/// `ignored`. A failed event is now recorded `failed` and a retry re-runs it.
+model InboundWebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  eventId     String
+  type        String
+  payload     Json
+  status      String    @default("received")
+  error       String?
+  attempts    Int       @default(0)
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([provider, eventId])
+  @@index([type])
+  @@index([status])
+}
+
+/// P-36 (ESC-2) - replaces lib/integrations/storage/documents.ts:34
+/// (`documentStore`, a Map).
+///
+/// `POST /api/uploads` put the blob in S3 durably and its metadata in a Map, so
+/// a restart orphaned the object and the `documentId` already handed back to
+/// the caller 404'd forever. `Document` cannot hold this: it has no `mimeType`,
+/// `category`, `tags`, `createdBy`, `storageKey`, `sizeBytes` or `checksum`, and
+/// its only Json column (`citations`) means something else.
+model StoredDocument {
+  id             String    @id @default(cuid())
+  entityId       String
+  entity         Entity    @relation(fields: [entityId], references: [id])
+  title          String
+  description    String?
+  mimeType       String
+  category       String
+  tags           String[]  @default([])
+  currentVersion Int       @default(1)
+  createdBy      String
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  versions StoredDocumentVersion[]
+
+  @@index([entityId])
+  @@index([category])
+  @@index([deletedAt])
+}
+
+/// P-36 (ESC-2) - the version array `Document` has nowhere to put.
+/// `Document.version` is a counter and `Document` stores only current content,
+/// which is the same wall modules/documents/services/versioning-service.ts hit.
+model StoredDocumentVersion {
+  id         String         @id @default(cuid())
+  documentId String
+  document   StoredDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version    Int
+  storageKey String
+  sizeBytes  Int
+  checksum   String
+  uploadedBy String
+  changelog  String?
+  uploadedAt DateTime       @default(now())
+
+  @@unique([documentId, version])
+  @@index([documentId])
+}
+
+/// P-36 (ESC-3) - replaces email/workflows.ts:{53,54} (`suppressedEmails`,
+/// `unsubscribeRecords`) and sms/workflows.ts:{30,31} (`optOutRecords`,
+/// `optOutIndex`).
+///
+/// A suppression list must outlive the Contact row. `Contact.preferences` and
+/// `ContactCallPreference.doNotCall` are both keyed to a Contact, so deleting a
+/// contact would silently re-enable sending to someone who unsubscribed — the
+/// exact failure the law is about — and neither can hold an address that has no
+/// Contact at all (a batch recipient, a hard bounce).
+///
+/// `entityId` null means platform-wide. NOTE (P-36 finding): Postgres indexes
+/// NULLs as DISTINCT, so this @@unique does NOT constrain the platform-wide
+/// rows; the write path guards those with a read. It is a real constraint for
+/// every entity-scoped row.
+model CommunicationOptOut {
+  id         String   @id @default(cuid())
+  entityId   String?
+  channel    String
+  address    String
+  scope      String   @default("all")
+  reason     String?
+  source     String
+  optedOutAt DateTime @default(now())
+
+  @@unique([channel, address, entityId, scope])
+  @@index([channel, address])
+  @@index([entityId])
 }

@@ -11,6 +11,11 @@ const setDNDSchema = z.object({
   vipContactIds: z.array(z.string()).optional(),
   startTime: z.string().optional(),
   endTime: z.string().optional(),
+  // P-36 (ESC-5): a timed do-not-disturb is settable through the API for the
+  // first time. Before the column existed there was nowhere to put it, so this
+  // route could only ever set an indefinite DND -- `enableDND`, the function
+  // that accepted a duration, has no caller in src/.
+  expiresAt: z.coerce.date().optional(),
   reason: z.string().optional(),
 });
 
