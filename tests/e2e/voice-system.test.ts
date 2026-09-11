@@ -5,7 +5,7 @@
  * Services under test:
  * - persona-service.ts (createPersona, getPersona, listPersonas, validateConsentChain, generateWatermarkId)
  * - campaign-service.ts (checkStopConditions, updateStats, getNextContacts)
- * - script-engine.ts (validateScript, startExecution, advanceNode, evaluateBranch, generateScriptWithAI)
+ * - script-engine.ts (validateScript, startExecution, advanceNode, evaluateBranch, generateScriptWithAI, createScript)
  */
 
 // --- Infrastructure mocks ---
@@ -23,7 +23,7 @@ jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
 
 import { createPersona, getPersona, listPersonas, validateConsentChain, generateWatermarkId } from '@/modules/voiceforge/services/persona-service';
 import { checkStopConditions, updateStats, getNextContacts } from '@/modules/voiceforge/services/campaign-service';
-import { validateScript, startExecution, advanceNode, evaluateBranch, generateScriptWithAI } from '@/modules/voiceforge/services/script-engine';
+import { validateScript, startExecution, advanceNode, evaluateBranch, generateScriptWithAI, createScript } from '@/modules/voiceforge/services/script-engine';
 import type { Campaign, OutboundCallResult, CallScript, ScriptNode, ScriptBranch } from '@/modules/voiceforge/types';
 import { verifiedEntityIdForTest } from '../helpers/factories';
 
@@ -317,34 +317,66 @@ describe('Voice System E2E', () => {
         { id: 'c', type: 'END', content: 'Thanks', branches: [] },
       ], startNodeId: 'g' });
 
-      const script = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
+      const draft = await generateScriptWithAI(ENTITY, { purpose: 'sales', targetAudience: 'prospects', tone: 'friendly', maxDuration: 5, keyPoints: ['pitch'] });
+
       // ---------------------------------------------------------------
-      // P-35 FINDING — LEFT AS IT BEHAVES, DELIBERATELY.
+      // P-42 — THE TEST WAS THE THING THAT WAS WRONG, AND IT IS FIXED HERE.
       //
-      // This line was `startExecution((script as any).id, ...)`. Typed, the
-      // cast turns out to have been hiding a real hole: `generateScriptWithAI`
-      // returns a `ScriptDraft`, and `ScriptDraft` is
-      // `Omit<CallScript, 'id' | 'entityId' | 'version' | ...>` -- the id is
-      // explicitly NOT on it, because a draft has not been persisted yet. So
-      // `script.id` is `undefined` at runtime and always has been, and this
-      // "Full Voice Lifecycle" case starts an execution whose `scriptId` is
-      // `undefined`. It passes because it only ever asserts `currentNodeId`.
+      // This case used to read `startExecution((script as any).id, ...)`, which
+      // P-35 typed as `(script as Partial<CallScript>).id as string` and left
+      // behaving exactly as before, reporting it instead. Both readings agree
+      // on the fact: `generateScriptWithAI` returns a `ScriptDraft`, whose type
+      // is `Omit<CallScript, 'id' | ...>`, so `.id` was `undefined` at runtime
+      // and this "Full Voice Lifecycle" started an execution against no script
+      // at all. It passed because it only ever asserted `currentNodeId`, which
+      // `startExecution` copies from its third argument -- the one field that
+      // cannot be wrong.
       //
-      // The fix is to persist the draft with `createScript` first and execute
-      // the returned `CallScript`. That changes what this test exercises, and a
-      // lint package may not do that -- so the behaviour is untouched and the
-      // cast is merely made honest and greppable. Reported in the P-35 PR.
+      // The owner's ruling was "fix the caller, not the test", and the caller
+      // here IS the test: nothing in `src/` calls `startExecution`, and the
+      // product path that gives a script an id is `createScript` (reached over
+      // HTTP by `POST /api/voice/scripts`). So the lifecycle now runs the real
+      // sequence -- generate a draft, PERSIST it, execute the persisted script
+      // -- and asserts the `scriptId` it carries.
+      //
+      // A draft has no id. That is not a bug to work around; it is the type
+      // telling the truth about a row that does not exist yet.
       // ---------------------------------------------------------------
-      const draftScriptId = (script as Partial<CallScript>).id as string;
-      const e = startExecution(draftScriptId, 'call-lc', script.startNodeId);
+      expect('id' in draft).toBe(false);
+
+      // The write path, standing in for `POST /api/voice/scripts`. The mock
+      // echoes the row back the way Prisma does, so the id under test is the
+      // one the WRITE produced rather than one the test chose.
+      (mockPrisma.document.create as jest.Mock).mockImplementation(
+        async ({ data }: { data: { entityId: string; type: string; content: string; status: string } }) => ({
+          id: 'script-row-lc', entityId: data.entityId, type: data.type, version: 1,
+          content: data.content, status: data.status, createdAt: new Date(), updatedAt: new Date(),
+        })
+      );
+
+      const script = await createScript(draft);
+      expect(script.id).toBe('script-row-lc');
+      // The persisted row carries the graph, not just the name -- the same
+      // round trip the real route performs through `Document.content`.
+      expect(script.startNodeId).toBe('g');
+      expect(script.nodes.map((n) => n.id)).toEqual(['g', 'p', 'c']);
+
+      const e = startExecution(script.id, 'call-lc', script.startNodeId);
+      // THE ASSERTION THIS CASE NEVER MADE. Under the old line this was
+      // `undefined` and every other expectation below still passed.
+      expect(e.scriptId).toBe(script.id);
+      expect(e.scriptId).toBeDefined();
       expect(e.currentNodeId).toBe('g');
 
       const s1 = advanceNode(e, 'I am interested', script.nodes);
       expect(s1.currentNodeId).toBe('p');
+      // The execution keeps pointing at the persisted script as it advances.
+      expect(s1.scriptId).toBe(script.id);
 
       // 'sounds good' matches keyword=good on node p
       const s2 = advanceNode(s1, 'sounds good', script.nodes);
       expect(s2.currentNodeId).toBe('c');
+      expect(s2.scriptId).toBe(script.id);
     });
   });
 });

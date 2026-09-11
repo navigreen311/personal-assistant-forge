@@ -6,8 +6,9 @@
 import { prisma } from '@/lib/db';
 import { generateText } from '@/lib/ai';
 import { MockVoiceProvider } from '@/lib/voice/mock-provider';
-import { updateStats } from '@/modules/voiceforge/services/campaign-service';
+import { getCampaign, updateStats } from '@/modules/voiceforge/services/campaign-service';
 import { getPersona } from '@/modules/voiceforge/services/persona-service';
+import { getScript } from '@/modules/voiceforge/services/script-engine';
 import {
   emitCallStart,
   emitCallEnd,
@@ -42,9 +43,81 @@ function logCallEvent(callId: string, event: string, details?: Record<string, un
   console.log(JSON.stringify({ timestamp, callId, event, ...details }));
 }
 
+// ---------------------------------------------------------------------------
+// P-42 — the script is resolved BEFORE the call starts
+// ---------------------------------------------------------------------------
+//
+// `scriptId` arrived here as an unchecked string off the request body and went
+// straight into `Call.scriptId`, `provider.initiateCall` and the `playbook`
+// handed to every call-start subscriber. Nothing asked whether it named a
+// script, or whether that script belonged to this tenant. So a call could be
+// placed against a script id that did not exist, or one that existed in
+// somebody else's entity, and the `Call` row would record it either way — the
+// durable half of the same defect the E2E showed with `scriptId: undefined`.
+//
+// The owner's ruling on that E2E: "That's a wiring bug... ensure the scriptId
+// is resolved from the playbook before the call starts. Don't suppress the
+// undefined — fix the caller." This is the caller.
+//
+// `getScript` is scoped: its WHERE clause carries the VerifiedEntityId, so a
+// foreign script is indistinguishable from a missing one, which is the correct
+// answer to give — it does not confirm that another tenant's id exists. The id
+// written to the row is the one READ BACK from the database (`script.id`), not
+// the one on the request, so an undefined cannot reach the row by any path.
+
+/** A call was requested against a script this entity does not have. */
+export class ScriptResolutionError extends Error {
+  constructor(public readonly scriptId: string) {
+    super(`Script ${scriptId} not found`);
+    this.name = 'ScriptResolutionError';
+  }
+}
+
+/**
+ * A call whose script disagrees with the campaign it belongs to. Refused rather
+ * than reconciled: the two ids came from different places, and silently
+ * preferring one is how a campaign comes to run a script nobody assigned it.
+ */
+export class ScriptMismatchError extends Error {
+  constructor(
+    public readonly campaignId: string,
+    public readonly requestedScriptId: string,
+    public readonly campaignScriptId: string
+  ) {
+    super(
+      `Call for campaign ${campaignId} names script ${requestedScriptId}, ` +
+        `but the campaign's script is ${campaignScriptId}`
+    );
+    this.name = 'ScriptMismatchError';
+  }
+}
+
+/**
+ * Resolve the script a call will run, or refuse the call.
+ *
+ * Returns the id as the database holds it, or `undefined` for a call that
+ * genuinely has no script — a purpose-only call, which `Call.scriptId` is
+ * nullable to allow. `undefined` here is a deliberate absence; the bug was an
+ * `undefined` that had been *intended* as an id.
+ */
+async function resolveScriptId(
+  request: VerifiedOutboundCallRequest
+): Promise<string | undefined> {
+  if (!request.scriptId) return undefined;
+
+  const script = await getScript(request.scriptId, request.entityId);
+  if (!script) throw new ScriptResolutionError(request.scriptId);
+  return script.id;
+}
+
 export async function initiateOutboundCall(
   request: VerifiedOutboundCallRequest
 ): Promise<OutboundCallResult> {
+  // Resolve the script BEFORE anything durable happens. A call that names a
+  // script nobody can produce must not reach the provider, and must not leave a
+  // Call row behind.
+  const scriptId = await resolveScriptId(request);
+
   // Create call record first
   const call = await prisma.call.create({
     data: {
@@ -52,7 +125,7 @@ export async function initiateOutboundCall(
       contactId: request.contactId,
       direction: 'OUTBOUND',
       personaId: request.personaId,
-      scriptId: request.scriptId,
+      scriptId,
       actionItems: [],
     },
   });
@@ -68,7 +141,7 @@ export async function initiateOutboundCall(
     from: '+10000000000',
     to: '+10000000001',
     personaId: request.personaId,
-    scriptId: request.scriptId,
+    scriptId,
     maxDuration: request.maxDuration ?? 300,
     recordCall: request.recordCall ?? true,
     consentRequired: true,
@@ -95,8 +168,8 @@ export async function initiateOutboundCall(
     entityId: request.entityId,
     contactId: request.contactId,
     personaId: request.personaId,
-    scriptId: request.scriptId,
-    playbook: { scriptId: request.scriptId, guardrails: request.guardrails, purpose: request.purpose },
+    scriptId,
+    playbook: { scriptId, guardrails: request.guardrails, purpose: request.purpose },
     messageId: request.messageId,
   });
 
@@ -395,11 +468,34 @@ export function checkGuardrails(
 
 /**
  * Initiate an outbound call as part of a campaign and update campaign stats.
+ *
+ * P-42 — THIS IS WHERE "resolved from the playbook" LITERALLY APPLIES.
+ *
+ * A campaign carries its own `scriptId`; that is the playbook for every call it
+ * places. This function used to forward whatever `scriptId` the caller happened
+ * to pass — including none — and then update the campaign's stats as though the
+ * call had run the campaign's script. So a campaign could report conversions for
+ * calls that ran no script at all.
+ *
+ * The campaign's script is now resolved from the campaign when the caller names
+ * none, and a caller that names a DIFFERENT one is refused rather than
+ * reconciled. The campaign is loaded scoped, so a campaign belonging to another
+ * tenant is not found and the call does not happen.
  */
 export async function initiateOutboundCallForCampaign(
   request: VerifiedOutboundCallRequest & { campaignId: string }
 ): Promise<OutboundCallResult> {
-  const result = await initiateOutboundCall(request);
+  const campaign = await getCampaign(request.campaignId, request.entityId);
+  if (!campaign) throw new Error(`Campaign ${request.campaignId} not found`);
+
+  if (request.scriptId && campaign.scriptId && request.scriptId !== campaign.scriptId) {
+    throw new ScriptMismatchError(request.campaignId, request.scriptId, campaign.scriptId);
+  }
+
+  const result = await initiateOutboundCall({
+    ...request,
+    scriptId: request.scriptId ?? campaign.scriptId,
+  });
 
   // Update campaign stats
   try {

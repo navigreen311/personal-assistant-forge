@@ -71,6 +71,38 @@ function uniqueViolation(target: string[]): Prisma.PrismaClientKnownRequestError
   });
 }
 
+/**
+ * Ordered comparison for `lt` / `lte` / `gt` / `gte`.
+ *
+ * P-42 — this handled DATES ONLY, and returned false for everything else. The
+ * one-line consequence: P-42's retry budget is claimed with
+ * `attempts: { lt: MAX_HANDLER_ATTEMPTS }`, and against the date-only matcher
+ * that clause matched NOTHING, so the unit suite saw a webhook whose failed row
+ * could never be re-claimed while Postgres re-claimed it correctly — the fake
+ * disagreeing with the database it stands in for, in the direction that
+ * invents a bug rather than hiding one. Both suites now agree.
+ *
+ * Non-comparable operands (a string against a number, an undefined column)
+ * return false rather than coercing, because `Number('abc') < 5` is false in a
+ * way that looks like an answer.
+ */
+function compare(
+  actual: unknown,
+  bound: unknown,
+  ordered: (a: number, b: number) => boolean
+): boolean {
+  if (actual instanceof Date && bound instanceof Date) {
+    return ordered(actual.getTime(), bound.getTime());
+  }
+  if (typeof actual === 'number' && typeof bound === 'number') {
+    return ordered(actual, bound);
+  }
+  if (typeof actual === 'bigint' && typeof bound === 'bigint') {
+    return ordered(Number(actual), Number(bound));
+  }
+  return false;
+}
+
 function matchValue(actual: unknown, cond: unknown): boolean {
   if (cond === null) return actual === null || actual === undefined;
   if (cond instanceof Date) return actual instanceof Date && actual.getTime() === cond.getTime();
@@ -78,16 +110,10 @@ function matchValue(actual: unknown, cond: unknown): boolean {
   if (isPlainObject(cond)) {
     if ('in' in cond) return (cond.in as unknown[]).some((v) => matchValue(actual, v));
     if ('notIn' in cond) return !(cond.notIn as unknown[]).some((v) => matchValue(actual, v));
-    if ('lte' in cond) {
-      return (
-        actual instanceof Date && cond.lte instanceof Date && actual.getTime() <= cond.lte.getTime()
-      );
-    }
-    if ('lt' in cond) {
-      return (
-        actual instanceof Date && cond.lt instanceof Date && actual.getTime() < cond.lt.getTime()
-      );
-    }
+    if ('lte' in cond) return compare(actual, cond.lte, (a, b) => a <= b);
+    if ('lt' in cond) return compare(actual, cond.lt, (a, b) => a < b);
+    if ('gte' in cond) return compare(actual, cond.gte, (a, b) => a >= b);
+    if ('gt' in cond) return compare(actual, cond.gt, (a, b) => a > b);
     if ('not' in cond) return !matchValue(actual, cond.not);
     if ('hasSome' in cond) {
       return Array.isArray(actual) && (cond.hasSome as unknown[]).some((v) => actual.includes(v));

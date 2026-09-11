@@ -32,6 +32,7 @@ import {
   handleSubscriptionDeleted,
   handleCheckoutCompleted,
   _resetState,
+  MAX_HANDLER_ATTEMPTS,
 } from '@/lib/integrations/payments/webhooks';
 import type { WebhookEvent } from '@/lib/integrations/payments/webhooks';
 
@@ -172,6 +173,125 @@ describe('Stripe Webhooks', () => {
       expect(retry.status).toBe('processed');
       expect(attempts).toBe(2);
       expect(await isEventProcessed('evt_retry_after_failure')).toBe(true);
+    });
+
+    // -----------------------------------------------------------------------
+    // P-42 — `retryable`, which is what the route turns into a status code.
+    //
+    // These cases are about the ANSWER TO STRIPE, so they are written as
+    // assertions on `retryable` and on how many times the handler ran. The
+    // status code itself is asserted where it is actually produced, against
+    // the real route and a real database, in tests/db/stripe-webhook-status.
+    // -----------------------------------------------------------------------
+    it('does not ask for a retry when the handler succeeded', async () => {
+      registerHandler('payment_intent.succeeded', async () => undefined);
+
+      const result = await processWebhookEvent({
+        id: 'evt_ok_not_retryable',
+        type: 'payment_intent.succeeded',
+        data: { id: 'pi_ok' },
+        status: 'received',
+      });
+
+      expect(result).toMatchObject({ status: 'processed', retryable: false, attempts: 1 });
+    });
+
+    it('does not ask for a retry for an event type it has no handler for', async () => {
+      const result = await processWebhookEvent({
+        id: 'evt_unknown_not_retryable',
+        type: 'unknown.event.type',
+        data: {},
+        status: 'received',
+      });
+
+      // Redelivery cannot register a handler. Not implementing an event type is
+      // a decision, and a decision must not look like a transient failure.
+      expect(result).toMatchObject({ status: 'ignored', retryable: false });
+    });
+
+    it('does not ask for a retry of a DUPLICATE — the work already happened', async () => {
+      registerHandler('invoice.paid', async () => undefined);
+      const event: WebhookEvent = {
+        id: 'evt_dup_not_retryable',
+        type: 'invoice.paid',
+        data: { id: 'inv_dup' },
+        status: 'received',
+      };
+
+      expect((await processWebhookEvent(event)).retryable).toBe(false);
+
+      const duplicate = await processWebhookEvent({ ...event, status: 'received' });
+      expect(duplicate).toMatchObject({ status: 'ignored', retryable: false });
+      expect(duplicate.error).toContain('already processed');
+    });
+
+    it('ASKS for a retry while the budget lasts, and stops asking once it is spent', async () => {
+      // The poison event. Under the fix's first half alone -- non-200 on every
+      // failure -- this event would be redelivered for three days and run a
+      // handler known to fail on every one of them.
+      let runs = 0;
+      registerHandler('invoice.paid', async () => {
+        runs += 1;
+        throw new Error('ledger permanently unavailable');
+      });
+
+      const event: WebhookEvent = {
+        id: 'evt_poison',
+        type: 'invoice.paid',
+        data: { id: 'inv_poison' },
+        status: 'received',
+      };
+
+      const seen: Array<{ attempts: number; retryable: boolean }> = [];
+      for (let delivery = 1; delivery <= MAX_HANDLER_ATTEMPTS; delivery += 1) {
+        const result = await processWebhookEvent({ ...event, status: 'received' });
+        expect(result.status).toBe('failed');
+        seen.push({ attempts: result.attempts, retryable: result.retryable });
+      }
+
+      expect(seen).toEqual([
+        { attempts: 1, retryable: true },
+        { attempts: 2, retryable: true },
+        { attempts: 3, retryable: true },
+        { attempts: 4, retryable: true },
+        // The attempt that spends the last of the budget already knows nobody
+        // will act on a redelivery, so it does not ask for one.
+        { attempts: 5, retryable: false },
+      ]);
+      expect(runs).toBe(MAX_HANDLER_ATTEMPTS);
+
+      // A sixth delivery does not reach the handler at all.
+      const beyond = await processWebhookEvent({ ...event, status: 'received' });
+      expect(beyond).toMatchObject({ status: 'failed', retryable: false, attempts: 5 });
+      expect(beyond.error).toContain('no further retries');
+      expect(runs).toBe(MAX_HANDLER_ATTEMPTS);
+
+      // And it is still NOT reported as handled. `failed` is the state an
+      // operator queries for; "exhausted" must never decay into "processed".
+      expect(await isEventProcessed('evt_poison')).toBe(false);
+    });
+
+    it('a handler that recovers within the budget still succeeds', async () => {
+      // The counterpart the budget must not break: five attempts exist so a
+      // transient outage can end on its own.
+      let runs = 0;
+      registerHandler('invoice.paid', async () => {
+        runs += 1;
+        if (runs < 3) throw new Error('ledger briefly unavailable');
+      });
+
+      const event: WebhookEvent = {
+        id: 'evt_recovers',
+        type: 'invoice.paid',
+        data: { id: 'inv_recovers' },
+        status: 'received',
+      };
+
+      expect((await processWebhookEvent({ ...event, status: 'received' })).retryable).toBe(true);
+      expect((await processWebhookEvent({ ...event, status: 'received' })).retryable).toBe(true);
+      const third = await processWebhookEvent({ ...event, status: 'received' });
+      expect(third).toMatchObject({ status: 'processed', attempts: 3 });
+      expect(await isEventProcessed('evt_recovers')).toBe(true);
     });
 
     it('still refuses a second delivery of an event that SUCCEEDED', async () => {

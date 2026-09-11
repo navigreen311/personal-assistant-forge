@@ -15,7 +15,18 @@ import type { VerifiedEntityId } from '@/shared/middleware/auth';
 
 const DOC_TYPE = 'CALL_SCRIPT';
 
-/** A script draft whose scope has already been proven. See section 2. */
+/**
+ * A script draft whose scope has already been proven. See section 2.
+ *
+ * P-42 — READ THIS BEFORE PASSING A DRAFT TO ANYTHING THAT WANTS AN ID.
+ *
+ * `id` is absent from this type on purpose: a draft has not been persisted, so
+ * it does not have one. `tests/e2e/voice-system.test.ts` used to start a call
+ * execution from `(script as any).id` off one of these, which was `undefined`
+ * at runtime and always had been — the cast was the only thing between that and
+ * a compile error. `createScript` is what turns a draft into a `CallScript`
+ * with a real id, and only a `CallScript` can be executed.
+ */
 export type ScriptDraft = Omit<
   CallScript,
   'id' | 'entityId' | 'version' | 'createdAt' | 'updatedAt'
@@ -266,6 +277,60 @@ export function validateScript(
   return { valid: errors.length === 0, errors };
 }
 
+// ---------------------------------------------------------------------------
+// P-42 — the generated draft could not be saved, and a cast hid it
+// ---------------------------------------------------------------------------
+//
+// `generateScriptWithAI` asked the model for node types
+//
+//   GREETING, QUESTION, STATEMENT, BRANCH, OBJECTION_HANDLER, CLOSING
+//
+// and then wrote `n.type as ScriptNode['type']`. `ScriptNode['type']` is
+// `SPEAK | LISTEN | BRANCH | TRANSFER | END | COLLECT_INFO`, so five of those
+// six names are not node types at all. The cast made it compile; nothing made
+// it work. `POST /api/voice/scripts` validates `nodes[].type` against a zod
+// enum of the REAL six, so every AI-generated draft was rejected 400 by the
+// only route that can persist one — and `validateScript` would happily call the
+// same draft valid, because it checks graph reachability and never looks at a
+// type. The prompt and the schema described different systems and the cast kept
+// them from meeting.
+//
+// The prompt below now names the six types that exist. This map is kept for the
+// old vocabulary because a model reading a paraphrase of the old prompt will
+// still answer in it, and because it is what the existing tests send.
+const NODE_TYPE_ALIASES: Record<string, ScriptNode['type']> = {
+  SPEAK: 'SPEAK',
+  LISTEN: 'LISTEN',
+  BRANCH: 'BRANCH',
+  TRANSFER: 'TRANSFER',
+  END: 'END',
+  COLLECT_INFO: 'COLLECT_INFO',
+  // The old prompt's vocabulary, mapped to what the engine can execute.
+  GREETING: 'SPEAK',
+  STATEMENT: 'SPEAK',
+  OBJECTION_HANDLER: 'SPEAK',
+  QUESTION: 'LISTEN',
+  CLOSING: 'END',
+};
+
+/**
+ * Resolve a generated node type, or refuse the draft.
+ *
+ * It THROWS on an unrecognised type rather than defaulting to `SPEAK`. A
+ * default would be this codebase's own failure mode one layer down: a script
+ * that looks generated, saves cleanly, and runs a node the author never wrote.
+ */
+function resolveNodeType(nodeId: string, type: string): ScriptNode['type'] {
+  const resolved = NODE_TYPE_ALIASES[type?.toUpperCase?.() ?? ''];
+  if (!resolved) {
+    throw new Error(
+      `Generated script node "${nodeId}" has unsupported type "${type}". ` +
+        `Supported types: SPEAK, LISTEN, BRANCH, TRANSFER, END, COLLECT_INFO.`
+    );
+  }
+  return resolved;
+}
+
 export async function generateScriptWithAI(
   entityId: VerifiedEntityId,
   params: {
@@ -302,7 +367,9 @@ Generate a branching call script with:
 - Decision branch nodes (e.g., "interested" vs "not interested")
 - Objection handling nodes
 - Closing/wrap-up node
-- Each node has: id (unique string), type (GREETING, QUESTION, STATEMENT, BRANCH, OBJECTION_HANDLER, CLOSING), content (what to say), branches (array of {condition, targetNodeId})`, {
+- Each node has: id (unique string), type, content (what to say), branches (array of {condition, targetNodeId})
+- type MUST be one of exactly these six values: SPEAK (say the content), LISTEN (ask and wait for a reply), BRANCH (route on the reply), TRANSFER (hand to a human), END (close the call), COLLECT_INFO (capture one field)
+- Use SPEAK for the greeting, key points and objection handling; LISTEN for questions; END for the closing node`, {
     maxTokens: 2048,
     temperature: 0.6,
     system: 'You are a professional call script writer. Create natural, conversational scripts that achieve their purpose while maintaining compliance.',
@@ -314,7 +381,7 @@ Generate a branching call script with:
     description: result.description,
     nodes: result.nodes.map((n) => ({
       id: n.id,
-      type: n.type as ScriptNode['type'],
+      type: resolveNodeType(n.id, n.type),
       content: n.content,
       branches: n.branches.map((b) => ({
         condition: b.condition,
