@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
-import { registerPlugin, getPlugins, submitForReview, approvePlugin, revokePlugin } from '@/modules/developer/services/plugin-service';
+import { registerPlugin, getPlugins, submitForReview, approvePlugin, revokePlugin, PluginRevokedError } from '@/modules/developer/services/plugin-service';
+import { breakGlassRevoke } from '@/modules/developer/services/security-review-service';
 
 // P-13 / tenancy-pattern.md 5b -- SINGLE-ENTITY.
 //
@@ -25,7 +26,7 @@ const registerPluginSchema = z.object({
 
 const pluginActionSchema = z.object({
   pluginId: z.string().min(1),
-  action: z.enum(['submit', 'approve', 'revoke']),
+  action: z.enum(['submit', 'approve', 'revoke', 'break-glass']),
   reason: z.string().optional(),
 });
 
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   return withRole(request, ['owner', 'admin'], () =>
-    withEntityScope(request, async (req, _session, entityId) => {
+    withEntityScope(request, async (req, session, entityId) => {
       try {
         const body = await req.json();
 
@@ -64,6 +65,19 @@ export async function POST(request: NextRequest) {
             case 'revoke':
               result = await revokePlugin(parsed.data.pluginId, parsed.data.reason || 'Revoked', entityId);
               break;
+            // P-37: break glass had no route at all. The emergency revocation
+            // path for a malicious plugin was exported from the module index
+            // and called by nothing, so an operator could not reach it even
+            // when it worked -- which it did not. It is here, behind the same
+            // owner/admin gate as the ordinary revoke, and it returns a COUNTED
+            // affectedUsers rather than the literal 0 it used to.
+            case 'break-glass':
+              result = await breakGlassRevoke(
+                parsed.data.pluginId,
+                parsed.data.reason || 'Break-glass revocation',
+                { revokedBy: session.userId, ownerEntityId: entityId }
+              );
+              break;
           }
           return success(result);
         }
@@ -75,6 +89,7 @@ export async function POST(request: NextRequest) {
         const plugin = await registerPlugin(parsed.data, entityId);
         return success(plugin, 201);
       } catch (err) {
+        if (err instanceof PluginRevokedError) return error('PLUGIN_REVOKED', err.message, 403);
         const message = err instanceof Error ? err.message : 'Unknown error';
         if (message.includes('not found')) return error('NOT_FOUND', message, 404);
         return error('INTERNAL_ERROR', message, 500);
