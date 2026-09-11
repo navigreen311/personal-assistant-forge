@@ -1,14 +1,52 @@
+/**
+ * P-37 -- this suite used to seed a Map and then read the same Map back.
+ *
+ * `security-review-service` kept plugins in `plugin-service :: pluginStore`, a
+ * module-level `Map`, and this file mocked `plugin-service` down to nothing but
+ * that Map. So `breakGlassRevoke` set `status = 'REVOKED'` on an object the test
+ * had put there and the test read it back and passed -- while the plugin being
+ * SERVED lived in a `Document` row that the revocation never touched. A test
+ * that calls the emergency kill switch and then inspects the Map proves the
+ * Map, not the kill switch.
+ *
+ * The Map is gone. The service reads plugins through `getPlugin`, mocked here,
+ * and writes revocations through Prisma, mocked here too. What a mocked client
+ * CAN honestly show is asserted below: the registry row is written, every
+ * installation is written, and `affectedUsers` comes from the rows the call
+ * actually moved. What it CANNOT show -- that the revocation survives a restart
+ * and that the plugin is then refused through a real request path -- is proved
+ * against a real Postgres in tests/db/plugin-revocation.test.ts.
+ */
+import type { PluginDefinition } from '@/modules/developer/types';
+import type { MockedDelegates } from '../../support/prisma-mock';
+
+/** The plugins the database holds, as far as this suite is concerned. */
+const mockPlugins = new Map<string, PluginDefinition>();
+
+const mockPrisma: MockedDelegates<'document' | 'pluginRecord' | 'pluginReview'> & {
+  $transaction: jest.Mock;
+} = {
+  document: { findFirst: jest.fn(), update: jest.fn() },
+  pluginRecord: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn(), create: jest.fn() },
+  pluginReview: { createMany: jest.fn(), findMany: jest.fn() },
+  $transaction: jest.fn(),
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue(''),
   generateJSON: jest.fn().mockResolvedValue({ findings: [] }),
 }));
 
-jest.mock('@/modules/developer/services/plugin-service', () => {
-  const store = new Map();
-  return {
-    pluginStore: store,
-  };
-});
+jest.mock('@/modules/developer/services/plugin-service', () => ({
+  PLUGIN_REVOKED: 'REVOKED',
+  getPlugin: jest.fn(async (pluginId: string) => {
+    const plugin = mockPlugins.get(pluginId);
+    if (!plugin) throw new Error(`Plugin ${pluginId} not found`);
+    return plugin;
+  }),
+}));
 
 import {
   requestReview,
@@ -17,17 +55,48 @@ import {
   breakGlassRevoke,
   reviewStore,
 } from '@/modules/developer/services/security-review-service';
-import { pluginStore } from '@/modules/developer/services/plugin-service';
 import { generateJSON } from '@/lib/ai';
-import type { PluginDefinition } from '@/modules/developer/types';
 
 const mockGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
-const mockPluginStore = pluginStore as Map<string, PluginDefinition>;
+
+function resetPrismaMock(): void {
+  mockPrisma.$transaction.mockImplementation(
+    async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma)
+  );
+  mockPrisma.document.findFirst!.mockImplementation(async ({ where }: { where: { id: string } }) => {
+    const plugin = mockPlugins.get(where.id);
+    if (!plugin) return null;
+    return {
+      id: plugin.id,
+      title: plugin.name,
+      entityId: 'entity-1',
+      type: 'PLUGIN',
+      status: plugin.status,
+      content: JSON.stringify(plugin),
+      createdAt: plugin.createdAt,
+      updatedAt: plugin.updatedAt,
+      deletedAt: null,
+    };
+  });
+  mockPrisma.document.update!.mockResolvedValue({});
+  mockPrisma.pluginRecord.findMany!.mockResolvedValue([]);
+  mockPrisma.pluginRecord.count!.mockResolvedValue(0);
+  mockPrisma.pluginRecord.updateMany!.mockResolvedValue({ count: 0 });
+  mockPrisma.pluginRecord.create!.mockResolvedValue({ id: 'tombstone-1' });
+  mockPrisma.pluginReview.createMany!.mockResolvedValue({ count: 0 });
+}
+
+/** Installations of the seeded plugin that are still live at revocation time. */
+function seedInstallations(ids: string[]): void {
+  mockPrisma.pluginRecord.findMany!.mockResolvedValue(ids.map((id) => ({ id })));
+  mockPrisma.pluginRecord.count!.mockResolvedValue(ids.length);
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
   reviewStore.clear();
-  mockPluginStore.clear();
+  mockPlugins.clear();
+  resetPrismaMock();
 });
 
 function seedPlugin(overrides: Partial<PluginDefinition> = {}): PluginDefinition {
@@ -45,7 +114,7 @@ function seedPlugin(overrides: Partial<PluginDefinition> = {}): PluginDefinition
     updatedAt: new Date(),
     ...overrides,
   };
-  mockPluginStore.set(plugin.id, plugin);
+  mockPlugins.set(plugin.id, plugin);
   return plugin;
 }
 
@@ -252,37 +321,91 @@ describe('getReview', () => {
 });
 
 describe('breakGlassRevoke', () => {
-  it('should set plugin status to REVOKED', async () => {
+  it('revokes the REGISTRY row -- the thing that is actually served', async () => {
     seedPlugin();
-
-    const result = await breakGlassRevoke('plugin-1', 'Security incident');
-
-    expect(result.revoked).toBe(true);
-    const plugin = mockPluginStore.get('plugin-1');
-    expect(plugin?.status).toBe('REVOKED');
-  });
-
-  it('should update the plugin updatedAt timestamp', async () => {
-    const originalDate = new Date('2025-01-01');
-    seedPlugin({ updatedAt: originalDate });
 
     await breakGlassRevoke('plugin-1', 'Security incident');
 
-    const plugin = mockPluginStore.get('plugin-1');
-    expect(plugin!.updatedAt.getTime()).toBeGreaterThan(originalDate.getTime());
+    expect(mockPrisma.document.update!).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'plugin-1' },
+        data: expect.objectContaining({ status: 'REVOKED' }),
+      })
+    );
+    // The manifest is JSON-stuffed into Document.content and the status COLUMN
+    // was the half nobody wrote. Both, or the documents API keeps calling a
+    // revoked plugin an active document.
+    const written = JSON.parse(mockPrisma.document.update!.mock.calls[0][0].data.content);
+    expect(written.status).toBe('REVOKED');
   });
 
-  it('should throw for unknown plugin', async () => {
-    await expect(breakGlassRevoke('non-existent', 'reason')).rejects.toThrow(
-      'Plugin non-existent not found'
+  it('revokes every live installation, which is what stops it being served', async () => {
+    seedPlugin();
+    seedInstallations(['rec-1', 'rec-2', 'rec-3']);
+
+    await breakGlassRevoke('plugin-1', 'Security incident');
+
+    expect(mockPrisma.pluginRecord.updateMany!).toHaveBeenCalledWith({
+      where: { id: { in: ['rec-1', 'rec-2', 'rec-3'] } },
+      data: expect.objectContaining({ status: 'REVOKED' }),
+    });
+  });
+
+  it('COUNTS affectedUsers rather than returning the literal 0 it used to', async () => {
+    seedPlugin();
+    seedInstallations(['rec-1', 'rec-2', 'rec-3']);
+
+    const result = await breakGlassRevoke('plugin-1', 'Security incident');
+
+    expect(result.affectedUsers).toBe(3);
+  });
+
+  it('returns 0 only when it counted 0, and leaves a tombstone so the name stays dead', async () => {
+    seedPlugin();
+    // No installations at all: the old code returned 0 here too, and returned 0
+    // in the case above as well. That is the difference this pair pins down.
+
+    const result = await breakGlassRevoke('plugin-1', 'Security incident', { revokedBy: 'user-1' });
+
+    expect(result.affectedUsers).toBe(0);
+    expect(mockPrisma.pluginRecord.create!).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ userId: 'user-1', name: 'Test Plugin', status: 'REVOKED' }),
+      })
     );
   });
 
-  it('should return zero affectedUsers as placeholder', async () => {
+  it('writes a revocation ledger entry naming who, when, why and how many', async () => {
     seedPlugin();
+    seedInstallations(['rec-1', 'rec-2']);
 
-    const result = await breakGlassRevoke('plugin-1', 'Reason');
+    await breakGlassRevoke('plugin-1', 'Exfiltrating contacts', { revokedBy: 'user-9' });
 
-    expect(result.affectedUsers).toBe(0);
+    const arg = mockPrisma.pluginReview.createMany!.mock.calls[0][0];
+    expect(arg.data).toHaveLength(2);
+    expect(arg.data[0]).toEqual(
+      expect.objectContaining({ reviewerId: 'user-9', status: 'REVOKED', affectedUsers: 2 })
+    );
+    expect(JSON.stringify(arg.data[0].findings)).toContain('Exfiltrating contacts');
+  });
+
+  it('applies registry, installations and ledger in ONE transaction', async () => {
+    seedPlugin();
+    seedInstallations(['rec-1']);
+
+    await breakGlassRevoke('plugin-1', 'Security incident');
+
+    // A break-glass revocation that half-applied and returned { revoked: true }
+    // would be the same bug with more steps.
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws for unknown plugin, and writes nothing', async () => {
+    await expect(breakGlassRevoke('non-existent', 'reason')).rejects.toThrow(
+      'Plugin non-existent not found'
+    );
+
+    expect(mockPrisma.document.update!).not.toHaveBeenCalled();
+    expect(mockPrisma.pluginRecord.updateMany!).not.toHaveBeenCalled();
   });
 });

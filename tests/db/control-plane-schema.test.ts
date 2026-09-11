@@ -160,8 +160,20 @@ import { join } from 'path';
 /**
  * Unreferenced as of P-36 (migration window 01), recorded for a decision
  * rather than deleted or hidden. See the note above.
+ *
+ * P-37 removed `PluginRecord` and `PluginReview`. The note above guessed
+ * right about where they belonged and half wrong about what for:
+ * `PluginRecord` is not a home for `pluginStore` -- it has no `entityId`, so
+ * making it the registry would have undone P-13's tenancy scoping. It is a
+ * per-user INSTALLATION, which is what let `breakGlassRevoke` stop returning
+ * `affectedUsers: 0` as a literal and start counting the rows it revoked.
+ * `PluginReview` is the revocation ledger those writes produce.
+ * `security-review-service :: reviewStore` is still a Map and still named in
+ * that service's own doc-comment: `PluginReview.pluginRecordId` is a required
+ * FK to an installation, so a review of an UNINSTALLED registry entry has
+ * nothing to hang off. That one needs a schema change, not a wiring.
  */
-const KNOWN_ORPHANS = ['VoicePersona', 'PluginRecord', 'PluginReview'];
+const KNOWN_ORPHANS = ['VoicePersona'];
 
 /** Prisma's delegate name for a model: first character lower-cased. */
 function delegateName(model: string): string {
@@ -204,7 +216,7 @@ describe('P-36 — every model in the schema is reached by src/', () => {
     expect(models).toContain('InboundWebhookEvent');
   });
 
-  it('references every model except the three recorded orphans', () => {
+  it('references every model except the recorded orphans', () => {
     const unreferenced = models.filter((m) => !isReferenced(m));
     expect(unreferenced.sort()).toEqual([...KNOWN_ORPHANS].sort());
   });

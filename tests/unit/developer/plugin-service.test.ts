@@ -1,5 +1,6 @@
 const mockFindUnique = jest.fn();
 const mockDelete = jest.fn();
+const mockPluginRecordCount = jest.fn().mockResolvedValue(0);
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -14,6 +15,14 @@ jest.mock('@/lib/db', () => ({
       update: jest.fn(),
       delete: mockDelete,
       deleteMany: (...args: unknown[]) => mockDelete(...args),
+    },
+    // P-37: register / enable / approve now ask whether the plugin NAME carries
+    // a break-glass revocation tombstone before they let it through. Default 0
+    // here -- the refusal itself is asserted against a real Postgres in
+    // tests/db/plugin-revocation.test.ts, because a mocked count that returns
+    // whatever the test told it to cannot prove a revocation is durable.
+    pluginRecord: {
+      count: mockPluginRecordCount,
     },
   },
 }));
@@ -35,6 +44,7 @@ const mockDocument = prisma.document as jest.Mocked<typeof prisma.document>;
 describe('Plugin Service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPluginRecordCount.mockResolvedValue(0);
   });
 
   const validManifest = {

@@ -24,12 +24,23 @@ export {
   unregisterPlugin,
   validateManifest,
   getPluginSDKStub,
+  installPlugin,
+  uninstallPlugin,
+  loadPluginForUser,
+  listInstallations,
+  isPluginNameRevoked,
+  assertPluginUsable,
+  PluginRevokedError,
+  PluginNotInstalledError,
+  PLUGIN_REVOKED,
+  PLUGIN_INSTALL_ACTIVE,
 } from './services/plugin-service';
 export {
   requestReview,
   conductReview,
   getReview,
   breakGlassRevoke,
+  getRevocationLedger,
 } from './services/security-review-service';
 export {
   createWebhook,
@@ -43,6 +54,14 @@ export {
 } from './services/webhook-service';
 
 // Types
+export type {
+  LoadedPlugin,
+  PluginInstallation,
+} from './services/plugin-service';
+export type {
+  BreakGlassOptions,
+  BreakGlassResult,
+} from './services/security-review-service';
 export type {
   PluginDefinition,
   WebhookConfig,

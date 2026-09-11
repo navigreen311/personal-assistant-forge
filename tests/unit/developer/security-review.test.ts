@@ -1,14 +1,40 @@
+/**
+ * P-37 -- see tests/unit/developer/security-review-service.test.ts for the full
+ * account. In short: this suite seeded `plugin-service :: pluginStore` (a
+ * module-level `Map`) and then asserted that `breakGlassRevoke` had changed the
+ * same Map. That is asserting the bug -- the plugin being served came from a
+ * `Document` row the revocation never touched. The Map is gone; the service
+ * reads through `getPlugin` and writes through Prisma, both mocked here.
+ */
+import type { PluginDefinition } from '@/modules/developer/types';
+import type { MockedDelegates } from '../../support/prisma-mock';
+
+const mockPlugins = new Map<string, PluginDefinition>();
+
+const mockPrisma: MockedDelegates<'document' | 'pluginRecord' | 'pluginReview'> & {
+  $transaction: jest.Mock;
+} = {
+  document: { findFirst: jest.fn(), update: jest.fn() },
+  pluginRecord: { findMany: jest.fn(), updateMany: jest.fn(), count: jest.fn(), create: jest.fn() },
+  pluginReview: { createMany: jest.fn(), findMany: jest.fn() },
+  $transaction: jest.fn(),
+};
+
+jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
+
 jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue(''),
   generateJSON: jest.fn().mockResolvedValue({ findings: [] }),
 }));
 
-jest.mock('@/modules/developer/services/plugin-service', () => {
-  const store = new Map();
-  return {
-    pluginStore: store,
-  };
-});
+jest.mock('@/modules/developer/services/plugin-service', () => ({
+  PLUGIN_REVOKED: 'REVOKED',
+  getPlugin: jest.fn(async (pluginId: string) => {
+    const plugin = mockPlugins.get(pluginId);
+    if (!plugin) throw new Error(`Plugin ${pluginId} not found`);
+    return plugin;
+  }),
+}));
 
 import {
   requestReview,
@@ -17,18 +43,43 @@ import {
   breakGlassRevoke,
   reviewStore,
 } from '@/modules/developer/services/security-review-service';
-import { pluginStore } from '@/modules/developer/services/plugin-service';
 import { generateJSON } from '@/lib/ai';
-import type { PluginDefinition } from '@/modules/developer/types';
 
 const mockGenerateJSON = generateJSON as jest.MockedFunction<typeof generateJSON>;
-const mockPluginStore = pluginStore as Map<string, PluginDefinition>;
+
+function resetPrismaMock(): void {
+  mockPrisma.$transaction.mockImplementation(
+    async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma)
+  );
+  mockPrisma.document.findFirst!.mockImplementation(async ({ where }: { where: { id: string } }) => {
+    const plugin = mockPlugins.get(where.id);
+    if (!plugin) return null;
+    return {
+      id: plugin.id,
+      title: plugin.name,
+      entityId: 'entity-1',
+      type: 'PLUGIN',
+      status: plugin.status,
+      content: JSON.stringify(plugin),
+      createdAt: plugin.createdAt,
+      updatedAt: plugin.updatedAt,
+      deletedAt: null,
+    };
+  });
+  mockPrisma.document.update!.mockResolvedValue({});
+  mockPrisma.pluginRecord.findMany!.mockResolvedValue([]);
+  mockPrisma.pluginRecord.count!.mockResolvedValue(0);
+  mockPrisma.pluginRecord.updateMany!.mockResolvedValue({ count: 0 });
+  mockPrisma.pluginRecord.create!.mockResolvedValue({ id: 'tombstone-1' });
+  mockPrisma.pluginReview.createMany!.mockResolvedValue({ count: 0 });
+}
 
 describe('security-review-service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     reviewStore.clear();
-    mockPluginStore.clear();
+    mockPlugins.clear();
+    resetPrismaMock();
   });
 
   function seedPlugin(overrides: Partial<PluginDefinition> = {}): PluginDefinition {
@@ -46,7 +97,7 @@ describe('security-review-service', () => {
       updatedAt: new Date(),
       ...overrides,
     };
-    mockPluginStore.set(plugin.id, plugin);
+    mockPlugins.set(plugin.id, plugin);
     return plugin;
   }
 
@@ -127,14 +178,35 @@ describe('security-review-service', () => {
   });
 
   describe('breakGlassRevoke', () => {
-    it('sets plugin status to REVOKED', async () => {
+    it('writes REVOKED to the registry row rather than to an in-process object', async () => {
       seedPlugin();
 
       const result = await breakGlassRevoke('plugin-1', 'Security incident');
 
       expect(result.revoked).toBe(true);
-      const plugin = mockPluginStore.get('plugin-1');
-      expect(plugin?.status).toBe('REVOKED');
+      // The predecessor of this assertion read the status back off the Map the
+      // test had just seeded, which is true of any implementation that mutates
+      // the object it was handed -- including the one that never persisted.
+      expect(mockPrisma.document.update!).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'plugin-1' },
+          data: expect.objectContaining({ status: 'REVOKED' }),
+        })
+      );
+    });
+
+    it('revokes the installations, and counts them into affectedUsers', async () => {
+      seedPlugin();
+      mockPrisma.pluginRecord.findMany!.mockResolvedValue([{ id: 'rec-1' }, { id: 'rec-2' }]);
+      mockPrisma.pluginRecord.count!.mockResolvedValue(2);
+
+      const result = await breakGlassRevoke('plugin-1', 'Security incident');
+
+      expect(mockPrisma.pluginRecord.updateMany!).toHaveBeenCalledWith({
+        where: { id: { in: ['rec-1', 'rec-2'] } },
+        data: expect.objectContaining({ status: 'REVOKED' }),
+      });
+      expect(result.affectedUsers).toBe(2);
     });
 
     it('throws for unknown plugin', async () => {

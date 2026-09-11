@@ -18,15 +18,29 @@ type DocumentInput = {
  * the fields this fake actually reads, so the mock states an interface instead
  * of asserting nothing.
  */
-const mockPrisma: MockedDelegates<'document'> = {
+const mockPrisma: MockedDelegates<'document' | 'pluginRecord'> = {
   document: {
     create: jest.fn(),
     findMany: jest.fn().mockResolvedValue([]),
     findUnique: jest.fn(),
+    // P-37: `conductReview` no longer reads the plugin out of a module-level
+    // Map -- it reads the Document row, the same row `registerPlugin` wrote and
+    // the same row the plugin is served from. So this fake has to remember what
+    // it created, and `findFirst` has to hand it back.
+    findFirst: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
   },
+  // P-37: register asks whether the plugin NAME carries a break-glass
+  // revocation tombstone. Always 0 here; the refusal is proved against a real
+  // Postgres in tests/db/plugin-revocation.test.ts.
+  pluginRecord: {
+    count: jest.fn(),
+  },
 };
+
+/** Rows this fake has "written", keyed by id. */
+const mockDocuments = new Map<string, Record<string, unknown>>();
 
 jest.mock('@/lib/db', () => ({ prisma: mockPrisma }));
 
@@ -41,17 +55,21 @@ jest.mock('@/lib/ai', () => ({
 }));
 
 import { conductReview, requestReview, reviewStore } from '@/modules/developer/services/security-review-service';
-import { registerPlugin, pluginStore } from '@/modules/developer/services/plugin-service';
+import { registerPlugin } from '@/modules/developer/services/plugin-service';
 
 beforeEach(() => {
-  pluginStore.clear();
   reviewStore.clear();
+  mockDocuments.clear();
   jest.clearAllMocks();
 
-  // Make prisma.document.create return a proper document object
+  mockPrisma.pluginRecord.count!.mockResolvedValue(0);
+
+  // Make prisma.document.create return a proper document object -- and keep it,
+  // so a later read sees what the write produced instead of a Map the service
+  // happened to also update.
   mockPrisma.document.create!.mockImplementation(async ({ data }: { data: DocumentInput }) => {
     const id = uuidv4();
-    return {
+    const row = {
       id,
       title: data.title,
       entityId: data.entityId,
@@ -62,7 +80,14 @@ beforeEach(() => {
       updatedAt: new Date(),
       deletedAt: null,
     };
+    mockDocuments.set(id, row);
+    return row;
   });
+
+  mockPrisma.document.findFirst!.mockImplementation(
+    async ({ where }: { where: { id?: string } }) =>
+      (where.id ? mockDocuments.get(where.id) : undefined) ?? null
+  );
 });
 
 describe('conductReview (AI-powered)', () => {
