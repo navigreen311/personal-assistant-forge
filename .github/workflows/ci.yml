@@ -149,7 +149,28 @@ jobs:
     # unbounded. It hits 30 exactly as reliably as it hit 15; it just costs
     # fifteen more minutes on the rare occasion it happens. Slow is bounded,
     # hung is not, and only the ceiling's height distinguishes them.
-    timeout-minutes: 30
+    # 45, not 30. Raised a second time, and the reason is NOT "to make a
+    # failure pass".
+    #
+    # P-41's run took 30m16s and was cancelled AT the ceiling -- and inside it
+    # there was a genuine failure (`queue-worker.test.ts` waited on one table and
+    # asserted another; see the coordinator fix in that package). The
+    # cancellation TRUNCATED the report, so the log had to be read by hand to
+    # find out which test failed and why. A ceiling that fires mid-suite converts
+    # a diagnosable failure into "cancelled", which this repository has already
+    # learned reads like a hang and invites a re-run instead of a diagnosis.
+    #
+    # The suite has also grown: 849 tests when 30 was set, **1,161 now**, still
+    # ~7 minutes on a healthy runner. Degraded runners here have measured 4-8x
+    # (content-tenancy 28s -> 201s on one occasion), so 30 was back to roughly 4x
+    # normal -- exactly the margin that was found insufficient last time.
+    #
+    # This does not weaken hang detection. The failure the ceiling exists for --
+    # P-18's Redis singleton, P-20's `setInterval`, P-33's un-`unref`ed timer,
+    # where every test passes and the PROCESS never exits -- is unbounded. It
+    # hits 45 as reliably as 30; it just costs fifteen more minutes on the rare
+    # occasion it happens. Slow is bounded, hung is not.
+    timeout-minutes: 45
 
     # Deliberately NOT gated on lint-typecheck-test. Originally because that job
     # was red on the standing type errors, and gating this behind it would have
