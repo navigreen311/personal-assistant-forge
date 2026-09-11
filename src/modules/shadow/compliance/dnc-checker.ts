@@ -30,17 +30,39 @@
 //     is returned so a blocked call becomes an email rather than nothing.
 //
 // ----------------------------------------------------------------------------
-// ONE HONEST GAP
+// THE HONEST GAP P-16 LEFT, AND WHAT MIGRATION WINDOW 02 DID ABOUT IT
 // ----------------------------------------------------------------------------
 //
-// The spec's `quiet_hours_timezone` column does not exist on
-// `ContactCallPreference` and the schema is frozen, so quiet hours are
-// evaluated in a timezone the CALLER supplies -- in practice the user's, which
-// is the best available answer and is not the contact's. It is a parameter
-// rather than a silent `new Date().getHours()` so that the assumption is
-// visible at every call site. It is NOT stuffed into an unrelated `Json`
-// column; if per-contact timezones are wanted, that is a column and an
-// escalation.
+// P-16 wrote, and it is kept verbatim because it is the defect:
+//
+//     "The spec's `quiet_hours_timezone` column does not exist on
+//      `ContactCallPreference` and the schema is frozen, so quiet hours are
+//      evaluated in a timezone the CALLER supplies -- in practice the user's,
+//      which is the best available answer and is not the contact's."
+//
+// Ivan's ruling: *"required, quiet hours without a timezone are meaningless"*.
+// `ContactCallPreference.quietHoursTimezone` now exists, and the consequence is
+// in `resolveTimezone` below: THE CONTACT'S OWN ZONE WINS. The caller's zone is
+// the fallback for a contact whose zone is not recorded, which is every row
+// written before the migration -- so the behaviour does not change for those,
+// and does change for every contact whose zone is known.
+//
+// This is the part window 02 insists on: a stored-but-unread column is
+// `DNDConfig.reason` again, the field window 01 had to add `expiresAt` for
+// because no timed do-not-disturb had ever expired. So the column is read here,
+// on the path that refuses the call, and `nextAvailable` is computed from it
+// too -- an answer of "call back in nine hours" derived from the wrong zone is
+// wrong by the same offset as the refusal it accompanies.
+//
+// A RECORDED ZONE THAT IS NOT A ZONE IS NOT SILENTLY IGNORED. `Intl` throws a
+// `RangeError` on an unknown IANA id. Swallowing it would put this file back
+// where it started -- evaluating a contact's quiet hours in the server's zone
+// while a column says otherwise -- so `localMinutes` reports the failure to
+// `canCall`, which refuses the call and says why. Refusing to call is the safe
+// direction: the cost of a false refusal is a call that happens an hour later,
+// and the cost of a false permission is a 2 a.m. phone call. The write boundary
+// (`PUT /api/contacts/[id]/call-preferences`) validates the zone, so reaching
+// this branch means a row was written by something else.
 
 import { prisma } from '@/lib/db';
 import type { VerifiedEntityId } from '@/shared/middleware/auth';
@@ -66,8 +88,11 @@ export interface DNCCheckOptions {
   /** Clock, injected so a quiet-hours test is not a test of when it ran. */
   now?: Date;
   /**
-   * IANA timezone the contact's quiet hours are evaluated in. See the header:
-   * the schema has no per-contact timezone, so the caller supplies one.
+   * FALLBACK IANA timezone, used only when the contact's own
+   * `quietHoursTimezone` is null. Since migration window 02 the contact's
+   * recorded zone wins over this -- see `resolveTimezone`. It stays on the
+   * options so a contact whose zone is not known is still evaluated in a stated
+   * zone rather than in whatever zone the server happens to run in.
    */
   timezone?: string;
 }
@@ -95,14 +120,44 @@ function minutesOf(hhmm: string): number | null {
   return hours * 60 + minutes;
 }
 
-function localMinutes(now: Date, timezone: string | undefined): number {
-  const formatter = new Intl.DateTimeFormat('en-GB', {
-    ...(timezone ? { timeZone: timezone } : {}),
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  return minutesOf(formatter.format(now)) ?? 0;
+/**
+ * MIGRATION WINDOW 02. Which zone a contact's quiet hours are stated in.
+ *
+ * The contact's recorded zone wins. That is the whole ruling: the window is the
+ * CONTACT's, so 21:00 means 21:00 where the contact is, not where the operator
+ * is. The caller's zone remains the fallback for a contact whose zone is not
+ * recorded -- the pre-window behaviour, unchanged for every existing row.
+ */
+export function resolveTimezone(
+  contactTimezone: string | null | undefined,
+  callerTimezone: string | undefined
+): string | undefined {
+  return contactTimezone ?? callerTimezone;
+}
+
+/**
+ * `null` means the timezone is not a timezone.
+ *
+ * NOT `0`, which is what this function used to return via `?? 0` and which
+ * reads as midnight -- inside the default quiet window, so an unparseable time
+ * would have refused every call and looked like a working quiet-hours check.
+ * The failure is returned rather than defaulted so `canCall` can say which of
+ * the two things happened.
+ */
+function localMinutes(now: Date, timezone: string | undefined): number | null {
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      ...(timezone ? { timeZone: timezone } : {}),
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    // `Intl` throws RangeError on an unknown IANA id. See the header.
+    return null;
+  }
+  return minutesOf(formatter.format(now));
 }
 
 /**
@@ -180,15 +235,32 @@ export class DNCChecker {
       };
     }
 
-    // 2. The contact's own quiet hours.
-    const currentMinutes = localMinutes(now, options.timezone);
+    // 2. The contact's own quiet hours, IN THE CONTACT'S OWN ZONE.
+    //
+    //    Migration window 02: `preference.quietHoursTimezone` is read here and
+    //    beats `options.timezone`. Before the column, a contact in Tokyo whose
+    //    preference said "no calls 21:00-08:00" was evaluated against the
+    //    OPERATOR's clock, so at 10:00 in Chicago -- 01:00 in Tokyo -- this
+    //    function said yes.
+    const timezone = resolveTimezone(preference?.quietHoursTimezone, options.timezone);
+    const currentMinutes = localMinutes(now, timezone);
     const quietStart = preference?.quietHoursStart ?? DEFAULT_QUIET_START;
     const quietEnd = preference?.quietHoursEnd ?? DEFAULT_QUIET_END;
+
+    if (currentMinutes === null) {
+      return {
+        allowed: false,
+        reason: `Contact quiet hours cannot be evaluated: "${timezone}" is not a known IANA timezone`,
+        preferredChannel,
+        callsThisWeek: await this.countCallsThisWeek(contactId, now),
+        maxCallsPerWeek,
+      };
+    }
 
     if (isInQuietHours(currentMinutes, quietStart, quietEnd)) {
       return {
         allowed: false,
-        reason: `Contact quiet hours in effect (${quietStart} - ${quietEnd})`,
+        reason: `Contact quiet hours in effect (${quietStart} - ${quietEnd}${timezone ? ` ${timezone}` : ''})`,
         nextAvailable: nextAvailableAfterQuietHours(now, currentMinutes, quietEnd),
         preferredChannel,
         callsThisWeek: await this.countCallsThisWeek(contactId, now),

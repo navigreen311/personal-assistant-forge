@@ -34,11 +34,36 @@ const WRITE_ROLES: UserRole[] = ['owner', 'admin', 'member'];
 /** `HH:MM`, 24-hour. */
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/**
+ * MIGRATION WINDOW 02 — the write boundary for `quietHoursTimezone`.
+ *
+ * Validated against `Intl` rather than a regex or a hard-coded list: the IANA
+ * database is what `dnc-checker` evaluates the window with, so the only useful
+ * question is whether THAT can read the string. A regex would accept
+ * `Europe/Atlantis`, which would store fine and then be unreadable at the one
+ * moment it matters -- and an unreadable zone on the read side means a refused
+ * call (see `dnc-checker`'s header), so a typo here would silently stop every
+ * call to a contact. Caught at the write instead, where a person can fix it.
+ */
+function isIanaTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const UpdateSchema = z.object({
   doNotCall: z.boolean().optional(),
   preferredChannel: z.enum(['phone', 'email', 'sms']).optional(),
   quietHoursStart: z.string().regex(TIME).nullable().optional(),
   quietHoursEnd: z.string().regex(TIME).nullable().optional(),
+  quietHoursTimezone: z
+    .string()
+    .refine(isIanaTimezone, { message: 'Not a known IANA timezone, e.g. "Asia/Tokyo"' })
+    .nullable()
+    .optional(),
   maxCallsPerWeek: z.number().int().min(0).max(50).optional(),
 });
 
@@ -83,6 +108,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         preferredChannel: preference?.preferredChannel ?? 'phone',
         quietHoursStart: preference?.quietHoursStart ?? null,
         quietHoursEnd: preference?.quietHoursEnd ?? null,
+        quietHoursTimezone: preference?.quietHoursTimezone ?? null,
         maxCallsPerWeek: preference?.maxCallsPerWeek ?? 3,
         lastCalledAt: preference?.lastCalledAt?.toISOString() ?? null,
         callableNow: check.allowed,
@@ -138,6 +164,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
           preferredChannel: data.preferredChannel ?? 'phone',
           quietHoursStart: data.quietHoursStart ?? null,
           quietHoursEnd: data.quietHoursEnd ?? null,
+          quietHoursTimezone: data.quietHoursTimezone ?? null,
           maxCallsPerWeek: data.maxCallsPerWeek ?? 3,
         },
         update: {
@@ -147,6 +174,12 @@ export async function PUT(request: NextRequest, context: RouteContext) {
             : {}),
           ...(startGiven ? { quietHoursStart: data.quietHoursStart ?? null } : {}),
           ...(endGiven ? { quietHoursEnd: data.quietHoursEnd ?? null } : {}),
+          // Independently settable from the pair above: a contact who moves
+          // keeps the same 21:00-08:00 window in a new zone, and a client that
+          // sends only the zone must not have to re-send the hours.
+          ...(data.quietHoursTimezone !== undefined
+            ? { quietHoursTimezone: data.quietHoursTimezone }
+            : {}),
           ...(data.maxCallsPerWeek !== undefined
             ? { maxCallsPerWeek: data.maxCallsPerWeek }
             : {}),
@@ -159,6 +192,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         preferredChannel: preference.preferredChannel,
         quietHoursStart: preference.quietHoursStart,
         quietHoursEnd: preference.quietHoursEnd,
+        quietHoursTimezone: preference.quietHoursTimezone,
         maxCallsPerWeek: preference.maxCallsPerWeek,
       });
     } catch (err) {

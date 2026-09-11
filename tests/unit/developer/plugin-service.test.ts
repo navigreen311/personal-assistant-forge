@@ -1,6 +1,8 @@
 const mockFindUnique = jest.fn();
 const mockDelete = jest.fn();
 const mockPluginRecordCount = jest.fn().mockResolvedValue(0);
+const mockPluginRecordFindMany = jest.fn().mockResolvedValue([]);
+const mockDocumentCount = jest.fn().mockResolvedValue(0);
 
 jest.mock('@/lib/db', () => ({
   prisma: {
@@ -15,6 +17,11 @@ jest.mock('@/lib/db', () => ({
       update: jest.fn(),
       delete: mockDelete,
       deleteMany: (...args: unknown[]) => mockDelete(...args),
+      // Migration window 02 (P-40): the re-registration guard is now scoped to
+      // the entity, so it asks the REGISTRY whether a same-named plugin was
+      // revoked here -- rather than burning the name platform-wide. Default 0,
+      // for the same reason as `pluginRecord.count` below.
+      count: mockDocumentCount,
     },
     // P-37: register / enable / approve now ask whether the plugin NAME carries
     // a break-glass revocation tombstone before they let it through. Default 0
@@ -23,6 +30,11 @@ jest.mock('@/lib/db', () => ({
     // whatever the test told it to cannot prove a revocation is durable.
     pluginRecord: {
       count: mockPluginRecordCount,
+      // Window 02: the guard resolves a tombstone's `registryId` back to the
+      // Document that published it, so it reads the rows as well as counting
+      // them. Empty here; the real refusals are asserted against Postgres in
+      // tests/db/migration-window-02.test.ts.
+      findMany: mockPluginRecordFindMany,
     },
   },
 }));
@@ -45,6 +57,8 @@ describe('Plugin Service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockPluginRecordCount.mockResolvedValue(0);
+    mockPluginRecordFindMany.mockResolvedValue([]);
+    mockDocumentCount.mockResolvedValue(0);
   });
 
   const validManifest = {
