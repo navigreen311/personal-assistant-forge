@@ -2,6 +2,7 @@
 // Manages session history, message persistence, and learned preferences.
 
 import { prisma } from '@/lib/db';
+import { storeShadowMessage } from '../compliance/message-store';
 import type { SessionMessage } from '../types';
 
 export class ShadowMemory {
@@ -75,25 +76,23 @@ export class ShadowMemory {
       telemetry?: Record<string, unknown>;
     },
   ): Promise<string> {
-    const created = await prisma.shadowMessage.create({
-      data: {
-        sessionId,
-        role: message.role,
-        content: message.content,
-        contentType: message.contentType ?? 'TEXT',
-        intent: message.intent ?? null,
-        toolsUsed: message.toolsUsed ?? [],
-        actionsTaken: message.actionsTaken ?? [],
-        channel: message.channel,
-        confidence: message.confidence ?? null,
-        latencyMs: message.latencyMs ?? null,
-        // Prisma's JSON column rejects Record<string, unknown> directly
-        // because `unknown` values could be non-serializable. The payload
-        // is always a shallow JSON-safe object, so cast at the boundary.
-        telemetry: message.telemetry as Parameters<
-          typeof prisma.shadowMessage.create
-        >[0]['data']['telemetry'],
-      },
+    // P-17 (v3 Addition 9.2). Every transcript is redacted before storage, and
+    // `storeShadowMessage` is the only writer of `ShadowMessage` in the
+    // codebase -- see src/modules/shadow/compliance/message-store.ts. This call
+    // site is the agent's own: it stores the user's raw utterance, which is
+    // where a spoken card number or SSN actually arrives.
+    const created = await storeShadowMessage({
+      sessionId,
+      role: message.role,
+      content: message.content,
+      contentType: message.contentType,
+      intent: message.intent,
+      toolsUsed: message.toolsUsed,
+      actionsTaken: message.actionsTaken,
+      channel: message.channel,
+      confidence: message.confidence,
+      latencyMs: message.latencyMs,
+      telemetry: message.telemetry,
     });
 
     // Update session message count and last activity

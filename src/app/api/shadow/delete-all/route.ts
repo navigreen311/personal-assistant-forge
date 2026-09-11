@@ -39,10 +39,33 @@ export async function POST(request: NextRequest) {
       const result = await gdprService.deleteAllData(session.userId);
 
       if (!result.success) {
-        return error('DELETE_FAILED', 'Data deletion partially failed', 500);
+        // P-17: the reason travels now. `deleteAllData` used to compute it and
+        // discard it, so a half-completed erasure told the user nothing and
+        // left nothing in the logs either.
+        return error(
+          'DELETE_FAILED',
+          result.error
+            ? `Data deletion partially failed: ${result.error}`
+            : 'Data deletion partially failed',
+          500,
+          { deletedCounts: result.deletedCounts },
+        );
       }
 
-      return success(result);
+      // P-17. v3 Addition 9.3 requires the delete flow to SAY that consent
+      // receipts survive it ("Consent receipts will be retained for regulatory
+      // compliance"). Until this commit the flow neither said it nor did it:
+      // `gdprService.deleteAllData` deleted them. It now retains and scrubs
+      // them, and the response states so, so a user is not told their data is
+      // gone when a seven-year record of what they authorised remains.
+      return success({
+        ...result,
+        consentReceiptsRetained: true,
+        notice:
+          'Conversations, messages, transcripts and recordings were deleted. Consent ' +
+          'receipts are retained for regulatory compliance (7 years); the conversation ' +
+          'content inside them has been scrubbed.',
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete data';
       return error('DELETE_ALL_FAILED', message, 500);

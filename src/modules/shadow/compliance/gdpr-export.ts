@@ -5,7 +5,67 @@
 // and selective deletion by entity/channel/type.
 // ============================================================================
 
+// ============================================================================
+// P-17 (Sprint 6) — A USER-REQUESTED DELETE DOES NOT DESTROY CONSENT RECEIPTS
+// ============================================================================
+//
+// This file's three delete methods each contained
+//
+//     prisma.shadowConsentReceipt.deleteMany({ where: { sessionId: { in: ids } } })
+//
+// and, unlike `retention.ts`'s identical line, THIS ONE WAS LIVE. `gdpr-export`
+// has three route importers — `/api/shadow/delete-all`,
+// `/api/shadow/delete-session/[id]` and `/api/shadow/export` — so every erasure
+// request a user made was already destroying the regulatory record alongside
+// the conversation.
+//
+// The committed spec, v3 Addition 9.3, says the opposite in the delete flow
+// itself:
+//
+//     1. Confirmation: "This will permanently delete [X] conversations, [Y]
+//        recordings, and [Z] transcripts. Consent receipts will be retained for
+//        regulatory compliance. ..."
+//     6. Consent receipts RETAINED (legal requirement) but message content
+//        within them is scrubbed
+//
+// That is not GDPR being ignored. Article 17(3)(b) exempts processing required
+// for compliance with a legal obligation, which is exactly what a seven-year
+// consent receipt is; the receipt is what proves the user authorised the action,
+// and erasing it on request erases the evidence in the user's own favour too.
+//
+// So `scrubReceiptsForSessions` replaces every `deleteMany` over receipts here.
+// WHAT IT SCRUBS, and why that list and not a longer or shorter one:
+//
+//   messageId      -> null.  The ShadowMessage it points at is being deleted in
+//                     the same call; leaving the id behind is a dangling
+//                     pointer to erased content, which is worse than either
+//                     keeping or removing it.
+//   reasoning      -> a fixed marker. This is the field that quotes the
+//                     conversation: `core.ts` writes the classified user intent
+//                     into it and the confirmation route writes the phrase the
+//                     user actually said. It is "message content within them".
+//   sourcesCited   -> []. These cite records the same request is erasing.
+//
+// KEPT, deliberately: actionType, actionDescription, triggerSource,
+// confirmationLevel, confirmationMethod, blastRadius, affectedCount,
+// financialImpact, reversible, entityId, executedAt, rolledBackAt. Those are
+// the receipt. A receipt scrubbed down to a timestamp proves nothing, which is
+// the opposite of "retained for regulatory compliance" — the point is that six
+// years from now someone can establish WHAT was authorised and under WHICH
+// confirmation level, without being able to read the conversation.
+//
+// `sessionId` needs no handling: `ShadowConsentReceipt_sessionId_fkey` is
+// `ON DELETE SET NULL` in the baseline migration, so deleting the session
+// detaches the receipt by itself. The schema has always said receipts outlive
+// their sessions; only the application code disagreed.
+//
+// `ShadowAuthEvent` gets the same treatment for the same reason — it is the
+// record of whether a step-up challenge passed, and it too is SET NULL — except
+// that it holds no free text to scrub, so detaching is the whole of it.
+// ============================================================================
+
 import { prisma } from '@/lib/db';
+import { reportError } from '@/lib/observability';
 
 // --- Types ---
 
@@ -17,6 +77,36 @@ export interface GDPRExportResult {
 export interface GDPRDeleteResult {
   success: boolean;
   deletedCounts: Record<string, number>;
+  /** Why it failed, when it did. Present only on `success: false`. */
+  error?: string;
+}
+
+/**
+ * What `reasoning` is replaced with. A fixed string, not an empty one, so a
+ * reader can tell a scrubbed receipt from one that never carried reasoning.
+ */
+export const SCRUBBED_REASONING =
+  '[SCRUBBED] conversation content erased at the user request; receipt retained for regulatory compliance';
+
+/**
+ * Scrub the conversation content out of the consent receipts attached to these
+ * sessions, and return how many were scrubbed.
+ *
+ * Called INSTEAD OF deleting them. The count is reported to the caller as
+ * `consentReceiptsRetained` rather than folded into a `deletedCounts` total, so
+ * an operator reading the response cannot mistake "retained" for "removed".
+ */
+async function scrubReceiptsForSessions(sessionIds: string[]): Promise<number> {
+  if (sessionIds.length === 0) return 0;
+  const { count } = await prisma.shadowConsentReceipt.updateMany({
+    where: { sessionId: { in: sessionIds } },
+    data: {
+      messageId: null,
+      reasoning: SCRUBBED_REASONING,
+      sourcesCited: [],
+    },
+  });
+  return count;
 }
 
 export interface SelectiveDeleteParams {
@@ -34,6 +124,23 @@ export class GDPRService {
    * Gathers all sessions, messages, consent receipts, outcomes, and auth events.
    */
   async exportUserData(userId: string): Promise<GDPRExportResult> {
+    // P-17. Receipts and auth events reached this export ONLY through
+    // `session: { userId }`, and both models detach from their session -- on a
+    // retention sweep, and now on an erasure request. A detached row was
+    // therefore invisible to Article 15 while still being retained under
+    // Article 17(3)(b): kept, and unreadable by the person it is about. That is
+    // the worst of both.
+    //
+    // A receipt is reattached to the user through its `entityId`; an auth event
+    // has its own `userId` column (`@@index([userId])` -- it exists to be
+    // queried this way, and `sendSmsCode` writes events with a userId and no
+    // session at all, so those were never exported either).
+    const ownedEntities = await prisma.entity.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    const ownedEntityIds = ownedEntities.map((e) => e.id);
+
     const [sessions, messages, consentReceipts, outcomes, authEvents] =
       await Promise.all([
         prisma.shadowVoiceSession.findMany({
@@ -45,7 +152,14 @@ export class GDPRService {
           orderBy: { createdAt: 'asc' },
         }),
         prisma.shadowConsentReceipt.findMany({
-          where: { session: { userId } },
+          where: {
+            OR: [
+              { session: { userId } },
+              ...(ownedEntityIds.length > 0
+                ? [{ entityId: { in: ownedEntityIds } }]
+                : []),
+            ],
+          },
           orderBy: { executedAt: 'desc' },
         }),
         prisma.shadowSessionOutcome.findMany({
@@ -53,7 +167,7 @@ export class GDPRService {
           orderBy: { createdAt: 'desc' },
         }),
         prisma.shadowAuthEvent.findMany({
-          where: { session: { userId } },
+          where: { OR: [{ userId }, { session: { userId } }] },
           orderBy: { createdAt: 'desc' },
         }),
       ]);
@@ -159,32 +273,38 @@ export class GDPRService {
       const sessionIds = sessions.map((s) => s.id);
 
       if (sessionIds.length > 0) {
-        // Delete related records first
-        const [messagesResult, outcomesResult, consentsResult, authEventsResult] =
-          await Promise.all([
-            prisma.shadowMessage.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
-            prisma.shadowSessionOutcome.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
-            prisma.shadowConsentReceipt.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
-            prisma.shadowAuthEvent.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
-          ]);
+        // Receipts are scrubbed BEFORE the sessions go, while `sessionId` still
+        // identifies them. After the delete the FK has nulled it and there is
+        // no way left to find them.
+        const retained = await scrubReceiptsForSessions(sessionIds);
+
+        const [messagesResult, outcomesResult] = await Promise.all([
+          prisma.shadowMessage.deleteMany({
+            where: { sessionId: { in: sessionIds } },
+          }),
+          prisma.shadowSessionOutcome.deleteMany({
+            where: { sessionId: { in: sessionIds } },
+          }),
+        ]);
 
         deletedCounts.messages = messagesResult.count;
         deletedCounts.outcomes = outcomesResult.count;
-        deletedCounts.consentReceipts = consentsResult.count;
-        deletedCounts.authEvents = authEventsResult.count;
+        // Named so it cannot be misread. These two rows are NOT deleted; they
+        // are detached by the ON DELETE SET NULL foreign key and kept for the
+        // regulatory period. See this file's header.
+        deletedCounts.consentReceiptsRetained = retained;
+        deletedCounts.authEventsRetained = await prisma.shadowAuthEvent.count({
+          where: { sessionId: { in: sessionIds } },
+        });
+        deletedCounts.consentReceipts = 0;
+        deletedCounts.authEvents = 0;
       } else {
         deletedCounts.messages = 0;
         deletedCounts.outcomes = 0;
         deletedCounts.consentReceipts = 0;
         deletedCounts.authEvents = 0;
+        deletedCounts.consentReceiptsRetained = 0;
+        deletedCounts.authEventsRetained = 0;
       }
 
       // Delete all sessions
@@ -211,10 +331,31 @@ export class GDPRService {
 
       return { success: true, deletedCounts };
     } catch (err) {
+      // P-17, found by `npx eslint` warning on an unused `message`. The
+      // variable was computed from the error and then DISCARDED: the route
+      // turned `success: false` into a flat "Data deletion partially failed"
+      // 500, and the only description of what went wrong existed for one line
+      // and was thrown away. A user's erasure request failing halfway with no
+      // record anywhere is the codebase's defining bug in its most consequential
+      // place. It is reported now, and the reason travels with the result.
       const message = err instanceof Error ? err.message : 'Unknown error during deletion';
+      reportError(err, {
+        kind: 'manual',
+        severity: 'error',
+        fingerprint: 'shadow:gdpr:delete-all-failed',
+        message: 'a user erasure request failed partway through',
+        // Counts only -- no user id, which would be both high-cardinality and
+        // the personal data the request was about.
+        context: {
+          messagesDeleted: deletedCounts.messages ?? 0,
+          sessionsDeleted: deletedCounts.sessions ?? 0,
+          consentReceiptsRetained: deletedCounts.consentReceiptsRetained ?? 0,
+        },
+      });
       return {
         success: false,
-        deletedCounts: { ...deletedCounts, error: 0 },
+        error: message,
+        deletedCounts,
       };
     }
   }
@@ -231,12 +372,14 @@ export class GDPRService {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    // Delete related records first
+    // Scrub the receipts first (see the header), then delete what may go.
+    // `ShadowAuthEvent` is absent from this list on purpose: it holds no
+    // conversation content and its FK detaches it when the session goes.
+    await scrubReceiptsForSessions([sessionId]);
+
     await Promise.all([
       prisma.shadowMessage.deleteMany({ where: { sessionId } }),
       prisma.shadowSessionOutcome.deleteMany({ where: { sessionId } }),
-      prisma.shadowConsentReceipt.deleteMany({ where: { sessionId } }),
-      prisma.shadowAuthEvent.deleteMany({ where: { sessionId } }),
     ]);
 
     // Delete the session
@@ -248,10 +391,17 @@ export class GDPRService {
   /**
    * Selectively delete data matching specific criteria.
    * Can filter by entity, channel, or data type.
+   *
+   * `consentReceiptsRetained` is reported separately from `deletedCount` so a
+   * caller cannot read "N" and conclude N receipts were removed. Receipts are
+   * never removed here; see this file's header.
    */
-  async selectiveDelete(params: SelectiveDeleteParams): Promise<{ deletedCount: number }> {
+  async selectiveDelete(
+    params: SelectiveDeleteParams,
+  ): Promise<{ deletedCount: number; consentReceiptsRetained: number }> {
     const { userId, entityId, channel, type } = params;
     let deletedCount = 0;
+    let consentReceiptsRetained = 0;
 
     // Build the session filter
     const sessionWhere: Record<string, unknown> = { userId };
@@ -270,7 +420,7 @@ export class GDPRService {
     const sessionIds = sessions.map((s) => s.id);
 
     if (sessionIds.length === 0) {
-      return { deletedCount: 0 };
+      return { deletedCount: 0, consentReceiptsRetained: 0 };
     }
 
     // Delete based on type filter
@@ -306,45 +456,38 @@ export class GDPRService {
         break;
       }
       case 'consent': {
-        const result = await prisma.shadowConsentReceipt.deleteMany({
-          where: { sessionId: { in: sessionIds } },
-        });
-        deletedCount = result.count;
+        // "Delete all my consent receipts" is the one selective request this
+        // service will not carry out. It scrubs instead, and the returned count
+        // is the number scrubbed — same shape of answer, and the caller can
+        // tell which happened from `consentReceiptsRetained`.
+        consentReceiptsRetained = await scrubReceiptsForSessions(sessionIds);
+        deletedCount = 0;
         break;
       }
       default: {
-        // Delete everything for the matching sessions
-        const [msgs, outcomes, consents, authEvts] = await Promise.all([
+        // Scrub first, while `sessionId` still identifies the receipts.
+        consentReceiptsRetained = await scrubReceiptsForSessions(sessionIds);
+
+        const [msgs, outcomes] = await Promise.all([
           prisma.shadowMessage.deleteMany({
             where: { sessionId: { in: sessionIds } },
           }),
           prisma.shadowSessionOutcome.deleteMany({
             where: { sessionId: { in: sessionIds } },
           }),
-          prisma.shadowConsentReceipt.deleteMany({
-            where: { sessionId: { in: sessionIds } },
-          }),
-          prisma.shadowAuthEvent.deleteMany({
-            where: { sessionId: { in: sessionIds } },
-          }),
         ]);
 
-        // Delete the sessions themselves
+        // Delete the sessions themselves. The receipts and auth events detach.
         const sessResult = await prisma.shadowVoiceSession.deleteMany({
           where: { id: { in: sessionIds } },
         });
 
-        deletedCount =
-          msgs.count +
-          outcomes.count +
-          consents.count +
-          authEvts.count +
-          sessResult.count;
+        deletedCount = msgs.count + outcomes.count + sessResult.count;
         break;
       }
     }
 
-    return { deletedCount };
+    return { deletedCount, consentReceiptsRetained };
   }
 }
 

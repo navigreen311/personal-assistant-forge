@@ -18,6 +18,7 @@ import { getVafConfig } from '@/lib/shadow/vaf-config';
 import { ShadowVoicePipeline } from '@/lib/shadow/voice/pipeline';
 import type { AudioQualityReport } from '@/lib/vaf/audio-quality-client';
 import { deriveEntityCompliance } from '@/lib/shadow/compliance/entity-compliance';
+import { storeShadowMessage } from '../compliance/message-store';
 import {
   VAFTranslation,
   type TranslateSpeechResult,
@@ -569,18 +570,17 @@ export class VoiceInAppHandler {
       });
       if (!session) return;
 
-      await prisma.shadowMessage.create({
-        data: {
-          sessionId: session.id,
-          role: 'user',
-          content: args.transcript,
-          contentType: 'TEXT',
-          channel: session.currentChannel,
-          sttProvider: args.sttProvider ?? null,
-          // Cast: prisma's Json input type is fiddly across versions;
-          // AudioQualityReport is a plain JSON-compatible object.
-          audioQuality: (args.audioQuality ?? null) as unknown as never,
-        },
+      // P-17 (v3 Addition 9.2). THE voice path: this is the literal transcript
+      // of what was said out loud, and it was being stored verbatim. Redaction
+      // now happens inside `storeShadowMessage`, the codebase's only writer of
+      // `ShadowMessage`.
+      await storeShadowMessage({
+        sessionId: session.id,
+        role: 'user',
+        content: args.transcript,
+        channel: session.currentChannel,
+        sttProvider: args.sttProvider ?? null,
+        audioQuality: args.audioQuality ?? null,
       });
     } catch (err) {
       console.warn('[VoiceInApp] persistUserMessage failed:', err);
@@ -599,15 +599,12 @@ export class VoiceInAppHandler {
       });
       if (!session) return;
 
-      await prisma.shadowMessage.create({
-        data: {
-          sessionId: session.id,
-          role: 'assistant',
-          content: args.text,
-          contentType: 'TEXT',
-          channel: session.currentChannel,
-          ttsProvider: args.ttsProvider ?? null,
-        },
+      await storeShadowMessage({
+        sessionId: session.id,
+        role: 'assistant',
+        content: args.text,
+        channel: session.currentChannel,
+        ttsProvider: args.ttsProvider ?? null,
       });
     } catch (err) {
       console.warn('[VoiceInApp] persistAssistantMessage failed:', err);

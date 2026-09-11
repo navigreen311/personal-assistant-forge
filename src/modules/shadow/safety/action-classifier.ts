@@ -146,6 +146,196 @@ const ACTION_CLASSIFICATION_MAP: Record<string, ActionDefinition> = {
     blastRadius: 'public',
     description: 'Activate the phone tree for mass notifications',
   },
+
+  // ==========================================================================
+  // P-17 (Sprint 6) — THE NAMES THE RUNTIME ACTUALLY CLASSIFIES
+  // ==========================================================================
+  //
+  // Everything above this line is the original eighteen entries; none of them
+  // are changed, and nothing below lowers any of them.
+  //
+  // The problem being fixed: `classifyAction` is called with TOOL NAMES (by
+  // `consent-receipt.ts` for every receipt, and now by `auth-manager.ts` for
+  // every step-up decision), and the map above was written in a different
+  // vocabulary. Of the 29 tools `agent/tool-router.ts` exposes, exactly SEVEN
+  // appeared above -- `create_task`, `draft_email`, `classify_email`,
+  // `complete_task`, `create_invoice`, `send_email`, `trigger_workflow`. The
+  // other 22, including every read-only listing tool, fell through to
+  // `DEFAULT_CLASSIFICATION` and were classified VOICE_PIN / irreversible /
+  // external.
+  //
+  // That default is the right default -- an unknown action should be treated as
+  // the most dangerous one. But it is a default for the UNKNOWN, and these 22
+  // are not unknown: they are the platform's own tools. Leaving them there has
+  // two costs, and the second is the dangerous one:
+  //
+  //   1. `get_dashboard_stats` would demand a voice PIN, which is the kind of
+  //      friction that gets a security gate switched off rather than fixed.
+  //   2. Every consent receipt the agent wrote recorded `reversible: false`
+  //      and `blastRadius: 'external'` for a created task. A receipt is the
+  //      audit record of what an action's blast radius WAS; a receipt saying a
+  //      calendar edit was external and irreversible is not a small
+  //      inaccuracy, it is the audit trail being wrong.
+  //
+  // Aliases are included where the two vocabularies spell the same action
+  // differently (`navigate` / `navigate_page` / `navigate_to_page`,
+  // `modify_calendar` / `modify_calendar_event`, `search_knowledge` /
+  // `search_knowledge_base`), because both spellings genuinely reach here:
+  // `IntentCategory` uses one and `tool-router.ts` the other.
+
+  // --- Read-only tools. NONE / self / reversible. ---------------------------
+  navigate: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Navigate to a page in the application',
+  },
+  navigate_to_page: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Navigate to a page in the application',
+  },
+  get_dashboard_stats: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Read dashboard statistics',
+  },
+  list_tasks: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List tasks',
+  },
+  list_inbox: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List inbox messages',
+  },
+  list_calendar_events: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List calendar events',
+  },
+  list_contacts: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List contacts',
+  },
+  get_contact: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Read a single contact',
+  },
+  list_invoices: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List invoices',
+  },
+  get_finance_summary: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Read a financial summary',
+  },
+  list_expenses: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List expenses',
+  },
+  search_knowledge_base: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Search the knowledge base',
+  },
+  get_workflow_status: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Read the status of a workflow run',
+  },
+  get_entity_list: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List the entities the user owns',
+  },
+  list_projects: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'List projects',
+  },
+  get_project_status: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Read the status of a project',
+  },
+  general_question: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Answer a question without taking an action',
+  },
+  switch_entity: {
+    confirmationLevel: 'NONE',
+    reversible: true,
+    blastRadius: 'self',
+    description: 'Switch the session to a different entity the user owns',
+  },
+
+  // --- Reversible mutations inside the entity. TAP. -------------------------
+  update_task: {
+    confirmationLevel: 'TAP',
+    reversible: true,
+    blastRadius: 'entity',
+    description: 'Update an existing task',
+  },
+  create_calendar_event: {
+    confirmationLevel: 'TAP',
+    reversible: true,
+    blastRadius: 'entity',
+    description: 'Create a calendar event',
+  },
+  modify_calendar_event: {
+    confirmationLevel: 'TAP',
+    reversible: true,
+    blastRadius: 'entity',
+    description: 'Modify a calendar event',
+  },
+  create_contact: {
+    confirmationLevel: 'TAP',
+    reversible: true,
+    blastRadius: 'entity',
+    description: 'Create a contact',
+  },
+  add_knowledge_entry: {
+    confirmationLevel: 'TAP',
+    reversible: true,
+    blastRadius: 'entity',
+    description: 'Add an entry to the knowledge base',
+  },
+
+  // --- Leaves the building. CONFIRM_PHRASE / external / irreversible. -------
+  //
+  // `send_invoice_reminder` sends mail to a client. It is the tool behind the
+  // `send_invoice` intent above and carries that intent's classification, not
+  // `create_invoice`'s.
+  send_invoice_reminder: {
+    confirmationLevel: 'CONFIRM_PHRASE',
+    reversible: false,
+    blastRadius: 'external',
+    description: 'Send an invoice reminder to a client or vendor',
+  },
 };
 
 /**

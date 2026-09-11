@@ -110,7 +110,16 @@ function resolveContentType(
 
 // ─── Citation Extraction ────────────────────────────────────────────────────
 
-function extractCitations(toolResults: ToolResult[]): Citation[] {
+/**
+ * P-17: exported. v3 Addition 2.2 ends "Sources stored in
+ * consent_receipt.sources_cited", and that column was `[]` on every row ever
+ * written. The citations a turn relied on were already being computed here for
+ * the RESPONSE and then thrown away; `agent/core.ts` now also writes them onto
+ * each consent receipt the turn produces. Exporting the existing function
+ * rather than deriving citations a second time in core.ts, so the sources a
+ * user is shown and the sources the audit record keeps cannot diverge.
+ */
+export function extractCitations(toolResults: ToolResult[]): Citation[] {
   const citations: Citation[] = [];
 
   for (const result of toolResults) {

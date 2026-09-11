@@ -303,25 +303,126 @@ describe('Action Classifier', () => {
       expect(all.every((c) => c.actionType && c.confirmationLevel)).toBe(true);
     });
 
+    // P-17. The counts moved when the map learned the 22 tool names the
+    // runtime was already classifying (see action-classifier.ts). They are
+    // still asserted exactly -- a level silently gaining a member is worth
+    // failing on -- but the assertions that carry the meaning are the
+    // memberships below them, which a future addition does not invalidate and
+    // which a REclassification would break immediately.
     it('getActionsByLevel returns correct actions', () => {
       const noneActions = getActionsByLevel('NONE');
-      expect(noneActions.length).toBe(6);
+      expect(noneActions.length).toBe(24);
       expect(noneActions.every((a) => a.confirmationLevel === 'NONE')).toBe(true);
 
       const tapActions = getActionsByLevel('TAP');
-      expect(tapActions.length).toBe(3);
+      expect(tapActions.length).toBe(8);
 
       const confirmActions = getActionsByLevel('CONFIRM_PHRASE');
-      expect(confirmActions.length).toBe(4);
+      expect(confirmActions.length).toBe(5);
 
       const pinActions = getActionsByLevel('VOICE_PIN');
       expect(pinActions.length).toBe(5);
+    });
+
+    it('the original eighteen classifications are unchanged', () => {
+      // The P-17 additions must not have moved anything that was already
+      // classified. Asserted as a table so a diff to any one of them fails on
+      // the line that names it.
+      const byType = new Map(getAllClassifications().map((c) => [c.actionType, c]));
+      const expected: Array<[string, string, string, boolean]> = [
+        ['navigate_page', 'NONE', 'self', true],
+        ['read_data', 'NONE', 'self', true],
+        ['create_task', 'NONE', 'self', true],
+        ['draft_email', 'NONE', 'self', true],
+        ['classify_email', 'NONE', 'self', true],
+        ['search_knowledge', 'NONE', 'self', true],
+        ['modify_calendar', 'TAP', 'entity', true],
+        ['complete_task', 'TAP', 'entity', true],
+        ['create_invoice', 'TAP', 'entity', true],
+        ['send_email', 'CONFIRM_PHRASE', 'external', false],
+        ['trigger_workflow', 'CONFIRM_PHRASE', 'external', false],
+        ['place_call', 'CONFIRM_PHRASE', 'external', false],
+        ['send_invoice', 'CONFIRM_PHRASE', 'external', false],
+        ['bulk_email', 'VOICE_PIN', 'public', false],
+        ['declare_crisis', 'VOICE_PIN', 'public', false],
+        ['make_payment', 'VOICE_PIN', 'external', false],
+        ['delete_data', 'VOICE_PIN', 'entity', false],
+        ['activate_phone_tree', 'VOICE_PIN', 'public', false],
+      ];
+      for (const [actionType, level, radius, reversible] of expected) {
+        expect([actionType, byType.get(actionType)?.confirmationLevel]).toEqual([
+          actionType,
+          level,
+        ]);
+        expect([actionType, byType.get(actionType)?.blastRadius]).toEqual([actionType, radius]);
+        expect([actionType, byType.get(actionType)?.reversible]).toEqual([
+          actionType,
+          reversible,
+        ]);
+      }
+    });
+
+    it('every tool the agent can call is classified, and read-only tools are NONE', () => {
+      // The bug this closes: `classifyAction` is called with TOOL names, and 22
+      // of the 29 tools in agent/tool-router.ts were absent from the map, so
+      // they fell through to the unknown-action default -- VOICE_PIN,
+      // irreversible, external. Every consent receipt for a created calendar
+      // event recorded that, and it was false.
+      const readOnly = [
+        'get_dashboard_stats',
+        'list_tasks',
+        'list_inbox',
+        'list_calendar_events',
+        'list_contacts',
+        'get_contact',
+        'list_invoices',
+        'get_finance_summary',
+        'list_expenses',
+        'search_knowledge_base',
+        'get_workflow_status',
+        'get_entity_list',
+        'list_projects',
+        'get_project_status',
+        'navigate_to_page',
+      ];
+      for (const tool of readOnly) {
+        expect([tool, isKnownAction(tool)]).toEqual([tool, true]);
+        expect([tool, classifyAction(tool).confirmationLevel]).toEqual([tool, 'NONE']);
+        expect([tool, classifyAction(tool).reversible]).toEqual([tool, true]);
+        expect([tool, classifyAction(tool).blastRadius]).toEqual([tool, 'self']);
+      }
+
+      const reversibleMutations = [
+        'update_task',
+        'create_calendar_event',
+        'modify_calendar_event',
+        'create_contact',
+        'add_knowledge_entry',
+      ];
+      for (const tool of reversibleMutations) {
+        expect([tool, classifyAction(tool).confirmationLevel]).toEqual([tool, 'TAP']);
+        expect([tool, classifyAction(tool).reversible]).toEqual([tool, true]);
+      }
+
+      // ...and the one tool that leaves the building stays irreversible.
+      expect(classifyAction('send_invoice_reminder').confirmationLevel).toBe('CONFIRM_PHRASE');
+      expect(classifyAction('send_invoice_reminder').reversible).toBe(false);
+      expect(classifyAction('send_invoice_reminder').blastRadius).toBe('external');
     });
 
     it('isKnownAction correctly identifies known vs unknown', () => {
       expect(isKnownAction('send_email')).toBe(true);
       expect(isKnownAction('navigate_page')).toBe(true);
       expect(isKnownAction('nonexistent_action')).toBe(false);
+    });
+
+    it('an action nobody has classified is still treated as the most dangerous', () => {
+      // The default must survive the additions above: it is the property that
+      // makes a tool somebody adds next month fail closed.
+      const unknown = classifyAction('exfiltrate_everything');
+      expect(unknown.confirmationLevel).toBe('VOICE_PIN');
+      expect(unknown.reversible).toBe(false);
+      expect(unknown.blastRadius).toBe('external');
     });
   });
 });

@@ -5,6 +5,7 @@
 // ============================================================================
 
 import { prisma } from '@/lib/db';
+import { storeShadowMessage } from '../compliance/message-store';
 import { sessionManager } from './session-manager';
 import type {
   WebChatIncoming,
@@ -81,19 +82,18 @@ async function persistMessage(params: {
   confidence?: number;
   latencyMs?: number;
 }): Promise<string> {
-  const message = await prisma.shadowMessage.create({
-    data: {
-      sessionId: params.sessionId,
-      role: params.role,
-      content: params.content,
-      contentType: params.contentType ?? 'TEXT',
-      intent: params.intent ?? null,
-      toolsUsed: (params.toolsUsed ?? []) as unknown as Parameters<typeof prisma.shadowMessage.create>[0]['data']['toolsUsed'],
-      actionsTaken: (params.actionsTaken ?? []) as unknown as Parameters<typeof prisma.shadowMessage.create>[0]['data']['actionsTaken'],
-      channel: params.channel,
-      confidence: params.confidence ?? null,
-      latencyMs: params.latencyMs ?? null,
-    },
+  // P-17 (v3 Addition 9.2): redaction before storage, through the one writer.
+  const message = await storeShadowMessage({
+    sessionId: params.sessionId,
+    role: params.role,
+    content: params.content,
+    contentType: params.contentType,
+    intent: params.intent,
+    toolsUsed: params.toolsUsed,
+    actionsTaken: params.actionsTaken,
+    channel: params.channel,
+    confidence: params.confidence,
+    latencyMs: params.latencyMs,
   });
   return message.id;
 }

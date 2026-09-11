@@ -36,9 +36,14 @@ jest.mock('@/lib/db', () => ({
       deleteMany: jest.fn(),
     },
     shadowConsentReceipt: {
+      // P-17: `count` is how `runRetentionCleanup` measures the receipts a
+      // session deletion PRESERVES. It is in this mock because the service
+      // calls it, which is the only reason anything should be in a mock.
+      count: jest.fn(),
       deleteMany: jest.fn(),
     },
     shadowAuthEvent: {
+      count: jest.fn(),
       deleteMany: jest.fn(),
     },
   },
@@ -500,6 +505,10 @@ describe('RetentionService', () => {
       (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 42 });
       (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
       (mockSession.findMany as jest.Mock).mockResolvedValue([]);
+      // P-17: receipts and auth events now age on their own 7-year clock, so
+      // the sweep queries them even when no session expires.
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
 
       const result = await service.runRetentionCleanup();
       expect(result.messagesDeleted).toBe(42);
@@ -513,6 +522,8 @@ describe('RetentionService', () => {
       );
       (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 5 });
       (mockSession.findMany as jest.Mock).mockResolvedValue([]);
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
 
       const result = await service.runRetentionCleanup();
       expect(result.errors).toHaveLength(1);
@@ -530,12 +541,57 @@ describe('RetentionService', () => {
         { id: 'old-session-2' },
       ]);
       (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 3 });
-      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 1 });
-      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
+      (mockConsent.count as jest.Mock).mockResolvedValue(1);
+      (mockAuthEvent.count as jest.Mock).mockResolvedValue(2);
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
       (mockSession.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
 
       const result = await service.runRetentionCleanup();
       expect(result.sessionsDeleted).toBe(2);
+      expect(result.outcomesDeleted).toBe(3);
+    });
+
+    // P-17 (Sprint 6). The hazard this whole package exists to close, asserted
+    // on the QUERY rather than on a count: the session-deletion step must never
+    // issue a `deleteMany` over consent receipts or auth events keyed by
+    // session. A count assertion would pass against the old code too, because
+    // the old code reported the rows it destroyed as successfully cleaned up.
+    it('never deletes consent receipts or auth events as a child of a session', async () => {
+      (mockRetentionConfig.findMany as jest.Mock).mockResolvedValue([]);
+      (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockSession.updateMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockSession.findMany as jest.Mock).mockResolvedValue([
+        { id: 'old-session-1' },
+        { id: 'old-session-2' },
+      ]);
+      (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 3 });
+      (mockConsent.count as jest.Mock).mockResolvedValue(7);
+      (mockAuthEvent.count as jest.Mock).mockResolvedValue(4);
+      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockSession.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
+
+      const result = await service.runRetentionCleanup();
+
+      const receiptDeletes = (mockConsent.deleteMany as jest.Mock).mock.calls;
+      for (const [args] of receiptDeletes) {
+        expect(JSON.stringify(args)).not.toContain('sessionId');
+        // The only permitted receipt deletion is one aged off `executedAt`.
+        expect(args.where).toHaveProperty('executedAt');
+      }
+
+      const authDeletes = (mockAuthEvent.deleteMany as jest.Mock).mock.calls;
+      for (const [args] of authDeletes) {
+        expect(JSON.stringify(args)).not.toContain('sessionId');
+        expect(args.where).toHaveProperty('createdAt');
+      }
+
+      // And the survivors are counted, so "we kept 7" is a number an operator
+      // sees rather than an absence they have to infer.
+      expect(result.consentReceiptsPreserved).toBe(7);
+      expect(result.authEventsPreserved).toBe(4);
+      expect(result.consentReceiptsDeleted).toBe(0);
     });
   });
 

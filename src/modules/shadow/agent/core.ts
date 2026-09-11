@@ -17,8 +17,9 @@ import { entityPersonaService } from '../proactive/entity-persona';
 import { ShadowMemory } from './memory';
 import { classifyIntent } from './intent-classifier';
 import { buildContext, fetchPersona } from './context-engine';
-import { generateResponse } from './response-generator';
+import { generateResponse, extractCitations } from './response-generator';
 import { computeRiskScore, isBusinessHours } from './risk-scorer';
+import { consentReceiptService } from '../safety/consent-receipt';
 
 const MAX_TOOL_ITERATIONS = 5;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -653,6 +654,36 @@ Lists, tables, and detailed responses are appropriate. Include deep links to rec
 
   /**
    * Create consent receipts for any actions taken by tools.
+   *
+   * ========================================================================
+   * P-17 (Sprint 6, v3 Addition 2.1) — THROUGH THE SERVICE, NOT AROUND IT
+   * ========================================================================
+   *
+   * This method used to call `prisma.shadowConsentReceipt.create` directly,
+   * with three consequences:
+   *
+   *  1. `confirmationLevel` and `blastRadius` came from `intent` -- the
+   *     CLASSIFIER'S guess about the whole turn -- rather than from the action
+   *     actually taken. One turn that created a task and sent an email wrote
+   *     two receipts with identical safety metadata, and the email's was the
+   *     task's.
+   *  2. `reversible` came from `isReversible()` below: a three-element hardcoded
+   *     set living beside, and disagreeing with, `safety/action-classifier.ts`.
+   *     Two sources of truth for "can this be undone", and the one the audit
+   *     record used was the smaller.
+   *  3. `sourcesCited` was never written. Addition 2.2 ends "Sources stored in
+   *     consent_receipt.sources_cited", and the column was `[]` on every row.
+   *
+   * `consentReceiptService.createReceipt` enriches from `classifyAction`, which
+   * is the single source for the first two and for reversibility. For the
+   * third, `extractCitations` in `response-generator.ts` was already computing
+   * the turn's real citations for the RESPONSE and then discarding them; they
+   * are now also stored on the receipt.
+   *
+   * `isReversible` is gone. `describeAction` stays, because the classifier's
+   * `description` is generic ("Create a calendar event") and this one names the
+   * specific record ("Created calendar event: Q3 review") -- which is what makes
+   * a receipt readable six months later.
    */
   private async createConsentReceipts(
     sessionId: string,
@@ -671,26 +702,33 @@ Lists, tables, and detailed responses are appropriate. Include deep links to rec
       );
     });
 
+    // The evidence THIS TURN relied on, attached to every action it produced.
+    // Deliberately the whole turn's citations rather than each action's own:
+    // Addition 2.2's worked example is a payment reminder whose sources are the
+    // invoice and the email thread -- which came from OTHER tool calls in the
+    // same turn, not from the send itself. Scoping the citations to the sending
+    // tool would store exactly the one source that proves nothing.
+    const turnSources = extractCitations(toolResults).map((c) =>
+      c.label ? `${c.type}:${c.id} (${c.label})` : `${c.type}:${c.id}`,
+    );
+
     for (const result of actionResults) {
       const data = result.data as Record<string, unknown>;
       const description = this.describeAction(result.toolName, data);
 
-      await prisma.shadowConsentReceipt.create({
-        data: {
-          sessionId,
-          messageId,
-          actionType: result.toolName,
-          actionDescription: description,
-          triggerSource: 'voice_command',
-          reasoning: `User intent: ${intent.primaryIntent}`,
-          confirmationLevel: intent.confirmationLevel,
-          blastRadius: intent.blastRadius,
-          reversible: this.isReversible(result.toolName),
-          entityId: context.activeEntity?.id ?? null,
-        },
+      await consentReceiptService.createReceipt({
+        sessionId,
+        messageId,
+        actionType: result.toolName,
+        actionDescription: description,
+        triggerSource: 'voice_command',
+        reasoning: `User intent: ${intent.primaryIntent}`,
+        sourcesCited: turnSources,
+        entityId: context.activeEntity?.id ?? undefined,
       });
     }
   }
+
 
   private describeAction(toolName: string, data: Record<string, unknown>): string {
     switch (toolName) {
@@ -729,12 +767,4 @@ Lists, tables, and detailed responses are appropriate. Include deep links to rec
     }
   }
 
-  private isReversible(toolName: string): boolean {
-    const irreversibleActions = new Set([
-      'send_email',
-      'trigger_workflow',
-      'send_invoice_reminder',
-    ]);
-    return !irreversibleActions.has(toolName);
-  }
 }

@@ -317,6 +317,12 @@ describe('queue workers actually consume', () => {
       // scripts/worker.ts; without a consumer in this list that repeat would
       // fire every five minutes into nothing, which is P-11 finding 1 exactly.
       'shadow-proactive',
+      // P-17 (Sprint 6, issue #25): the nightly retention sweep. Listed here
+      // for the same reason and with one addition -- this is the platform's
+      // only scheduled DESTRUCTIVE job, so the failure of omitting it is not
+      // "work silently does not happen" but "a retention obligation is
+      // silently unmet", which nobody notices by not receiving anything.
+      'shadow-retention',
       'workflow-cron',
       'workflow-execution',
     ]);
