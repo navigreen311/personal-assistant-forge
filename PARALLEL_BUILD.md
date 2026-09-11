@@ -1161,3 +1161,80 @@ This is the second time this file has had to warn about `retention.ts`. The firs
 was P-02 making the module executable at all — before that, every service in it
 addressed a nonexistent Prisma model and threw on first call, so the code could
 not have deleted anything. **It can now.**
+
+
+---
+
+# THIRD RE-SCORE — 71% -> 86% (measured, 32 packages merged)
+
+Master @ `ec14cb8`: `tsc` **0** · `npx eslint` whole-repo **0 errors** ·
+unit **327 / 5,486** · `test:db` **34 / 1,034** · five CI jobs green ·
+`end-to-end-proof` **nine of nine**.
+
+| Dimension | Audit | 18 pkgs | **32 pkgs** |
+|---|---|---|---|
+| Feature completeness | 66 | 82 | **88** |
+| Wiring & integration | 38 | 78 | **92** |
+| Test coverage | 22 | 72 | **84** |
+| Quality & polish | 45 | 62 | **80** |
+| Production readiness | 30 | 68 | **82** |
+| Platform reliability | 12 | 58 | **86** |
+
+**Weighted: 86%** (range 82-89). Was 71%, was 48%, was 37%.
+
+## What justifies the jump, and it is one thing
+
+**The audit's end-to-end scenario runs.** At the 71% re-score it did not — P-20
+measured five of nine legs, with all four failures in the joins. Wiring &
+integration moving 78 -> 92 is that, and nothing else would have moved it.
+
+| | audit | 18 pkgs | now |
+|---|---|---|---|
+| routes with entity scoping | ~0 | 177 | **202** of 347 |
+| routes with role gating | 4 | 182 | **201** |
+| module-level in-memory stores | ~64 | 64 | **55** |
+| live `as any` in `src/` | 173 | 0 | **0** |
+| lint gate scope | nothing | `src` (1,350 files) | **whole repo (1,686)** |
+| known leaking routes | 5 | 5 | **0** |
+| orphaned Prisma models | 5 | 5 | **1** |
+
+## ⚠️ A NINTH SCOPE-DEPENDENT COUNT, CAUGHT IN THE ACT
+
+`grep -rn "as any" src/` returns **14**. **All fourteen are comments** — P-19's
+own records of the casts it removed. Live occurrences are **0**, which the lint
+gate enforces as an error.
+
+Same cause as the very first one on this repository: prose counted as code. It is
+now the ninth. **Quote no number from this codebase without its scope attached.**
+
+## Why not higher
+
+**Platform reliability at 86, not 95.** Thirteen phantoms were found; the
+thirteenth was a break-glass security control that wrote to a `Map`. The rate of
+discovery has not yet fallen — P-16 found a compliance route silently discarding
+`neverDisclose`, P-37 found a kill switch with no route. **A codebase stops
+earning a reliability score when packages stop finding this class of bug, and
+this one has not.**
+
+**Production readiness at 82, not higher.** No vendor is provisioned: Twilio
+(four `[E]` deliverables), Sentry (works without a DSN by design, but no DSN),
+no deploy target. Those are procurement, not code.
+
+**Test coverage at 84.** 5,486 unit tests, but P-28's finding stands: **205
+`jest.mock('@/lib/db')` sites across 203 files**, where a mocked delegate proves
+the delegate exists. The DMMF scan closes the specific hole; the general one —
+*a mock is a claim about an interface* — is structural.
+
+**Feature completeness at 88.** Sprint 6 is in flight; Sprint 5's four `[E]`
+items are wired but unverifiable without an account.
+
+## The three failure modes, and which are now caught
+
+1. **A table exists and nothing queries it** — `control-plane-schema.test.ts`
+   asserts *reference* since P-36. **Caught by CI.** `KNOWN_ORPHANS` = 1.
+2. **A module is imported and nobody calls its functions** — P-16 and P-17's
+   entire shape. **Nothing catches this.** It is the most valuable instrument
+   this repository does not have.
+3. **Code runs and reports success for work it did not do** — thirteen phantoms.
+   Caught only by tests that assert a durable effect through a real entry point,
+   which is now the standard every package is held to.
