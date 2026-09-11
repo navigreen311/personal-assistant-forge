@@ -729,6 +729,12 @@ Lists, tables, and detailed responses are appropriate. Include deep links to rec
       const description = this.describeAction(result.toolName, data);
 
       await consentReceiptService.createReceipt({
+        // Migration window 02. `context.user.id` is the authenticated user this
+        // turn belongs to -- the person who authorised the action. It is taken
+        // from the context rather than resolved back through `sessionId`,
+        // because the receipt has to outlive the session (v3 Addition 9.3) and
+        // an attribution derived from the session would not.
+        userId: context.user.id,
         sessionId,
         messageId,
         actionType: result.toolName,

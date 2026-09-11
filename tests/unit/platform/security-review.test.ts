@@ -30,12 +30,19 @@ const mockPrisma: MockedDelegates<'document' | 'pluginRecord'> = {
     findFirst: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    // Migration window 02 (P-40): `registerPlugin` now asks the REGISTRY
+    // whether a same-named plugin was revoked IN THIS ENTITY, rather than
+    // whether the name was revoked anywhere on the platform. Always 0 here, for
+    // the same reason as `pluginRecord.count` below.
+    count: jest.fn(),
   },
   // P-37: register asks whether the plugin NAME carries a break-glass
   // revocation tombstone. Always 0 here; the refusal is proved against a real
-  // Postgres in tests/db/plugin-revocation.test.ts.
+  // Postgres in tests/db/plugin-revocation.test.ts -- and, for the per-registry
+  // scoping window 02 added, in tests/db/migration-window-02.test.ts.
   pluginRecord: {
     count: jest.fn(),
+    findMany: jest.fn(),
   },
 };
 
@@ -63,6 +70,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   mockPrisma.pluginRecord.count!.mockResolvedValue(0);
+  mockPrisma.pluginRecord.findMany!.mockResolvedValue([]);
+  mockPrisma.document.count!.mockResolvedValue(0);
 
   // Make prisma.document.create return a proper document object -- and keep it,
   // so a later read sees what the write produced instead of a Map the service

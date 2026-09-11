@@ -48,8 +48,13 @@
 //
 // KEPT, deliberately: actionType, actionDescription, triggerSource,
 // confirmationLevel, confirmationMethod, blastRadius, affectedCount,
-// financialImpact, reversible, entityId, executedAt, rolledBackAt. Those are
-// the receipt. A receipt scrubbed down to a timestamp proves nothing, which is
+// financialImpact, reversible, entityId, executedAt, rolledBackAt -- and since
+// migration window 02, `userId`. Those are the receipt, and `userId` is the
+// most load-bearing of them: a receipt retained under Article 17(3)(b) is
+// retained BECAUSE it proves who authorised the action, so scrubbing the
+// attribution would leave a row that is kept for a reason it can no longer
+// serve. It is not conversation content -- it is the identity of the person
+// making the erasure request, which they already have. A receipt scrubbed down to a timestamp proves nothing, which is
 // the opposite of "retained for regulatory compliance" — the point is that six
 // years from now someone can establish WHAT was authorised and under WHICH
 // confirmation level, without being able to read the conversation.
@@ -135,6 +140,19 @@ export class GDPRService {
     // has its own `userId` column (`@@index([userId])` -- it exists to be
     // queried this way, and `sendSmsCode` writes events with a userId and no
     // session at all, so those were never exported either).
+    //
+    // MIGRATION WINDOW 02. `ShadowConsentReceipt.userId` now exists, and this
+    // is the code that acts on it: the FIRST arm of the receipt `OR` below.
+    // What P-17's workaround could not reach, and said so, was a detached
+    // receipt with NO entity -- `core.ts` writes `activeEntity?.id ?? null`, so
+    // those exist -- and the entity arm cannot find one because there is no
+    // entity to join through. That receipt was retained under Article
+    // 17(3)(b) and invisible under Article 15 at the same time.
+    //
+    // The entity arm is KEPT, not replaced. It is what finds receipts written
+    // before this column existed, which have `userId` null and are the only
+    // rows in every database that predates the migration. Deleting it would
+    // trade one unreachable class of receipt for another.
     const ownedEntities = await prisma.entity.findMany({
       where: { userId },
       select: { id: true },
@@ -154,6 +172,7 @@ export class GDPRService {
         prisma.shadowConsentReceipt.findMany({
           where: {
             OR: [
+              { userId },
               { session: { userId } },
               ...(ownedEntityIds.length > 0
                 ? [{ entityId: { in: ownedEntityIds } }]
@@ -201,6 +220,12 @@ export class GDPRService {
         })),
         consentReceipts: consentReceipts.map((c) => ({
           id: c.id,
+          // Exported, not merely queried on. An Article 15 package whose
+          // receipts do not say who authorised the action is missing the field
+          // that makes a receipt a receipt -- and `sessionId` beside it is null
+          // on exactly the retained rows this column exists for, so a reader
+          // could not otherwise tell an unattributed receipt from a detached one.
+          userId: c.userId,
           sessionId: c.sessionId,
           messageId: c.messageId,
           entityId: c.entityId,
