@@ -203,12 +203,14 @@ export async function POST(request: NextRequest) {
       } = parsed.data;
 
       // --- 1. Verify session ownership -----------------------------------
-      const voiceSession = await sessionManager.getSession(sessionId);
+      // P-41: the scope IS the ownership check. A session id in a request body
+      // is a caller-supplied cuid; `forUser` merges the authenticated user
+      // into the where clause, so another tenant's session reads as missing.
+      const sessions = sessionManager.forUser(session.userId);
+
+      const voiceSession = await sessions.getSession(sessionId);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Session not found', 404);
-      }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this session', 403);
       }
 
       const channel = voiceSession.currentChannel;
@@ -225,7 +227,7 @@ export async function POST(request: NextRequest) {
         ],
       });
 
-      await sessionManager.touchSession(sessionId);
+      await sessions.touchSession(sessionId);
 
       // --- 3. Anti-social-engineering screen ------------------------------
       //

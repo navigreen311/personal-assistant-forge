@@ -29,16 +29,15 @@ export async function POST(
         // Empty body is fine — no channel override
       }
 
-      // Verify session ownership
-      const voiceSession = await sessionManager.getSession(id);
+      // P-41: the scope IS the ownership check. See session-store.ts.
+      const sessions = sessionManager.forUser(session.userId);
+
+      const voiceSession = await sessions.getSession(id);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Session not found', 404);
       }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this session', 403);
-      }
 
-      const updated = await sessionManager.resumeSession(id, channel);
+      const updated = await sessions.resumeSession(id, channel);
       return success(updated);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to resume session';

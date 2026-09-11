@@ -90,18 +90,21 @@ async function handlePOST(request: NextRequest) {
       const { message, sessionId, currentPage } = parsed.data;
 
       // 1. Get or create session
-      let voiceSession = sessionId
-        ? await sessionManager.getSession(sessionId)
-        : await sessionManager.getActiveSession(authSession.userId);
+      //
+      // P-41: `forUser` is the ownership check. The hand-written
+      // `voiceSession.userId !== authSession.userId` that used to stand here
+      // was the compensating check in the CALLER that this package moved into
+      // the accessor -- `getSession` now returns null for another tenant's id,
+      // which is the same answer it gives for an id that does not exist, so the
+      // "start a fresh session instead" branch below is reached identically.
+      const sessions = sessionManager.forUser(authSession.userId);
 
-      // Verify ownership if session was found by ID
-      if (voiceSession && voiceSession.userId !== authSession.userId) {
-        voiceSession = null;
-      }
+      let voiceSession = sessionId
+        ? await sessions.getSession(sessionId)
+        : await sessions.getActiveSession();
 
       if (!voiceSession || voiceSession.status === 'ended') {
-        voiceSession = await sessionManager.startSession({
-          userId: authSession.userId,
+        voiceSession = await sessions.startSession({
           channel: 'web' as SessionChannel,
           entityId: authSession.activeEntityId,
           currentPage,
@@ -110,7 +113,7 @@ async function handlePOST(request: NextRequest) {
 
       // Resume paused sessions
       if (voiceSession.status === 'paused') {
-        voiceSession = await sessionManager.resumeSession(voiceSession.id, 'web');
+        voiceSession = await sessions.resumeSession(voiceSession.id, 'web');
       }
 
       // Update currentPage if provided
@@ -130,7 +133,7 @@ async function handlePOST(request: NextRequest) {
       });
 
       // Touch session: increment messageCount, update lastActivityAt
-      await sessionManager.touchSession(voiceSession.id, touchUpdates);
+      await sessions.touchSession(voiceSession.id, touchUpdates);
 
       // -----------------------------------------------------------------
       // 2b. ANTI-SOCIAL-ENGINEERING GATE (P-17, v3 Addition 1.3)
@@ -177,7 +180,7 @@ async function handlePOST(request: NextRequest) {
           intent: 'refused',
           channel: voiceSession.currentChannel,
         });
-        await sessionManager.touchSession(voiceSession.id);
+        await sessions.touchSession(voiceSession.id);
 
         // 200, not 4xx. This is a conversational refusal with an explanation
         // and an offered alternative, which is what Addition 1.3 specifies; a
@@ -223,7 +226,7 @@ async function handlePOST(request: NextRequest) {
       });
 
       // Touch session again for the assistant message
-      await sessionManager.touchSession(voiceSession.id);
+      await sessions.touchSession(voiceSession.id);
 
       // 5. Return the response
       return success({

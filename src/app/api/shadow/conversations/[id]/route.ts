@@ -12,13 +12,12 @@ export async function GET(
     try {
       const { id } = await params;
 
-      // Verify session ownership
-      const voiceSession = await sessionManager.getSession(id);
+      // P-41: the scope IS the ownership check. `forUser` merges the
+      // authenticated user into the where clause, so another tenant's
+      // conversation reads as one that does not exist.
+      const voiceSession = await sessionManager.forUser(session.userId).getSession(id);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Conversation not found', 404);
-      }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this conversation', 403);
       }
 
       // Fetch all related data in parallel
@@ -123,16 +122,17 @@ export async function DELETE(
     try {
       const { id } = await params;
 
-      // Verify session ownership
-      const voiceSession = await sessionManager.getSession(id);
+      // P-41: the scope IS the ownership check, and `deleteSession` applies
+      // it a second time in its own where clause -- a delete is not something
+      // to perform on an id a previous statement resolved.
+      const sessions = sessionManager.forUser(session.userId);
+
+      const voiceSession = await sessions.getSession(id);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Conversation not found', 404);
       }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this conversation', 403);
-      }
 
-      await sessionManager.deleteSession(id);
+      await sessions.deleteSession(id);
 
       return success({ deleted: true });
     } catch (err) {

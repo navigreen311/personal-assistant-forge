@@ -133,15 +133,23 @@ export class WebChatHandler {
     userId: string,
     sessionId?: string,
   ): Promise<WebChatResponse> {
+    // P-41. `touchSession` was called on a caller-supplied `sessionId` with no
+    // ownership check of any kind, so a ping naming a stranger's session moved
+    // that session's `lastActivityAt` -- a cross-tenant WRITE. It is now
+    // reached through `forUser`, which refuses a session that is not this
+    // user's exactly as it refuses one that does not exist, which is why the
+    // pre-existing `.catch()` still reads correctly.
+    const sessions = sessionManager.forUser(userId);
+
     let resolvedSessionId = sessionId;
 
     if (!resolvedSessionId) {
-      const active = await sessionManager.getActiveSession(userId);
+      const active = await sessions.getActiveSession();
       resolvedSessionId = active?.id ?? 'none';
     }
 
     if (resolvedSessionId && resolvedSessionId !== 'none') {
-      await sessionManager.touchSession(resolvedSessionId).catch(() => {
+      await sessions.touchSession(resolvedSessionId).catch(() => {
         // Ignore touch errors on ping — session may not exist
       });
     }
@@ -156,10 +164,17 @@ export class WebChatHandler {
     userId: string,
     sessionId?: string,
   ): Promise<WebChatResponse> {
+    // P-41. `endSession` was called on a caller-supplied `sessionId` with no
+    // ownership check, so `{ type: 'end_session', sessionId: <someone
+    // else's> }` ended a stranger's session. `forUser` makes that id read as
+    // missing, and `endSession` then throws `Session <id> not found` rather
+    // than ending it.
+    const sessions = sessionManager.forUser(userId);
+
     let resolvedSessionId = sessionId;
 
     if (!resolvedSessionId) {
-      const active = await sessionManager.getActiveSession(userId);
+      const active = await sessions.getActiveSession();
       if (!active) {
         return buildResponse('none', undefined, {
           text: 'No active session to end.',
@@ -169,7 +184,7 @@ export class WebChatHandler {
       resolvedSessionId = active.id;
     }
 
-    const session = await sessionManager.endSession(resolvedSessionId);
+    const session = await sessions.endSession(resolvedSessionId);
 
     // Persist the end-session system message
     const messageId = await persistMessage({
@@ -198,8 +213,13 @@ export class WebChatHandler {
       });
     }
 
-    const session = await sessionManager.getSession(sessionId);
-    if (!session || session.userId !== userId) {
+    // P-41: `forUser` is the ownership check the hand-written
+    // `session.userId !== userId` used to be. The refusal text already said
+    // "not found or access denied", which is now literally one condition.
+    const sessions = sessionManager.forUser(userId);
+
+    const session = await sessions.getSession(sessionId);
+    if (!session) {
       return buildResponse(sessionId, undefined, {
         text: 'Session not found or access denied.',
         contentType: 'text',
@@ -223,7 +243,7 @@ export class WebChatHandler {
     });
 
     // Touch session to track activity
-    await sessionManager.touchSession(session.id);
+    await sessions.touchSession(session.id);
 
     // Process through the agent
     const startTime = Date.now();
@@ -270,24 +290,22 @@ export class WebChatHandler {
       });
     }
 
-    // Resolve or create session
-    let session = sessionId
-      ? await sessionManager.getSession(sessionId)
-      : await sessionManager.getActiveSession(userId);
+    // Resolve or create session. P-41: `forUser` replaces the hand-written
+    // `session.userId !== userId` reset below it.
+    const sessions = sessionManager.forUser(userId);
 
-    if (session && session.userId !== userId) {
-      session = null;
-    }
+    let session = sessionId
+      ? await sessions.getSession(sessionId)
+      : await sessions.getActiveSession();
 
     if (!session || session.status === 'ended') {
-      session = await sessionManager.startSession({
-        userId,
+      session = await sessions.startSession({
         channel: 'web' as SessionChannel,
       });
     }
 
     if (session.status === 'paused') {
-      session = await sessionManager.resumeSession(session.id, 'web');
+      session = await sessions.resumeSession(session.id, 'web');
     }
 
     // Persist the user message
@@ -300,7 +318,7 @@ export class WebChatHandler {
     });
 
     // Touch session to track activity
-    await sessionManager.touchSession(session.id);
+    await sessions.touchSession(session.id);
 
     // Process through the agent
     const startTime = Date.now();
