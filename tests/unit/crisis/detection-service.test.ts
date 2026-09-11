@@ -37,7 +37,9 @@ jest.mock('@/modules/crisis/services/playbook-service', () => ({
   }),
 }));
 
-const { generateJSON } = require('@/lib/ai');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 // Helper to get the internal crisis store (via getCrisisById and createCrisisEvent)
 async function clearCrisisStore() {

@@ -139,7 +139,7 @@ describe('RetentionService — createPolicy', () => {
       name: 'Classified Policy',
       entityId: 'entity-1',
       dataType: 'Message',
-      classification: 'CONFIDENTIAL' as any,
+      classification: 'CONFIDENTIAL',
       retentionDays: 365,
       action: 'ARCHIVE',
       isActive: true,

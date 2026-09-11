@@ -34,6 +34,7 @@ jest.mock('@/lib/db', () => {
 });
 
 import { prisma } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
 import {
   createHabit,
   recordCompletion,
@@ -46,7 +47,18 @@ import {
   pearsonCorrelation,
 } from '@/modules/analytics/services/habit-tracking-service';
 
-const mockPrisma = prisma as any;
+// P-35: was `prisma as any`, which deleted the only check available here --
+// that these delegates and methods exist on the real client. See
+// tests/support/prisma-mock.ts.
+const mockPrisma = asMockedPrisma(prisma);
+
+/** The HabitEntry columns the service writes on update. */
+interface HabitEntryInput {
+  streak?: number;
+  longestStreak?: number;
+  completedDates?: string[];
+  isActive?: boolean;
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -217,7 +229,7 @@ describe('completeHabit', () => {
       isActive: true,
       createdAt: new Date(),
     });
-    mockPrisma.habitEntry.update.mockImplementation(({ data }: any) => ({
+    mockPrisma.habitEntry.update.mockImplementation(({ data }: { data: HabitEntryInput }) => ({
       id: 'habit-1',
       entityId: 'user-1',
       name: 'Exercise',
@@ -257,7 +269,7 @@ describe('completeHabit', () => {
       isActive: true,
       createdAt: new Date(),
     });
-    mockPrisma.habitEntry.update.mockImplementation(({ data }: any) => ({
+    mockPrisma.habitEntry.update.mockImplementation(({ data }: { data: HabitEntryInput }) => ({
       id: 'habit-1',
       entityId: 'user-1',
       name: 'Exercise',
@@ -293,7 +305,7 @@ describe('completeHabit', () => {
       isActive: true,
       createdAt: new Date(),
     });
-    mockPrisma.habitEntry.update.mockImplementation(({ data }: any) => ({
+    mockPrisma.habitEntry.update.mockImplementation(({ data }: { data: HabitEntryInput }) => ({
       id: 'habit-1',
       entityId: 'user-1',
       name: 'Exercise',

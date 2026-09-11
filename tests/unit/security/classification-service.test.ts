@@ -29,8 +29,17 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: jest.fn().mockRejectedValue(new Error('AI unavailable in test')),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const prisma = require('@/lib/db').default;
+import prismaImpl from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+/**
+ * P-35: was `require('@/lib/db').default` behind an unexplained
+ * `eslint-disable`, which made `prisma` `any`. The service imports the default
+ * export (classification-service.ts:14), so the default is the right one to
+ * reach for; `asMockedPrisma` keeps the delegate and method names checked
+ * against the real client. See tests/support/prisma-mock.ts.
+ */
+const prisma = asMockedPrisma(prismaImpl);
 
 // ---------------------------------------------------------------------------
 // Helpers

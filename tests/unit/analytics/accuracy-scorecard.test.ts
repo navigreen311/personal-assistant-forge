@@ -27,7 +27,9 @@ jest.mock('@/lib/ai', () => ({
   generateText: jest.fn().mockResolvedValue('AI-generated insight'),
 }));
 
-const { generateJSON } = require('@/lib/ai');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 describe('generateScorecard', () => {
   it('should assign grade A for overall >= 90', () => {

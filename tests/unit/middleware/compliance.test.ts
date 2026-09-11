@@ -55,6 +55,7 @@ jest.mock('@/modules/security/services/audit-service', () => ({
 }));
 
 import { NextRequest, NextResponse } from 'next/server';
+import type { ClassificationResult, DataClassification } from '@/modules/security/types';
 import {
   withClassificationEnforcement,
   withConsentCheck,
@@ -80,14 +81,41 @@ function createMockRequest(
   url = 'http://localhost/api/test',
   options?: { method?: string; headers?: Record<string, string>; body?: string }
 ): NextRequest {
-  const init: RequestInit = {
+  const init: NextRequestInit = {
     method: options?.method || 'GET',
     headers: options?.headers || {},
   };
   if (options?.body) {
     init.body = options.body;
   }
-  return new NextRequest(url, init as any);
+  return new NextRequest(url, init);
+}
+
+/**
+ * P-35: these calls carried `init as any`. The real incompatibility is one
+ * field -- the DOM `RequestInit` types `signal` as `AbortSignal | null |
+ * undefined` and Next narrows it to `AbortSignal | undefined` -- so `any` was
+ * discarding every other field's type to paper over `signal`. Naming Next's
+ * own init type checks `method`, `headers` and `body` again.
+ */
+type NextRequestInit = NonNullable<ConstructorParameters<typeof NextRequest>[1]>;
+
+/**
+ * A `ClassificationResult` from `classifyContent`.
+ *
+ * P-35: the two call sites said `{ classification: 'RESTRICTED' } as any`.
+ * `ClassificationResult` has five fields and the middleware under test reads
+ * only `classification`, so the other four are stated here once instead of
+ * being deleted from the type ten lines further down.
+ */
+function classifiedAs(classification: DataClassification): ClassificationResult {
+  return {
+    classification,
+    confidence: 1,
+    reasons: [],
+    regulatoryFlags: [],
+    autoApplied: false,
+  };
 }
 
 describe('compliance middleware', () => {
@@ -135,11 +163,14 @@ describe('compliance middleware', () => {
         NextResponse.json({ secret: 'sensitive-data' }, { status: 200 })
       );
 
-      mockClassify.mockResolvedValue({ classification: 'RESTRICTED' } as any);
+      mockClassify.mockResolvedValue(classifiedAs('RESTRICTED'));
       mockRedact.mockReturnValue({
+        originalLength: 30,
         redactedText: '{"secret":"[REDACTED]"}',
+        matches: [],
         matchCount: 1,
-      } as any);
+        categories: [],
+      });
 
       const middleware = withClassificationEnforcement(handler, {
         requiredClassification: 'INTERNAL',
@@ -157,7 +188,7 @@ describe('compliance middleware', () => {
         NextResponse.json({ data: 'public-info' }, { status: 200 })
       );
 
-      mockClassify.mockResolvedValue({ classification: 'PUBLIC' } as any);
+      mockClassify.mockResolvedValue(classifiedAs('PUBLIC'));
 
       const middleware = withClassificationEnforcement(handler, {
         requiredClassification: 'INTERNAL',

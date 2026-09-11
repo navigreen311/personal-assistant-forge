@@ -17,7 +17,9 @@ jest.mock('@/lib/ai', () => ({
   generateJSON: jest.fn().mockResolvedValue({}),
 }));
 
-const { generateText } = require('@/lib/ai');
+import { generateText as generateTextImpl } from '@/lib/ai';
+
+const generateText = jest.mocked(generateTextImpl);
 
 function makeEntry(overrides: Partial<TimeAuditEntry> = {}): TimeAuditEntry {
   return {

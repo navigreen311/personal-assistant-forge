@@ -22,7 +22,9 @@ import {
 import { notificationStore } from '@/modules/attention/services/priority-router';
 import type { NotificationItem } from '@/modules/attention/types';
 
-const { generateText } = require('@/lib/ai');
+import { generateText as generateTextImpl } from '@/lib/ai';
+
+const generateText = jest.mocked(generateTextImpl);
 
 function makeNotification(overrides: Partial<NotificationItem> & { id: string }): NotificationItem {
   return {

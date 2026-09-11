@@ -1,4 +1,20 @@
 import { NextRequest } from 'next/server';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
+import type { AuthSession, UserRole } from '@/lib/auth/types';
+
+/**
+ * P-35: these three were `handler: Function`, which accepts anything callable
+ * and therefore asserted nothing. They are the signatures the real
+ * `src/shared/middleware/auth.ts` hands its handlers, so the mock's central
+ * claim -- "I call your handler the way the middleware does" -- is now checked
+ * by the compiler instead of by hope.
+ */
+type AuthHandler = (req: NextRequest, session: AuthSession) => Promise<Response>;
+type ScopedHandler = (
+  req: NextRequest,
+  session: AuthSession,
+  entityId: VerifiedEntityId
+) => Promise<Response>;
 
 // ---------------------------------------------------------------------------
 // P-10/T-001. The admin routes now compose the role gate with `withEntityScope`
@@ -13,11 +29,29 @@ import { NextRequest } from 'next/server';
 //      so a route that dropped the check would fail these tests rather than
 //      quietly pass them. The real cross-tenant proof is in tests/db/.
 // ---------------------------------------------------------------------------
+/**
+ * P-35: these calls carried `init as any`. The real incompatibility is one
+ * field -- the DOM `RequestInit` types `signal` as `AbortSignal | null |
+ * undefined` and Next narrows it to `AbortSignal | undefined` -- so `any` was
+ * discarding every other field's type to paper over `signal`. Naming Next's
+ * own init type checks `method`, `headers` and `body` again.
+ */
+type NextRequestInit = NonNullable<ConstructorParameters<typeof NextRequest>[1]>;
+
 jest.mock('@/shared/middleware/auth', () => {
   async function sessionFor(req: NextRequest) {
     const token = req.headers.get('authorization');
     if (!token) return null;
-    const role = req.headers.get('x-test-role') || 'member';
+    // P-35: was `req.headers.get('x-test-role') || 'member'`, typed `string`.
+    // The real `withAuth` builds `role: token.role ?? 'viewer'` where
+    // `token.role` is a `UserRole`, so an unchecked header let this mock mint a
+    // session production can never issue -- a route gated on an invented role
+    // would have passed here. The three values any suite actually sends are
+    // 'admin', 'member' and 'viewer'; anything else now falls back to 'member',
+    // exactly as a missing header already did.
+    const ROLES: readonly UserRole[] = ['owner', 'admin', 'member', 'viewer'];
+    const header = req.headers.get('x-test-role');
+    const role: UserRole = ROLES.find((r) => r === header) ?? 'member';
     return {
       userId: 'user-1',
       email: role === 'admin' ? 'admin@test.com' : 'user@test.com',
@@ -28,7 +62,7 @@ jest.mock('@/shared/middleware/auth', () => {
   }
 
   return {
-    withAuth: jest.fn(async (req: NextRequest, handler: Function) => {
+    withAuth: jest.fn(async (req: NextRequest, handler: AuthHandler) => {
       const session = await sessionFor(req);
       if (!session) {
         const { error } = await import('@/shared/utils/api-response');
@@ -36,7 +70,7 @@ jest.mock('@/shared/middleware/auth', () => {
       }
       return handler(req, session);
     }),
-    withRole: jest.fn(async (req: NextRequest, roles: string[], handler: Function) => {
+    withRole: jest.fn(async (req: NextRequest, roles: UserRole[], handler: AuthHandler) => {
       const session = await sessionFor(req);
       const { error } = await import('@/shared/utils/api-response');
       if (!session) return error('UNAUTHORIZED', 'Authentication required', 401);
@@ -47,7 +81,7 @@ jest.mock('@/shared/middleware/auth', () => {
     }),
     withEntityScope: jest.fn(async (
       req: NextRequest,
-      handler: Function,
+      handler: ScopedHandler,
       explicitEntityId?: string,
     ) => {
       const session = await sessionFor(req);
@@ -71,7 +105,7 @@ jest.mock('@/shared/middleware/auth', () => {
         return error('FORBIDDEN', 'You do not have access to this entity', 403);
       }
 
-      return handler(req, session, entity.id);
+      return handler(req, session, entity.id as VerifiedEntityId);
     }),
     withEntityAccess: jest.fn(),
     resolveActor: jest.fn(async (req: NextRequest) => {
@@ -127,7 +161,7 @@ jest.mock('@/lib/db', () => ({
 
 function createRequest(url: string, options: { method?: string; headers?: Record<string, string>; body?: unknown } = {}): NextRequest {
   const fullUrl = `http://localhost:3000${url}`;
-  const init: RequestInit = {
+  const init: NextRequestInit = {
     method: options.method || 'GET',
     headers: options.headers || {},
   };
@@ -135,7 +169,7 @@ function createRequest(url: string, options: { method?: string; headers?: Record
     init.body = JSON.stringify(options.body);
     (init.headers as Record<string, string>)['content-type'] = 'application/json';
   }
-  return new NextRequest(fullUrl, init as any);
+  return new NextRequest(fullUrl, init);
 }
 
 describe('Admin route auth', () => {

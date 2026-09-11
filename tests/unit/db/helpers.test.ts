@@ -23,6 +23,19 @@ const { __mockTransaction: mockTransaction } = jest.requireMock('@/lib/db/index'
   __mockTransaction: jest.Mock;
 };
 
+/**
+ * P-35: was `fn: Function`, which accepts any callable and checks nothing.
+ * `withTransaction` (src/lib/db/helpers.ts:72) is declared as
+ * `fn: (tx: PrismaTransactionClient) => Promise<T>` and hands `fn` straight to
+ * `prisma.$transaction`, so this is the shape the stub is claiming to honour.
+ * The parameter is `unknown` rather than `PrismaTransactionClient` on purpose:
+ * the stub passes the string `'tx'` as a sentinel and the assertion below
+ * (`expect(fn).toHaveBeenCalledWith('tx')`) is what the test is about. Naming
+ * the real client type here would make the sentinel a compile error and change
+ * what the test exercises.
+ */
+type TxCallback = (tx: unknown) => Promise<unknown>;
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -191,7 +204,7 @@ describe('buildWhereClause', () => {
 describe('withTransaction', () => {
   it('should execute function within a transaction', async () => {
     const mockResult = { id: '1', name: 'test' };
-    mockTransaction.mockImplementation(async (fn: Function) => fn('tx'));
+    mockTransaction.mockImplementation(async (fn: TxCallback) => fn('tx'));
 
     const fn = jest.fn().mockResolvedValue(mockResult);
     const result = await withTransaction(fn);
@@ -210,7 +223,7 @@ describe('withTransaction', () => {
     mockTransaction
       .mockRejectedValueOnce(serializationError)
       .mockRejectedValueOnce(serializationError)
-      .mockImplementation(async (fn: Function) => fn('tx'));
+      .mockImplementation(async (fn: TxCallback) => fn('tx'));
 
     const fn = jest.fn().mockResolvedValue('success');
     const result = await withTransaction(fn, 3);

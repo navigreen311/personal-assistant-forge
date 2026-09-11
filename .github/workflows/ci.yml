@@ -73,8 +73,48 @@ jobs:
       # Nine `eslint-disable-next-line react-hooks/*` exceptions remain, each
       # with a written reason at the site and each listed in the P-19 PR. If you
       # are about to add a tenth, put the reason next to it.
+      #
+      # -----------------------------------------------------------------------
+      # P-35/T-011 -- the argument was removed. This step ran `npx eslint src`.
+      #
+      # `npm run lint` -- the whole repository -- reported 332 problems and 128
+      # errors, all of them under `tests/`, and gated nothing. That is not a
+      # cosmetic gap, because of what the 128 were: 87 `no-explicit-any`, and a
+      # large share of those sat on a mocked Prisma client. P-28 states the
+      # consequence exactly:
+      #
+      #     A mocked delegate returns whatever the test told it to, so a mocked
+      #     `prisma.attentionEvent.findMany` PROVES THE OPPOSITE of what is true
+      #     in production: it proves the delegate exists.
+      #
+      # A mock is a claim about an interface and `any` is what stops anyone
+      # checking the claim, so `no-explicit-any` on a db mock is the SAME defect
+      # class as the 173 `as any` P-19 removed from `src`. Enforcing the rule on
+      # the code and not on the 203 files that mock the code left the half where
+      # the ten phantom-delegate bugs actually hid.
+      #
+      # WHY BARE `npx eslint` AND NOT `npx eslint src tests`
+      #
+      # Measured, not assumed. Bare `npx eslint` lints 1,686 files; `npx eslint
+      # src` lints 1,350. The 336-file difference is `tests/` (329), `scripts/`
+      # (1), `prisma/` (1) and the five root configs -- including
+      # `eslint.config.mjs`, `jest.config.ts` and `next.config.ts`, none of which
+      # any gate has ever looked at. All 336 are at zero errors today.
+      #
+      # A path list is the thing that goes stale: it is right until someone adds
+      # a top-level directory, and then it is silently wrong with a green tick,
+      # which is how this step spent its first life. `npx eslint` with no
+      # arguments takes its scope from `eslint.config.mjs`, so a new directory
+      # is covered on the day it is created by nobody remembering anything. It
+      # also matches `npm run lint`, so what a developer runs locally and what
+      # CI runs are now the same command.
+      #
+      # WARNINGS ARE STILL WARNINGS. There are 203 (191 `no-unused-vars`, which
+      # this repo's own config sets to "warn"). `--max-warnings 0` would fail
+      # today, and a gate that arrives failing teaches people to disable gates.
+      # Errors are the line; moving warnings to it is a separate package's job.
       - name: Lint
-        run: npx eslint src
+        run: npx eslint
 
       - name: Type check
         run: npx tsc --noEmit

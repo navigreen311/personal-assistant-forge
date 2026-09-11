@@ -26,7 +26,10 @@ import {
   otnStore,
 } from '@/modules/attention/services/one-thing-now-service';
 
-const { prisma } = require('@/lib/db');
+import { prisma as prismaImpl } from '@/lib/db';
+import { asMockedPrisma } from '../../support/prisma-mock';
+
+const prisma = asMockedPrisma(prismaImpl);
 
 describe('OneThingNowService', () => {
   beforeEach(() => {

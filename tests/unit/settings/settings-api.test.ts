@@ -40,7 +40,7 @@ function mockAuthenticated(userId = 'user-123') {
     name: 'Test User',
     role: 'owner',
     activeEntityId: 'entity-1',
-  } as any);
+  });
 }
 
 function mockUnauthenticated() {

@@ -22,7 +22,9 @@ jest.mock('@/lib/ai', () => ({
   }),
 }));
 
-const { generateJSON } = require('@/lib/ai');
+import { generateJSON as generateJSONImpl } from '@/lib/ai';
+
+const generateJSON = jest.mocked(generateJSONImpl);
 
 describe('GoldenTestService', () => {
   beforeEach(() => {

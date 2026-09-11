@@ -1,7 +1,42 @@
-// In-memory store for calendar events used by the mock
-const calendarEventStore = new Map<string, any>();
+import type { MockedDelegates } from '../../support/prisma-mock';
 
-const mockPrisma = {
+/**
+ * P-35: this fake's delegate names, method names and `mockImplementation` args
+ * were all unconstrained -- `const mockPrisma = { calendarEvent: {...} }` with
+ * `({ data }: any)` throughout. `MockedDelegates` binds the names to the real
+ * client (tests/support/prisma-mock.ts) and the types below name the columns
+ * this fake actually reads, so the mock now states the interface it is
+ * standing in for. The row types are deliberately local and partial: the
+ * service reads six columns of `CalendarEvent` and the fake stores exactly
+ * those, which is what it stored before.
+ */
+
+/** The CalendarEvent columns this fake stores and returns. */
+interface EventRow {
+  id: string;
+  title: string;
+  entityId: string;
+  startTime: Date;
+  endTime: Date;
+  prepPacket: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** The columns the service supplies on create/update. */
+type EventInput = Partial<Omit<EventRow, 'createdAt' | 'updatedAt'>>;
+
+/** The `where` shapes the service builds, including the JSON-path filter. */
+interface EventWhere {
+  id?: string;
+  entityId?: string;
+  prepPacket?: { path?: string[]; equals?: unknown };
+}
+
+// In-memory store for calendar events used by the mock
+const calendarEventStore = new Map<string, EventRow>();
+
+const mockPrisma: MockedDelegates<'entity' | 'calendarEvent'> = {
   entity: {
     findFirst: jest.fn().mockResolvedValue({ id: 'entity-test' }),
   },
@@ -58,15 +93,15 @@ beforeEach(() => {
   calendarEventStore.clear();
   jest.clearAllMocks();
 
-  mockPrisma.entity.findFirst.mockResolvedValue({ id: 'entity-test' });
+  mockPrisma.entity.findFirst!.mockResolvedValue({ id: 'entity-test' });
 
-  mockPrisma.calendarEvent.create.mockImplementation(async ({ data }: any) => {
-    const event = {
-      id: data.id,
-      title: data.title,
-      entityId: data.entityId,
-      startTime: data.startTime,
-      endTime: data.endTime,
+  mockPrisma.calendarEvent.create!.mockImplementation(async ({ data }: { data: EventInput }) => {
+    const event: EventRow = {
+      id: data.id ?? '',
+      title: data.title ?? '',
+      entityId: data.entityId ?? '',
+      startTime: data.startTime ?? new Date(0),
+      endTime: data.endTime ?? new Date(0),
       prepPacket: data.prepPacket,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -75,13 +110,13 @@ beforeEach(() => {
     return event;
   });
 
-  mockPrisma.calendarEvent.findMany.mockImplementation(async ({ where }: any) => {
-    const results: any[] = [];
+  mockPrisma.calendarEvent.findMany!.mockImplementation(async ({ where }: { where?: EventWhere }) => {
+    const results: EventRow[] = [];
     for (const [, event] of calendarEventStore) {
       // The service now carries the entity in the WHERE; honour it here, or the
       // mock would answer questions the real client would refuse.
       if (where?.entityId && event.entityId !== where.entityId) continue;
-      if (where?.prepPacket?.path && where?.prepPacket?.equals) {
+      if (where?.prepPacket?.path && where?.prepPacket?.equals !== undefined) {
         const path = where.prepPacket.path;
         const equals = where.prepPacket.equals;
         const meta = event.prepPacket as Record<string, unknown>;
@@ -90,23 +125,23 @@ beforeEach(() => {
         }
       }
     }
-    return results.sort((a: any, b: any) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    return results.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
   });
 
-  mockPrisma.calendarEvent.delete.mockImplementation(async ({ where }: any) => {
+  mockPrisma.calendarEvent.delete!.mockImplementation(async ({ where }: { where: { id: string } }) => {
     const event = calendarEventStore.get(where.id);
     calendarEventStore.delete(where.id);
     return event;
   });
 
-  mockPrisma.calendarEvent.deleteMany.mockImplementation(async ({ where }: any) => {
+  mockPrisma.calendarEvent.deleteMany!.mockImplementation(async ({ where }: { where: EventWhere & { id: string } }) => {
     const event = calendarEventStore.get(where.id);
     if (!event || (where.entityId && event.entityId !== where.entityId)) return { count: 0 };
     calendarEventStore.delete(where.id);
     return { count: 1 };
   });
 
-  mockPrisma.calendarEvent.updateMany.mockImplementation(async ({ where, data }: any) => {
+  mockPrisma.calendarEvent.updateMany!.mockImplementation(async ({ where, data }: { where: EventWhere & { id: string }; data: EventInput }) => {
     const existing = calendarEventStore.get(where.id);
     if (!existing || (where.entityId && existing.entityId !== where.entityId)) {
       return { count: 0 };
@@ -117,7 +152,7 @@ beforeEach(() => {
     return { count: 1 };
   });
 
-  mockPrisma.calendarEvent.update.mockImplementation(async ({ where, data }: any) => {
+  mockPrisma.calendarEvent.update!.mockImplementation(async ({ where, data }: { where: { id: string }; data: EventInput }) => {
     const existing = calendarEventStore.get(where.id);
     if (!existing) throw new Error(`Event ${where.id} not found`);
     const updated = { ...existing, ...data, updatedAt: new Date() };
