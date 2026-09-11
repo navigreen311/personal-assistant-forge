@@ -1,7 +1,11 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
-import { initiateOutboundCall } from '@/modules/voiceforge/services/outbound-agent';
+import {
+  initiateOutboundCall,
+  ScriptMismatchError,
+  ScriptResolutionError,
+} from '@/modules/voiceforge/services/outbound-agent';
 import { withEntityScope, withRole } from '@/shared/middleware/auth';
 import { withRateLimit } from '@/shared/middleware/rate-limit';
 
@@ -46,6 +50,17 @@ async function handlePOST(request: NextRequest) {
         });
         return success(result, 201);
       } catch (err) {
+        // P-42 — a call naming a script this entity does not have is refused
+        // here, before any Call row exists. 404 rather than 403 deliberately:
+        // `getScript` is entity-scoped, so a foreign id and a nonexistent id
+        // are the same answer, and saying "forbidden" would confirm that
+        // another tenant's script exists.
+        if (err instanceof ScriptResolutionError) {
+          return error('SCRIPT_NOT_FOUND', err.message, 404);
+        }
+        if (err instanceof ScriptMismatchError) {
+          return error('SCRIPT_MISMATCH', err.message, 409);
+        }
         return error('INTERNAL_ERROR', err instanceof Error ? err.message : 'Unknown error', 500);
       }
     })

@@ -4238,6 +4238,17 @@ Initiate an outbound AI voice call.
 
 **Guardrails:** `{ maxCommitments, forbiddenTopics[], escalationTriggers[], complianceProfile[], maxSilenceSeconds }`
 
+**Refusals** (P-42). `scriptId` is optional, but when given it is resolved
+against the caller's own entity *before* the call starts, and the id written to
+`Call.scriptId` is the one read back from the database:
+
+| Status | Code               | When                                                                 |
+|--------|--------------------|----------------------------------------------------------------------|
+| 404    | `SCRIPT_NOT_FOUND` | `scriptId` names no script in this entity (a foreign script included — the lookup is entity-scoped, so it is genuinely not found, and 403 would confirm the id exists) |
+| 409    | `SCRIPT_MISMATCH`  | campaign calls only: the `scriptId` given disagrees with the campaign's own |
+
+No `Call` row is created on either refusal.
+
 ---
 
 ### `GET /api/voice/calls/:id`

@@ -36,11 +36,25 @@ import { prisma } from '@/lib/db';
 // the Set is a boolean. `status` gives one: a failure is written `failed`, and
 // a later delivery of that same event re-claims it and runs the handler again.
 //
-// STILL OPEN, and NOT fixed here because it is a product decision (P-33's
-// defect #2): whether the route should answer non-200 on handler failure —
-// retry storms against a broken handler, versus events lost when nothing else
-// retries. With `status='failed'` rows now visible in Postgres, that decision
-// can be made against evidence for the first time. See the PR body.
+// P-42 — THE DECISION P-36 LEFT OPEN, NOW MADE BY THE OWNER.
+//
+// P-33's defect #2 was whether the route may answer 200 when the handler
+// failed. The owner's ruling: "A payment endpoint that returns 200 when the
+// charge fails is a production incident waiting to happen. Return the actual
+// status." So `/api/webhooks/stripe` now answers non-2xx on a handler failure
+// and Stripe retries with backoff, which is the only mechanism that recovers a
+// failed `invoice.paid`.
+//
+// Non-2xx is a REQUEST for redelivery, so it cannot be unconditional: a poison
+// event that always throws would be retried until Stripe gave up, and every one
+// of those deliveries re-runs a handler already known to fail. `attempts` is the
+// budget for that, and MAX_HANDLER_ATTEMPTS below is where it is spent. Past
+// the budget the endpoint stops asking: it answers 200, leaves the row
+// `failed`, and the event waits for an operator rather than for Stripe.
+//
+// What this module reports, and what the route does with it, are two things.
+// `processWebhookEvent` returns `retryable`; the route turns that into a status
+// code. Nothing here knows about HTTP.
 //
 // KNOWN LIMIT, stated rather than hidden: a row stuck at `status='received'`
 // means the process was killed between the claim and the handler, and later
@@ -74,11 +88,57 @@ export type StripeEventType =
 
 export type WebhookHandler = (event: WebhookEvent) => Promise<void>;
 
+/**
+ * The outcome of one delivery, and whether another one is wanted.
+ *
+ * `retryable` is the field the route turns into a status code. It is a separate
+ * field rather than a sixth `status` value because the row's status and the
+ * answer to Stripe are different questions: a `failed` row is retryable up to
+ * the budget and not retryable past it, and the row reads `failed` either way.
+ */
+export interface WebhookProcessResult {
+  status: 'processed' | 'failed' | 'ignored';
+  error?: string;
+  /**
+   * True only when this module wants the provider to deliver the event again.
+   * A processed event, an ignored event, a duplicate and a failure that has
+   * spent its attempt budget are all false.
+   */
+  retryable: boolean;
+  /** How many times this event has been handed to a handler, this one included. */
+  attempts: number;
+}
+
 // --- Internal State ---
 
 /** The provider these rows belong to. `@@unique([provider, eventId])` namespaces
  *  Stripe's ids so a second provider can be added without collision. */
 const PROVIDER = 'stripe';
+
+/**
+ * How many times one event may be handed to a handler before this endpoint
+ * stops asking the provider to send it again.
+ *
+ * FIVE, and the number is a judgement rather than a measurement: Stripe retries
+ * a failed delivery with exponential backoff for up to three days, so five
+ * attempts spans hours — long enough for a transient outage of the ledger, the
+ * database or a downstream API to end on its own, and short enough that a
+ * genuinely poison event stops burning handler runs early on the first day.
+ *
+ * The budget is spent in `claimEvent`: a re-claim of a `failed` row is guarded
+ * on `attempts < MAX_HANDLER_ATTEMPTS`, so the guard is in the same atomic
+ * `updateMany` as the status guard and two concurrent retries cannot spend the
+ * last attempt twice. Past the budget the row stays `failed` with `attempts`
+ * pinned at the maximum and the handler is not run again:
+ *
+ *   SELECT * FROM "InboundWebhookEvent"
+ *    WHERE status = 'failed' AND attempts >= 5;
+ *
+ * is the operator's dead-letter queue, and replaying one is
+ * `UPDATE ... SET attempts = 0` — deliberately a human act, because a handler
+ * that failed five times is a bug report, not a retry.
+ */
+export const MAX_HANDLER_ATTEMPTS = 5;
 
 // Handlers stay in memory deliberately: they are CODE, registered at import by
 // `registerDefaultHandlers()`. A restart rebuilds them identically, which is
@@ -235,7 +295,16 @@ function toJsonPayload(data: Record<string, unknown>): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(data ?? {})) as Prisma.InputJsonValue;
 }
 
-type Claim = 'claimed' | 'duplicate';
+type Claim =
+  /** This delivery owns the event and must run the handler. */
+  | { claim: 'claimed'; attempts: number }
+  /** Someone else already dealt with it. Nothing to do, and nothing to retry. */
+  | { claim: 'duplicate'; attempts: number }
+  /**
+   * P-42. The event is `failed` and has spent its attempt budget. The handler
+   * is NOT run again and the provider is no longer asked to redeliver.
+   */
+  | { claim: 'exhausted'; attempts: number; error: string | null };
 
 /**
  * Take exclusive ownership of an event, or discover that someone already has.
@@ -249,10 +318,16 @@ type Claim = 'claimed' | 'duplicate';
  * a failed handler was marked processed and the event lost. The re-claim is an
  * `updateMany` guarded on `status: 'failed'` so that it, too, is atomic: two
  * concurrent retries cannot both take it.
+ *
+ * P-42 adds `attempts < MAX_HANDLER_ATTEMPTS` to that same guard, which is the
+ * only place it can go and stay atomic. Reading `attempts` and then deciding
+ * would be the read-then-write race this whole module is written to avoid: two
+ * concurrent retries of an event on its last attempt would both read 4 and both
+ * run the handler.
  */
 async function claimEvent(event: WebhookEvent): Promise<Claim> {
   try {
-    await prisma.inboundWebhookEvent.create({
+    const created = await prisma.inboundWebhookEvent.create({
       data: {
         provider: PROVIDER,
         eventId: event.id,
@@ -261,13 +336,19 @@ async function claimEvent(event: WebhookEvent): Promise<Claim> {
         status: 'received',
         attempts: 1,
       },
+      select: { attempts: true },
     });
-    return 'claimed';
+    return { claim: 'claimed', attempts: created.attempts };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
 
     const retaken = await prisma.inboundWebhookEvent.updateMany({
-      where: { provider: PROVIDER, eventId: event.id, status: 'failed' },
+      where: {
+        provider: PROVIDER,
+        eventId: event.id,
+        status: 'failed',
+        attempts: { lt: MAX_HANDLER_ATTEMPTS },
+      },
       data: {
         status: 'received',
         error: null,
@@ -276,7 +357,25 @@ async function claimEvent(event: WebhookEvent): Promise<Claim> {
         attempts: { increment: 1 },
       },
     });
-    return retaken.count === 1 ? 'claimed' : 'duplicate';
+
+    // Read AFTER the claim attempt, so `attempts` is the count this delivery
+    // was given rather than the one it raced.
+    const row = await prisma.inboundWebhookEvent.findUnique({
+      where: { provider_eventId: { provider: PROVIDER, eventId: event.id } },
+      select: { status: true, attempts: true, error: true },
+    });
+    const attempts = row?.attempts ?? MAX_HANDLER_ATTEMPTS;
+
+    if (retaken.count === 1) return { claim: 'claimed', attempts };
+
+    // Not re-claimed, and still `failed`: the budget is gone. Distinguished from
+    // a duplicate because they are different answers to Stripe — a duplicate is
+    // a success that already happened, this is a failure nobody will retry.
+    if (row && row.status === 'failed' && row.attempts >= MAX_HANDLER_ATTEMPTS) {
+      return { claim: 'exhausted', attempts, error: row.error };
+    }
+
+    return { claim: 'duplicate', attempts };
   }
 }
 
@@ -296,20 +395,46 @@ async function settle(
   });
 }
 
-export async function processWebhookEvent(event: WebhookEvent): Promise<{
-  status: 'processed' | 'failed' | 'ignored';
-  error?: string;
-}> {
-  if ((await claimEvent(event)) === 'duplicate') {
+export async function processWebhookEvent(event: WebhookEvent): Promise<WebhookProcessResult> {
+  const claim = await claimEvent(event);
+
+  if (claim.claim === 'duplicate') {
     event.status = 'ignored';
-    return { status: 'ignored', error: 'Event already processed' };
+    // A DUPLICATE IS A SUCCESS. The work happened on an earlier delivery, so
+    // asking for another one would be asking for nothing. The wording is
+    // unchanged from P-36 because `isEventProcessed` and two suites assert it.
+    return {
+      status: 'ignored',
+      error: 'Event already processed',
+      retryable: false,
+      attempts: claim.attempts,
+    };
+  }
+
+  if (claim.claim === 'exhausted') {
+    event.status = 'failed';
+    const errorMessage =
+      `${claim.error ?? 'Handler failed'} ` +
+      `(no further retries: ${claim.attempts} of ${MAX_HANDLER_ATTEMPTS} attempts spent)`;
+    event.error = errorMessage;
+    // Deliberately no write: the row already says `failed` with the attempts
+    // pinned, and overwriting `error` on every later delivery would bury the
+    // message from the attempt that actually ran.
+    return {
+      status: 'failed',
+      error: errorMessage,
+      retryable: false,
+      attempts: claim.attempts,
+    };
   }
 
   const handler = handlers.get(event.type);
   if (!handler) {
     event.status = 'ignored';
     await settle(event.id, 'ignored');
-    return { status: 'ignored' };
+    // Not retryable: no amount of redelivery will register a handler. An event
+    // type this deployment does not implement is a decision, not a failure.
+    return { status: 'ignored', retryable: false, attempts: claim.attempts };
   }
 
   try {
@@ -317,7 +442,7 @@ export async function processWebhookEvent(event: WebhookEvent): Promise<{
     event.status = 'processed';
     event.processedAt = new Date();
     await settle(event.id, 'processed');
-    return { status: 'processed' };
+    return { status: 'processed', retryable: false, attempts: claim.attempts };
   } catch (err) {
     const errorMessage = (err as Error).message;
     event.status = 'failed';
@@ -325,7 +450,15 @@ export async function processWebhookEvent(event: WebhookEvent): Promise<{
     // P-36: the old line here was `markEventProcessed(event.id)`, which is why a
     // failed `invoice.paid` was lost forever. `failed` is retryable.
     await settle(event.id, 'failed', errorMessage);
-    return { status: 'failed', error: errorMessage };
+    // P-42: and now the caller is told to SAY so. `retryable` is false on the
+    // attempt that spends the last of the budget, so the redelivery this asks
+    // for is one that will actually be given to a handler.
+    return {
+      status: 'failed',
+      error: errorMessage,
+      retryable: claim.attempts < MAX_HANDLER_ATTEMPTS,
+      attempts: claim.attempts,
+    };
   }
 }
 
