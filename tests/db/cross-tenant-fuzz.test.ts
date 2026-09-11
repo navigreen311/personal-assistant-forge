@@ -950,7 +950,33 @@ describe('T-035 — every route, called by tenant A while naming tenant B', () =
     // this line is for -- a route added on the old pattern lands in
     // `KNOWN_LEAKING_ROUTES` or in the unscoped inventory instead, and both of
     // those are assertions too.
-    expect(enforcing.length).toBe(143);
+    //
+    // P-39: 143 -> 144, and the one is `GET /api/billing/usage`. It did not
+    // become scoped -- it was ALREADY scoped, and it was BROKEN. Measured on
+    // both trees rather than argued:
+    //
+    //   before P-39   A -> 403,  B -> 500       (refusesEveryone)
+    //   after  P-39   A -> 403,  B -> 200       (enforcing)
+    //
+    // `engines/cost/usage-metering.ts :: getUsageSummary` read every
+    // `UsageRecord` row for the entity and indexed a fixed five-key object with
+    // `metadata.metricType ?? row.model`. `seedCanaryRows` puts a generic DMMF
+    // row in `UsageRecord`, whose `model` is not one of the five metric names,
+    // so the fold hit `undefined.amount` and the route 500'd -- for its OWN
+    // tenant, on every run of this file, for as long as the seeder has existed.
+    // It is not a fuzz artefact: `subscriptions.ts` (P-33) writes plan-meter
+    // rows into the same table with `model` set to a plan metric name, so any
+    // production entity with a subscription meter got the same 500, swallowed
+    // into a generic INTERNAL_ERROR by the route's catch.
+    //
+    // This line is what surfaced it. The route sat in `refusesEveryone`, which
+    // this file prints but does not assert, so "the billing usage endpoint is
+    // dead for everyone" was visible only as a number in a console.log that
+    // nobody had a reason to read. That is the third time this file has found a
+    // defect it was not looking for -- and the first time it found one by a
+    // route LEAVING the refuses-everyone bucket.
+    expect(enforcing.length).toBe(144);
+    expect(enforcing).toContain('GET /api/billing/usage');
 
     // P-16's three, named for the same reason P-34's five are: so the delta is
     // evidence rather than a number to take on trust.

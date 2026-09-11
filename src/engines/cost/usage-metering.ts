@@ -1,5 +1,50 @@
 import { prisma } from '@/lib/db';
+import { summariseAiUsage, type AiSpendSummary } from '@/lib/ai/metering';
 import type { UsageMetricType, UsageRecord } from './types';
+
+/**
+ * P-39 — three ledgers share the `UsageRecord` table, and this one only owns
+ * the rows it wrote.
+ *
+ * `getUsageSummary` and `getRealtimeUsage` both read EVERY row for the entity
+ * and treat `metadata.metricType ?? row.model` as a `UsageMetricType`. That is
+ * a cast, not a check, and `getUsageSummary` then indexes a fixed five-key
+ * object with it:
+ *
+ *     byMetric[record.metricType].amount += record.amount;   // TypeError
+ *
+ * Any row whose model is not one of the five metric names takes that line to
+ * `undefined.amount`. It was ALREADY reachable before this package:
+ * `subscriptions.ts` (P-33) writes plan-meter rows into this table with
+ * `model` set to a plan metric name, so an entity with a subscription meter and
+ * a billing-usage read would 500 on `GET /api/billing/usage`. Nothing caught it
+ * because the route swallows the throw into a generic INTERNAL_ERROR and no
+ * test had both kinds of row in the table at once.
+ *
+ * P-39 adds a third kind -- AI calls, whose `model` is a real Anthropic model
+ * id -- which would have made a latent break a certain one. So the fold now
+ * SELECTS this module's own rows by the positive marker it writes
+ * (`metadata.metricType`) rather than assuming every row is its own, and the AI
+ * rows are summarised separately by their own owner and returned beside it.
+ */
+function ownMetricType(row: { model: string; metadata: unknown }): UsageMetricType | null {
+  const meta =
+    typeof row.metadata === 'object' && row.metadata !== null
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+  const candidate = typeof meta.metricType === 'string' ? meta.metricType : row.model;
+  return isUsageMetricType(candidate) ? candidate : null;
+}
+
+function isUsageMetricType(value: string): value is UsageMetricType {
+  return (
+    value === 'TOKENS' ||
+    value === 'VOICE_MINUTES' ||
+    value === 'STORAGE_MB' ||
+    value === 'WORKFLOW_RUNS' ||
+    value === 'API_CALLS'
+  );
+}
 
 const UNIT_COSTS: Record<UsageMetricType, number> = {
   TOKENS: 0.00001,
@@ -81,6 +126,12 @@ export async function getUsageSummary(
 ): Promise<{
   byMetric: Record<UsageMetricType, { amount: number; cost: number }>;
   totalCost: number;
+  /**
+   * P-39: AI model spend for the same window, read from the same table but
+   * folded by its own owner. `ai.complete` is false when a call could not be
+   * priced, in which case `ai.costUsd` is a floor and not a total.
+   */
+  ai: AiSpendSummary;
 }> {
   const rows = await prisma.usageRecord.findMany({
     where: {
@@ -89,7 +140,9 @@ export async function getUsageSummary(
     },
   });
 
-  const filtered: UsageRecord[] = rows.map(toUsageRecord);
+  // P-39: this module's own rows only -- see `ownMetricType` above.
+  const filtered: UsageRecord[] = rows.filter((row) => ownMetricType(row) !== null).map(toUsageRecord);
+  const ai = summariseAiUsage(rows);
 
   const byMetric: Record<UsageMetricType, { amount: number; cost: number }> = {
     TOKENS: { amount: 0, cost: 0 },
@@ -106,9 +159,21 @@ export async function getUsageSummary(
     totalCost += record.totalCost;
   }
 
-  return { byMetric, totalCost };
+  return { byMetric, totalCost, ai };
 }
 
+/**
+ * P-39 note, recorded rather than fixed: this function sums `cost` over EVERY
+ * row for the entity, so it folds all three ledgers together. It does not
+ * throw the way `getUsageSummary` did -- it accumulates into a Map rather than
+ * indexing a fixed object -- but its `todaySpend`/`monthSpend` include
+ * plan-meter rows (always 0) and AI rows, and an AI row whose model had no list
+ * price contributes 0 as though the call were free. It has NO product caller
+ * (only `tests/unit/engines/cost-usage-metering.test.ts` references it), so
+ * changing its contract here would be changing an interface nothing uses;
+ * whoever wires it should read AI spend through `getUsageSummary().ai`, which
+ * carries `complete`.
+ */
 export async function getRealtimeUsage(entityId: string): Promise<{
   todaySpend: number;
   monthSpend: number;

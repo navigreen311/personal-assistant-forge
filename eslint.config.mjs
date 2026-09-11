@@ -109,6 +109,77 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  // -------------------------------------------------------------------------
+  // P-39 — the raw Anthropic client is a metering bypass.
+  //
+  // `src/lib/ai/client.ts` is the seam every model call goes through, and since
+  // P-39 every function in it ends in `recordAiUsage`, which writes a durable
+  // `UsageRecord` row. It also exports `anthropic` itself -- the SDK client --
+  // and 96 files import from that module or its barrel. A call made through the
+  // raw client skips the ledger entirely and leaves no trace that it happened,
+  // which is exactly the state the whole platform was in before P-39: P-38's
+  // reachability scan found `src/lib/ai/usage.ts` imported by NOTHING, so not
+  // one Anthropic call this platform made was metered.
+  //
+  // Three files held that bypass -- `shadow/agent/core.ts`,
+  // `intent-classifier.ts` and `outcome-extractor.ts`, which between them are
+  // the agent's entire model path -- and now call `createMessage`, the metered
+  // equivalent that takes attribution as a required argument.
+  //
+  // This is the same instrument P-34 used to keep `@/lib/db` out of the Shadow
+  // tool router and P-17 used to give `ShadowMessage` and `ShadowConsentReceipt`
+  // one permitted writer each: a rule, not a review convention, so that the
+  // call added next month is metered BY DEFAULT. `npx eslint src` gates CI.
+  //
+  // `@anthropic-ai/sdk` is restricted alongside it, because constructing a
+  // second client is the same bypass with an extra line. Nothing outside
+  // `src/lib/ai/` imports it today; the rule keeps it that way. Types callers
+  // legitimately need (`AIMessageCreateParams`, `AIMessageResponse`) are
+  // re-exported from the seam so a type import is never a reason to reach past
+  // it.
+  //
+  // Scoped by `ignores` on the seam's own directory rather than by trusting
+  // review, for the same reason as the two blocks above.
+  //
+  // IT USES `@typescript-eslint/no-restricted-imports`, NOT THE BASE RULE, AND
+  // THAT IS LOAD-BEARING. In flat config the last config object that matches a
+  // file wins for a given rule NAME. This block matches `src/**/*.ts`, which
+  // includes `src/modules/shadow/agent/tool-router.ts`, so writing it as the
+  // base `no-restricted-imports` would silently replace P-34's `@/lib/db` ban
+  // on that file -- reopening the prompt-injection hole P-34 closed, with no
+  // error and a green lint run. The two rules have different names, so both
+  // apply. Do not "simplify" this by merging them.
+  // -------------------------------------------------------------------------
+  {
+    files: ["src/**/*.ts", "src/**/*.tsx"],
+    ignores: ["src/lib/ai/**"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@/lib/ai",
+              importNames: ["anthropic", "default"],
+              message:
+                "The raw Anthropic client is unmetered: a call through it writes no UsageRecord row, so the spend is invisible. Use createMessage(params, attribution) from @/lib/ai — or generateText/generateJSON/chat/streamText with entityId, userId and module in AIOptions. See src/lib/ai/metering.ts.",
+            },
+            {
+              name: "@/lib/ai/client",
+              importNames: ["anthropic", "default"],
+              message:
+                "The raw Anthropic client is unmetered. Use createMessage(params, attribution) from @/lib/ai. See src/lib/ai/metering.ts.",
+            },
+            {
+              name: "@anthropic-ai/sdk",
+              message:
+                "Only src/lib/ai/ may construct an Anthropic client; a second one bypasses AI usage metering. Call createMessage() from @/lib/ai, and import AIMessageCreateParams / AIMessageResponse from there for the request and response types.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     rules: {
       "@typescript-eslint/no-unused-vars": [
