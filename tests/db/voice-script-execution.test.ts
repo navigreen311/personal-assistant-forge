@@ -53,13 +53,18 @@ jest.mock('@/lib/ai', () => ({
 }));
 
 import { POST as scriptsPOST } from '@/app/api/voice/scripts/route';
+import { POST as campaignsPOST } from '@/app/api/voice/campaigns/route';
 import { POST as outboundPOST } from '@/app/api/voice/calls/outbound/route';
+import {
+  initiateOutboundCallForCampaign,
+  ScriptMismatchError,
+} from '@/modules/voiceforge/services/outbound-agent';
 import {
   createScript,
   generateScriptWithAI,
   startExecution,
 } from '@/modules/voiceforge/services/script-engine';
-import type { CallScript } from '@/modules/voiceforge/types';
+import type { Campaign, CallScript } from '@/modules/voiceforge/types';
 
 import { db, setupTestDatabase } from '../helpers/db';
 import { createContact, createTwoTenants, verifiedEntityIdForTest, type Tenant } from '../helpers/factories';
@@ -338,5 +343,134 @@ describe('POST /api/voice/calls/outbound resolves the script before the call sta
     const { callId } = (await readJson<OkBody<{ callId: string }>>(res)).data;
     const call = await db.call.findUnique({ where: { id: callId } });
     expect(call!.scriptId).toBeNull();
+  });
+});
+
+// ===========================================================================
+// 4. The campaign path — "resolved from the playbook", literally
+// ===========================================================================
+
+describe('initiateOutboundCallForCampaign takes the script from the campaign', () => {
+  /** Create a campaign over HTTP, against a script that really exists. */
+  async function persistCampaign(scriptId: string): Promise<Campaign> {
+    const res = await campaignsPOST(
+      requestAs(tenantA, '/api/voice/campaigns', {
+        method: 'POST',
+        body: {
+          name: 'Renewal wave',
+          description: 'Q1 renewals',
+          personaId: 'persona-p42',
+          scriptId,
+          targetContactIds: [contactA.id],
+          schedule: {
+            startDate: new Date('2026-01-05T09:00:00Z').toISOString(),
+            callWindowStart: '09:00',
+            callWindowEnd: '17:00',
+            timezone: 'America/Chicago',
+            maxCallsPerDay: 10,
+            retryAttempts: 1,
+            retryDelayHours: 4,
+          },
+          stopConditions: [{ type: 'MAX_CALLS', threshold: 10 }],
+        },
+      })
+    );
+    expect(res.status).toBe(201);
+    return (await readJson<OkBody<Campaign>>(res)).data;
+  }
+
+  it("uses the campaign's scriptId when the caller passes none", async () => {
+    mockGenerateJSON.mockResolvedValueOnce(generatedScript());
+    const script = await persistDraftForTenant(tenantA);
+    const campaign = await persistCampaign(script.id);
+
+    // The campaign write path kept the scriptId rather than discarding it —
+    // P-16's disease, checked rather than assumed.
+    expect(campaign.scriptId).toBe(script.id);
+
+    const result = await initiateOutboundCallForCampaign({
+      campaignId: campaign.id,
+      entityId: verifiedEntityIdForTest(tenantA.entity.id),
+      contactId: contactA.id,
+      personaId: 'persona-p42',
+      purpose: 'Renewal check-in',
+      maxDuration: 1,
+      guardrails: guardrails(),
+      // NOTE: no scriptId. Before this package the call ran with none, and the
+      // campaign's stats were then updated as though it had run the campaign's
+      // script.
+    });
+
+    const call = await db.call.findUnique({ where: { id: result.callId } });
+    expect(call!.scriptId).toBe(script.id);
+  });
+
+  it('refuses a call whose scriptId disagrees with the campaign, and writes no Call row', async () => {
+    mockGenerateJSON.mockResolvedValueOnce(generatedScript());
+    const campaignScript = await persistDraftForTenant(tenantA);
+    mockGenerateJSON.mockResolvedValueOnce({ ...generatedScript(), name: 'Other' });
+    const otherScript = await persistDraftForTenant(tenantA);
+    const campaign = await persistCampaign(campaignScript.id);
+
+    const callsBefore = await db.call.count();
+
+    await expect(
+      initiateOutboundCallForCampaign({
+        campaignId: campaign.id,
+        entityId: verifiedEntityIdForTest(tenantA.entity.id),
+        contactId: contactA.id,
+        personaId: 'persona-p42',
+        purpose: 'Renewal check-in',
+        maxDuration: 1,
+        guardrails: guardrails(),
+        // A real script, in the right tenant, and still the wrong one.
+        scriptId: otherScript.id,
+      })
+    ).rejects.toBeInstanceOf(ScriptMismatchError);
+
+    expect(await db.call.count()).toBe(callsBefore);
+  });
+
+  it('refuses a campaign that does not belong to the caller, and writes no Call row', async () => {
+    mockGenerateJSON.mockResolvedValueOnce(generatedScript());
+    const bScript = await persistDraftForTenant(tenantB);
+    const bCampaignRes = await campaignsPOST(
+      requestAs(tenantB, '/api/voice/campaigns', {
+        method: 'POST',
+        body: {
+          name: "B's wave",
+          description: 'theirs',
+          personaId: 'persona-b',
+          scriptId: bScript.id,
+          targetContactIds: [],
+          schedule: {
+            startDate: new Date('2026-01-05T09:00:00Z').toISOString(),
+            callWindowStart: '09:00',
+            callWindowEnd: '17:00',
+            timezone: 'America/Chicago',
+            maxCallsPerDay: 10,
+            retryAttempts: 1,
+            retryDelayHours: 4,
+          },
+          stopConditions: [],
+        },
+      })
+    );
+    expect(bCampaignRes.status).toBe(201);
+    const bCampaign = (await readJson<OkBody<Campaign>>(bCampaignRes)).data;
+
+    await expect(
+      initiateOutboundCallForCampaign({
+        campaignId: bCampaign.id,
+        entityId: verifiedEntityIdForTest(tenantA.entity.id),
+        contactId: contactA.id,
+        personaId: 'persona-p42',
+        purpose: 'Renewal check-in',
+        maxDuration: 1,
+        guardrails: guardrails(),
+      })
+    ).rejects.toThrow('not found');
+
+    expect(await db.call.count()).toBe(0);
   });
 });
