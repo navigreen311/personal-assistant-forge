@@ -222,17 +222,33 @@ export interface BreakGlassResult {
  * All four in ONE transaction. A break-glass revocation that half-applied and
  * returned `{ revoked: true }` would be the same bug with more steps.
  *
- * SCOPE, STATED PLAINLY: THIS IS GLOBAL BY PLUGIN NAME.
+ * SCOPE, STATED PLAINLY: THIS IS GLOBAL ACROSS USERS, PER REGISTRY ENTRY.
  *
- * `PluginRecord` has no `entityId` and is unique on `(userId, name)`, so `name`
- * is the only cross-user identity a plugin has in the frozen schema, and a
- * revocation keyed on anything else could not reach another user's install.
- * Global is also the right semantics for break glass -- a malicious plugin must
- * die everywhere, not in one tenant. The cost is that two tenants publishing
- * unrelated plugins under the same name share a kill switch. Closing that needs
- * a `PluginRecord.registryId` column, which migration window 01 has closed; it
- * is raised in the PR rather than worked around by stuffing a foreign key into
- * `PluginRecord.config`, which is exactly how this bug got here.
+ * MIGRATION WINDOW 02 CHANGED THIS PARAGRAPH, AND IT IS THE POINT OF THE
+ * PACKAGE. What it used to say is kept here because it is the defect:
+ *
+ *     "THIS IS GLOBAL BY PLUGIN NAME. `PluginRecord` has no `entityId` and is
+ *      unique on `(userId, name)`, so `name` is the only cross-user identity a
+ *      plugin has in the frozen schema ... The cost is that two tenants
+ *      publishing unrelated plugins under the same name share a kill switch.
+ *      Closing that needs a `PluginRecord.registryId` column."
+ *
+ * Ivan's ruling: *"break-glass should scope to a specific plugin instance, not
+ * a name"*. `PluginRecord.registryId` now exists, `installPlugin` writes it,
+ * and the `where` below reads it. A malicious plugin still dies for EVERY user
+ * who installed it -- that part was right and is unchanged, and it is why the
+ * clause is not entity-scoped -- but it dies as one plugin rather than as a
+ * string. Revoking tenant A's "Calendar Sync" leaves tenant B's "Calendar Sync"
+ * installed, loadable and served, which `tests/db/migration-window-02.test.ts`
+ * asserts from a second `PrismaClient` after a restart.
+ *
+ * THE LEGACY ARM OF THE `OR` IS NOT A LOOPHOLE. `registryId` is nullable, so
+ * installations written before the migration have none; those are still matched
+ * by name, because a revocation of a plugin whose installations cannot name
+ * their registry entry has no narrower honest reading, and missing them would
+ * be a revocation that fails to revoke. It cannot re-widen a new revocation:
+ * every row `installPlugin` writes from here on carries a `registryId`, so the
+ * `registryId: null` arm matches nothing that was written since.
  */
 export async function breakGlassRevoke(
   pluginId: string,
@@ -264,11 +280,20 @@ export async function breakGlassRevoke(
       data: { status: PLUGIN_REVOKED, content: JSON.stringify(manifest) },
     });
 
-    // (b) every live installation. Read the ids first so the ledger can name
-    // them and the count is of rows this call actually moved -- a second
-    // `count()` afterwards would also count installations revoked days ago.
+    // (b) every live installation OF THIS REGISTRY ENTRY. Read the ids first so
+    // the ledger can name them and the count is of rows this call actually
+    // moved -- a second `count()` afterwards would also count installations
+    // revoked days ago.
+    //
+    // `affectedUsers` is `liveIds.length`, inside this transaction, and this
+    // clause is what it counts. Narrowing the clause without saying so would
+    // have quietly changed the number an operator reads during an incident, so:
+    // it now counts the users who installed THIS plugin, and no longer counts
+    // users who installed a different plugin with the same name.
+    const scope = { OR: [{ registryId: pluginId }, { registryId: null, name: plugin.name }] };
+
     const live = await tx.pluginRecord.findMany({
-      where: { name: plugin.name, status: { not: PLUGIN_REVOKED } },
+      where: { ...scope, status: { not: PLUGIN_REVOKED } },
       select: { id: true },
     });
     const liveIds = live.map((r) => r.id);
@@ -281,13 +306,18 @@ export async function breakGlassRevoke(
     }
 
     // (c) the tombstone, only when there is nothing else carrying the fact.
+    //     It carries `registryId` too -- a tombstone that did not would be read
+    //     by `isPluginNameRevoked` as a LEGACY global burn and would kill every
+    //     same-named plugin on the platform, which is the bug this package is
+    //     closing arriving through the back door.
     const ledgerIds = [...liveIds];
-    const existing = await tx.pluginRecord.count({ where: { name: plugin.name } });
+    const existing = await tx.pluginRecord.count({ where: scope });
     if (existing === 0 && options.revokedBy) {
       const tombstone = await tx.pluginRecord.create({
         data: {
           userId: options.revokedBy,
           name: plugin.name,
+          registryId: pluginId,
           version: plugin.version,
           author: plugin.author || null,
           description: plugin.description || null,

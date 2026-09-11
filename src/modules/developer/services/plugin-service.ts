@@ -148,15 +148,19 @@ export async function registerPlugin(
     throw new Error(`Invalid manifest: ${validation.errors.join(', ')}`);
   }
 
+  // The proven entity wins, deliberately: it overwrites the caller's own value.
+  // Resolved BEFORE the revocation check, because since window 02 that check is
+  // scoped by it -- see `isPluginNameRevokedInEntity`.
+  const entityId = ownerEntityId ?? (plugin as { entityId?: string }).entityId ?? 'default';
+
   // P-37: a name that has been break-glass revoked cannot be re-registered.
   // Without this, revocation is a speed bump -- register the same manifest
-  // again under a fresh Document id and the plugin is back.
-  if (await isPluginNameRevoked(plugin.name)) {
+  // again under a fresh Document id and the plugin is back. Window 02 narrowed
+  // the burn to the entity that published the revoked entry, so another
+  // tenant's unrelated plugin of the same name is still publishable.
+  if (await isPluginNameRevokedInEntity(plugin.name, entityId)) {
     throw new PluginRevokedError(plugin.name);
   }
-
-  // The proven entity wins, deliberately: it overwrites the caller's own value.
-  const entityId = ownerEntityId ?? (plugin as { entityId?: string }).entityId ?? 'default';
 
   const doc = await prisma.document.create({
     data: {
@@ -247,6 +251,11 @@ export async function enablePlugin(
   if (manifest.status === PLUGIN_REVOKED || doc.status === PLUGIN_REVOKED) {
     throw new PluginRevokedError(name);
   }
+  // Window 02: the tombstone for THIS registry entry, plus the legacy
+  // name-global tombstones. Not every same-named plugin on the platform.
+  if (await isRegistryEntryRevoked(doc.id)) {
+    throw new PluginRevokedError(name);
+  }
   if (await isPluginNameRevoked(name)) {
     throw new PluginRevokedError(name);
   }
@@ -326,6 +335,11 @@ export async function approvePlugin(
 
   // P-37: approval was the second way back from revoked. All three are closed.
   if (manifest.status === PLUGIN_REVOKED || doc.status === PLUGIN_REVOKED) {
+    throw new PluginRevokedError(name);
+  }
+  // Window 02: the tombstone for THIS registry entry, plus the legacy
+  // name-global tombstones. Not every same-named plugin on the platform.
+  if (await isRegistryEntryRevoked(doc.id)) {
     throw new PluginRevokedError(name);
   }
   if (await isPluginNameRevoked(name)) {
@@ -435,46 +449,172 @@ export async function unregisterPlugin(
 // `PluginReview`. There is nothing to migrate and no dual-read window to serve,
 // which is the only reason a clean split is available at all.
 
+// ===========================================================================
+// MIGRATION WINDOW 02, CHANGE 1 — `PluginRecord.registryId`
+// ===========================================================================
+//
+// P-37's own note said what was wrong with what it shipped, and Ivan's ruling
+// is the same sentence: *"break-glass should scope to a specific plugin
+// instance, not a name"*.
+//
+// `PluginRecord` had no way to say WHICH registry entry an installation came
+// from, so `name` was the only cross-user identity a plugin had. Everything
+// downstream inherited that:
+//
+//   - `breakGlassRevoke` matched installations on `name`, so revoking one
+//     tenant's "Calendar Sync" revoked every OTHER tenant's "Calendar Sync"
+//     too — unrelated code, unrelated author, same kill switch;
+//   - `isPluginNameRevoked` made one revocation burn the NAME platform-wide, so
+//     a second tenant could no longer register, install, load, enable or
+//     approve a plugin of that name at all;
+//   - and both were fail-closed, so nothing ever surfaced as an error. The
+//     second tenant's plugin just stopped, permanently, and the only evidence
+//     was another tenant's incident.
+//
+// `registryId` is the `Document.id` the installation was made from. It is
+// written by `installPlugin` and by the break-glass tombstone, and it is read
+// by the serving path (`assertPluginUsable` -> `loadPluginForUser`) and by
+// `breakGlassRevoke`'s WHERE clause. Both halves, or the column would be the
+// thing window 02's rules exist to forbid: a column that exists while
+// revocation still matches on `name`, which LOOKS fixed.
+//
+// LEGACY ROWS KEEP LEGACY SEMANTICS, DELIBERATELY. `registryId` is nullable and
+// rows written before this migration have none. Those revocations were global
+// by name when they were made, and `isPluginNameRevoked` below still honours
+// them exactly that way — restricted to `registryId: null` so it cannot reach a
+// row written since. Narrowing an existing revocation retroactively would
+// un-revoke a plugin somebody killed on purpose, which is a worse failure than
+// the over-broad one being fixed.
+
 /**
- * Has this plugin NAME been revoked anywhere?
+ * Has this specific REGISTRY ENTRY been revoked?
  *
- * This is the revocation tombstone, and it is the reason a revocation cannot be
- * walked back. A `PluginRecord` row in `REVOKED` state is a durable fact about
- * the NAME, not about one user: as long as one exists, nobody may install,
- * load, register, enable or approve a plugin called that.
+ * The tombstone, keyed the way the ruling asks for: a `PluginRecord` row in
+ * `REVOKED` state carrying this `registryId` is a durable fact about THIS
+ * plugin, and it is why a revocation cannot be walked back — it survives
+ * uninstall, restart, and a second process, and it is checked on every load.
  *
- * That is deliberately fail-closed and deliberately global. Break glass means a
- * plugin is believed malicious; the wrong answer to "should the same manifest be
- * allowed back under a different Document id, in a different entity" is yes. The
- * cost is that the name is burned platform-wide, which is recorded in the PR as
- * the residual: un-burning one takes an operator deleting the row.
+ * It does not reach a different registry entry, which is the entire change.
  */
-export async function isPluginNameRevoked(name: string): Promise<boolean> {
-  if (!name) return false;
+export async function isRegistryEntryRevoked(registryId: string): Promise<boolean> {
+  if (!registryId) return false;
   const tombstones = await prisma.pluginRecord.count({
-    where: { name, status: PLUGIN_REVOKED },
+    where: { registryId, status: PLUGIN_REVOKED },
   });
   return tombstones > 0;
 }
 
 /**
- * Refuse a revoked plugin. Both halves matter and neither is redundant:
+ * Has this plugin NAME been revoked by a LEGACY (pre-window-02) revocation?
  *
- *   - the registry row covers a plugin nobody ever installed;
- *   - the tombstone covers a plugin re-registered under a new Document id, and
- *     a same-named plugin published in another entity.
+ * Scoped to `registryId: null` — see the block above. A revocation made before
+ * the column existed named no registry entry, so the only honest reading of it
+ * is the global one it was made under. A revocation made since is found by
+ * `isRegistryEntryRevoked` or `isPluginNameRevokedInEntity` instead, and never
+ * by this function.
+ */
+export async function isPluginNameRevoked(name: string): Promise<boolean> {
+  if (!name) return false;
+  const tombstones = await prisma.pluginRecord.count({
+    where: { name, status: PLUGIN_REVOKED, registryId: null },
+  });
+  return tombstones > 0;
+}
+
+/**
+ * The RE-REGISTRATION guard, and the one place a name is still consulted.
+ *
+ * `registerPlugin` runs before any `Document` exists, so there is no
+ * `registryId` to check yet — and P-37's third hole was exactly this: publish
+ * the same manifest again under a fresh `Document` id and the revoked plugin is
+ * back. The name therefore stays burned, but only INSIDE THE ENTITY THAT
+ * PUBLISHED THE REVOKED ENTRY, resolved through the tombstone's `registryId`.
+ *
+ * That is the narrowest rule that closes the hole: re-publishing in the
+ * revoked entity is refused, and another tenant's same-named plugin is not that
+ * plugin and is not touched.
+ */
+export async function isPluginNameRevokedInEntity(
+  name: string,
+  entityId: string
+): Promise<boolean> {
+  if (!name) return false;
+
+  // Legacy global burns first: they predate scoping and stay global.
+  if (await isPluginNameRevoked(name)) return true;
+
+  // The registry's own record of the revocation, which needs no tombstone at
+  // all. Kept as a second arm because `breakGlassRevoke` writes its tombstone
+  // as a `PluginRecord`, and `@@unique([userId, name])` can refuse that one row
+  // when the operator already holds a same-named installation from a different
+  // registry entry -- a narrow case, but the hole it would open (re-publish the
+  // manifest under a fresh `Document` id) is the one P-37 closed, so it is
+  // closed twice rather than argued about.
+  if (entityId) {
+    const revokedRegistry = await prisma.document.count({
+      where: { type: 'PLUGIN', entityId, title: name, status: PLUGIN_REVOKED },
+    });
+    if (revokedRegistry > 0) return true;
+  }
+
+  const tombstones = await prisma.pluginRecord.findMany({
+    where: { name, status: PLUGIN_REVOKED, registryId: { not: null } },
+    select: { registryId: true },
+  });
+  const registryIds = tombstones
+    .map((t) => t.registryId)
+    .filter((id): id is string => id !== null);
+  if (registryIds.length === 0) return false;
+
+  // Fail closed when the caller could not name an entity: an unscoped
+  // registration has not proven which tenant it is acting for, and the safe
+  // answer to "may this revoked name be republished by someone unknown" is no.
+  if (!entityId) return true;
+
+  const inEntity = await prisma.document.count({
+    where: { id: { in: registryIds }, type: 'PLUGIN', entityId },
+  });
+  return inEntity > 0;
+}
+
+/**
+ * Refuse a revoked plugin. Three halves now, none redundant:
+ *
+ *   - the registry row's own status covers a plugin nobody ever installed;
+ *   - the `registryId` tombstone covers THIS plugin's installations, including
+ *     after a restart and in another process;
+ *   - the legacy name tombstone covers revocations made before window 02, which
+ *     named no registry entry and were global when they were made.
+ *
+ * What it deliberately no longer does is refuse a DIFFERENT registry entry that
+ * happens to share a name.
  */
 export async function assertPluginUsable(plugin: PluginDefinition): Promise<void> {
   if (plugin.status === PLUGIN_REVOKED) throw new PluginRevokedError(plugin.name);
+  if (await isRegistryEntryRevoked(plugin.id)) throw new PluginRevokedError(plugin.name);
   if (await isPluginNameRevoked(plugin.name)) throw new PluginRevokedError(plugin.name);
 }
 
 /**
  * Install a plugin for a user. Refuses a revoked plugin.
  *
- * `upsert` cannot resurrect a revoked installation: `assertPluginUsable` has
- * already thrown by the time the write is reached, because a revoked
- * installation is itself a tombstone for the name.
+ * WINDOW 02: THIS IS WHERE `registryId` IS WRITTEN. It is the only place an
+ * installation is created, so it is the only place that knows which registry
+ * entry the manifest came from. Without this write nothing else in the file can
+ * scope anything, and `breakGlassRevoke` would have to keep matching on `name`.
+ *
+ * THE `@@unique([userId, name])` COLLISION, STATED RATHER THAN HIDDEN. One user
+ * holds at most one installation per NAME, so a user who already holds a
+ * REVOKED "Calendar Sync" cannot also hold tenant B's unrelated "Calendar
+ * Sync": the upsert would have to overwrite the tombstone, and deleting a
+ * tombstone is how a revoked plugin gets back in (see `uninstallPlugin`). So
+ * that one install is refused, for that one user, and the tombstone survives.
+ * It is fail-closed and it is a residual of the unique key, not of `registryId`
+ * — widening it means changing that key, which is not in this window.
+ *
+ * The check is explicit rather than relying on `assertPluginUsable`: since the
+ * revocation is now scoped by `registryId`, a same-named tombstone from ANOTHER
+ * registry entry no longer throws there, which is the fix working correctly.
  */
 export async function installPlugin(
   pluginId: string,
@@ -484,11 +624,18 @@ export async function installPlugin(
   const plugin = await getPlugin(pluginId, ownerEntityId);
   await assertPluginUsable(plugin);
 
+  const held = await prisma.pluginRecord.findUnique({
+    where: { userId_name: { userId, name: plugin.name } },
+    select: { status: true },
+  });
+  if (held?.status === PLUGIN_REVOKED) throw new PluginRevokedError(plugin.name);
+
   const record = await prisma.pluginRecord.upsert({
     where: { userId_name: { userId, name: plugin.name } },
     create: {
       userId,
       name: plugin.name,
+      registryId: pluginId,
       version: plugin.version,
       author: plugin.author || null,
       description: plugin.description || null,
@@ -496,6 +643,11 @@ export async function installPlugin(
       status: PLUGIN_INSTALL_ACTIVE,
     },
     update: {
+      // Re-stamped on re-install: a row that predates the column, or one
+      // reinstalled from a different registry entry, must not keep pointing at
+      // the wrong plugin -- a stale `registryId` would make the next revocation
+      // miss this installation, which is the failure this column exists to end.
+      registryId: pluginId,
       version: plugin.version,
       permissions: plugin.permissions,
       status: PLUGIN_INSTALL_ACTIVE,
@@ -532,7 +684,13 @@ export async function uninstallPlugin(
     where: { userId, name: plugin.name, status: { not: PLUGIN_REVOKED } },
   });
 
-  if (deleted.count === 0 && (await isPluginNameRevoked(plugin.name))) {
+  // Window 02: "was it refused because it is revoked" is now asked about THIS
+  // registry entry. Asking it by name told a user their own live plugin was
+  // revoked whenever some other tenant's same-named plugin had been.
+  if (
+    deleted.count === 0 &&
+    ((await isRegistryEntryRevoked(pluginId)) || (await isPluginNameRevoked(plugin.name)))
+  ) {
     return { uninstalled: false, revoked: true };
   }
 

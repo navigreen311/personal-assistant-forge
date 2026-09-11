@@ -405,6 +405,12 @@ export async function POST(request: NextRequest) {
       // one classification table rather than from whatever the call site
       // believed. `eslint.config.mjs` now forbids the direct create.
       const receipt = await consentReceiptService.createReceipt({
+        // Migration window 02: the authenticated caller who answered the
+        // confirmation card. `voiceSession.userId === session.userId` is already
+        // asserted above, so this is the session's owner AND the person who
+        // pressed the button -- and it stays on the receipt after the session is
+        // deleted, which is the whole ruling.
+        userId: session.userId,
         sessionId,
         messageId: actionMessage.id,
         actionType,

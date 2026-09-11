@@ -763,9 +763,29 @@ model PluginRecord {
   installedAt DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  /// Migration window 02, change 1 — "break-glass should scope to a specific
+  /// plugin instance, not a name".
+  ///
+  /// The registry entry this installation was made from: `Document.id` of the
+  /// `type: 'PLUGIN'` row. NOT a Prisma relation on purpose — `Document` is
+  /// entity-scoped and deletable by its publisher, and a required FK would
+  /// either cascade a `unregisterPlugin` into somebody's live installation or
+  /// block the delete. The column is the INSTALLATION's record of where it came
+  /// from; it must survive the registry row disappearing.
+  ///
+  /// Nullable because rows written before this window have no registry to name.
+  /// Those legacy rows keep the old, global-by-NAME revocation semantics
+  /// (`isPluginNameRevoked`); narrowing them retroactively would un-revoke a
+  /// plugin somebody killed. Everything written from here on carries it, so
+  /// every NEW revocation is scoped to one registry entry.
+  registryId String?
+
   pluginReviews PluginReview[]
 
   @@unique([userId, name])
+  /// `breakGlassRevoke` and the serving path both query on this, and the
+  /// serving path runs on every `loadPluginForUser`.
+  @@index([registryId])
 }
 
 model PluginReview {
@@ -990,12 +1010,42 @@ model ShadowConsentReceipt {
   rolledBackAt         DateTime?
   rolledBackBy         String?
 
+  /// Migration window 02, change 3 — "a receipt you can't attribute to a user
+  /// defeats the entire audit trail. THIS ONE IS A BUG FIX, NOT A FEATURE."
+  ///
+  /// The person who authorised the action. A receipt's value IS the attribution,
+  /// and until this column the only links to a person were `sessionId` — which
+  /// `ShadowConsentReceipt_sessionId_fkey` sets to NULL the moment the session
+  /// is cleaned up or a GDPR erasure removes it — and `entityId`, which
+  /// `core.ts` writes as `context.activeEntity?.id ?? null`. P-17 made receipts
+  /// outlive their session (correctly: v3 Addition 9.3 retains them for
+  /// regulatory compliance while the transcript is erased), which exposed that
+  /// a retained, detached, entity-less receipt named nobody: not exportable
+  /// under Article 15, not listable, not producible for the person it is about.
+  ///
+  /// NOT a Prisma relation to `User`, and that is the whole point: a relation
+  /// would need an `onDelete`, and both answers are wrong. `Cascade` deletes
+  /// the regulatory record when the account closes; `SetNull` puts the receipt
+  /// straight back into the unattributable state this column exists to end.
+  /// The retention clock (`ShadowRetentionConfig.consentRetentionDays`, default
+  /// 2555) is what removes a receipt, not the lifetime of anything it points at.
+  ///
+  /// Nullable because 1,079 db tests and existing rows stand on the current
+  /// schema, and because a receipt can still be written with no user in context
+  /// — `recording-consent` records a CONTACT's recording decision. A null here
+  /// now means "no user was in scope", which is a fact; before this column it
+  /// was indistinguishable from "the session was deleted".
+  userId String?
+
   session ShadowVoiceSession? @relation(fields: [sessionId], references: [id])
 
   @@index([sessionId])
   @@index([actionType])
   @@index([entityId])
   @@index([executedAt])
+  /// `gdpr-export.exportUserData` queries on this — Article 15 is the path that
+  /// has to find a detached receipt.
+  @@index([userId])
 }
 
 model ShadowSessionOutcome {
@@ -1235,15 +1285,32 @@ model VoiceforgeConsentConfig {
 }
 
 model ContactCallPreference {
-  id               String    @id @default(cuid())
-  contactId        String    @unique
-  doNotCall        Boolean   @default(false)
-  preferredChannel String    @default("phone")
-  quietHoursStart  String?
-  quietHoursEnd    String?
-  maxCallsPerWeek  Int       @default(3)
-  callsThisWeek    Int       @default(0)
-  lastCalledAt     DateTime?
+  id                 String    @id @default(cuid())
+  contactId          String    @unique
+  doNotCall          Boolean   @default(false)
+  preferredChannel   String    @default("phone")
+  quietHoursStart    String?
+  quietHoursEnd      String?
+  /// Migration window 02, change 2 — "required, quiet hours without a timezone
+  /// are meaningless".
+  ///
+  /// The IANA zone `quietHoursStart`/`quietHoursEnd` are stated in. v3 Addition
+  /// 3.3's `quiet_hours_timezone`. P-16 wired `dnc-checker` but had to take the
+  /// zone from the CALLER — in practice the user's own — so a contact's
+  /// "not before 10" was evaluated in the operator's timezone and a contact in
+  /// Tokyo was called at 02:00 local while the server read 10:00.
+  ///
+  /// Nullable, not `@default`: there is no defensible default. A null means
+  /// "this contact's zone is not known", and `dnc-checker` then falls back to
+  /// the caller-supplied zone exactly as before — the pre-window behaviour,
+  /// preserved for rows that predate the column. Written values are validated
+  /// as real IANA zones at the write boundary (`PUT
+  /// /api/contacts/[id]/call-preferences`), so an unreadable string cannot be
+  /// stored and then silently ignored on read.
+  quietHoursTimezone String?
+  maxCallsPerWeek    Int       @default(3)
+  callsThisWeek      Int       @default(0)
+  lastCalledAt       DateTime?
 
   contact Contact @relation(fields: [contactId], references: [id])
 }

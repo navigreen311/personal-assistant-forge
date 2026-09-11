@@ -40,12 +40,57 @@ import { classifyAction } from './action-classifier';
 // deliberate: a receipt attributable to no entity cannot be shown to one
 // without guessing which, and guessing is what this file is being fixed for.
 // ============================================================================
+// MIGRATION WINDOW 02 — `userId`. IVAN CALLS THIS A BUG FIX, NOT A FEATURE.
+// ============================================================================
+//
+//   *"a receipt you can't attribute to a user defeats the entire audit trail."*
+//
+// The paragraph above is where the bug was visible and nobody read it that way.
+// P-34 wrote it about TENANCY -- a null-entity receipt is addressable from no
+// tenant, which is the safe direction and is still true. P-17 then made
+// receipts outlive their session, correctly, because v3 Addition 9.3 retains
+// them for regulatory compliance while the transcript is erased. Put together:
+//
+//   sessionId  -- nulled by `ShadowConsentReceipt_sessionId_fkey`
+//                 (ON DELETE SET NULL) the moment the session is cleaned up or
+//                 a GDPR erasure removes it;
+//   entityId   -- `core.ts` writes `context.activeEntity?.id ?? null`.
+//
+// ...were the ONLY two links a receipt had to a person, and both are nullable.
+// A retained receipt with neither named nobody. It could not be exported under
+// Article 15, could not be listed, and could not be produced for the person it
+// is about -- while still being kept for seven years under Article 17(3)(b).
+// Kept, and unreadable by its subject, which is the worst of both.
+//
+// So `userId` is written here, by the one permitted writer (eslint's P-17 block
+// makes a direct `prisma.shadowConsentReceipt.create` a lint error), and it is
+// read by `gdpr-export.exportUserData` -- the Article 15 path, which is the
+// code that acts on the attribution. `tests/db/migration-window-02.test.ts`
+// deletes the session and asserts the receipt still names its user, from a
+// second `PrismaClient`, after a restart.
+//
+// It does not replace the entity scoping above and does not widen it:
+// `listReceipts`, `getReceipt` and `rollbackAction` still take a
+// `VerifiedEntityId` and still filter on `entityId`. Attribution answers "whose
+// receipt is this"; tenancy answers "which tenant may read it". Those are
+// different questions and conflating them is what P-34 was fixing.
+// ============================================================================
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface CreateReceiptParams {
+  /**
+   * The `User.id` who authorised the action. Migration window 02.
+   *
+   * Optional on the params rather than required, because a receipt can
+   * legitimately have no user in scope -- `recording-consent` records a
+   * CONTACT's decision about being recorded. A null now means "no user was in
+   * scope", which is a fact; before the column it was indistinguishable from
+   * "the session that named the user has been deleted".
+   */
+  userId?: string;
   sessionId?: string;
   messageId?: string;
   actionType: string;
@@ -73,6 +118,8 @@ export interface ListReceiptsParams {
 
 export interface ConsentReceiptRecord {
   id: string;
+  /** Who authorised the action. Survives the session being deleted. */
+  userId: string | null;
   sessionId: string | null;
   messageId: string | null;
   actionType: string;
@@ -117,6 +164,11 @@ export class ConsentReceiptService {
 
     const receipt = await prisma.shadowConsentReceipt.create({
       data: {
+        // Window 02. Written FIRST, and from the caller's own authenticated
+        // identity rather than resolved back through `sessionId`: resolving it
+        // through the session would reproduce the defect -- the attribution
+        // would only exist for as long as the thing it was derived from.
+        userId: params.userId ?? null,
         sessionId: params.sessionId ?? null,
         messageId: params.messageId ?? null,
         actionType: params.actionType,
