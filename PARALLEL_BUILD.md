@@ -1108,3 +1108,56 @@ Every naive count on this repository has misled at least once: `_session` went
 and tests; in-memory stores 64 vs 69 vs 104 depending on arrays and constants;
 `as unknown as` "+3" that was its own explanatory comments. **Quote no number
 from this codebase without its scope attached.**
+
+---
+
+# ⚠️ HAZARD — read before wiring Sprint 6's retention cron (P-17)
+
+**Wiring issue #25's "retention policies + nightly cleanup cron" as the code
+stands today will delete regulatory records on the wrong schedule.**
+
+`src/modules/shadow/compliance/retention.ts` deletes consent receipts as a
+*child of the session*:
+
+```ts
+const oldSessionIds = /* sessions past message_retention_days */;
+await Promise.all([
+  prisma.shadowMessage.deleteMany({ where: { sessionId: { in: oldSessionIds } } }),
+  prisma.shadowSessionOutcome.deleteMany({ where: { sessionId: { in: oldSessionIds } } }),
+  prisma.shadowConsentReceipt.deleteMany({ where: { sessionId: { in: oldSessionIds } } }),  // <--
+  prisma.shadowAuthEvent.deleteMany({ where: { sessionId: { in: oldSessionIds } } }),
+]);
+```
+
+The committed spec says the opposite, twice.
+`docs/specs/PAF-Shadow-Voice-Agent-v3-Final-…`, Addition 9.1:
+
+```
+message_retention_days           INTEGER DEFAULT 365,
+consent_receipt_retention_days   INTEGER DEFAULT 2555,  -- 7 years (regulatory)
+```
+
+and Addition 9.3, on user-requested deletion:
+
+> Consent receipts **RETAINED (legal requirement)** but message content within
+> them is scrubbed
+
+**A consent receipt is the record that a human authorised an action.** It is the
+evidence an auditor asks for, and it is the only artefact that survives the
+conversation it came from. Deleting it on the transcript's schedule destroys the
+proof while keeping nothing that needed keeping.
+
+**Why this has never caused harm, and why that is about to change:**
+`runRetentionCleanup()` has **no caller anywhere in `src/`**. The deletion path
+is latent. Issue #25's cron is precisely the thing that makes it live — so the
+sprint's deliverable is what converts a dormant bug into nightly data loss.
+
+**Required before any cron is registered:** consent receipts get their own
+retention period, independent of the session; deletion is proved against a
+scratch database first; and the nightly job is observable (P-28's recorder) so a
+run that deletes more than expected is visible rather than silent.
+
+This is the second time this file has had to warn about `retention.ts`. The first
+was P-02 making the module executable at all — before that, every service in it
+addressed a nonexistent Prisma model and threw on first call, so the code could
+not have deleted anything. **It can now.**
