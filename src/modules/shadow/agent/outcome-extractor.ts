@@ -1,7 +1,7 @@
 // Shadow Voice Agent — Outcome Extractor
 // Extracts structured outcomes from conversation transcripts using Claude.
 
-import { anthropic } from '@/lib/ai';
+import { createMessage, type AiCallAttribution } from '@/lib/ai';
 import { prisma } from '@/lib/db';
 import type { ExtractedOutcome } from '../types';
 
@@ -32,30 +32,46 @@ JSON schema:
 If nothing was found in a category, return an empty array for that category.
 Only extract what is clearly stated or directly implied. Do not infer or guess.`;
 
+/** P-39: `UsageRecord.module` for every call this file makes. */
+const METERING_MODULE = 'shadow-outcome-extractor';
+
 /**
  * Extract structured outcomes from a conversation transcript.
  *
  * Uses Claude to analyze the full transcript and identify decisions,
  * commitments, deadlines, follow-ups, and record changes.
+ *
+ * P-39: goes through `createMessage`, not the raw `anthropic` client, so the
+ * call lands in the `UsageRecord` ledger. `attribution` is optional here only
+ * because a transcript carries no entity of its own; a caller that knows the
+ * entity should pass it, and `extractAndSaveOutcomes` threads it through.
+ * Without one the call is counted as unattributed rather than silently
+ * unmetered.
  */
-export async function extractOutcomes(transcript: string): Promise<ExtractedOutcome> {
+export async function extractOutcomes(
+  transcript: string,
+  attribution: AiCallAttribution = { module: METERING_MODULE },
+): Promise<ExtractedOutcome> {
   if (!transcript || transcript.trim().length === 0) {
     return emptyOutcome();
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      temperature: 0,
-      system: EXTRACTION_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: `Extract outcomes from this conversation transcript:\n\n${transcript}`,
-        },
-      ],
-    });
+    const response = await createMessage(
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        temperature: 0,
+        system: EXTRACTION_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: `Extract outcomes from this conversation transcript:\n\n${transcript}`,
+          },
+        ],
+      },
+      attribution,
+    );
 
     const block = response.content[0];
     const text = block.type === 'text' ? block.text : '';
@@ -132,8 +148,9 @@ export async function saveSessionOutcome(
 export async function extractAndSaveOutcomes(
   sessionId: string,
   transcript: string,
+  attribution: AiCallAttribution = { module: METERING_MODULE },
 ): Promise<{ outcome: ExtractedOutcome; outcomeId: string }> {
-  const outcome = await extractOutcomes(transcript);
+  const outcome = await extractOutcomes(transcript, attribution);
 
   // Compute a simple confidence score based on how many items were extracted
   const totalItems =

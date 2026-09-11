@@ -1,7 +1,7 @@
 // Shadow Voice Agent — Intent Classifier
 // Uses a fast Claude call to classify user messages into structured intents.
 
-import { anthropic } from '@/lib/ai';
+import { createMessage } from '@/lib/ai';
 import type { AgentContext, ClassifiedIntent, IntentCategory } from '../types';
 
 /**
@@ -117,13 +117,24 @@ User message: "${message}"
 Classify this message.`;
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 256,
-      temperature: 0,
-      system: CLASSIFICATION_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
-    });
+    // P-39: `createMessage`, not the raw `anthropic` client, so this call lands
+    // in the `UsageRecord` ledger. `context.activeEntity` is optional -- a turn
+    // with no entity selected is recorded as unattributed rather than silently
+    // unmetered, because `UsageRecord.entityId` is a non-null foreign key.
+    const response = await createMessage(
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 256,
+        temperature: 0,
+        system: CLASSIFICATION_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: userPrompt }],
+      },
+      {
+        entityId: context.activeEntity?.id,
+        userId: context.user.id,
+        module: 'shadow-intent-classifier',
+      },
+    );
 
     const block = response.content[0];
     const text = block.type === 'text' ? block.text : '';

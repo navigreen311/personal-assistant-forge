@@ -125,16 +125,14 @@ jest.mock('@/lib/db', () => ({
   },
 }));
 
-// Mock Anthropic AI client
+// Mock the AI seam. P-39: `createMessage` replaced the raw `anthropic` client
+// here -- it is the metered door, and importing the raw client outside
+// `src/lib/ai/**` is now a lint error.
 jest.mock('@/lib/ai', () => ({
-  anthropic: {
-    messages: {
-      create: jest.fn().mockResolvedValue({
-        content: [{ type: 'text', text: '{"primaryIntent":"general_question","confidence":0.9,"entities":{},"reasoning":"test"}' }],
-        usage: { input_tokens: 100, output_tokens: 50 },
-      }),
-    },
-  },
+  createMessage: jest.fn().mockResolvedValue({
+    content: [{ type: 'text', text: '{"primaryIntent":"general_question","confidence":0.9,"entities":{},"reasoning":"test"}' }],
+    usage: { input_tokens: 100, output_tokens: 50 },
+  }),
   generateText: jest.fn().mockResolvedValue('Mock response'),
   generateJSON: jest.fn().mockResolvedValue({}),
 }));

@@ -93,14 +93,28 @@ const REPO_ROOT = toPosix(join(__dirname, '..', '..', '..'));
  *       The hash-chained tamper-evidence trail. Sole toucher of
  *       `prisma.provenanceRecord`. Same shape, same conclusion.
  *
- *   `lib/ai/usage.ts :: usageTracker`
+ *   `lib/ai/usage.ts :: usageTracker`   -- CLOSED BY P-39, see below.
  *       Token and cost accounting for Anthropic calls. Stronger than the other
  *       twelve: `src/lib/ai/usage.ts` is imported by NOTHING -- not by
  *       `lib/ai/client.ts`, not even re-exported by `lib/ai/index.ts` -- so no
- *       barrel mentions it and no test touches it. Every model call this
- *       platform makes is unmetered. (`engines/cost/model-router.ts ::
- *       estimateCost` is live, but it PREDICTS a cost before a call; nothing
- *       records what was actually spent.)
+ *       barrel mentions it. Every model call this platform makes is unmetered.
+ *       (`engines/cost/model-router.ts :: estimateCost` is live, but it
+ *       PREDICTS a cost before a call; nothing records what was actually spent.)
+ *
+ *       P-39 deleted the file. Per `docs/parallel-build/decision-02-throttle.md`
+ *       and its amendment -- two implementations, one in-memory and dead, one
+ *       persisted and live, neither wired: delete the first and WIRE THE SECOND
+ *       -- `src/lib/ai/client.ts` now writes every call to the `UsageRecord`
+ *       table through `src/lib/ai/metering.ts`. An in-memory tracker would have
+ *       given metering that resets on every deploy.
+ *
+ *       One correction to the paragraph above, recorded because a measurement
+ *       that is 95% right is how the next one gets trusted: "no test touches
+ *       it" was wrong. `tests/unit/ai/usage.test.ts` existed and passed 21
+ *       assertions against it, one of which -- "should use default pricing for
+ *       unknown models" -- was a passing test encoding the defect. The VERDICT
+ *       was right anyway, because this scan does not count a test as a caller;
+ *       the prose overstated the evidence for it.
  *
  * Those first two are worth one more sentence, because they are precisely the
  * hole P-36 could not see. `tests/db/control-plane-schema.test.ts` asserts that
@@ -120,7 +134,11 @@ const REPO_ROOT = toPosix(join(__dirname, '..', '..', '..'));
  * here is direct-caller, not reachable-from-a-route.
  */
 const KNOWN_DEAD: readonly string[] = [
-  'src/lib/ai/usage.ts :: usageTracker',
+  // 'src/lib/ai/usage.ts :: usageTracker' was here. P-39 deleted the file; the
+  // AI client seam now writes to the persisted `UsageRecord` ledger instead.
+  // This deletion is not bookkeeping -- the list is guarded both ways, so the
+  // line had to go in the same commit as the wiring, and leaving it would fail
+  // 'keeps the list honest: every recorded name still exists'.
   'src/modules/capture/services/offline-queue.ts :: offlineQueue',
   'src/modules/capture/services/screenshot-service.ts :: screenshotService',
   'src/modules/security/services/provenance-service.ts :: provenanceService',
@@ -156,7 +174,11 @@ describe('P-38: every service singleton has a caller outside its own file', () =
     // pointed at the wrong place it returns an empty Map and the gate passes
     // forever.
     expect(tree.size).toBeGreaterThan(1200);
-    expect([...tree.keys()].some((f) => f.endsWith('/src/lib/ai/usage.ts'))).toBe(true);
+    // P-39: was '/src/lib/ai/usage.ts', deleted with that package. Repointed at
+    // the file that replaced it so the canary keeps naming a file that exists --
+    // an assertion against a deleted path passes vacuously the moment it is
+    // loosened, and this line exists to catch `readTree` reading nothing.
+    expect([...tree.keys()].some((f) => f.endsWith('/src/lib/ai/metering.ts'))).toBe(true);
     expect([...tree.keys()].some((f) => f.endsWith('/scripts/worker.ts'))).toBe(true);
     expect(scan.length).toBeGreaterThan(35);
     expect(scan.filter((entry) => entry.verdict === 'live').length).toBeGreaterThan(25);

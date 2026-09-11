@@ -46,8 +46,13 @@
 // service; the entry point under test is the route, called for real.
 const anthropicCreate = jest.fn();
 
+// P-39: the agent no longer holds the raw `anthropic` client -- reaching for it
+// outside `src/lib/ai/**` is now a lint error, because a call through it writes
+// no `UsageRecord` row. `createMessage(params, attribution)` is the metered
+// door, and it takes the same request object as argument 0, so every assertion
+// below on `anthropicCreate.mock.calls[n][0]` means exactly what it did before.
 jest.mock('@/lib/ai', () => ({
-  anthropic: { messages: { create: (...args: unknown[]) => anthropicCreate(...args) } },
+  createMessage: (...args: unknown[]) => anthropicCreate(...args),
   generateText: jest.fn().mockResolvedValue(''),
   generateJSON: jest.fn().mockResolvedValue({}),
   chat: jest.fn(),

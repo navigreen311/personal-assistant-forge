@@ -2,7 +2,7 @@
 // The "brain" of Shadow: processes messages through intent classification,
 // context assembly, safety checks, tool-use loop, and response generation.
 
-import { anthropic } from '@/lib/ai';
+import { createMessage } from '@/lib/ai';
 import { prisma } from '@/lib/db';
 import type {
   ShadowResponse,
@@ -263,22 +263,34 @@ export class ShadowAgent {
       // it is still the previous entity.
       const systemPrompt = this.buildSystemPrompt(context, intent);
 
-      const response = await anthropic.messages.create({
-        model: DEFAULT_MODEL,
-        max_tokens: 2048,
-        temperature: 0.3,
-        system: systemPrompt,
-        tools: tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.input_schema,
-        })) as unknown as Parameters<
-          typeof anthropic.messages.create
-        >[0]['tools'],
-        messages: conversationMessages as unknown as Parameters<
-          typeof anthropic.messages.create
-        >[0]['messages'],
-      });
+      // P-39. `createMessage`, not the raw `anthropic` client. This is the
+      // platform's highest-volume model call -- once per tool iteration, up to
+      // MAX_TOOL_ITERATIONS per turn -- and until this package it was entirely
+      // unmetered. Attribution is rebuilt each iteration from `context` for the
+      // same reason the system prompt is: `switch_entity` can move the session
+      // mid-turn, and the spend after the switch belongs to the entity that is
+      // active after it, not the one that started the turn.
+      const response = await createMessage(
+        {
+          model: DEFAULT_MODEL,
+          max_tokens: 2048,
+          temperature: 0.3,
+          system: systemPrompt,
+          tools: tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            input_schema: t.input_schema,
+          })) as unknown as Parameters<typeof createMessage>[0]['tools'],
+          messages: conversationMessages as unknown as Parameters<
+            typeof createMessage
+          >[0]['messages'],
+        },
+        {
+          entityId: context.activeEntity?.id,
+          userId: context.user.id,
+          module: 'shadow-agent',
+        },
+      );
 
       totalTokensIn += response.usage?.input_tokens ?? 0;
       totalTokensOut += response.usage?.output_tokens ?? 0;
