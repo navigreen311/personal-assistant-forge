@@ -7,8 +7,12 @@
 
 jest.mock('@/lib/db', () => ({
   prisma: {
+    contact: {
+      findFirst: jest.fn(),
+    },
     contactCallPreference: {
       findUnique: jest.fn(),
+      updateMany: jest.fn(),
     },
     shadowCallAttempt: {
       count: jest.fn(),
@@ -43,6 +47,7 @@ jest.mock('@/lib/db', () => ({
 import { prisma } from '@/lib/db';
 import { RedactionPipeline } from '@/modules/shadow/compliance/redaction';
 import { DNCChecker } from '@/modules/shadow/compliance/dnc-checker';
+import type { VerifiedEntityId } from '@/shared/middleware/auth';
 import { RetentionService } from '@/modules/shadow/compliance/retention';
 
 // Type-safe mock references
@@ -50,6 +55,32 @@ const mockDNCEntry = prisma.contactCallPreference as jest.Mocked<
   typeof prisma.contactCallPreference
 >;
 const mockCallAttempt = prisma.shadowCallAttempt as jest.Mocked<typeof prisma.shadowCallAttempt>;
+const mockContact = prisma.contact as jest.Mocked<typeof prisma.contact>;
+
+/**
+ * P-16. `canCall` takes the branded `VerifiedEntityId` so it cannot be reached
+ * from code that has not proved entity ownership. A test is such trusted code;
+ * this is the one cast in the file and it is what the brand is for.
+ */
+const ENTITY = 'entity-1' as VerifiedEntityId;
+const OTHER_ENTITY = 'entity-2' as VerifiedEntityId;
+
+/** A contact that is in scope for `ENTITY`. */
+function contactInScope(id: string): void {
+  (mockContact.findFirst as jest.Mock).mockImplementation(
+    async (args: { where: { id: string; entityId: string } }) =>
+      args.where.id === id && args.where.entityId === ENTITY
+        ? { id, name: 'Test Contact' }
+        : null
+  );
+}
+
+/** 2 PM on a Wednesday, UTC. Outside every default quiet-hours window. */
+const AFTERNOON = new Date('2026-03-11T14:00:00Z');
+/** 10 PM on the same Wednesday, UTC. Inside the default 21:00-08:00 window. */
+const LATE_EVENING = new Date('2026-03-11T22:00:00Z');
+/** 6 AM on the same Wednesday, UTC. Also inside it, on the other side. */
+const EARLY_MORNING = new Date('2026-03-11T06:00:00Z');
 const mockRetentionConfig = prisma.shadowRetentionConfig as jest.Mocked<typeof prisma.shadowRetentionConfig>;
 const mockMessage = prisma.shadowMessage as jest.Mocked<typeof prisma.shadowMessage>;
 const mockSession = prisma.shadowVoiceSession as jest.Mocked<typeof prisma.shadowVoiceSession>;
@@ -264,88 +295,158 @@ describe('DNCChecker', () => {
     jest.clearAllMocks();
   });
 
+  // ==========================================================================
+  // P-16. Every assertion below was here before and still is. What changed:
+  //
+  //   * `canCall` takes a `VerifiedEntityId`, so each case now also states
+  //     which entity is asking. The old signature had no tenancy at all.
+  //   * The clock is injected rather than `jest.spyOn(Date.prototype,
+  //     'getHours')`. Stubbing a prototype method proved that the checker calls
+  //     `getHours`, which is an implementation detail, and it stopped proving
+  //     anything the moment the checker switched to `Intl` for the timezone.
+  //   * `resetWeeklyCounts` is `pruneOldCallAttempts`. The rename is the point:
+  //     it never reset a counter -- there is no counter, the limit counts the
+  //     durable rows -- and a name promising a reset invited someone to depend
+  //     on one.
+  // ==========================================================================
+
   describe('canCall', () => {
     it('should block calls to contacts on the DNC list', async () => {
+      contactInScope('contact-1');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue({
         contactId: 'contact-1',
         doNotCall: true,
         maxCallsPerWeek: 3,
+        preferredChannel: 'phone',
       });
 
-      const result = await checker.canCall('contact-1');
+      const result = await checker.canCall('contact-1', ENTITY, { now: AFTERNOON });
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('Do Not Call');
+      // Addition 3.3: "Is contact on DNC list? -> use email instead".
+      expect(result.preferredChannel).toBe('email');
     });
 
     it('should block calls during quiet hours (after 9 PM)', async () => {
+      contactInScope('contact-2');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue(null);
 
-      // Mock Date.prototype.getHours to return 22 (10 PM)
-      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(22);
-
-      const result = await checker.canCall('contact-2');
+      const result = await checker.canCall('contact-2', ENTITY, {
+        now: LATE_EVENING,
+        timezone: 'UTC',
+      });
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('Quiet hours');
-
-      jest.restoreAllMocks();
+      expect(result.reason).toContain('quiet hours');
     });
 
     it('should block calls during quiet hours (before 8 AM)', async () => {
+      contactInScope('contact-3');
+      (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockCallAttempt.count as jest.Mock).mockResolvedValue(0);
+
+      const result = await checker.canCall('contact-3', ENTITY, {
+        now: EARLY_MORNING,
+        timezone: 'UTC',
+      });
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('quiet hours');
+    });
+
+    it('honours the CONTACT quiet hours, not a hard-coded 21:00-08:00', async () => {
+      // The defect this case exists for: `ContactCallPreference` has
+      // `quietHoursStart` and `quietHoursEnd` columns and the checker ignored
+      // both. A contact who asked not to be called before 10 was called at
+      // 08:01, and the stored preference said otherwise.
+      contactInScope('contact-late-riser');
+      (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue({
+        contactId: 'contact-late-riser',
+        doNotCall: false,
+        maxCallsPerWeek: 3,
+        preferredChannel: 'phone',
+        quietHoursStart: '18:00',
+        quietHoursEnd: '10:00',
+      });
+      (mockCallAttempt.count as jest.Mock).mockResolvedValue(0);
+
+      // 09:00 UTC is fine under the default window and inside this contact's.
+      const early = await checker.canCall('contact-late-riser', ENTITY, {
+        now: new Date('2026-03-11T09:00:00Z'),
+        timezone: 'UTC',
+      });
+      expect(early.allowed).toBe(false);
+      expect(early.reason).toContain('18:00 - 10:00');
+
+      const later = await checker.canCall('contact-late-riser', ENTITY, {
+        now: new Date('2026-03-11T11:00:00Z'),
+        timezone: 'UTC',
+      });
+      expect(later.allowed).toBe(true);
+    });
+
+    it('refuses a contact that belongs to another entity', async () => {
+      contactInScope('contact-1');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue(null);
 
-      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(6);
-
-      const result = await checker.canCall('contact-3');
+      const result = await checker.canCall('contact-1', OTHER_ENTITY, {
+        now: AFTERNOON,
+        timezone: 'UTC',
+      });
       expect(result.allowed).toBe(false);
-      expect(result.reason).toContain('Quiet hours');
-
-      jest.restoreAllMocks();
+      expect(result.reason).toContain('not in the active entity');
+      // And it never reached the preference row, so the refusal cannot leak
+      // whether the other tenant has one.
+      expect(mockDNCEntry.findUnique).not.toHaveBeenCalled();
     });
 
     it('should block calls when weekly limit is reached', async () => {
+      contactInScope('contact-4');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue({
         contactId: 'contact-4',
         doNotCall: false,
         maxCallsPerWeek: 3,
+        preferredChannel: 'phone',
       });
-
-      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(14); // 2 PM
       (mockCallAttempt.count as jest.Mock).mockResolvedValue(3);
 
-      const result = await checker.canCall('contact-4');
+      const result = await checker.canCall('contact-4', ENTITY, {
+        now: AFTERNOON,
+        timezone: 'UTC',
+      });
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('Weekly call limit reached');
-
-      jest.restoreAllMocks();
     });
 
     it('should allow calls when all checks pass', async () => {
+      contactInScope('contact-5');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue({
         contactId: 'contact-5',
         doNotCall: false,
         maxCallsPerWeek: 3,
+        preferredChannel: 'phone',
       });
-
-      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(14); // 2 PM
       (mockCallAttempt.count as jest.Mock).mockResolvedValue(1);
 
-      const result = await checker.canCall('contact-5');
+      const result = await checker.canCall('contact-5', ENTITY, {
+        now: AFTERNOON,
+        timezone: 'UTC',
+      });
       expect(result.allowed).toBe(true);
       expect(result.reason).toBeUndefined();
-
-      jest.restoreAllMocks();
+      expect(result.callsThisWeek).toBe(1);
+      expect(result.maxCallsPerWeek).toBe(3);
     });
 
     it('should use default max calls per week when no entry exists', async () => {
+      contactInScope('contact-new');
       (mockDNCEntry.findUnique as jest.Mock).mockResolvedValue(null);
-
-      jest.spyOn(Date.prototype, 'getHours').mockReturnValue(14);
       (mockCallAttempt.count as jest.Mock).mockResolvedValue(0);
 
-      const result = await checker.canCall('contact-new');
+      const result = await checker.canCall('contact-new', ENTITY, {
+        now: AFTERNOON,
+        timezone: 'UTC',
+      });
       expect(result.allowed).toBe(true);
-
-      jest.restoreAllMocks();
+      expect(result.maxCallsPerWeek).toBe(3);
     });
   });
 
@@ -366,11 +467,11 @@ describe('DNCChecker', () => {
     });
   });
 
-  describe('resetWeeklyCounts', () => {
+  describe('pruneOldCallAttempts', () => {
     it('should delete old call attempt records', async () => {
       (mockCallAttempt.deleteMany as jest.Mock).mockResolvedValue({ count: 15 });
 
-      const count = await checker.resetWeeklyCounts();
+      const count = await checker.pruneOldCallAttempts();
       expect(count).toBe(15);
       expect(mockCallAttempt.deleteMany).toHaveBeenCalledWith({
         where: {

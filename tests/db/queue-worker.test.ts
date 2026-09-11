@@ -312,6 +312,11 @@ describe('queue workers actually consume', () => {
       // list is what stops that happening a fifth time.
       'domain-events',
       'pa-forge-jobs',
+      // P-16 (Sprint 5): the Shadow proactive sweep. Its repeatable is
+      // registered by `ensureProactiveSchedule()` from `main()` in
+      // scripts/worker.ts; without a consumer in this list that repeat would
+      // fire every five minutes into nothing, which is P-11 finding 1 exactly.
+      'shadow-proactive',
       'workflow-cron',
       'workflow-execution',
     ]);

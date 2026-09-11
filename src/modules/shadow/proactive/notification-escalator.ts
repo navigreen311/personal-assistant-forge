@@ -1,3 +1,37 @@
+// ============================================================================
+// Shadow Voice Agent — Escalation State Machine
+// v2 spec Part 9.3: notify -> call -> SMS -> second call -> phone tree.
+// ============================================================================
+//
+// P-16, deliverable 4. THIS FILE WAS ALREADY CORRECT AND HAD NO CALLER.
+// `docs/parallel-build/decision-02-throttle.md`'s amendment records how that
+// was missed: a grep for `@/modules/shadow/proactive` prefix-matched four
+// routes that import `.../morning-briefing`, and import-granular reachability
+// was read as function-granular reachability. Until `proactive-runner.ts`, the
+// `notificationEscalator` singleton had zero callers anywhere in `src/`, so
+// every anti-spam control the Shadow settings page offers -- quiet hours, the
+// call window, `maxCallsPerDay`, `maxCallsPerHour`, the cooldown -- was a
+// stored preference nothing read.
+//
+// What P-16 changed here is small and deliberate:
+//
+//   * `preferredChannel` (Addition 7.1). The adaptive channel service decides
+//     which channel a user actually answers; a downgrade has to reach the rung
+//     that would otherwise have placed a call. `phone_tree` is exempt --
+//     "NEVER DOWNGRADE: Crisis declarations always call".
+//   * `acknowledge()`. `escalate()` already stopped when it saw an
+//     `acknowledged` row, and nothing in the repository could produce one. The
+//     stop condition was unreachable.
+//   * `dueForNextStep()`. The ladder's `waitMinutes` were declared and never
+//     consulted; a state machine that cannot tell whether the wait has elapsed
+//     is a list, not a machine.
+//
+// The anti-spam counting is unchanged, because it is right: it counts the
+// durable `ShadowOutreach` rows that record the outreach rather than keeping a
+// counter, so it is correct across a restart and across instances by
+// construction. That is the reason `src/engines/trust-safety/throttle-service.ts`
+// was deleted rather than persisted (Decision 2).
+
 import { prisma } from '@/lib/db';
 
 // ---- Types ----
@@ -13,6 +47,12 @@ export interface EscalationParams {
   content: string;
   sourceType?: string;
   sourceId?: string;
+  /**
+   * The channel the adaptive service says this user actually answers for this
+   * trigger type. When it is not a phone channel, the phone rungs of the ladder
+   * are delivered on it instead. `phone_tree` is never downgraded.
+   */
+  preferredChannel?: string;
 }
 
 export interface EscalationStep {
@@ -36,6 +76,31 @@ export interface EscalationResult {
   channel: string;
   status: string;
   attempt: number;
+  /** Why a `blocked` result was blocked. Absent otherwise. */
+  reason?: string;
+  /** The `ShadowOutreach` row this call wrote, when it wrote one. */
+  outreachId?: string;
+}
+
+export interface ActiveEscalation {
+  notificationId: string;
+  triggerType: string;
+  attempts: number;
+  lastAttemptAt: Date;
+  priority: EscalationPriority;
+  title: string;
+}
+
+export interface AcknowledgeResult {
+  acknowledged: boolean;
+  /** The channel the acknowledged outreach was delivered on. */
+  channel: string | null;
+  /** Trigger type of the acknowledged outreach, for effectiveness accounting. */
+  triggerType: string | null;
+  /** The escalation thread the row belonged to, if it belonged to one. */
+  notificationId: string | null;
+  /** Milliseconds between the outreach being recorded and this acknowledgement. */
+  responseTimeMs: number | null;
 }
 
 // ---- Escalation ladder ----
@@ -56,7 +121,7 @@ export class NotificationEscalator {
    * Each call advances one step if the prior step was not acknowledged.
    */
   async escalate(params: EscalationParams): Promise<EscalationResult> {
-    const { userId, notificationId, type, priority, title, content, sourceType, sourceId } = params;
+    const { userId, notificationId, type, priority, title, content, preferredChannel } = params;
 
     // Load existing escalation state from outreach records
     const existingOutreach = await prisma.shadowOutreach.findMany({
@@ -91,45 +156,189 @@ export class NotificationEscalator {
       };
     }
 
+    // Addition 7.1 -- the adaptive downgrade, applied to the rung about to fire.
+    const channel = applyChannelPreference(nextStep.channel, preferredChannel);
+
     // Anti-spam: check proactive config limits
-    const spamCheck = await this.checkAntiSpam(userId, nextStep.channel);
+    const spamCheck = await this.checkAntiSpam(userId, channel);
     if (!spamCheck.allowed) {
       // If we cannot deliver on this channel, record as blocked and skip
-      await prisma.shadowOutreach.create({
+      const blocked = await prisma.shadowOutreach.create({
         data: {
           userId,
           triggerType: type,
           triggerEvent: notificationId,
-          channel: nextStep.channel,
+          channel,
           status: 'blocked',
           content: `[ANTI-SPAM] ${spamCheck.reason}: ${title}`,
         },
       });
 
       return {
-        channel: nextStep.channel,
+        channel,
         status: 'blocked',
         attempt: currentAttempt + 1,
+        reason: spamCheck.reason,
+        outreachId: blocked.id,
       };
     }
 
     // Record this escalation step
-    await prisma.shadowOutreach.create({
+    const row = await prisma.shadowOutreach.create({
       data: {
         userId,
         triggerType: type,
         triggerEvent: notificationId,
-        channel: nextStep.channel,
+        channel,
         status: 'pending',
         content: `[${priority}] ${title}: ${content}`,
       },
     });
 
     return {
-      channel: nextStep.channel,
+      channel,
       status: 'escalated',
       attempt: currentAttempt + 1,
+      outreachId: row.id,
     };
+  }
+
+  /**
+   * Record that the user answered.
+   *
+   * `escalate()` has always refused to advance past an `acknowledged` row, and
+   * before this method nothing in the repository could write one -- so the stop
+   * condition was unreachable and the ladder ran to exhaustion for every
+   * notification. `POST /api/shadow/outreach/[id]/ack` is the entry point.
+   *
+   * `userId` is part of the lookup rather than a check after it: acknowledging
+   * another user's outreach row must be indistinguishable from acknowledging
+   * one that does not exist, and one acknowledged row anywhere in a thread is
+   * what `escalate()` reads to stop the ladder.
+   */
+  async acknowledge(params: {
+    userId: string;
+    outreachId: string;
+    now?: Date;
+  }): Promise<AcknowledgeResult> {
+    const { userId, outreachId } = params;
+    const now = params.now ?? new Date();
+
+    const pending = await prisma.shadowOutreach.findFirst({
+      where: {
+        id: outreachId,
+        userId,
+        status: { in: ['pending', 'delivered'] },
+      },
+    });
+
+    if (!pending) {
+      return {
+        acknowledged: false,
+        channel: null,
+        triggerType: null,
+        notificationId: null,
+        responseTimeMs: null,
+      };
+    }
+
+    await prisma.shadowOutreach.update({
+      where: { id: pending.id },
+      data: { status: 'acknowledged' },
+    });
+
+    return {
+      acknowledged: true,
+      channel: pending.channel,
+      triggerType: pending.triggerType,
+      notificationId: pending.triggerEvent,
+      responseTimeMs: Math.max(0, now.getTime() - pending.createdAt.getTime()),
+    };
+  }
+
+  /**
+   * Has the wait after the last rung elapsed?
+   *
+   * The ladder `waitMinutes` values were declared and never read. Without this
+   * the runner would advance every unacknowledged notification on every tick,
+   * turning a five-rung ladder into five notifications in five minutes.
+   */
+  dueForNextStep(lastAttemptAt: Date, currentAttempt: number, now: Date = new Date()): boolean {
+    const previous = ESCALATION_LADDER[currentAttempt - 1];
+    if (!previous) return true;
+    const dueAt = lastAttemptAt.getTime() + previous.waitMinutes * 60 * 1000;
+    return now.getTime() >= dueAt;
+  }
+
+  /**
+   * Every notification still climbing the ladder for this user.
+   *
+   * Grouped from the durable rows rather than an in-flight map, for the same
+   * reason `checkAntiSpam` counts rows: a map does not survive a restart, and
+   * an escalation that forgets it was mid-ladder starts again at rung one.
+   *
+   * BLOCKED ROWS ARE COUNTED, because `escalate()` counts them: a rung that
+   * anti-spam refused has been spent, and the ladder moves on rather than
+   * hammering the same refused channel every tick. The two must agree. They did
+   * not in the first draft of this method -- it excluded blocked rows while
+   * `escalate` included them, so a notification whose phone rungs were all
+   * refused during quiet hours would have sat in this list, reported as still
+   * climbing, forever. That is a smaller version of the same defect this whole
+   * package is about: two places counting the same thing differently, with only
+   * one of them consulted by the code that acts.
+   */
+  async listActiveEscalations(userId: string): Promise<ActiveEscalation[]> {
+    const rows = await prisma.shadowOutreach.findMany({
+      where: { userId, triggerEvent: { not: null } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const byNotification = new Map<
+      string,
+      {
+        triggerType: string;
+        attempts: number;
+        lastAttemptAt: Date;
+        content: string | null;
+        acknowledged: boolean;
+      }
+    >();
+
+    for (const row of rows) {
+      const key = row.triggerEvent;
+      if (!key) continue;
+      const existing = byNotification.get(key);
+      if (existing) {
+        existing.attempts += 1;
+        existing.lastAttemptAt = row.createdAt;
+        existing.acknowledged = existing.acknowledged || row.status === 'acknowledged';
+      } else {
+        byNotification.set(key, {
+          triggerType: row.triggerType,
+          attempts: 1,
+          lastAttemptAt: row.createdAt,
+          content: row.content,
+          acknowledged: row.status === 'acknowledged',
+        });
+      }
+    }
+
+    const out: ActiveEscalation[] = [];
+
+    byNotification.forEach((value, notificationId) => {
+      if (value.acknowledged) return;
+      if (value.attempts >= ESCALATION_LADDER.length) return;
+      out.push({
+        notificationId,
+        triggerType: value.triggerType,
+        attempts: value.attempts,
+        lastAttemptAt: value.lastAttemptAt,
+        priority: this.extractPriority(value.content),
+        title: extractTitle(value.content),
+      });
+    });
+
+    return out;
   }
 
   /**
@@ -295,6 +504,34 @@ export class NotificationEscalator {
     const match = content.match(/\[(P0|P1|P2)\]/);
     return (match?.[1] as EscalationPriority) ?? 'P2';
   }
+}
+
+/**
+ * Apply the adaptive downgrade to one rung.
+ *
+ * A rung that already avoids the phone is left alone -- the adaptive service
+ * ranks channels by response rate and could otherwise *upgrade* rung one from
+ * an in-app push to an SMS, which is the opposite of what Addition 7.1 asks
+ * for. Only phone rungs move, and only downwards.
+ */
+export function applyChannelPreference(
+  ladderChannel: string,
+  preferred: string | undefined
+): string {
+  if (!preferred) return ladderChannel;
+  if (preferred === 'phone') return ladderChannel;
+  // "NEVER DOWNGRADE: Crisis declarations always call" (v3, Addition 7.1).
+  if (ladderChannel === 'phone_tree') return ladderChannel;
+  if (!ladderChannel.includes('phone')) return ladderChannel;
+  return preferred;
+}
+
+/** The title half of a `[P1] Title: content` outreach record. */
+function extractTitle(content: string | null): string {
+  if (!content) return 'Notification';
+  const withoutPriority = content.replace(/^\[(P0|P1|P2)\]\s*/, '');
+  const colon = withoutPriority.indexOf(':');
+  return colon > 0 ? withoutPriority.slice(0, colon) : withoutPriority;
 }
 
 export const notificationEscalator = new NotificationEscalator();

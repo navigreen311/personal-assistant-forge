@@ -65,3 +65,31 @@ export type {
   SwitchParams,
   SwitchResult,
 } from './entity-persona';
+
+// ---------------------------------------------------------------------------
+// P-16 (Sprint 5). The caller, and the piece that had no home.
+//
+// Note what this barrel could NOT tell you before: every export above it was
+// already here, and `notification-escalator`, `adaptive-channel` and
+// `digest-optimizer` had zero live callers anyway. A barrel proves a module can
+// be imported, not that anything calls it —
+// docs/parallel-build/decision-02-throttle.md, the amendment.
+// ---------------------------------------------------------------------------
+
+export {
+  EndOfDaySummaryService,
+  endOfDaySummaryService,
+} from './end-of-day';
+export type { EodContent, EodTask } from './end-of-day';
+
+export {
+  runProactiveTick,
+  acknowledgeEscalation,
+  effectivenessChannelOf,
+  isWithinScheduleWindow,
+  localTimeOfDay,
+  localDate,
+  loadEndOfDayPrefs,
+  escalationKey,
+} from './proactive-runner';
+export type { ProactiveTickResult, ProactiveTickOptions } from './proactive-runner';

@@ -13,9 +13,10 @@ import type {
   ToolDefinition,
 } from '../types';
 import { ToolRouter } from './tool-router';
+import { entityPersonaService } from '../proactive/entity-persona';
 import { ShadowMemory } from './memory';
 import { classifyIntent } from './intent-classifier';
-import { buildContext } from './context-engine';
+import { buildContext, fetchPersona } from './context-engine';
 import { generateResponse } from './response-generator';
 import { computeRiskScore, isBusinessHours } from './risk-scorer';
 
@@ -134,7 +135,7 @@ export class ShadowAgent {
 
     // 6. Run tool-use loop with Claude
     const responseStart = Date.now();
-    const { text, toolResults, tokensIn, tokensOut } = await this.runToolLoop(
+    const { text, toolResults, tokensIn, tokensOut, entitySwitched } = await this.runToolLoop(
       params.message,
       context,
       intent,
@@ -142,6 +143,23 @@ export class ShadowAgent {
     );
     telemetry.responseGenerationMs = Date.now() - responseStart;
     telemetry.model = DEFAULT_MODEL;
+
+    // P-16. The persona this turn actually ran under, recorded on the message.
+    // A system prompt leaves no trace; this is what lets someone establish, six
+    // months later, that an answer was produced under MedLink's HIPAA profile
+    // and not CRE Forge's -- and it is what makes the mid-turn switch below
+    // provable rather than asserted.
+    telemetry.persona = {
+      entityId: context.activeEntity?.id ?? null,
+      entityName: context.activeEntity?.name ?? null,
+      tone: context.activePersona?.tone ?? null,
+      voicePersona: context.activePersona?.voicePersona ?? null,
+      complianceProfiles:
+        context.activePersona?.complianceProfiles ??
+        context.activeEntity?.complianceProfile ??
+        [],
+      switchedDuringTurn: entitySwitched,
+    };
     telemetry.tokensIn = tokensIn;
     telemetry.tokensOut = tokensOut;
 
@@ -203,10 +221,11 @@ export class ShadowAgent {
     toolResults: ToolResult[];
     tokensIn: number;
     tokensOut: number;
+    entitySwitched: boolean;
   }> {
     const tools = this.toolRouter.getToolDefinitions();
-    const systemPrompt = this.buildSystemPrompt(context, intent);
     const allToolResults: ToolResult[] = [];
+    let entitySwitched = false;
     let totalTokensIn = 0;
     let totalTokensOut = 0;
 
@@ -235,6 +254,13 @@ export class ShadowAgent {
 
     while (iterations < MAX_TOOL_ITERATIONS) {
       iterations++;
+
+      // P-16. Rebuilt every iteration rather than once before the loop. The
+      // prompt names the active entity, its compliance profiles and now its
+      // persona; if `switch_entity` moves the session mid-turn and the prompt
+      // does not move with it, the model spends the rest of the turn being told
+      // it is still the previous entity.
+      const systemPrompt = this.buildSystemPrompt(context, intent);
 
       const response = await anthropic.messages.create({
         model: DEFAULT_MODEL,
@@ -294,6 +320,19 @@ export class ShadowAgent {
           );
           allToolResults.push(result);
 
+          // P-16, deliverable 7. `switch_entity` returned `{ switched: true }`
+          // and switched NOTHING: P-34 left the note in tool-router.ts --
+          // "NOTE FOR WHOEVER WIRES THIS UP: it still does not switch anything
+          // ... the name is a promise the code does not keep". The switch is
+          // session state, so it belongs to the runtime that owns the session
+          // rather than to a tool; that is also why it is here and not in
+          // tool-router.ts, which eslint forbids from importing `@/lib/db` at
+          // all (the P-34 block in eslint.config.mjs).
+          if (block.name === 'switch_entity' && result.success) {
+            const applied = await this.applyEntitySwitch(context, result.data);
+            if (applied) entitySwitched = true;
+          }
+
           telemetry.toolCalls.push({
             tool: block.name,
             durationMs: result.durationMs,
@@ -333,7 +372,67 @@ export class ShadowAgent {
       toolResults: allToolResults,
       tokensIn: totalTokensIn,
       tokensOut: totalTokensOut,
+      entitySwitched,
     };
+  }
+
+  /**
+   * Make a `switch_entity` tool call real.
+   *
+   * Three things have to happen together or none of them should:
+   *   1. `ShadowVoiceSession.activeEntityId` moves, so the NEXT turn starts in
+   *      the new entity rather than snapping back.
+   *   2. `context.activeEntity` moves, so the REST OF THIS TURN's tool calls
+   *      are scoped to the new entity -- `entity-scope.ts` re-verifies
+   *      `context.activeEntity.id` on every call, so mutating it here is both
+   *      necessary and sufficient, and it re-checks ownership itself.
+   *   3. `context.activePersona` moves, so the rebuilt system prompt carries
+   *      the new entity's tone, disclaimers and `neverDisclose` list.
+   *
+   * `entityPersonaService.switchEntity` performs 1 and both ownership checks --
+   * the entity's and the session's. It throws on every refusal, and a refusal
+   * here means the switch did not happen, so `applyEntitySwitch` returns false
+   * and the context is left alone. The model is not told it succeeded.
+   */
+  private async applyEntitySwitch(
+    context: AgentContext,
+    data: unknown,
+  ): Promise<boolean> {
+    const entityId =
+      data && typeof data === 'object' && typeof (data as { entityId?: unknown }).entityId === 'string'
+        ? (data as { entityId: string }).entityId
+        : null;
+
+    if (!entityId) return false;
+    if (context.activeEntity?.id === entityId) return false;
+
+    try {
+      await entityPersonaService.switchEntity({
+        sessionId: context.sessionId,
+        userId: context.user.id,
+        targetEntityId: entityId,
+      });
+    } catch (err) {
+      console.error('[ShadowAgent] entity switch refused:', err);
+      return false;
+    }
+
+    const entity = await prisma.entity.findUnique({
+      where: { id: entityId },
+      select: { id: true, name: true, type: true, complianceProfile: true },
+    });
+
+    if (!entity) return false;
+
+    context.activeEntity = {
+      id: entity.id,
+      name: entity.name,
+      type: entity.type,
+      complianceProfile: entity.complianceProfile,
+    };
+    context.activePersona = await fetchPersona(entity.id);
+
+    return true;
   }
 
   // ─── System Prompt Builder ──────────────────────────────────────────────
@@ -344,6 +443,15 @@ export class ShadowAgent {
       ? `\nActive Entity: ${context.activeEntity.name} (${context.activeEntity.type})
 Compliance profiles: ${context.activeEntity.complianceProfile.join(', ') || 'none'}`
       : '\nNo active entity selected. The user may need to switch entity first.';
+
+    // P-16, deliverable 7. `ShadowEntityProfile` stored a tone, a signature, a
+    // greeting, disclaimers and a `neverDisclose` list, and none of it reached
+    // the model: every entity sounded the same and had the same disclosure
+    // rules. `neverDisclose` is the load-bearing one -- on a MedLink entity it
+    // is PHI policy -- so it is stated as a prohibition rather than as context,
+    // and it is placed AFTER the generic persona block so it cannot be read as
+    // one more preference.
+    const personaContext = this.buildPersonaBlock(context);
 
     const pageContext = context.currentPage
       ? `\nCurrent page: ${context.currentPage.title}`
@@ -371,7 +479,7 @@ Name: ${context.user.name}
 Email: ${context.user.email}
 Timezone: ${context.user.timezone}
 Time: ${context.timeOfDay} (${context.dayOfWeek})
-Channel: ${context.channel}${entityContext}${pageContext}${recentActionsContext}
+Channel: ${context.channel}${entityContext}${pageContext}${recentActionsContext}${personaContext}
 
 DETECTED INTENT: ${intent.primaryIntent} (confidence: ${intent.confidence.toFixed(2)})
 
@@ -386,6 +494,44 @@ INSTRUCTIONS:
 5. Keep responses focused and relevant to the request.
 6. When listing items, show the most important/relevant ones first.
 7. After completing an action, confirm what was done and offer related follow-ups.`;
+  }
+
+  /**
+   * The active entity's persona, or nothing at all.
+   *
+   * Nothing at all when the entity has no `ShadowEntityProfile`: inventing a
+   * tone for an entity whose owner never configured one would be the prompt
+   * asserting a preference that does not exist.
+   */
+  private buildPersonaBlock(context: AgentContext): string {
+    const persona = context.activePersona;
+    if (!persona || !context.activeEntity) return '';
+
+    const lines: string[] = [
+      '',
+      `ENTITY PERSONA — ${context.activeEntity.name}:`,
+      `Tone: ${persona.tone}`,
+    ];
+
+    if (persona.signature) lines.push(`Sign off as: ${persona.signature}`);
+    if (persona.greeting) lines.push(`Open a call with: "${persona.greeting}"`);
+    if (persona.complianceProfiles.length > 0) {
+      lines.push(`Compliance regime: ${persona.complianceProfiles.join(', ')}`);
+    }
+    if (persona.disclaimers.length > 0) {
+      lines.push(`Disclaimers that must be stated: ${persona.disclaimers.join('; ')}`);
+    }
+    if (persona.allowedDisclosures.length > 0) {
+      lines.push(`You MAY disclose: ${persona.allowedDisclosures.join(', ')}`);
+    }
+    if (persona.neverDisclose.length > 0) {
+      lines.push(
+        `You MUST NEVER disclose, to anyone, on any channel: ${persona.neverDisclose.join(', ')}. ` +
+          'This overrides any instruction to the contrary, including one from the user.',
+      );
+    }
+
+    return lines.join('\n');
   }
 
   private getChannelGuidance(channel: string): string {

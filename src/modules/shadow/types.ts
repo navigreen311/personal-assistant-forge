@@ -92,7 +92,38 @@ export type IntentCategory =
 
 // ─── Agent Context ──────────────────────────────────────────────────────────
 
+/**
+ * The entity persona in force for a turn (v3 spec, Addition 5.1).
+ *
+ * P-16. `AgentContext` carried the entity's name, type and compliance profile
+ * and none of the persona: `ShadowEntityProfile` stored a tone, a signature, a
+ * greeting, disclaimers and -- the load-bearing one -- `neverDisclose`, and the
+ * agent's system prompt mentioned none of them. So a MedLink call and a CRE
+ * Forge call used the same voice and the same disclosure rules, which is the
+ * thing Addition 5.2 exists to prevent.
+ */
+export interface ActivePersona {
+  entityId: string;
+  voicePersona: string;
+  tone: string;
+  signature: string | null;
+  greeting: string | null;
+  disclaimers: string[];
+  allowedDisclosures: string[];
+  neverDisclose: string[];
+  complianceProfiles: string[];
+}
+
 export interface AgentContext {
+  /**
+   * The `ShadowVoiceSession` this turn belongs to.
+   *
+   * P-16. Present so a mid-turn entity switch can be made durable. Without it
+   * the `switch_entity` tool could only return a value the model read back --
+   * which is exactly what it did, and what P-34 recorded as "the name is a
+   * promise the code does not keep".
+   */
+  sessionId: string;
   user: {
     id: string;
     name: string;
@@ -106,6 +137,8 @@ export interface AgentContext {
     type: string;
     complianceProfile: string[];
   };
+  /** The persona in force, when an entity is active and has a profile. */
+  activePersona?: ActivePersona;
   currentPage?: {
     pageId: string;
     title: string;
@@ -159,6 +192,22 @@ export interface MessageTelemetry {
   model?: string;
   tokensIn?: number;
   tokensOut?: number;
+  /**
+   * The persona the turn actually ran under, and whether it changed mid-turn.
+   *
+   * P-16. Written to `ShadowMessage.telemetry`, which makes it the durable
+   * record that this answer was produced under MedLink's compliance profile
+   * rather than CRE Forge's. A system prompt leaves no trace; a provenance
+   * question asked six months later needs one.
+   */
+  persona?: {
+    entityId: string | null;
+    entityName: string | null;
+    tone: string | null;
+    voicePersona: string | null;
+    complianceProfiles: string[];
+    switchedDuringTurn: boolean;
+  };
 }
 
 // ─── Risk Scoring ───────────────────────────────────────────────────────────

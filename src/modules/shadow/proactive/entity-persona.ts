@@ -1,3 +1,36 @@
+// ============================================================================
+// Shadow Voice Agent — entity voice profiles and persona switching
+// v3 spec, Addition 5.1 (entity voice profiles) + 5.2 (persona switching).
+// ============================================================================
+//
+// P-16, deliverables 6 and 7.
+//
+// `getEntityProfile` was reachable (`GET /api/shadow/config/entity/[id]`).
+// `switchEntity` and `detectEntity` were not called by anything, and
+// `switchEntity` had a defect that would have made wiring it worse than not:
+//
+//     try {
+//       const session = await prisma.shadowVoiceSession.findUnique(...)
+//       if (session) { ...update... } else { personaChanged = true; }
+//     } catch { personaChanged = true; }
+//
+// A session id that does not exist, and a database error while updating one
+// that does, both produced `personaChanged: true` and the announcement
+// "Context switched to X. All subsequent actions will be in the X context."
+// Nothing had switched. That is the codebase's third failure mode -- reporting
+// success for work not done -- in the one place where the work being reported
+// is a compliance boundary: MedLink carries a HIPAA profile and CRE Forge does
+// not, and Addition 5.2's cross-entity safeguard is the reason `entity-scope.ts`
+// exists.
+//
+// It also did not check that the session belonged to the user. It verified the
+// ENTITY's owner and then wrote `activeEntityId` into whatever session id it was
+// handed, so one user could move another user's live voice session onto their
+// own entity.
+//
+// Both are fixed below, and the failure is now a thrown error with a specific
+// message rather than a cheerful announcement.
+
 import { prisma } from '@/lib/db';
 
 // ---- Types ----
@@ -25,6 +58,21 @@ export interface SwitchParams {
   userId: string;
   targetEntityId?: string;
   contactKeyword?: string;
+}
+
+export class EntitySwitchError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | 'TARGET_UNRESOLVED'
+      | 'ENTITY_NOT_FOUND'
+      | 'ENTITY_FORBIDDEN'
+      | 'SESSION_NOT_FOUND'
+      | 'SESSION_FORBIDDEN',
+  ) {
+    super(message);
+    this.name = 'EntitySwitchError';
+  }
 }
 
 export interface SwitchResult {
@@ -90,7 +138,10 @@ export class EntityPersonaService {
     }
 
     if (!entityId) {
-      throw new Error('Could not resolve target entity. Provide an entity ID or keyword.');
+      throw new EntitySwitchError(
+        'Could not resolve target entity. Provide an entity ID or keyword.',
+        'TARGET_UNRESOLVED',
+      );
     }
 
     // Verify ownership
@@ -99,34 +150,44 @@ export class EntityPersonaService {
     });
 
     if (!entity) {
-      throw new Error(`Entity not found: ${entityId}`);
+      throw new EntitySwitchError(`Entity not found: ${entityId}`, 'ENTITY_NOT_FOUND');
     }
 
     if (entity.userId !== userId) {
-      throw new Error('Access denied: entity does not belong to this user');
+      throw new EntitySwitchError(
+        'Access denied: entity does not belong to this user',
+        'ENTITY_FORBIDDEN',
+      );
     }
 
-    // Load current session to check if entity is actually changing
-    let personaChanged = false;
-    try {
-      const session = await prisma.shadowVoiceSession.findUnique({
-        where: { id: sessionId },
-      });
+    // The session must exist and must belong to the same user. Both checks are
+    // P-16; see the file header. Neither failure is swallowed, because a switch
+    // that did not happen must not be announced as one.
+    const session = await prisma.shadowVoiceSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true, activeEntityId: true },
+    });
 
-      if (session) {
-        personaChanged = session.activeEntityId !== entityId;
-
-        // Update the session's active entity
-        await prisma.shadowVoiceSession.update({
-          where: { id: sessionId },
-          data: { activeEntityId: entityId },
-        });
-      } else {
-        personaChanged = true;
-      }
-    } catch {
-      personaChanged = true;
+    if (!session) {
+      throw new EntitySwitchError(`Voice session not found: ${sessionId}`, 'SESSION_NOT_FOUND');
     }
+
+    if (session.userId !== userId) {
+      throw new EntitySwitchError(
+        'Access denied: session does not belong to this user',
+        'SESSION_FORBIDDEN',
+      );
+    }
+
+    const personaChanged = session.activeEntityId !== entityId;
+
+    // Written unconditionally even when the entity is unchanged: `updatedAt`
+    // semantics aside, an idempotent write is cheaper to reason about than a
+    // branch whose "nothing to do" arm is the one no test covers.
+    await prisma.shadowVoiceSession.update({
+      where: { id: sessionId },
+      data: { activeEntityId: entityId },
+    });
 
     // Load the new entity's profile for the announcement
     const profile = await this.getEntityProfile(entityId);

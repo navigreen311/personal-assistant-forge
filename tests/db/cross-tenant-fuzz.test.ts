@@ -531,17 +531,26 @@ describe('T-035 — the route inventory is read off the filesystem', () => {
     expect(readFileSync(visa, 'utf8')).toContain('withEntityScope');
     expect(classify(visa).scopes).toBe(false);
 
-    // LINE COMMENT. `src/app/api/safety/throttle/route.ts` says
-    // "`withAuditedRole` is a separate helper from `withAuditedRoleEntityScope`"
-    // on a `//` line. This one is not hypothetical: the first version of
-    // stripComments split on '\n' without normalising CRLF, so on a Windows
-    // checkout every line kept a trailing '\r', `.` does not match '\r', and
-    // the line-comment strip matched nothing at all. This route was cleared by
-    // that comment, the recorded set below was one route short, and the suite
-    // was green locally and red in CI — with CI right.
-    const throttle = routeFile('src/app/api/safety/throttle/route.ts');
-    expect(readFileSync(throttle, 'utf8')).toContain('withAuditedRoleEntityScope');
-    expect(classify(throttle).scopes).toBe(false);
+    // LINE COMMENT. `src/app/api/developer/webhooks/route.ts` says "this is
+    // NOT a `withEntityScope` route: scoping it to one entity would answer the
+    // wrong question" on a `//` line. A classifier reading raw source clears it
+    // on the strength of the sentence saying it is not scoped.
+    //
+    // This one is not hypothetical: the first version of stripComments split on
+    // '\n' without normalising CRLF, so on a Windows checkout every line kept a
+    // trailing '\r', `.` does not match '\r', and the line-comment strip matched
+    // nothing at all. A route was cleared by exactly such a comment, the
+    // recorded set below was one route short, and the suite was green locally
+    // and red in CI — with CI right.
+    //
+    // P-16 CHANGED THE FIXTURE, NOT THE ASSERTION. The example used to be
+    // `src/app/api/safety/throttle/route.ts`, which Decision 2 deletes (see the
+    // recorded set below). `developer/webhooks` is the same shape: the scope
+    // primitive appears only inside a `//` comment, and the route does not
+    // scope. Both halves of the original assertion survive unchanged.
+    const lineCommented = routeFile('src/app/api/developer/webhooks/route.ts');
+    expect(readFileSync(lineCommented, 'utf8')).toContain('withEntityScope');
+    expect(classify(lineCommented).scopes).toBe(false);
 
     // And the mechanism directly, so the reading cannot depend on the checkout:
     // the same source with either line ending must strip identically.
@@ -630,6 +639,19 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
     // and `/api/shadow/receipts/[id]` now call `withEntityScope`, so the
     // detector stops finding them. The recorded number is what forces that
     // removal to be stated in the same commit as the repair.
+    //
+    // A FOURTH TIME, IN P-16, AND DOWNWARD AGAIN. Twenty-seven became
+    // twenty-six: `/api/safety/throttle` is DELETED, along with the service
+    // behind it, under docs/parallel-build/decision-02-throttle.md. It was an
+    // in-memory duplicate of `ShadowProactiveConfig`'s call limits with one
+    // importer (its own route), zero UI consumers, and defaults that could not
+    // fire. That is an API removal and belongs in a changelog; this line is the
+    // test-side record of it.
+    //
+    // P-16's own new routes are absent from this list, which is not an
+    // omission: every one of them reads `session.userId`, so
+    // `unscopedAuthenticatedRoutes()` counts them as user-scoped rather than
+    // tenant-blind, exactly as it does for `/api/entities`.
     expect(patterns).toEqual([
       '/api/admin/observability',
       '/api/attention/insights',
@@ -648,7 +670,6 @@ describe('T-035 — routes that authenticate and never prove the tenant', () => 
       '/api/safety/email-headers',
       '/api/safety/fraud-check',
       '/api/safety/injection-check',
-      '/api/safety/throttle',
       '/api/settings/api-keys',
       '/api/shadow/config/voice-personas',
       '/api/shadow/config/voice-personas/[id]/preview',
@@ -923,7 +944,47 @@ describe('T-035 — every route, called by tenant A while naming tenant B', () =
     // number that makes `KNOWN_LEAKING_ROUTES` being empty mean something. Had
     // the repair worked by refusing everyone, the empty array would still be
     // empty and this line would read 135 or less.
-    expect(enforcing.length).toBe(140);
+    //
+    // P-16: 140 -> 143, and the three are new entity-scoped routes, named just
+    // below. The number went UP because they were written scoped, which is what
+    // this line is for -- a route added on the old pattern lands in
+    // `KNOWN_LEAKING_ROUTES` or in the unscoped inventory instead, and both of
+    // those are assertions too.
+    expect(enforcing.length).toBe(143);
+
+    // P-16's three, named for the same reason P-34's five are: so the delta is
+    // evidence rather than a number to take on trust.
+    expect(enforcing).toEqual(
+      expect.arrayContaining([
+        // The playbook read that did not exist -- the service method was
+        // entity-scoped by P-34 and no route exported GET for it.
+        'GET /api/shadow/playbooks/[id]',
+        // A contact's do-not-call status and quiet hours. Scoped through the
+        // contact's own entity: knowing that a contact is on another tenant's
+        // DNC list is itself a disclosure.
+        'GET /api/contacts/[id]/call-preferences',
+        'PUT /api/contacts/[id]/call-preferences',
+      ])
+    );
+
+    // P-16's other two new entity-scoped routes are deliberately NOT in the
+    // list above, and the reason is worth recording rather than leaving as an
+    // apparent omission.
+    //
+    // `POST /api/shadow/voiceforge/calls/plan` answers 200 for both tenants:
+    // a refusal to call is part of its payload (`allowed: false`,
+    // `blockedReason`), not its status, because "you may not call this contact
+    // for another nine hours" is an answer and not an error. The sweep reads
+    // status, so this route shows as serving everyone. Its actual cross-tenant
+    // behaviour -- A planning a call to B's contact gets `allowed: false,
+    // "not in the active entity"` and spends no call budget -- is asserted
+    // directly in tests/db/shadow-persona-calls.test.ts.
+    //
+    // `POST /api/shadow/config/entity/[id]/switch` refuses BOTH tenants here,
+    // because the sweep has no real `sessionId` to send it, so it is in
+    // `refusesEveryone` and correctly counts as evidence of nothing. Its
+    // asymmetry is asserted directly in the same file: A switching B's session
+    // is 403 and B's session row is unchanged.
 
     // The five additions, named, so the delta is not a number anyone has to
     // take on trust. Four are repaired leaks; the fifth is
