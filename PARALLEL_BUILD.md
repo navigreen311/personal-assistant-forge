@@ -1238,3 +1238,50 @@ items are wired but unverifiable without an account.
 3. **Code runs and reports success for work it did not do** — thirteen phantoms.
    Caught only by tests that assert a durable effect through a real entry point,
    which is now the standard every package is held to.
+
+---
+
+# THE INSTRUMENT THIS REPOSITORY DOES NOT HAVE — measured, viable
+
+Failure mode 2 — *a module is imported and nobody calls its functions* — is the
+one nothing catches, and it is the entire shape of Sprints 5 and 6. Every one of
+P-16's nine deliverables existed as correct code with no caller.
+
+A naive unused-export check is hopeless: **1,760 exported functions** in `src/`.
+But the pattern that actually fails is narrower and countable — the module-scope
+service singleton, `export const x = new SomethingService()`. **There are 49.**
+
+Asking, for each, whether any file *other than its own* calls a method on it:
+
+```
+live: 30      dead: 19
+```
+
+**Hand-verified 3 of 3.** A barrel re-export is the only reference to
+`vaultService` and `offlineQueue` — a re-export is not a call. **`usageTracker`
+has no reference anywhere at all**, not even a re-export.
+
+The nineteen:
+
+```
+usageTracker        (src/lib/ai/usage.ts)              -- AI cost tracking. Money.
+vaultService        (security/vault-service.ts)        -- SECURITY
+provenanceService   (security/provenance-service.ts)   -- SECURITY
+redactionPipeline   (shadow/compliance/redaction.ts)   -- PII/PHI. P-17 is wiring it.
+failoverManager     (shadow/monitoring/failover.ts)    -- v3 Addition 8.3
+dlpStore, exportStore, policyStore, ssoStore           -- admin services
+offlineQueue, screenshotService                        -- capture
+toolStore, importStore, wizardStore
+webChatHandler, workflowCompanionService
+commandParser, voiceForgeHandoffService, wakeWordService
+```
+
+**This is the check to build, and the constraints are set by P-35's precedent:**
+it built a factory-scan, got 66 candidates, hand-checked the first two, found
+both false positives — *import-granular is not function-granular* — and correctly
+**refused to ship it**. So: prove it against known-true cases
+(`notificationEscalator` before P-16, `addToDigest`, `breakGlassRevoke` before
+P-37 gave it a route) **and** known-false ones (barrel re-exports, types, test
+helpers) before it gates anything. **If it cannot be made clean, it ships as a
+report, not a gate** — a noisy gate teaches people to disable gates, which is how
+`continue-on-error` got there in the first place.
