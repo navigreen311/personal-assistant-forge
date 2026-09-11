@@ -68,6 +68,10 @@ import { prisma } from '@/lib/db';
 import { createJobWorker } from '@/lib/queue/jobs/registry';
 import { createCronWorker } from '@/lib/queue/scheduler';
 import { createDomainEventWorker } from '@/lib/queue/domain-event-worker';
+import {
+  createShadowProactiveWorker,
+  ensureProactiveSchedule,
+} from '@/lib/queue/shadow-proactive';
 import { createWorkflowWorker } from '@/lib/queue/workflow-worker';
 import { report, reportError } from '@/lib/observability/report';
 import { startHeartbeat, reportWorkerShutdown } from '@/lib/observability/worker-health';
@@ -101,6 +105,11 @@ export function createAllWorkers(): NamedWorker[] {
     // file exists at all: a worker nobody constructs is a queue that fills up
     // in silence, and P-11 found four of those.
     { name: 'domain-events', worker: createDomainEventWorker({ concurrency: CONCURRENCY }) },
+    // P-16 (Sprint 5). The Shadow proactive sweep: trigger evaluation, the
+    // morning briefing, the end-of-day summary, the digest, and one rung of the
+    // escalation ladder per due notification. Everything it calls existed and
+    // had no caller; see src/modules/shadow/proactive/proactive-runner.ts.
+    { name: 'shadow-proactive', worker: createShadowProactiveWorker() },
   ];
 }
 
@@ -175,6 +184,26 @@ async function main(): Promise<void> {
   console.log(`[worker] starting; redis=${redisUrl} concurrency=${CONCURRENCY}`);
 
   const workers = createAllWorkers();
+
+  // P-16. Registering the repeat here rather than at import time: a worker that
+  // has not started consuming has no business adding a schedule, and this is
+  // the one place that knows the process intends to run. It is idempotent, so
+  // every replica calling it produces one repeatable.
+  try {
+    const schedule = await ensureProactiveSchedule();
+    console.log(
+      `[worker] shadow proactive sweep scheduled on "${schedule.cron}"` +
+        (schedule.replaced ? ' (replaced a previous pattern)' : ''),
+    );
+  } catch (err) {
+    console.error('[worker] could not register the shadow proactive sweep:', err);
+    reportError(err, {
+      kind: 'manual',
+      severity: 'error',
+      fingerprint: 'lifecycle:shadow-proactive-schedule',
+      message: 'shadow proactive sweep could not be scheduled; no briefings will be delivered',
+    });
+  }
 
   for (const { name, worker } of workers) {
     observeWorker(name, worker);

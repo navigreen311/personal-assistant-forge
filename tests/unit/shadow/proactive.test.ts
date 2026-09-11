@@ -1215,6 +1215,7 @@ describe('EntityPersonaService', () => {
       });
       (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
+        userId: USER_ID,
         activeEntityId: 'other-entity',
       });
       (mockShadowVoiceSession.update as jest.Mock).mockResolvedValue({});
@@ -1246,6 +1247,7 @@ describe('EntityPersonaService', () => {
       });
       (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
+        userId: USER_ID,
         activeEntityId: 'ent-2',
       });
       (mockShadowVoiceSession.update as jest.Mock).mockResolvedValue({});
@@ -1285,6 +1287,7 @@ describe('EntityPersonaService', () => {
       });
       (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
+        userId: USER_ID,
         activeEntityId: ENTITY_ID, // same entity
       });
       (mockShadowVoiceSession.update as jest.Mock).mockResolvedValue({});
@@ -1298,6 +1301,80 @@ describe('EntityPersonaService', () => {
 
       expect(result.personaChanged).toBe(false);
       expect(result.announcement).toContain('Already');
+    });
+
+    // ======================================================================
+    // P-16. Three cases the old implementation could not fail, because it
+    // swallowed every one of them into `personaChanged: true` and announced
+    // "Context switched to X. All subsequent actions will be in the X context."
+    // A switch that did not happen, announced as one, on the boundary that
+    // decides whether HIPAA rules apply to the rest of the conversation.
+    // ======================================================================
+
+    it('refuses a session that belongs to another user, and switches nothing', async () => {
+      (mockEntity.findUnique as jest.Mock).mockResolvedValue({
+        id: ENTITY_ID,
+        userId: USER_ID,
+        name: 'MedLink',
+      });
+      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+        id: SESSION_ID,
+        userId: 'someone-else',
+        activeEntityId: 'their-entity',
+      });
+
+      await expect(
+        service.switchEntity({
+          sessionId: SESSION_ID,
+          userId: USER_ID,
+          targetEntityId: ENTITY_ID,
+        })
+      ).rejects.toThrow('session does not belong to this user');
+
+      expect(mockShadowVoiceSession.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a session that does not exist rather than announcing a switch', async () => {
+      (mockEntity.findUnique as jest.Mock).mockResolvedValue({
+        id: ENTITY_ID,
+        userId: USER_ID,
+        name: 'MedLink',
+      });
+      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await expect(
+        service.switchEntity({
+          sessionId: 'no-such-session',
+          userId: USER_ID,
+          targetEntityId: ENTITY_ID,
+        })
+      ).rejects.toThrow('Voice session not found');
+
+      expect(mockShadowVoiceSession.update).not.toHaveBeenCalled();
+    });
+
+    it('does not swallow a failed write into a successful announcement', async () => {
+      (mockEntity.findUnique as jest.Mock).mockResolvedValue({
+        id: ENTITY_ID,
+        userId: USER_ID,
+        name: 'MedLink',
+      });
+      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+        id: SESSION_ID,
+        userId: USER_ID,
+        activeEntityId: 'other-entity',
+      });
+      (mockShadowVoiceSession.update as jest.Mock).mockRejectedValue(
+        new Error('connection reset')
+      );
+
+      await expect(
+        service.switchEntity({
+          sessionId: SESSION_ID,
+          userId: USER_ID,
+          targetEntityId: ENTITY_ID,
+        })
+      ).rejects.toThrow('connection reset');
     });
   });
 });

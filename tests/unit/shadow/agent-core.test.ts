@@ -143,6 +143,9 @@ jest.mock('@/lib/ai', () => ({
 
 function makeContext(overrides?: Partial<AgentContext>): AgentContext {
   return {
+    // P-16: an AgentContext now names the session it belongs to, so a mid-turn
+    // entity switch has somewhere durable to land.
+    sessionId: 'session-1',
     user: {
       id: 'user-1',
       name: 'Test User',

@@ -3,7 +3,7 @@
 
 import { prisma } from '@/lib/db';
 import { verifyEntityForUser } from '@/shared/middleware/auth';
-import type { AgentContext } from '../types';
+import type { AgentContext, ActivePersona } from '../types';
 import { getShadowConfig } from '@/lib/shadow/config';
 
 /**
@@ -41,7 +41,13 @@ export async function buildContext(params: {
     ? { pageId: params.currentPage, title: mapPageIdToTitle(params.currentPage) }
     : undefined;
 
+  // P-16. The persona is loaded only for an entity that has already passed
+  // `fetchOwnedEntity`'s ownership check, so an unowned `activeEntityId` cannot
+  // put another tenant's disclaimers or `neverDisclose` list into the prompt.
+  const activePersona = entity ? await fetchPersona(entity.id) : undefined;
+
   return {
+    sessionId: params.sessionId,
     user: {
       id: user.id,
       name: user.name,
@@ -57,6 +63,7 @@ export async function buildContext(params: {
           complianceProfile: entity.complianceProfile,
         }
       : undefined,
+    activePersona,
     currentPage,
     recentMessages,
     recentActions,
@@ -120,6 +127,37 @@ async function fetchOwnedEntity(entityId: string | undefined, userId: string) {
       complianceProfile: true,
     },
   });
+}
+
+/**
+ * The entity's voice profile, or nothing.
+ *
+ * Returns `undefined` rather than a default-filled object when there is no
+ * `ShadowEntityProfile` row: an entity with no configured persona must produce
+ * a prompt with no persona section, not one asserting a tone the user never
+ * chose. `getEntityProfile` fills defaults for the SETTINGS screen, which is a
+ * different question.
+ */
+export async function fetchPersona(entityId: string): Promise<ActivePersona | undefined> {
+  const profile = await prisma.shadowEntityProfile.findUnique({
+    where: { entityId },
+  });
+  if (!profile) return undefined;
+
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+
+  return {
+    entityId,
+    voicePersona: profile.voicePersona,
+    tone: profile.tone,
+    signature: profile.signature,
+    greeting: profile.greeting,
+    disclaimers: strings(profile.disclaimers),
+    allowedDisclosures: strings(profile.allowedDisclosures),
+    neverDisclose: strings(profile.neverDisclose),
+    complianceProfiles: strings(profile.complianceProfiles),
+  };
 }
 
 async function fetchRecentMessages(

@@ -202,6 +202,58 @@ export class AdaptiveChannelService {
   }
 
   /**
+   * The channel to use INSTEAD OF the escalation ladder's phone rungs, or
+   * `null` to run the ladder exactly as written.
+   *
+   * ------------------------------------------------------------------------
+   * P-16. WHY THIS IS NOT `getBestChannel`
+   * ------------------------------------------------------------------------
+   *
+   * `getBestChannel` answers "which channel should I use", and it always
+   * answers: with no data it returns `in_app` for a P2. That is a reasonable
+   * default and it is NOT a reason to downgrade an escalation rung, because
+   * Addition 7.1's downgrade is CONDITIONAL ON OBSERVED BEHAVIOUR -- "IF user
+   * ignores 3+ calls in a row for non-P0 items".
+   *
+   * Wiring `getBestChannel` into the escalator directly was tried first and was
+   * wrong twice over. With no rows at all it downgraded the phone rung for
+   * every user from the day it shipped, so Shadow would never have placed the
+   * ladder's call. And after the very first in-app rung -- which writes an
+   * attempt row with zero responses -- `responseRate < 0.1` fired on a sample
+   * of one and downgraded the phone rung again. One unanswered push, and the
+   * escalation ladder silently loses its call.
+   *
+   * So the condition here is the spec's condition, on the spec's channel:
+   * `IGNORED_CALL_THRESHOLD` phone attempts that went unanswered, for this
+   * trigger type. Everything else leaves the ladder alone.
+   *
+   * P0, crisis and VIP never downgrade -- "NEVER DOWNGRADE: Crisis declarations
+   * always call ... VIP breakout contacts always call".
+   */
+  async getDowngradeChannel(
+    userId: string,
+    triggerType: string,
+    priority: string
+  ): Promise<string | null> {
+    if (priority === 'P0' || ALWAYS_CALL_TRIGGERS.has(triggerType)) return null;
+
+    const phoneStats = await prisma.shadowChannelEffectiveness.findUnique({
+      where: { userId_channel_triggerType: { userId, channel: 'phone', triggerType } },
+    });
+
+    if (!phoneStats) return null;
+
+    const ignoredCalls = phoneStats.attempts - phoneStats.responses;
+    if (ignoredCalls < IGNORED_CALL_THRESHOLD) return null;
+
+    const stats = await prisma.shadowChannelEffectiveness.findMany({
+      where: { userId, triggerType },
+    });
+
+    return this.findBestAlternative(stats, 'phone');
+  }
+
+  /**
    * Get all channel stats for a user.
    */
   async getStats(userId: string): Promise<ChannelStats[]> {

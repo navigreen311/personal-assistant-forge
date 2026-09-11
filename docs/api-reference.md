@@ -42,6 +42,7 @@
   - [Memory](#memory)
   - [Rules](#rules)
   - [Safety](#safety)
+  - [Shadow](#shadow--proactive-intelligence-personas-and-call-playbooks)
   - [Travel](#travel)
   - [Voice](#voice)
 
@@ -3843,23 +3844,158 @@ Get domain/sender reputation dashboard.
 
 ---
 
-### `GET /api/safety/throttle`
+### `GET /api/safety/throttle` — REMOVED (P-16)
 
-Check throttle status for a user/action combination.
+### `POST /api/safety/throttle` — REMOVED (P-16)
 
-**Auth Required:** Yes (admin)
+Both methods and the service behind them are deleted. See
+`docs/parallel-build/decision-02-throttle.md`.
 
-**Query Parameters:** `userId` (required), `actionType` (required)
+In short: the throttle was an in-memory per-user action limiter with one
+importer (its own route), no UI consumer, and defaults that could not fire
+(`financial_tx` declared `maxPerHour: 10, maxPerDay: 1`, so the hourly limit was
+unreachable; `requiresApprovalAbove: 0` compared with `count >= 0` always
+returned `requiresApproval: true`). Its counters lived in a module-level `Map`,
+so a restart handed every user a fresh hour, a fresh day and an early end to
+every cooldown.
+
+The control it duplicated is `ShadowProactiveConfig` — `maxCallsPerDay`,
+`maxCallsPerHour`, quiet hours, call window and cooldown — enforced by
+`src/modules/shadow/proactive/notification-escalator.ts`, which counts the
+durable `ShadowOutreach` rows rather than keeping a counter and is therefore
+correct across restarts and across instances by construction. P-16 wired that
+enforcement to the proactive cron; see the Shadow section below.
+
+Per-user limits on email volume, message volume and financial transactions are
+NOT covered by `ShadowProactiveConfig` and were never enforced by the deleted
+route either. If they are wanted, they start from the same principle: count the
+rows that record the action.
 
 ---
 
-### `POST /api/safety/throttle`
+## Shadow — proactive intelligence, personas and call playbooks
 
-Record an action and get updated throttle status.
+Added by P-16 (Shadow Sprint 5). Every route here is authenticated and scoped to
+the caller; the call-planning and playbook routes are additionally entity-scoped
+through `withEntityScope`.
 
-**Auth Required:** Yes (admin)
+### `GET /api/shadow/outreach`
 
-**Request Body:** `{ "userId": "...", "actionType": "..." }`
+Recent outreach rows for the caller, plus the escalations still climbing the
+ladder (notification id, trigger type, attempts so far, last attempt).
+
+**Auth Required:** Yes
+
+**Query Parameters:** `limit` (optional, max 100, default 25)
+
+---
+
+### `POST /api/shadow/outreach/[id]/ack`
+
+Acknowledge one outreach row. Stops the escalation ladder for that notification
+and records the response against the channel it arrived on, which is what makes
+`GET /api/shadow/analytics/channel-effectiveness` show real rates.
+
+**Auth Required:** Yes
+
+**Returns:** `{ acknowledged, channel, medium }`, or 404 when there is no such
+row awaiting acknowledgement (a row belonging to another user answers
+identically).
+
+---
+
+### `POST /api/shadow/proactive/run`
+
+Run the proactive sweep now, for the calling user only: morning briefing,
+end-of-day summary, digest delivery, trigger evaluation and one escalation rung
+per due notification. The same function the `shadow-proactive` cron runs every
+five minutes. There is no `userIds` parameter.
+
+**Auth Required:** Yes
+
+---
+
+### `GET /api/shadow/summary`
+
+Today's end-of-day summary, generated from real rows. A read; delivers nothing.
+
+**Auth Required:** Yes
+
+---
+
+### `POST /api/shadow/summary/deliver`
+
+Deliver the end-of-day summary now: one `Notification` and one `ShadowOutreach`
+row. The cron does the same at the user's configured `endOfDayTime`.
+
+**Auth Required:** Yes (owner, admin)
+
+---
+
+### `GET /api/shadow/config/entity`
+
+Every entity voice profile the caller owns, with `configured` saying which have
+a stored `ShadowEntityProfile` and which are showing defaults.
+
+**Auth Required:** Yes
+
+---
+
+### `POST /api/shadow/config/entity/[id]/switch`
+
+Switch a voice session's active entity, and with it the persona, tone,
+compliance profiles and the scope of every Shadow tool.
+
+**Auth Required:** Yes
+
+**Request Body:** `{ "sessionId": "..." }`
+
+**Returns:** `{ entityId, entityName, personaChanged, announcement, profile }`.
+403 when the entity or the session belongs to someone else; 404 when either does
+not exist.
+
+---
+
+### `GET /api/shadow/playbooks/[id]`
+
+One call playbook. (The collection GET/POST and the `[id]` PUT/DELETE already
+existed; P-16 added this read and repaired the request schemas, which had
+declared columns the table does not have and therefore silently discarded
+`openingScript`, `dataAllowed`, `neverDisclose`, `escalationTriggers`,
+`escalationAction`, `maxDuration` and `outcomeFields`.)
+
+**Auth Required:** Yes, entity-scoped
+
+---
+
+### `POST /api/shadow/voiceforge/calls/plan`
+
+Plan one outbound call to a contact: the playbook guardrails that govern it, the
+recording-consent decision for the jurisdiction, and the do-not-call / quiet-hours
+/ weekly-budget verdict. Refuses rather than throwing.
+
+**Auth Required:** Yes, entity-scoped (owner, admin, member)
+
+**Request Body:** `{ contactId, scenario?, playbookId?, jurisdiction?, timezone?, record? }`
+
+**Returns:** `{ allowed, blockedReason?, alternateChannel?, nextAvailable?, playbook?, consent?, frequency, recorded }`
+
+`record: true` spends one unit of the contact's weekly calling budget. A refused
+plan never spends it.
+
+---
+
+### `GET` / `PUT /api/contacts/[id]/call-preferences`
+
+A contact's do-not-call flag, preferred channel, quiet hours and weekly call
+limit. `GET` also answers `callableNow` and `blockedReason` for right now, so a
+settings screen and the call planner cannot disagree.
+
+**Auth Required:** Yes, scoped through the contact's entity. `PUT` requires
+owner, admin or member.
+
+**Request Body (PUT):** `{ doNotCall?, preferredChannel?, quietHoursStart?, quietHoursEnd?, maxCallsPerWeek? }`
+— `quietHoursStart` and `quietHoursEnd` must be set together.
 
 ---
 

@@ -7,25 +7,57 @@ import { callPlaybookService } from '@/modules/shadow/compliance/call-playbook';
 
 const CREATE_ROLES: UserRole[] = ['owner', 'admin', 'member'];
 
-const CreatePlaybookSchema = z.object({
-  // Still accepted, still validated, and no longer load-bearing: P-34 takes the
-  // entity from `withEntityScope`, which has proved it against the session.
-  entityId: z.string().min(1).optional(),
-  name: z.string().min(1).max(255),
-  description: z.string().optional().default(''),
-  type: z.string().optional().default('general'),
-  steps: z.array(z.object({
-    order: z.number(),
-    type: z.enum(['greeting', 'question', 'script', 'objection_handler', 'escalation', 'closing']),
-    content: z.string(),
-    expectedResponses: z.array(z.string()).optional(),
-    nextStepOnSuccess: z.number().optional(),
-    nextStepOnFailure: z.number().optional(),
-    requiredCompliance: z.array(z.string()).optional(),
-  })).optional().default([]),
-  isActive: z.boolean().optional().default(true),
-  tags: z.array(z.string()).optional().default([]),
-});
+// ============================================================================
+// P-16 -- THE REQUEST SCHEMA DESCRIBED A TABLE THAT DOES NOT EXIST
+// ============================================================================
+//
+// `CreatePlaybookSchema` and `UpdatePlaybookSchema` declared `description`,
+// `type`, `steps`, `isActive` and `tags`. `VoiceforgeCallPlaybook` has none of
+// those columns, and `CallPlaybookService` -- which P-34 rewrote against the
+// real table, saying so in its header -- reads `scenario`, `openingScript`,
+// `dataAllowed`, `neverDisclose`, `escalationTriggers`, `escalationAction`,
+// `maxDuration` and `outcomeFields`.
+//
+// Zod strips unknown keys. So every compliance field a caller sent was
+// DISCARDED BY THE VALIDATOR before the service saw it, and the service, given
+// an object with none of its fields present, wrote column defaults and returned
+// 200. `PUT` was the worse half: sending a corrected `neverDisclose` -- the list
+// of things Shadow must never say out loud on a call -- changed nothing and
+// reported success. That is the codebase's third failure mode exactly: code
+// that runs and reports success for work it did not do.
+//
+// `POST` was usually not even that lucky. `scenario` was not in the schema, so
+// it was stripped; the service falls back to `description`, which defaulted to
+// `''`; `if (!scenario) throw` then made every request with no `description` a
+// 500. The route could not create a usable playbook at all.
+//
+// The schema below is the table. `description` survives as an accepted alias
+// for `scenario` because the old shape is what any existing caller sends.
+
+const CreatePlaybookSchema = z
+  .object({
+    // Still accepted, still validated, and no longer load-bearing: P-34 takes
+    // the entity from `withEntityScope`, which has proved it against the
+    // session.
+    entityId: z.string().min(1).optional(),
+    name: z.string().min(1).max(255),
+    scenario: z.string().min(1).max(100).optional(),
+    /** Legacy alias for `scenario`. */
+    description: z.string().min(1).optional(),
+    openingScript: z.string().optional(),
+    dataAllowed: z.array(z.string()).optional(),
+    neverDisclose: z.array(z.string()).optional(),
+    escalationTriggers: z.array(z.string()).optional(),
+    escalationAction: z
+      .enum(['transfer_to_human', 'end_call_politely', 'schedule_callback'])
+      .optional(),
+    maxDuration: z.number().int().min(30).max(3600).optional(),
+    outcomeFields: z.array(z.string()).optional(),
+  })
+  .refine((data) => Boolean(data.scenario ?? data.description), {
+    message: 'scenario is required',
+    path: ['scenario'],
+  });
 
 /**
  * GET /api/shadow/playbooks?entityId=xxx
