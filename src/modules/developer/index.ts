@@ -29,6 +29,8 @@ export {
   loadPluginForUser,
   listInstallations,
   isPluginNameRevoked,
+  isRegistryEntryRevoked,
+  isPluginNameRevokedInEntity,
   assertPluginUsable,
   PluginRevokedError,
   PluginNotInstalledError,

@@ -411,7 +411,22 @@ describe('queue workers actually consume', () => {
     expect(record.error).toContain('No handler registered for action type: CUSTOM');
     expect(record.completedAt).toBeInstanceOf(Date);
 
-    const logs = await db.actionLog.findMany({ orderBy: { timestamp: 'asc' } });
+    // COORDINATOR FIX (during P-41 verification). This was a bare read
+    // immediately after a `waitFor` on a DIFFERENT table, and the two writes are
+    // not atomic: `workflowExecutionRecord.status` reaching FAILED does not mean
+    // the step's `ActionLog` row has landed. On a fast machine they are
+    // indistinguishable; on a degraded CI runner -- the db job took 30m16s
+    // against a normal ~7m, so roughly 4x -- they separate, and this assertion
+    // saw one row where it expected two. It failed exactly once, in CI, on a
+    // tree whose tests pass 3/3 locally in isolation.
+    //
+    // The fix is to wait for the assertion's OWN subject rather than a proxy for
+    // it. P-41 did not touch this file; the race was latent from the commit that
+    // wrote it.
+    const logs = await waitFor('both workflow step rows to land', async () => {
+      const rows = await db.actionLog.findMany({ orderBy: { timestamp: 'asc' } });
+      return rows.length === 2 ? rows : null;
+    });
     expect(logs.map((l) => `${l.actionType}/${l.status}`)).toEqual([
       'WORKFLOW_STEP_COMPLETED/EXECUTED',
       'WORKFLOW_STEP_FAILED/FAILED',

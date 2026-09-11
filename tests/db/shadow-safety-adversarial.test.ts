@@ -309,8 +309,29 @@ describe('consent receipts', () => {
       response: 'confirm:create_task',
     });
 
-    expect(res.status).toBe(403);
+    // 404, not the 403 this asserted before P-41, and the change is the point
+    // rather than a consequence to be absorbed. The route used to fetch the
+    // session by id and then compare `voiceSession.userId` itself, so it could
+    // distinguish "there is such a session but it is not yours" from "there is
+    // no such session" -- which makes this endpoint an existence oracle for
+    // session cuids, addressable by anybody with a login. The session is now
+    // fetched through `sessionManager.forUser(...)`, which filters on the owner
+    // in the query, so the two cases are one code path and one answer. The
+    // refusal is asserted exactly as strictly as before, and the assertion that
+    // NOTHING was written is unchanged -- that is the part that says the action
+    // did not happen.
+    expect(res.status).toBe(404);
     expect(await db.shadowConsentReceipt.count()).toBe(0);
+
+    // And the positive control the original case did not have: tenant B's own
+    // confirmation of the same action in the same session is still refused for
+    // a DIFFERENT, honest reason (no such pending action), not by the tenancy
+    // gate. Without this, "404" is satisfied by a route that 404s everybody.
+    const own = await confirm(tenantB, sessionB.id, {
+      actionId: 'confirm-create_task-1789000000000',
+      response: 'confirm:create_task',
+    });
+    expect(own.status).not.toBe(404);
   });
 });
 

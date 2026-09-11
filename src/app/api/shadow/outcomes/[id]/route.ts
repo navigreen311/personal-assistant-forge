@@ -12,13 +12,11 @@ export async function GET(
     try {
       const { id } = await params;
 
-      // The id param here is the session ID. Verify session ownership.
-      const voiceSession = await sessionManager.getSession(id);
+      // The id param here is the session ID. P-41: the scope IS the
+      // ownership check. See session-store.ts.
+      const voiceSession = await sessionManager.forUser(session.userId).getSession(id);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Session not found', 404);
-      }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this session', 403);
       }
 
       const outcome = await prisma.shadowSessionOutcome.findUnique({

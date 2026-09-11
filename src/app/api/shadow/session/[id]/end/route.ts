@@ -13,16 +13,17 @@ export async function POST(
     try {
       const { id } = await params;
 
-      // Verify session ownership
-      const voiceSession = await sessionManager.getSession(id);
+      // P-41: the scope IS the ownership check. `forUser` merges the
+      // authenticated user into the where clause, so a session belonging to
+      // anybody else reads as a session that does not exist.
+      const sessions = sessionManager.forUser(session.userId);
+
+      const voiceSession = await sessions.getSession(id);
       if (!voiceSession) {
         return error('NOT_FOUND', 'Session not found', 404);
       }
-      if (voiceSession.userId !== session.userId) {
-        return error('FORBIDDEN', 'You do not have access to this session', 403);
-      }
 
-      const ended = await sessionManager.endSession(id);
+      const ended = await sessions.endSession(id);
 
       // Fetch the outcome summary if it exists
       const outcome = await prisma.shadowSessionOutcome.findUnique({

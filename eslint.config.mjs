@@ -180,6 +180,67 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  // -------------------------------------------------------------------------
+  // P-41 — the Shadow session manager may not hold a database client.
+  //
+  // `interfaces/session-manager.ts` held 13 `prisma.shadowVoiceSession`
+  // queries keyed on a bare `{ id: sessionId }` — 7 `findUnique`, 5 `update`,
+  // 1 `delete` — and every public method took the session id as a plain string
+  // with no user in the signature. A session id is a cuid a client sends in a
+  // path segment, so the row crossed the tenancy boundary before anybody
+  // checked it, and eleven route files each re-checked
+  // `voiceSession.userId !== session.userId` by hand afterwards. Two callers in
+  // `interfaces/web-chat.ts` did not: `end_session` and `ping` acted on a
+  // caller-supplied id with no ownership check at all.
+  //
+  // Every query now goes through `OwnedSessionStore`
+  // (src/modules/shadow/interfaces/session-store.ts), which holds the owning
+  // user id privately and merges it into the `where` itself. This rule is what
+  // keeps a method added next month correct BY DEFAULT rather than by
+  // discipline: reaching for `prisma` in the manager is a lint error, and
+  // `npx eslint` gates CI. Same instrument, same reasoning and the same one-file
+  // scope as the P-34 block above — the rest of `interfaces/` legitimately
+  // queries other models, and `session-store.ts` is the seam, so neither may be
+  // covered.
+  //
+  // IT USES THE BASE `no-restricted-imports`, AND THE `files` GLOB NAMES ONE
+  // FILE, BOTH DELIBERATELY. In flat config the last matching config object
+  // wins for a given rule NAME, so:
+  //
+  //   - `no-restricted-imports` is safe here only because P-34's block covers
+  //     `tool-router.ts` and this one covers `session-manager.ts`. The two
+  //     globs are disjoint, so neither shadows the other. Widening this glob
+  //     to `src/**` would silently delete P-34's `@/lib/db` ban and reopen the
+  //     prompt-injection hole with a green lint run — P-39's lesson, recorded
+  //     in the block above.
+  //   - `no-restricted-syntax` is NOT used here for the same reason in the
+  //     other direction: P-17's block sets it over `src/**/*.ts`, and any block
+  //     of mine setting that rule name would replace P-17's `ShadowMessage` and
+  //     `ShadowConsentReceipt` single-writer bans for whatever files it
+  //     matched. An import ban achieves the same guarantee with no collision.
+  // -------------------------------------------------------------------------
+  {
+    files: ["src/modules/shadow/interfaces/session-manager.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@/lib/db",
+              message:
+                "The Shadow session manager must not query Prisma directly: a ShadowVoiceSession addressed by id alone is a cross-tenant read. Add a method to OwnedSessionStore in src/modules/shadow/interfaces/session-store.ts, which merges the owning userId into every where clause.",
+            },
+            {
+              name: "@prisma/client",
+              message:
+                "The Shadow session manager must not query Prisma directly. See src/modules/shadow/interfaces/session-store.ts.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     rules: {
       "@typescript-eslint/no-unused-vars": [

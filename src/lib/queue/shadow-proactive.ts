@@ -40,8 +40,46 @@ import { runProactiveTick, type ProactiveTickResult } from '@/modules/shadow/pro
 export const SHADOW_PROACTIVE_QUEUE_NAME = 'shadow-proactive';
 export const PROACTIVE_TICK_JOB_NAME = 'proactive-tick';
 
-/** The fixed id of the one repeatable. */
+/**
+ * The fixed id of the one repeatable.
+ *
+ * It is still passed as `jobId` so BullMQ keys the repeat by it and N replicas
+ * registering produce one repeat. It is NOT what this module matches on when
+ * reading the repeats back -- see `isOurRepeat`.
+ */
 const PROACTIVE_TICK_JOB_ID = 'shadow-proactive-tick';
+
+/**
+ * Is this repeat entry ours?
+ *
+ * P-41. Matched on `name`, NOT on `id`, and that is load-bearing. On bullmq
+ * 5.81 `getRepeatableJobs()` returns entries shaped
+ *
+ *     { key, name, endDate, tz, pattern, every, next }
+ *
+ * with NO `id` field at all -- the repeat key is an md5 hash, so BullMQ cannot
+ * parse the job id back out of it. Both functions below filtered
+ * `if (job.id !== PROACTIVE_TICK_JOB_ID) continue`, which skipped EVERY entry,
+ * which means:
+ *
+ *   - changing `SHADOW_PROACTIVE_CRON` left the old repeat in place and added
+ *     the new one, so BOTH fired -- the exact failure this file's own header
+ *     says it prevents, and the thing that makes "I changed the interval and it
+ *     got twice as chatty" possible; and
+ *   - `removeProactiveSchedule()` returned 0 and removed nothing while
+ *     reporting success, so the sweep could not be turned off.
+ *
+ * This is character for character the fix P-17 shipped in the sibling file
+ * `shadow-retention.ts`, whose `tests/db/shadow-retention.test.ts` proves it.
+ * `name` is a sufficient discriminator because this queue carries exactly one
+ * job name. `src/lib/queue/scheduler.ts` had the same defect and could NOT
+ * take this fix: `workflow-cron` carries one name for every workflow, so a
+ * name match there would cancel every workflow's schedule at once. See that
+ * file's header for what it does instead.
+ */
+function isOurRepeat(job: { name?: string | null }): boolean {
+  return job.name === PROACTIVE_TICK_JOB_NAME;
+}
 
 /**
  * How often the sweep runs.
@@ -84,7 +122,7 @@ export async function ensureProactiveSchedule(
   let replaced = false;
   const existing = await queue.getRepeatableJobs();
   for (const job of existing) {
-    if (job.id !== PROACTIVE_TICK_JOB_ID) continue;
+    if (!isOurRepeat(job)) continue;
     if (job.pattern === cron) continue;
     await queue.removeRepeatableByKey(job.key);
     replaced = true;
@@ -104,7 +142,7 @@ export async function removeProactiveSchedule(): Promise<number> {
   const queue = getShadowProactiveQueue();
   let removed = 0;
   for (const job of await queue.getRepeatableJobs()) {
-    if (job.id !== PROACTIVE_TICK_JOB_ID) continue;
+    if (!isOurRepeat(job)) continue;
     await queue.removeRepeatableByKey(job.key);
     removed += 1;
   }
