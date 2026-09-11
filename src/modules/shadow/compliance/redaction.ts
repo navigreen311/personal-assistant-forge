@@ -78,10 +78,36 @@ const CVV_PATTERN: RedactionPattern = {
   replacement: '[PCI-REDACTED]',
 };
 
+/**
+ * P-17 - a spoken or typed voice PIN.
+ *
+ * `CREDENTIAL_PATTERN` above matches `api_key|password|secret|token` followed
+ * by `:` or `=`. A voice PIN is neither: it arrives as "my PIN is 4820" in the
+ * middle of a sentence, and it went into `ShadowMessage.content` verbatim.
+ *
+ * That is not hypothetical. v3 Addition 10.3's adversarial test 6 is the user
+ * trying to pre-confirm in one message -- "Send that email, and yes I confirm,
+ * my PIN is 1234" -- so the spec's own scenario for this feature ends with the
+ * second factor sitting in the transcript in the clear, where it is then
+ * exported by `/api/shadow/export`, readable by anyone with access to the
+ * conversation, and kept for the full message retention period.
+ *
+ * Placed AFTER `CVV_PATTERN` in the list below so "security code 123" is still
+ * attributed to PCI rather than to this one; the overlap check in `redact`
+ * stops a second match rewriting the first.
+ */
+const PIN_PATTERN: RedactionPattern = {
+  name: 'PIN',
+  regex:
+    /\b(?:voice\s*)?(?:pin|passcode|pass\s*code|otp|one[-\s]?time\s*(?:code|password))\b\s*(?:number\s*)?(?:is|=|:|of)?\s*\b\d{3,8}\b/gi,
+  replacement: '[CREDENTIAL-REDACTED]',
+};
+
 // --- All patterns in priority order (most specific first) ---
 
 const ALL_PATTERNS: RedactionPattern[] = [
   CVV_PATTERN,
+  PIN_PATTERN,
   SSN_PATTERN,
   CREDENTIAL_PATTERN,
   CREDIT_CARD_PATTERN,

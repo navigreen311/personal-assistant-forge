@@ -514,7 +514,21 @@ export class ShadowAuthManager {
 
     // Voice channel always requires PIN for CONFIRM_PHRASE+ actions
     // `NONE` already returned early above, so `!== 'TAP'` is the whole test.
-    if (channel === 'voice' && classification.confirmationLevel !== 'TAP') {
+    //
+    // P-17: `'phone'` added. The test was `channel === 'voice'` alone, and
+    // NOTHING IN THE PLATFORM EVER PASSES `'voice'`. `SessionChannel` is
+    // `'web' | 'phone' | 'mobile'`, `ShadowVoiceSession.currentChannel` holds
+    // one of those three, and `ShadowAgent.processMessage` is typed
+    // `channel: 'web' | 'phone' | 'mobile'`. So the rule the spec calls out in
+    // Addition 1.1 -- an inbound CALL is the least verifiable channel and needs
+    // the most auth -- could not fire, and a `place_call` or `send_email`
+    // confirmed over the phone was treated exactly like one confirmed in an
+    // authenticated browser tab.
+    //
+    // `'voice'` is KEPT rather than replaced: the value is the one the existing
+    // unit test passes, and an auth check that silently stops recognising a
+    // channel name is the failure being fixed, not a tidy-up to repeat.
+    if ((channel === 'voice' || channel === 'phone') && classification.confirmationLevel !== 'TAP') {
       requiresPin = true;
       reasons.push('Voice channel requires PIN for confirm-phrase and higher actions');
     }

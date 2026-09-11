@@ -3,8 +3,10 @@ import { z } from 'zod';
 import { success, error } from '@/shared/utils/api-response';
 import { withRole } from '@/shared/middleware/auth';
 
-import { prisma } from '@/lib/db';
 import { sessionManager } from '@/modules/shadow/interfaces/session-manager';
+import { storeShadowMessage } from '@/modules/shadow/compliance/message-store';
+import { detectFraud } from '@/modules/shadow/safety/fraud-detector';
+import { recordAuthEvent } from '@/modules/shadow/safety/auth-events';
 import type { AgentResponse, SessionChannel } from '@/modules/shadow/interfaces/types';
 import { withRateLimit } from '@/shared/middleware/rate-limit';
 
@@ -117,19 +119,82 @@ async function handlePOST(request: NextRequest) {
         touchUpdates.currentPage = currentPage;
       }
 
-      // 2. Persist the user message
-      const userMessage = await prisma.shadowMessage.create({
-        data: {
-          sessionId: voiceSession.id,
-          role: 'user',
-          content: message,
-          contentType: 'TEXT',
-          channel: voiceSession.currentChannel,
-        },
+      // 2. Persist the user message.
+      // P-17 (v3 Addition 9.2): through `storeShadowMessage`, which redacts
+      // before it writes. A spoken or typed card number arrives HERE.
+      await storeShadowMessage({
+        sessionId: voiceSession.id,
+        role: 'user',
+        content: message,
+        channel: voiceSession.currentChannel,
       });
 
       // Touch session: increment messageCount, update lastActivityAt
       await sessionManager.touchSession(voiceSession.id, touchUpdates);
+
+      // -----------------------------------------------------------------
+      // 2b. ANTI-SOCIAL-ENGINEERING GATE (P-17, v3 Addition 1.3)
+      // -----------------------------------------------------------------
+      //
+      // `safety/fraud-detector.ts` declares at the top of the file that it
+      // "CANNOT be overridden even with a valid PIN" and that "all patterns are
+      // evaluated before any action proceeds". It had ZERO external importers.
+      // Every pattern in it -- the wire-transfer-to-a-new-account BEC pattern,
+      // the vendor bank change, the credential request, the urgency bypass, the
+      // "don't log this", the prompt injection -- was evaluated nowhere, so
+      // every one of those messages went straight to the model.
+      //
+      // The gate is HERE, before `processWithAgent`, and not inside the agent,
+      // for two reasons. It has to refuse whether or not an ANTHROPIC_API_KEY
+      // is configured (the offline branch below is still a reachable code path
+      // that would otherwise answer a wire-transfer request). And a refusal
+      // must happen before the message reaches the model at all -- a prompt
+      // injection that the model has already read has already had its chance.
+      //
+      // The user's message is stored FIRST, above, and deliberately: "don't log
+      // this action" is one of the patterns, and a gate that discarded the
+      // message it refused would be granting exactly that request.
+      const fraud = detectFraud({
+        input: message,
+        context: { channel: voiceSession.currentChannel },
+      });
+
+      if (fraud.isFraudulent) {
+        await recordAuthEvent({
+          userId: authSession.userId,
+          sessionId: voiceSession.id,
+          method: 'fraud_screen',
+          result: 'refused',
+          riskLevel: fraud.severity.toLowerCase(),
+          actionAttempted: fraud.pattern,
+        });
+
+        const refusal = await storeShadowMessage({
+          sessionId: voiceSession.id,
+          role: 'assistant',
+          content: fraud.message,
+          contentType: 'TEXT',
+          intent: 'refused',
+          channel: voiceSession.currentChannel,
+        });
+        await sessionManager.touchSession(voiceSession.id);
+
+        // 200, not 4xx. This is a conversational refusal with an explanation
+        // and an offered alternative, which is what Addition 1.3 specifies; a
+        // client that renders errors differently from messages would otherwise
+        // show the user a failure instead of the reason.
+        return success({
+          sessionId: voiceSession.id,
+          messageId: refusal.id,
+          refused: true,
+          fraudPattern: fraud.pattern,
+          severity: fraud.severity,
+          response: {
+            text: fraud.message,
+            contentType: 'text',
+          },
+        });
+      }
 
       // 3. Process through agent
       const startTime = Date.now();
@@ -144,19 +209,17 @@ async function handlePOST(request: NextRequest) {
       const latencyMs = Date.now() - startTime;
 
       // 4. Persist assistant response
-      const assistantMessage = await prisma.shadowMessage.create({
-        data: {
-          sessionId: voiceSession.id,
-          role: 'assistant',
-          content: agentResponse.text,
-          contentType: agentResponse.contentType?.toUpperCase() ?? 'TEXT',
-          intent: agentResponse.intent ?? null,
-          toolsUsed: (agentResponse.toolsUsed ?? []) as unknown as Parameters<typeof prisma.shadowMessage.create>[0]['data']['toolsUsed'],
-          actionsTaken: (agentResponse.actionsTaken ?? []) as unknown as Parameters<typeof prisma.shadowMessage.create>[0]['data']['actionsTaken'],
-          channel: voiceSession.currentChannel,
-          confidence: agentResponse.confidence ?? null,
-          latencyMs,
-        },
+      const assistantMessage = await storeShadowMessage({
+        sessionId: voiceSession.id,
+        role: 'assistant',
+        content: agentResponse.text,
+        contentType: agentResponse.contentType?.toUpperCase() ?? 'TEXT',
+        intent: agentResponse.intent ?? null,
+        toolsUsed: agentResponse.toolsUsed ?? [],
+        actionsTaken: agentResponse.actionsTaken ?? [],
+        channel: voiceSession.currentChannel,
+        confidence: agentResponse.confidence ?? null,
+        latencyMs,
       });
 
       // Touch session again for the assistant message

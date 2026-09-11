@@ -52,6 +52,63 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  // -------------------------------------------------------------------------
+  // P-17 — two Shadow tables have exactly one permitted writer each.
+  //
+  // ShadowMessage -> src/modules/shadow/compliance/message-store.ts
+  //   v3 Addition 9.2 says "Every transcript passes through redaction BEFORE
+  //   being stored in the database", and `compliance/redaction.ts` opens with
+  //   the same sentence. It had ZERO callers, and `prisma.shadowMessage.create`
+  //   appeared in six files, so every transcript was stored raw. Redaction now
+  //   lives inside `storeShadowMessage`, and a seventh write path added later
+  //   would silently reopen the hole -- unless reaching for the delegate
+  //   directly is a lint error, which is what this rule makes it.
+  //
+  // ShadowConsentReceipt -> src/modules/shadow/safety/consent-receipt.ts
+  //   `consentReceiptService.createReceipt` enriches a receipt from
+  //   `classifyAction`, so `confirmationLevel`, `blastRadius` and `reversible`
+  //   come from one table. `agent/core.ts` bypassed it with a direct create and
+  //   filled those three fields from the intent classifier and a hardcoded
+  //   three-element set instead -- so the audit record of a created calendar
+  //   event said "external, irreversible". A consent receipt whose safety
+  //   metadata was decided by the call site is not an audit record.
+  //
+  // Scoped by `files` + `ignores` rather than by trusting review, for the same
+  // reason as the P-34 block above. `selector` is a chained member expression
+  // so it matches `prisma.shadowMessage.create` and
+  // `prisma.shadowMessage.createMany` wherever the client is named `prisma`.
+  // -------------------------------------------------------------------------
+  {
+    files: ["src/**/*.ts", "src/**/*.tsx"],
+    ignores: [
+      "src/modules/shadow/compliance/message-store.ts",
+      "src/modules/shadow/safety/consent-receipt.ts",
+      // The synthetic monitor writes and immediately deletes a fixed probe
+      // string of its own ("Synthetic test message - please ignore"). It is not
+      // a transcript and carries no user content, and routing a liveness probe
+      // through the redaction pipeline would make the probe test the pipeline
+      // rather than the database. Exempted explicitly so the exemption is
+      // visible rather than implicit in a narrower `files` glob.
+      "src/modules/shadow/monitoring/synthetic-tests.ts",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "MemberExpression[object.object.name='prisma'][object.property.name='shadowMessage'][property.name=/^create(Many)?$/]",
+          message:
+            "ShadowMessage has one writer: storeShadowMessage() in src/modules/shadow/compliance/message-store.ts. It redacts PII/PHI/PCI before storage (v3 Addition 9.2); a direct create stores the transcript raw.",
+        },
+        {
+          selector:
+            "MemberExpression[object.object.name='prisma'][object.property.name='shadowConsentReceipt'][property.name=/^create(Many)?$/]",
+          message:
+            "ShadowConsentReceipt has one writer: consentReceiptService.createReceipt() in src/modules/shadow/safety/consent-receipt.ts. It derives confirmationLevel, blastRadius and reversible from classifyAction(); a direct create lets the call site invent its own safety metadata.",
+        },
+      ],
+    },
+  },
   {
     rules: {
       "@typescript-eslint/no-unused-vars": [

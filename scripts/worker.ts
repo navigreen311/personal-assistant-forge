@@ -72,6 +72,10 @@ import {
   createShadowProactiveWorker,
   ensureProactiveSchedule,
 } from '@/lib/queue/shadow-proactive';
+import {
+  createShadowRetentionWorker,
+  ensureRetentionSchedule,
+} from '@/lib/queue/shadow-retention';
 import { createWorkflowWorker } from '@/lib/queue/workflow-worker';
 import { report, reportError } from '@/lib/observability/report';
 import { startHeartbeat, reportWorkerShutdown } from '@/lib/observability/worker-health';
@@ -110,6 +114,13 @@ export function createAllWorkers(): NamedWorker[] {
     // escalation ladder per due notification. Everything it calls existed and
     // had no caller; see src/modules/shadow/proactive/proactive-runner.ts.
     { name: 'shadow-proactive', worker: createShadowProactiveWorker() },
+    // P-17 (Sprint 6, issue #25). The nightly retention sweep. It is in this
+    // list rather than started from a route because it is the platform's only
+    // scheduled DESTRUCTIVE job, and a destructive job that can be triggered
+    // from an HTTP handler is a destructive job with an attack surface. See
+    // src/lib/queue/shadow-retention.ts for what it deletes and what it refuses
+    // to delete.
+    { name: 'shadow-retention', worker: createShadowRetentionWorker() },
   ];
 }
 
@@ -202,6 +213,27 @@ async function main(): Promise<void> {
       severity: 'error',
       fingerprint: 'lifecycle:shadow-proactive-schedule',
       message: 'shadow proactive sweep could not be scheduled; no briefings will be delivered',
+    });
+  }
+
+  // P-17. Same placement and the same idempotence argument as above. The
+  // failure message says the consequence rather than the symptom: a retention
+  // sweep that never runs is a compliance obligation silently unmet, and unlike
+  // a missed briefing nobody notices it by not receiving anything.
+  try {
+    const schedule = await ensureRetentionSchedule();
+    console.log(
+      `[worker] shadow retention cleanup scheduled on "${schedule.cron}"` +
+        (schedule.replaced ? ' (replaced a previous pattern)' : ''),
+    );
+  } catch (err) {
+    console.error('[worker] could not register the shadow retention cleanup:', err);
+    reportError(err, {
+      kind: 'manual',
+      severity: 'error',
+      fingerprint: 'lifecycle:shadow-retention-schedule',
+      message:
+        'shadow retention cleanup could not be scheduled; retention policies will not be enforced',
     });
   }
 

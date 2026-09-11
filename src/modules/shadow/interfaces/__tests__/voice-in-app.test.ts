@@ -182,9 +182,15 @@ describe('VoiceInAppHandler — VAF path (sttProvider=vaf)', () => {
 
     expect(assistantCall.data.role).toBe('assistant');
     expect(assistantCall.data.ttsProvider).toBe('vaf');
-    // audioQuality is omitted on the assistant row — Prisma input only
-    // includes the fields we explicitly set.
-    expect(assistantCall.data.audioQuality).toBeUndefined();
+    // P-17: `null`, not `undefined`. The write now goes through
+    // `storeShadowMessage` (the one permitted writer of ShadowMessage, which
+    // redacts before storing -- v3 Addition 9.2), and that function names every
+    // column explicitly. The stored value is unchanged: Prisma's `undefined`
+    // means "omit from the INSERT", and the column's default is NULL.
+    // The fact being asserted is the same one -- no audio quality on the
+    // assistant row -- and it is now asserted on the value rather than on
+    // whether the key was present.
+    expect(assistantCall.data.audioQuality).toBeNull();
   });
 });
 
