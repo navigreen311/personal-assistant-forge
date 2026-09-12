@@ -132,6 +132,50 @@ const REPO_ROOT = toPosix(join(__dirname, '..', '..', '..'));
  * `security/services/legal-hold-service.ts :: legalHoldService` is called only
  * by `security/services/retention-service.ts`, also on this list. The verdict
  * here is direct-caller, not reachable-from-a-route.
+ *
+ * ===========================================================================
+ * P-43 — THE TWO DELETIONS, AND WHAT DELETING THEM REVEALED
+ * ===========================================================================
+ *
+ * The owner ruled on two of the thirteen: delete security's duplicate
+ * `retentionService` (shadow's is the live one) and delete `screenshotService`.
+ * Both are gone, and their lines are gone with them in the same commit --
+ * required, because 'keeps the list honest' fails on a recorded name whose file
+ * no longer exists. The other eleven stay listed and gated; the five in-spec
+ * Sprint 5/6 services are deliberately NOT wired, because wiring plumbing
+ * before the Shadow agent is framed is how this repository got nine deliverables
+ * with no caller in the first place.
+ *
+ * Removing two entries added one, and that is the paragraph above being cashed
+ * in rather than a surprise:
+ *
+ *   `capture/services/ocr-service.ts :: ocrService` is now DEAD, not live. Its
+ *   only caller was `screenshot-service.ts`. "Live by definition and
+ *   unreachable in fact" became "dead by definition" the moment the definition
+ *   stopped being propped up. It is recorded rather than deleted because the
+ *   owner ruled on two services and this is a third; the list is where a newly
+ *   exposed orphan goes to be decided, not where it goes to be forgiven.
+ *
+ * The other half of that paragraph turned out to be WRONG, and the correction
+ * belongs here because a measurement that is 95% right is how the next one gets
+ * trusted:
+ *
+ *   `legalHoldService` did NOT go dead. Its verdict is `dynamic`, because
+ *   `security/services/consent-service.ts` -- which is live, via
+ *   `compliance-service.ts` and `shared/middleware/compliance.ts` -- reaches it
+ *   through `await import('./legal-hold-service')` behind a lazily-cached
+ *   module-scope binding, and has all along. So it had a second caller that the
+ *   prose above missed; "called only by retention-service.ts" was never true,
+ *   and it is genuinely reachable from a route today. The INSTRUMENT was right
+ *   about it the whole time (a dynamic import is reported `dynamic`, never
+ *   `dead`); only the hand-written sentence beside it was wrong.
+ *
+ * Deleting security's `retention-service.ts` also took the last
+ * `prisma.retentionPolicy` reference in `src/` with it, which moves
+ * `RetentionPolicy` onto `KNOWN_ORPHANS` in
+ * `tests/db/control-plane-schema.test.ts`. That is P-38's own finding about
+ * reference-versus-use arriving on schedule: one of the four models that passed
+ * P-36's check only because a dead service named them. See the note there.
  */
 const KNOWN_DEAD: readonly string[] = [
   // 'src/lib/ai/usage.ts :: usageTracker' was here. P-39 deleted the file; the
@@ -139,13 +183,20 @@ const KNOWN_DEAD: readonly string[] = [
   // This deletion is not bookkeeping -- the list is guarded both ways, so the
   // line had to go in the same commit as the wiring, and leaving it would fail
   // 'keeps the list honest: every recorded name still exists'.
+  //
+  // P-43 removed two more, by deleting the services rather than wiring them:
+  // 'src/modules/capture/services/screenshot-service.ts :: screenshotService'
+  // and 'src/modules/security/services/retention-service.ts :: retentionService'
+  // -- the latter the duplicate of shadow's live one, which is why this scan
+  // resolves imports instead of grepping for the identifier: keyed by name, the
+  // live declaration forgave the dead one and the coordinator's grep counted 19
+  // dead where the AST counts 13.
   'src/modules/capture/services/offline-queue.ts :: offlineQueue',
-  'src/modules/capture/services/screenshot-service.ts :: screenshotService',
+  // P-43: newly dead, and not a new defect -- `screenshot-service.ts` was its
+  // only caller, and the header above predicted this exact line. Recorded, not
+  // deleted: the owner ruled on two services, and a third is a third decision.
+  'src/modules/capture/services/ocr-service.ts :: ocrService',
   'src/modules/security/services/provenance-service.ts :: provenanceService',
-  // Distinct from `shadow/compliance/retention.ts :: retentionService`, which
-  // IS live. Two singletons, one name -- the reason this scan resolves imports
-  // instead of grepping for the identifier.
-  'src/modules/security/services/retention-service.ts :: retentionService',
   'src/modules/security/services/vault-service.ts :: vaultService',
   'src/modules/shadow/interfaces/web-chat.ts :: webChatHandler',
   'src/modules/shadow/monitoring/failover.ts :: failoverManager',

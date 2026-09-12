@@ -172,8 +172,43 @@ import { join } from 'path';
  * that service's own doc-comment: `PluginReview.pluginRecordId` is a required
  * FK to an installation, so a review of an UNINSTALLED registry entry has
  * nothing to hang off. That one needs a schema change, not a wiring.
+ *
+ * ---------------------------------------------------------------------------
+ * P-43 — `RetentionPolicy`, AND WHY IT IS LISTED RATHER THAN FIXED
+ * ---------------------------------------------------------------------------
+ *
+ * P-38's reachability scan recorded a hole in the check above, in prose, and
+ * named the exact number: "four models pass this reference check only because a
+ * dead service names them" -- `VaultEntry`, `VaultSecret`, `VaultKey` and
+ * `ProvenanceRecord`, each referenced thirty times over by a singleton with no
+ * caller. A reference inside a service nobody calls is a table that is named and
+ * never written, and `isReferenced` cannot tell the two apart.
+ *
+ * `RetentionPolicy` was a fifth instance of it, and deleting the dead service on
+ * the owner's ruling is what made it visible: every `prisma.retentionPolicy` in
+ * `src/` lived in `modules/security/services/retention-service.ts`, the dead
+ * duplicate of shadow's live `retentionService`. With that file gone the model
+ * has no reference at all, which is the same fact it had yesterday stated out
+ * loud.
+ *
+ * Three things were deliberately NOT done about it:
+ *
+ *   - The model was not deleted. `prisma/schema.prisma` is frozen for this
+ *     package, and dropping a table is a migration and a product decision.
+ *   - No reference was added to quiet the test. A `prisma.retentionPolicy`
+ *     written to satisfy a grep is precisely the phantom this file exists to
+ *     catch, one layer up.
+ *   - The assertion was not loosened. It still fails on any unlisted orphan,
+ *     and it still fails if someone wires this one and leaves the line here.
+ *
+ * So it is recorded, dated, and handed on. Note what it is NOT: retention is not
+ * unimplemented. `shadow/compliance/retention.ts` runs nightly over
+ * `ShadowRetentionConfig` and is live. `RetentionPolicy` is the generic
+ * per-data-type policy table the SECURITY module's engine was built against, and
+ * that engine never had a route. Wiring it means building
+ * `/api/security/retention`, not resurrecting the deleted file.
  */
-const KNOWN_ORPHANS = ['VoicePersona'];
+const KNOWN_ORPHANS = ['RetentionPolicy', 'VoicePersona'];
 
 /** Prisma's delegate name for a model: first character lower-cased. */
 function delegateName(model: string): string {

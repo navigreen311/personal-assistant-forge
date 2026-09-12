@@ -65,13 +65,19 @@
  * dead. This AST-resolved scan says 42 subjects, 29 live, 13 dead, and the two
  * differences are the argument for the rewrite:
  *
- *   - `retentionService` is declared TWICE, in
+ *   - `retentionService` was declared TWICE, in
  *     `modules/security/services/retention-service.ts` (dead) and
  *     `modules/shadow/compliance/retention.ts` (live, via
  *     `app/api/shadow/retention/route.ts` and `lib/queue/shadow-retention.ts`).
  *     Keyed by name, the live one forgives the dead one. Keyed by (file, name)
  *     and resolved through the import that actually binds it, they are two
  *     separate answers. `renderTemplate` is the same story one scope out.
+ *
+ *     P-43 deleted the security one on the owner's ruling, so the duplicate is
+ *     gone and the example now reads in the past tense. The example is kept --
+ *     not tidied away -- because it is the argument for resolving imports rather
+ *     than grepping identifiers, and that argument does not expire with the
+ *     file that motivated it.
  *   - `new Map()` is not a service. Seven of the nineteen were module-private
  *     Maps exported only so a test could `.clear()` them -- `dlpStore`,
  *     `exportStore`, `policyStore`, `ssoStore`, `toolStore`, `importStore`,
@@ -119,12 +125,24 @@
  *
  * One thing the singleton scan reports as live that a human would call dead:
  * `ocrService`'s only caller is `screenshot-service.ts`, and `screenshotService`
- * is itself dead; `legalHoldService`'s only caller is security's
- * `retention-service.ts`, which is also dead. The verdict here is
- * direct-caller, not root-reachability, so those two are live by definition and
- * unreachable in fact. Named in the gate's comment rather than smuggled into
- * the verdict, because widening the definition is what turns a check into a
- * guess.
+ * is itself dead. The verdict here is direct-caller, not root-reachability, so
+ * it was live by definition and unreachable in fact. Named in the gate's comment
+ * rather than smuggled into the verdict, because widening the definition is what
+ * turns a check into a guess.
+ *
+ * P-43 settled that one by deleting `screenshot-service.ts`: `ocrService` reads
+ * `dead` now, with no change to the definition. A transitive-reachability pass
+ * would have reported it a package earlier; not having one cost nothing here,
+ * because the thing it depended on was itself on the gated list.
+ *
+ * The same paragraph used to name `legalHoldService` beside it -- "its only
+ * caller is security's `retention-service.ts`, which is also dead". That was
+ * wrong, and deleting `retention-service.ts` is what proved it: the verdict went
+ * to `dynamic`, not `dead`, because `security/services/consent-service.ts` (live
+ * via `compliance-service.ts` and `shared/middleware/compliance.ts`) reaches it
+ * through `await import('./legal-hold-service')` and always did. The scan was
+ * right about it throughout -- a dynamic import is `dynamic`, never `dead`; only
+ * the hand-written sentence was wrong.
  */
 
 import * as ts from 'typescript';
