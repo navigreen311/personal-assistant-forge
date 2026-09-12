@@ -38,7 +38,19 @@ export interface ModelRoutingDecision {
   recommendedTier: ModelTier;
   recommendedModel: string;
   reason: string;
-  estimatedCost: number;
+  /**
+   * P-43: `null` when `src/lib/ai/pricing.ts` has no list price for
+   * `recommendedModel`. A predictive estimate that cannot be made is absent,
+   * not zero -- do not `?? 0` this at a call site. `reason` says so in words.
+   */
+  estimatedCost: number | null;
+  /**
+   * `PRICING_AS_OF` for the price list `estimatedCost` was computed from, or
+   * `null` alongside a `null` cost. A cost reported from a year-old list is a
+   * different claim from one reported from today's, and the payload should say
+   * which it is.
+   */
+  estimatedCostAsOf: string | null;
 }
 
 export interface ProviderHealth {

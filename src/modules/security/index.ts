@@ -16,7 +16,6 @@ export { ConsentService, consentService } from './services/consent-service';
 export { LegalHoldService, legalHoldService } from './services/legal-hold-service';
 export { ProvenanceService, provenanceService } from './services/provenance-service';
 export { RedactionService, redactionService } from './services/redaction-service';
-export { RetentionService, retentionService } from './services/retention-service';
 export { VaultService, vaultService } from './services/vault-service';
 
 // Types
