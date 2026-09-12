@@ -120,8 +120,18 @@ describe('P-44 — consent receipts are deleted by one clock, in one file', () =
     // — the field that quotes the conversation — intact after the user deleted
     // the session. That is the "preserved under a different label" outcome Ivan
     // ruled against, and two routes were doing it.
+    // MATCHED IN A `data:` POSITION, not merely mentioned. An earlier draft of
+    // this test looked for the identifier anywhere in the file, and it passed
+    // against a mutant that removed the spread from all three `updateMany` calls
+    // in `history/clear` -- the `import` line still named it, and an unused import
+    // is a lint WARNING in this repository, not an error. A guard that a dead
+    // import satisfies is the shape P-38 spent a package separating from a real
+    // one.
+    const APPLIES_THE_SCRUB =
+      /data:\s*(?:RECEIPT_CONTENT_SCRUB|\{[^}]*\.\.\.RECEIPT_CONTENT_SCRUB)/;
+
     const scrubbers = files
-      .filter((f) => f.code.includes('RECEIPT_CONTENT_SCRUB'))
+      .filter((f) => APPLIES_THE_SCRUB.test(f.code))
       .map((f) => f.rel)
       .sort();
 
