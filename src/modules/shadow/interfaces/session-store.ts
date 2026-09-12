@@ -101,6 +101,7 @@
 
 import type { Prisma, ShadowVoiceSession } from '@prisma/client';
 import { prisma } from '@/lib/db';
+import { RECEIPT_CONTENT_SCRUB } from '../compliance/receipt-retention';
 import type { ChannelHistoryEntry } from './types';
 
 // ---------------------------------------------------------------------------
@@ -296,14 +297,51 @@ export class OwnedSessionStore {
   }
 
   /**
-   * Delete one session of this user's, with its transcript, outcome, consent
-   * receipts and auth events.
+   * Delete one session of this user's: its transcript, its outcome and the
+   * session row. THE SINGLE IMPLEMENTATION — every route that deletes one
+   * Shadow session reaches this method, because the ruling P-44 implements is
+   * about the three of them agreeing.
    *
    * The children are keyed on `sessionId` and carry no `userId` of their own,
    * so the cascade is only safe behind the owner check this method performs
    * first. Keeping the order inside one method is the point: a caller that had
    * to delete the children itself could delete another tenant's transcript and
    * then be refused on the session.
+   *
+   * WHAT GOES, AND WHAT SURVIVES. P-44, and this is the whole of the ruling:
+   *
+   *   ShadowMessage         DELETED. The transcript. "A deleted session means
+   *                         deleted" — no soft-delete, no tombstone, no copy
+   *                         under another label.
+   *   ShadowSessionOutcome  DELETED. Derived from the transcript.
+   *   ShadowVoiceSession    DELETED, owner in the where clause.
+   *
+   *   ShadowConsentReceipt  RETAINED, content scrubbed, detached by the FK.
+   *                         This line used to be
+   *                         `prisma.shadowConsentReceipt.deleteMany({ where: {
+   *                         sessionId } })` — the identical line P-17 removed
+   *                         from `gdpr-export.ts` and `retention.ts`'s session
+   *                         sweep, left live here, reachable from
+   *                         `DELETE /api/shadow/conversations/[id]`. A consent
+   *                         receipt is the record that a human authorised an
+   *                         action; v3 Addition 9.3 requires it survive a
+   *                         user-requested deletion with only its content
+   *                         scrubbed, and GDPR Article 17(3)(b) is what permits
+   *                         that. It keeps `userId` (P-40's column), so the
+   *                         surviving row still names the person who authorised
+   *                         the action rather than nobody.
+   *   ShadowAuthEvent       RETAINED, detached by the FK. Also a `deleteMany`
+   *                         here until P-44: it is the record of whether a
+   *                         step-up challenge passed or failed, it holds no free
+   *                         text to scrub, it has its own `userId`, and
+   *                         `retention.ts` already ages it out on the same
+   *                         regulatory clock as a receipt. `gdpr-export` has
+   *                         retained it since P-17 and said so in its header;
+   *                         this path was the one that still destroyed it.
+   *
+   * Neither survivor needs its `sessionId` nulled by hand: both FKs are
+   * `ON DELETE SET NULL` in the baseline migration, so the `delete` below
+   * detaches them.
    */
   async deleteById(sessionId: string): Promise<void> {
     const owned = await this.findById(sessionId);
@@ -311,14 +349,29 @@ export class OwnedSessionStore {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    await Promise.all([
+    // ONE TRANSACTION, and the order in it is load-bearing.
+    //
+    // The scrub is keyed on `sessionId`, which the FK nulls the instant the last
+    // statement runs, so it has to be first — and it has to be in the same
+    // transaction, or a failure between the scrub and the delete leaves a
+    // session alive with its receipts' reasoning already erased. The interactive
+    // route (`DELETE /api/shadow/sessions/[id]`) was the only one of the three
+    // that wrapped this, and collapsing the three onto one implementation must
+    // not be how that atomicity gets lost.
+    //
+    // `delete` with the owner in its `where` raises P2025 if the filter misses,
+    // which rolls the whole transaction back — the same refusal as the
+    // `findById` above, arrived at a second time against a live database rather
+    // than trusted from a previous statement.
+    await prisma.$transaction([
+      prisma.shadowConsentReceipt.updateMany({
+        where: { sessionId },
+        data: RECEIPT_CONTENT_SCRUB,
+      }),
       prisma.shadowMessage.deleteMany({ where: { sessionId } }),
       prisma.shadowSessionOutcome.deleteMany({ where: { sessionId } }),
-      prisma.shadowConsentReceipt.deleteMany({ where: { sessionId } }),
-      prisma.shadowAuthEvent.deleteMany({ where: { sessionId } }),
+      prisma.shadowVoiceSession.delete({ where: this.#ownedRow(sessionId) }),
     ]);
-
-    await prisma.shadowVoiceSession.delete({ where: this.#ownedRow(sessionId) });
   }
 }
 

@@ -456,7 +456,13 @@ export class ShadowSessionScope {
   }
 
   /**
-   * Delete a session and all its associated messages, outcomes, consent receipts, and auth events.
+   * Delete a session with its messages and its outcome.
+   *
+   * P-44: consent receipts and auth events are NOT deleted. They are retained
+   * (the receipt's conversation content scrubbed) and detached, because each is
+   * a record that a human authorised something and v3 Addition 9.3 requires it
+   * outlive a user-requested deletion. `OwnedSessionStore.deleteById` documents
+   * the full list of what goes and what survives.
    */
   async deleteSession(sessionId: string): Promise<void> {
     await this.#store.deleteById(sessionId);

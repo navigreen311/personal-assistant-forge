@@ -197,11 +197,22 @@ describe('POST /api/shadow/config/entity/[id]/switch', () => {
     expect(body.data.personaChanged).toBe(false);
   });
 
-  it('refuses another tenant session, and switches nothing', async () => {
+  it('refuses another tenant session as NOT FOUND, and switches nothing', async () => {
     // The old implementation swallowed this into `personaChanged: true` and
     // announced "Context switched to X. All subsequent actions will be in the X
     // context" -- while writing `activeEntityId` into a session belonging to
     // someone else. Both halves are asserted.
+    //
+    // P-44 CHANGED THE EXPECTED STATUS FROM 403 TO 404, and which of the two was
+    // wrong is worth saying precisely: the REFUSAL this test pins was always
+    // right, and the VALUE it pinned made the endpoint a cuid existence oracle.
+    // A 403 here and a 404 on the case below told a caller that somebody else's
+    // session id is real. P-41 found the pair and closed one
+    // (`POST /api/shadow/action`, 403 -> 404); this was the other, and Ivan's
+    // ruling on the deletion routes -- *"404 on all three paths"* -- is the same
+    // instruction. `switchEntity` no longer HAS a `SESSION_FORBIDDEN` code,
+    // because it resolves the session with the owner in the filter and so has no
+    // state to report.
     const { tenantA, tenantB } = await createTwoTenants();
     const sessionB = await sessionFor(tenantB, tenantB.entity.id);
 
@@ -212,12 +223,47 @@ describe('POST /api/shadow/config/entity/[id]/switch', () => {
       }),
       { params: Promise.resolve({ id: tenantA.entity.id }) }
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
 
     const after = await db.shadowVoiceSession.findUnique({ where: { id: sessionB.id } });
     expect(after?.activeEntityId).toBe(tenantB.entity.id);
   });
 
+  it('is indistinguishable from a session id that never existed', async () => {
+    // The claim is not "both are 404" -- two 404s with different error codes or
+    // messages are still an oracle. The whole response envelope is compared, with
+    // only the id substituted out, because that is what a caller can actually
+    // see.
+    const { tenantA, tenantB } = await createTwoTenants();
+    const sessionB = await sessionFor(tenantB, tenantB.entity.id);
+    const ghost = 'clnonexistent000000000000';
+
+    async function refusal(sessionId: string) {
+      const res = await entitySwitchPOST(
+        requestAs(tenantA, `/api/shadow/config/entity/${tenantA.entity.id}/switch`, {
+          method: 'POST',
+          body: { sessionId },
+        }),
+        { params: Promise.resolve({ id: tenantA.entity.id }) }
+      );
+      const body = await readJson<{ error?: { code?: string; message?: string } }>(res);
+      return {
+        status: res.status,
+        code: body.error?.code,
+        message: body.error?.message?.replace(sessionId, '<id>'),
+      };
+    }
+
+    expect(await refusal(sessionB.id)).toEqual(await refusal(ghost));
+  });
+
+  // `ENTITY_FORBIDDEN` stays a 403, and the asymmetry with the session case above
+  // is deliberate. An entity id is not a secret the way a session id is --
+  // `GET /api/entities` hands a caller their own and `verifyEntityForUser` is the
+  // platform-wide gate for everybody else's -- and P-30's 49 route helpers all
+  // answer 403 on a foreign entity, so changing this one of fifty would create an
+  // inconsistency rather than remove one. Recorded in P-44's report as a finding
+  // for whoever takes entity-scope refusals as a package.
   it('refuses another tenant entity', async () => {
     const { tenantA, tenantB } = await createTwoTenants();
     const sessionA = await sessionFor(tenantA, tenantA.entity.id);

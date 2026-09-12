@@ -61,9 +61,26 @@ export async function POST(
         // A foreign entity, a foreign session and a nonexistent one are all
         // refusals rather than 500s, and the foreign cases are deliberately not
         // distinguished from the missing ones in the message.
+        //
+        // P-44. `SESSION_FORBIDDEN` used to sit beside `ENTITY_FORBIDDEN` in the
+        // 403 arm. Ivan's ruling — *"404 on all three paths"* — is about
+        // deletion, but this was the other half of the same finding P-41 raised:
+        // a 403 here told the caller that somebody else's session id is a real
+        // cuid. `switchEntity` no longer has a code for it, because it no longer
+        // has a state for it; the session is resolved with the owner in the
+        // filter, so a foreign session arrives here as `SESSION_NOT_FOUND` and
+        // leaves as a 404, indistinguishably from an id that never existed.
+        //
+        // `ENTITY_FORBIDDEN` is NOT folded in, and the asymmetry is deliberate
+        // rather than overlooked. An entity id is not a secret the way a session
+        // id is — `GET /api/entities` hands the caller their own and
+        // `verifyEntityForUser` is the platform-wide gate for everybody else's —
+        // and P-30's 49 route helpers all answer 403 on a foreign entity, so
+        // changing one of fifty here would create an inconsistency rather than
+        // remove one. Recorded in the P-44 report as a finding for whoever takes
+        // entity-scope refusals as a package.
         switch (err.code) {
           case 'ENTITY_FORBIDDEN':
-          case 'SESSION_FORBIDDEN':
             return error('FORBIDDEN', 'Access denied', 403);
           case 'ENTITY_NOT_FOUND':
           case 'SESSION_NOT_FOUND':

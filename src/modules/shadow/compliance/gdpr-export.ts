@@ -33,7 +33,12 @@
 // consent receipt is; the receipt is what proves the user authorised the action,
 // and erasing it on request erases the evidence in the user's own favour too.
 //
-// So `scrubReceiptsForSessions` replaces every `deleteMany` over receipts here.
+// So a scrub replaces every `deleteMany` over receipts here. P-44 moved that
+// scrub out to `./receipt-retention` — unchanged — because four OTHER code paths
+// delete a Shadow session and three of them disagreed with this file about what
+// happens to its receipts. The list below is now documented beside the payload
+// there, and repeated here because this is the file the ruling was written about.
+//
 // WHAT IT SCRUBS, and why that list and not a longer or shorter one:
 //
 //   messageId      -> null.  The ShadowMessage it points at is being deleted in
@@ -71,6 +76,8 @@
 
 import { prisma } from '@/lib/db';
 import { reportError } from '@/lib/observability';
+import { SCRUBBED_REASONING, retainAndScrubReceipts } from './receipt-retention';
+import { ownedSessions } from '../interfaces/session-store';
 
 // --- Types ---
 
@@ -86,33 +93,12 @@ export interface GDPRDeleteResult {
   error?: string;
 }
 
-/**
- * What `reasoning` is replaced with. A fixed string, not an empty one, so a
- * reader can tell a scrubbed receipt from one that never carried reasoning.
- */
-export const SCRUBBED_REASONING =
-  '[SCRUBBED] conversation content erased at the user request; receipt retained for regulatory compliance';
-
-/**
- * Scrub the conversation content out of the consent receipts attached to these
- * sessions, and return how many were scrubbed.
- *
- * Called INSTEAD OF deleting them. The count is reported to the caller as
- * `consentReceiptsRetained` rather than folded into a `deletedCounts` total, so
- * an operator reading the response cannot mistake "retained" for "removed".
- */
-async function scrubReceiptsForSessions(sessionIds: string[]): Promise<number> {
-  if (sessionIds.length === 0) return 0;
-  const { count } = await prisma.shadowConsentReceipt.updateMany({
-    where: { sessionId: { in: sessionIds } },
-    data: {
-      messageId: null,
-      reasoning: SCRUBBED_REASONING,
-      sourcesCited: [],
-    },
-  });
-  return count;
-}
+// P-44. `SCRUBBED_REASONING` and the function that applies it moved to
+// `./receipt-retention`, unchanged, because four other code paths delete a
+// Shadow session and three of them disagreed with this one about what happens
+// to its receipts. Re-exported under the name this file has always published so
+// its importers are unaffected.
+export { SCRUBBED_REASONING };
 
 export interface SelectiveDeleteParams {
   userId: string;
@@ -301,7 +287,7 @@ export class GDPRService {
         // Receipts are scrubbed BEFORE the sessions go, while `sessionId` still
         // identifies them. After the delete the FK has nulled it and there is
         // no way left to find them.
-        const retained = await scrubReceiptsForSessions(sessionIds);
+        const retained = await retainAndScrubReceipts(sessionIds);
 
         const [messagesResult, outcomesResult] = await Promise.all([
           prisma.shadowMessage.deleteMany({
@@ -386,31 +372,31 @@ export class GDPRService {
   }
 
   /**
-   * Delete a single session and all its associated data.
+   * Article 17 for ONE session: the user's "delete this conversation".
+   *
+   * P-44 changed two things about this method and both were defects of the same
+   * shape.
+   *
+   * IT TAKES THE OWNER NOW. It used to be `deleteSession(sessionId)` — a
+   * `findUnique` on a bare id, then a `delete` on a bare id, with `userId`
+   * nowhere in the signature. The only thing standing between a caller-supplied
+   * cuid and another tenant's session was a hand-written
+   * `if (voiceSession.userId !== session.userId) return 403` in
+   * `/api/shadow/delete-session/[id]`, which is a check in the caller instead of
+   * in the accessor — the pattern P-30 removed from 49 route helpers and P-41
+   * removed from this module's eleven. A second route file reaching this method
+   * and forgetting the check would have been a cross-tenant delete.
+   *
+   * IT HAS ONE IMPLEMENTATION NOW. The body was a near-copy of
+   * `OwnedSessionStore.deleteById`, and "near" is the entire finding: the two
+   * copies disagreed about consent receipts, so the SAME user action produced
+   * two different regulatory outcomes depending on which route they hit. It
+   * delegates instead, so the ruling cannot be honoured on one path and not the
+   * other. The scrub that used to live here now lives in `deleteById`, which is
+   * where the deletion lives.
    */
-  async deleteSession(sessionId: string): Promise<void> {
-    const session = await prisma.shadowVoiceSession.findUnique({
-      where: { id: sessionId },
-    });
-
-    if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    // Scrub the receipts first (see the header), then delete what may go.
-    // `ShadowAuthEvent` is absent from this list on purpose: it holds no
-    // conversation content and its FK detaches it when the session goes.
-    await scrubReceiptsForSessions([sessionId]);
-
-    await Promise.all([
-      prisma.shadowMessage.deleteMany({ where: { sessionId } }),
-      prisma.shadowSessionOutcome.deleteMany({ where: { sessionId } }),
-    ]);
-
-    // Delete the session
-    await prisma.shadowVoiceSession.delete({
-      where: { id: sessionId },
-    });
+  async deleteSession(sessionId: string, userId: string): Promise<void> {
+    await ownedSessions(userId).deleteById(sessionId);
   }
 
   /**
@@ -485,13 +471,13 @@ export class GDPRService {
         // service will not carry out. It scrubs instead, and the returned count
         // is the number scrubbed — same shape of answer, and the caller can
         // tell which happened from `consentReceiptsRetained`.
-        consentReceiptsRetained = await scrubReceiptsForSessions(sessionIds);
+        consentReceiptsRetained = await retainAndScrubReceipts(sessionIds);
         deletedCount = 0;
         break;
       }
       default: {
         // Scrub first, while `sessionId` still identifies the receipts.
-        consentReceiptsRetained = await scrubReceiptsForSessions(sessionIds);
+        consentReceiptsRetained = await retainAndScrubReceipts(sessionIds);
 
         const [msgs, outcomes] = await Promise.all([
           prisma.shadowMessage.deleteMany({
