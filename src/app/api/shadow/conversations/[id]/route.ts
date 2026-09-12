@@ -125,6 +125,17 @@ export async function DELETE(
       // P-41: the scope IS the ownership check, and `deleteSession` applies
       // it a second time in its own where clause -- a delete is not something
       // to perform on an id a previous statement resolved.
+      //
+      // P-44: THIS is the route the owner's ruling was live against. Its status
+      // codes were already right -- a foreign conversation and a missing one both
+      // 404 -- and what it did was wrong: `deleteSession` reached
+      // `OwnedSessionStore.deleteById`, which ran
+      // `prisma.shadowConsentReceipt.deleteMany({ where: { sessionId } })`, the
+      // identical line P-17 had already removed from two other files. So the
+      // interactive "delete this conversation" button destroyed the record that a
+      // human authorised each action in it, while the GDPR route one directory
+      // over retained and scrubbed the same rows. Fixed in `deleteById`, because
+      // fixing it here would have left the fourth and fifth paths disagreeing.
       const sessions = sessionManager.forUser(session.userId);
 
       const voiceSession = await sessions.getSession(id);

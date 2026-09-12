@@ -67,8 +67,13 @@ export class EntitySwitchError extends Error {
       | 'TARGET_UNRESOLVED'
       | 'ENTITY_NOT_FOUND'
       | 'ENTITY_FORBIDDEN'
-      | 'SESSION_NOT_FOUND'
-      | 'SESSION_FORBIDDEN',
+      // P-44 removed 'SESSION_FORBIDDEN'. It is not unused -- it is
+      // unrepresentable: `switchEntity` resolves the session with the owner in
+      // the filter, so there is no state in which a session exists, belongs to
+      // someone else, and is reported as anything but absent. Leaving the member
+      // in the union would leave a 403 arm in the route for a future edit to
+      // reintroduce the oracle through.
+      | 'SESSION_NOT_FOUND',
   ) {
     super(message);
     this.name = 'EntitySwitchError';
@@ -160,23 +165,34 @@ export class EntityPersonaService {
       );
     }
 
-    // The session must exist and must belong to the same user. Both checks are
-    // P-16; see the file header. Neither failure is swallowed, because a switch
-    // that did not happen must not be announced as one.
-    const session = await prisma.shadowVoiceSession.findUnique({
-      where: { id: sessionId },
-      select: { id: true, userId: true, activeEntityId: true },
+    // The session must exist AND belong to this user, and P-44 made that one
+    // query instead of two checks.
+    //
+    // P-16 added both checks and was right to; what it left was a distinction.
+    // `findUnique({ id })` followed by `if (session.userId !== userId) throw
+    // SESSION_FORBIDDEN` made the route a cuid existence oracle: the caller
+    // learned, from a 403 rather than a 404, that somebody else's session id is
+    // real. P-41 found two of these and closed the third; this is the second of
+    // the two it left, and Ivan's ruling on the deletion paths — *"404 on all
+    // three paths"* — is the same instruction.
+    //
+    // The fix is not to relabel the second branch. There is no second branch:
+    // the owner is IN the filter, so "not yours" and "not there" are one query
+    // returning null and a later edit cannot make them diverge. P-34's rule —
+    // the scoping and the refusal are the same act — and the reason this is a
+    // `findFirst`: `userId` is not part of any unique constraint on
+    // `ShadowVoiceSession`.
+    //
+    // The failure is still not swallowed. A switch that did not happen must not
+    // be announced as one; it is just no longer announced with a status code
+    // that says whose.
+    const session = await prisma.shadowVoiceSession.findFirst({
+      where: { id: sessionId, userId },
+      select: { id: true, activeEntityId: true },
     });
 
     if (!session) {
       throw new EntitySwitchError(`Voice session not found: ${sessionId}`, 'SESSION_NOT_FOUND');
-    }
-
-    if (session.userId !== userId) {
-      throw new EntitySwitchError(
-        'Access denied: session does not belong to this user',
-        'SESSION_FORBIDDEN',
-      );
     }
 
     const personaChanged = session.activeEntityId !== entityId;
@@ -184,8 +200,13 @@ export class EntityPersonaService {
     // Written unconditionally even when the entity is unchanged: `updatedAt`
     // semantics aside, an idempotent write is cheaper to reason about than a
     // branch whose "nothing to do" arm is the one no test covers.
+    // The owner is in this `where` as well, not only in the `findFirst` above.
+    // The read and the write are separate statements against a live database and
+    // "resolve an id, then trust it" is the shape P-41 spent a package removing;
+    // `userId` is legal in `ShadowVoiceSessionWhereUniqueInput`, so a filter that
+    // misses raises P2025 rather than writing the row.
     await prisma.shadowVoiceSession.update({
-      where: { id: sessionId },
+      where: { id: sessionId, userId },
       data: { activeEntityId: entityId },
     });
 

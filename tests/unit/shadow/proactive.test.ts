@@ -25,7 +25,12 @@ jest.mock('@/lib/db', () => ({
     },
     shadowTrigger: { findMany: jest.fn(), update: jest.fn() },
     shadowEntityProfile: { findUnique: jest.fn() },
-    shadowVoiceSession: { findUnique: jest.fn(), update: jest.fn() },
+    // P-44. `findFirst` is how `switchEntity` resolves a session now: the owner
+    // is in the filter, so a foreign session reads as absent. `findUnique` stays
+    // in the mock so the assertion that it is NEVER reached can be made -- a
+    // by-id read with no user in the where clause is the defect, and a mock that
+    // lacked the method would turn its return into a TypeError instead.
+    shadowVoiceSession: { findUnique: jest.fn(), findFirst: jest.fn(), update: jest.fn() },
     workflow: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     contact: { findMany: jest.fn() },
   },
@@ -1213,7 +1218,7 @@ describe('EntityPersonaService', () => {
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
         userId: USER_ID,
         activeEntityId: 'other-entity',
@@ -1245,7 +1250,7 @@ describe('EntityPersonaService', () => {
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
         userId: USER_ID,
         activeEntityId: 'ent-2',
@@ -1285,7 +1290,7 @@ describe('EntityPersonaService', () => {
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
         userId: USER_ID,
         activeEntityId: ENTITY_ID, // same entity
@@ -1311,17 +1316,29 @@ describe('EntityPersonaService', () => {
     // decides whether HIPAA rules apply to the rest of the conversation.
     // ======================================================================
 
+    // P-44 rewrote this case, and the rewrite is the point rather than a
+    // mechanical follow-on.
+    //
+    // It used to hand `findUnique` a row whose `userId` was `'someone-else'` and
+    // assert the message `'session does not belong to this user'`. That shape is
+    // only expressible if the code reads the row first and compares afterwards,
+    // which is exactly what made the route a cuid existence oracle: the
+    // distinction had to exist in the service for the route to render it as a 403.
+    //
+    // WHICH OF THE TWO WAS WRONG: neither was wrong about the refusal, and the
+    // test was wrong about its shape. The mock now returns null for the foreign
+    // session, because `findFirst({ id, userId })` is what the code runs and null
+    // is what Postgres returns -- and the assertion below is that the OWNER IS IN
+    // THE FILTER, which is the claim that cannot be satisfied by a comparison the
+    // caller performs later.
     it('refuses a session that belongs to another user, and switches nothing', async () => {
       (mockEntity.findUnique as jest.Mock).mockResolvedValue({
         id: ENTITY_ID,
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
-        id: SESSION_ID,
-        userId: 'someone-else',
-        activeEntityId: 'their-entity',
-      });
+      // A session owned by somebody else does not come back at all.
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue(null);
 
       await expect(
         service.switchEntity({
@@ -1329,9 +1346,54 @@ describe('EntityPersonaService', () => {
           userId: USER_ID,
           targetEntityId: ENTITY_ID,
         })
-      ).rejects.toThrow('session does not belong to this user');
+      ).rejects.toThrow('Voice session not found');
 
+      // The same message, the same code and the same 404 as an id that never
+      // existed -- asserted in `tests/db/shadow-persona-calls.test.ts` by
+      // comparing the two whole response envelopes.
       expect(mockShadowVoiceSession.update).not.toHaveBeenCalled();
+
+      // THE STRUCTURAL HALF. A future edit that drops `userId` from this filter
+      // fails here even though the case above would still pass against it, since
+      // a mock returning null returns null however it is asked.
+      expect(mockShadowVoiceSession.findFirst).toHaveBeenCalledWith({
+        where: { id: SESSION_ID, userId: USER_ID },
+        select: { id: true, activeEntityId: true },
+      });
+      // And nothing reached for the by-id delegate whose `where` cannot carry a
+      // filter. P-41's instrument, applied to the one Shadow session read that
+      // lives outside `OwnedSessionStore`.
+      expect(mockShadowVoiceSession.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('carries the owner into the WRITE as well, not only the read', async () => {
+      // "Resolve an id, then trust it" is the shape P-41 spent a package
+      // removing. The read and the write are separate statements against a live
+      // database, so the update filter names the owner too; `userId` is legal in
+      // `ShadowVoiceSessionWhereUniqueInput`, so a filter that misses raises
+      // P2025 rather than writing somebody else's row.
+      (mockEntity.findUnique as jest.Mock).mockResolvedValue({
+        id: ENTITY_ID,
+        userId: USER_ID,
+        name: 'MedLink',
+      });
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue({
+        id: SESSION_ID,
+        activeEntityId: 'other-entity',
+      });
+      (mockShadowVoiceSession.update as jest.Mock).mockResolvedValue({});
+      (mockShadowEntityProfile.findUnique as jest.Mock).mockResolvedValue(null);
+
+      await service.switchEntity({
+        sessionId: SESSION_ID,
+        userId: USER_ID,
+        targetEntityId: ENTITY_ID,
+      });
+
+      expect(mockShadowVoiceSession.update).toHaveBeenCalledWith({
+        where: { id: SESSION_ID, userId: USER_ID },
+        data: { activeEntityId: ENTITY_ID },
+      });
     });
 
     it('refuses a session that does not exist rather than announcing a switch', async () => {
@@ -1340,7 +1402,7 @@ describe('EntityPersonaService', () => {
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue(null);
 
       await expect(
         service.switchEntity({
@@ -1359,7 +1421,7 @@ describe('EntityPersonaService', () => {
         userId: USER_ID,
         name: 'MedLink',
       });
-      (mockShadowVoiceSession.findUnique as jest.Mock).mockResolvedValue({
+      (mockShadowVoiceSession.findFirst as jest.Mock).mockResolvedValue({
         id: SESSION_ID,
         userId: USER_ID,
         activeEntityId: 'other-entity',

@@ -22,11 +22,21 @@ jest.mock('@/lib/db', () => ({
       deleteMany: jest.fn(),
     },
     shadowConsentReceipt: {
+      // P-44. `updateMany` is the scrub; `deleteMany` is kept in the mock ON
+      // PURPOSE even though nothing in `src/` may call it on a session delete any
+      // more. A mock that lacks the method turns a regression into a TypeError
+      // with a confusing message; a mock that has it lets
+      // `expect(...).not.toHaveBeenCalled()` below say exactly what went wrong.
+      updateMany: jest.fn(),
       deleteMany: jest.fn(),
     },
     shadowAuthEvent: {
       deleteMany: jest.fn(),
     },
+    // `deleteById` runs the scrub and the three deletes as one transaction. The
+    // mock hands the already-invoked operations straight back, so the per-delegate
+    // assertions below still see their own arguments.
+    $transaction: jest.fn((ops: unknown) => Promise.all(ops as unknown[])),
   },
 }));
 
@@ -35,12 +45,14 @@ import {
   SessionManager,
   type ShadowSessionScope,
 } from '@/modules/shadow/interfaces/session-manager';
+import { RECEIPT_CONTENT_SCRUB } from '@/modules/shadow/compliance/receipt-retention';
 
 const mockSession = prisma.shadowVoiceSession as jest.Mocked<typeof prisma.shadowVoiceSession>;
 const mockMessage = prisma.shadowMessage as jest.Mocked<typeof prisma.shadowMessage>;
 const mockOutcome = prisma.shadowSessionOutcome as jest.Mocked<typeof prisma.shadowSessionOutcome>;
 const mockConsent = prisma.shadowConsentReceipt as jest.Mocked<typeof prisma.shadowConsentReceipt>;
 const mockAuthEvent = prisma.shadowAuthEvent as jest.Mocked<typeof prisma.shadowAuthEvent>;
+const mockTransaction = prisma.$transaction as unknown as jest.Mock;
 
 describe('SessionManager', () => {
   // P-41. `manager` is now only the factory and the one platform-wide sweep;
@@ -679,31 +691,95 @@ describe('SessionManager', () => {
   // --- deleteSession ---
 
   describe('deleteSession', () => {
-    it('should delete session and all related records', async () => {
+    // =======================================================================
+    // P-44 — THIS TEST USED TO ASSERT THE BUG, AND THE TEST WAS THE WRONG ONE
+    // =======================================================================
+    //
+    // It was called "should delete session and all related records" and it
+    // contained
+    //
+    //     expect(mockConsent.deleteMany).toHaveBeenCalledWith({
+    //       where: { sessionId },
+    //     });
+    //     expect(mockAuthEvent.deleteMany).toHaveBeenCalledWith({
+    //       where: { sessionId },
+    //     });
+    //
+    // which is the defect written down as a requirement. It passed, it had
+    // passed since the file was written, and it is the nineteenth consecutive
+    // package in this build to meet a green test encoding the thing it was sent
+    // to fix.
+    //
+    // WHICH OF THE TWO WAS WRONG: the test. The code it described destroyed a
+    // consent receipt — the record that a human authorised an action — on a
+    // user's "delete this conversation", which v3 Addition 9.3 forbids, which
+    // P-17 had already removed from `gdpr-export.ts` and from `retention.ts`'s
+    // session sweep, and which Ivan ruled on directly: receipts survive, content
+    // scrubbed. An assertion naming `deleteMany` on that table cannot be
+    // repaired by loosening it; it had to be inverted, so the two
+    // `.not.toHaveBeenCalled()` lines below are those same two claims with the
+    // truth value corrected.
+    //
+    // The session, its transcript and its outcome are still asserted deleted,
+    // for the reason P-20 recorded as 267 route/method pairs that refuse
+    // everyone and are counted nowhere: without the positive half, "retains
+    // everything" would pass as "retains correctly".
+    it('deletes the session, its transcript and its outcome — and RETAINS the receipts', async () => {
       (mockSession.findFirst as jest.Mock).mockResolvedValue({ ...baseDbSession });
       (mockMessage.deleteMany as jest.Mock).mockResolvedValue({ count: 5 });
       (mockOutcome.deleteMany as jest.Mock).mockResolvedValue({ count: 1 });
-      (mockConsent.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
-      (mockAuthEvent.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+      (mockConsent.updateMany as jest.Mock).mockResolvedValue({ count: 2 });
       (mockSession.delete as jest.Mock).mockResolvedValue({});
 
       await sessions.deleteSession(sessionId);
 
+      // GONE. "A deleted session means deleted."
       expect(mockMessage.deleteMany).toHaveBeenCalledWith({
         where: { sessionId },
       });
       expect(mockOutcome.deleteMany).toHaveBeenCalledWith({
         where: { sessionId },
       });
-      expect(mockConsent.deleteMany).toHaveBeenCalledWith({
-        where: { sessionId },
-      });
-      expect(mockAuthEvent.deleteMany).toHaveBeenCalledWith({
-        where: { sessionId },
-      });
       expect(mockSession.delete).toHaveBeenCalledWith({
         where: { id: sessionId, userId },
       });
+
+      // RETAINED, content scrubbed. The scrub is keyed on `sessionId`, so it has
+      // to run before the session row goes and the FK nulls the column.
+      expect(mockConsent.updateMany).toHaveBeenCalledWith({
+        where: { sessionId },
+        data: RECEIPT_CONTENT_SCRUB,
+      });
+      expect(mockConsent.deleteMany).not.toHaveBeenCalled();
+
+      // RETAINED, detached by `ON DELETE SET NULL`. No statement at all, which
+      // is why the assertion is about absence.
+      expect(mockAuthEvent.deleteMany).not.toHaveBeenCalled();
+
+      // All four statements in ONE transaction. The route that used to own its
+      // own copy of this logic (`DELETE /api/shadow/sessions/[id]`) wrapped it,
+      // and collapsing the three copies onto this one must not be how that gets
+      // lost: a failure between the scrub and the delete would otherwise leave a
+      // live session whose receipts' reasoning was already erased.
+      expect(mockTransaction).toHaveBeenCalledTimes(1);
+      expect((mockTransaction.mock.calls[0][0] as unknown[]).length).toBe(4);
+    });
+
+    it('scrubs to a marker, not an empty object — the payload is asserted by value', () => {
+      // `RECEIPT_CONTENT_SCRUB` is checked by value rather than only referenced,
+      // because the test above would pass against `{}` if the constant were ever
+      // emptied: `toHaveBeenCalledWith` would be comparing the same wrong object
+      // on both sides. Three fields, and `reasoning` is the one that quotes the
+      // conversation.
+      expect(RECEIPT_CONTENT_SCRUB).toEqual({
+        messageId: null,
+        reasoning: expect.stringContaining('[SCRUBBED]'),
+        sourcesCited: [],
+      });
+      // And the attribution is NOT in it. A receipt that survives naming nobody
+      // would defeat the ruling it survives under; P-40 added `userId` for
+      // exactly this row.
+      expect(RECEIPT_CONTENT_SCRUB).not.toHaveProperty('userId');
     });
 
     it('should throw if session not found', async () => {
@@ -712,6 +788,23 @@ describe('SessionManager', () => {
       await expect(sessions.deleteSession('nonexistent')).rejects.toThrow(
         'Session nonexistent not found',
       );
+    });
+
+    it('runs no statement at all when the session is not this user\'s', async () => {
+      // The positive control's negative twin, and the reason it is here rather
+      // than assumed: `deleteById` scrubs BEFORE it deletes, so an owner check
+      // that ran a statement too late would erase another tenant's receipt
+      // reasoning and then fail on the session row. Nothing the caller could see
+      // would distinguish that from a clean refusal.
+      (mockSession.findFirst as jest.Mock).mockResolvedValue(null);
+
+      await expect(sessions.deleteSession(sessionId)).rejects.toThrow('not found');
+
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(mockConsent.updateMany).not.toHaveBeenCalled();
+      expect(mockConsent.deleteMany).not.toHaveBeenCalled();
+      expect(mockMessage.deleteMany).not.toHaveBeenCalled();
+      expect(mockSession.delete).not.toHaveBeenCalled();
     });
   });
 

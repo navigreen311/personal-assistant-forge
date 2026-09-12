@@ -4,7 +4,38 @@ import { withRole } from '@/shared/middleware/auth';
 import { success, error } from '@/shared/utils/api-response';
 import { prisma } from '@/lib/db';
 import type { AuthSession } from '@/lib/auth/types';
+import { RECEIPT_CONTENT_SCRUB } from '@/modules/shadow/compliance/receipt-retention';
 
+// ---------------------------------------------------------------------------
+// WHAT SURVIVES A HISTORY CLEAR — P-44
+// ---------------------------------------------------------------------------
+//
+// The FOURTH place in this repository that deletes Shadow sessions, and the
+// second the P-44 card did not know about. It is a bulk clear rather than a
+// single-session delete, so it does not delegate to
+// `OwnedSessionStore.deleteById` — `deleteById` resolves one row and would mean
+// N round trips per mode — but it must agree with it, and it did not.
+//
+// Two disagreements, both in the direction of keeping too much:
+//
+//   * the consent receipts were DETACHED AND NOT SCRUBBED. `reasoning` is the
+//     field that quotes the conversation — `agent/core.ts` writes the classified
+//     user intent into it and the confirmation route writes the phrase the user
+//     actually said. Keeping it verbatim after "clear all my history" is session
+//     content preserved under a different label, which is the specific thing
+//     Ivan's ruling names as what fails a privacy audit. `RECEIPT_CONTENT_SCRUB`
+//     is the one definition of what comes out, shared with `gdpr-export` and the
+//     store.
+//
+//   * the `ShadowAuthEvent` rows were DELETED. They are the record of whether a
+//     step-up challenge passed or failed, they carry no free text to scrub, they
+//     have their own `userId`, `gdpr-export` has retained them since P-17 and
+//     `retention.ts` ages them out on the same seven-year clock as a receipt.
+//     Their FK is `ON DELETE SET NULL`, so deleting the session detaches them;
+//     no statement is needed and the ones that were here are gone.
+//
+// `recordings_only` touches neither, because it deletes no session.
+//
 // ---------------------------------------------------------------------------
 // Valid clear modes
 // ---------------------------------------------------------------------------
@@ -56,7 +87,7 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
 
     switch (mode as ClearMode) {
       // ---------------------------------------------------------------
-      // "all" — Delete all sessions and messages. Keep consent receipts.
+      // "all" — Delete all sessions and messages. Retain consent receipts.
       // ---------------------------------------------------------------
       case 'all': {
         // Find all session IDs for this user
@@ -75,13 +106,13 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
             prisma.shadowSessionOutcome.deleteMany({
               where: { sessionId: { in: sessionIds } },
             }),
-            prisma.shadowAuthEvent.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
-            // Detach consent receipts from sessions (keep the receipts)
+            // P-44. Retained with the conversation content scrubbed out, and
+            // detached in the same statement. The auth events are retained too,
+            // which is why no `shadowAuthEvent.deleteMany` stands above this
+            // line any more. See WHAT SURVIVES, at the top of the file.
             prisma.shadowConsentReceipt.updateMany({
               where: { sessionId: { in: sessionIds } },
-              data: { sessionId: null },
+              data: { sessionId: null, ...RECEIPT_CONTENT_SCRUB },
             }),
             // Delete the sessions themselves
             prisma.shadowVoiceSession.deleteMany({
@@ -141,12 +172,10 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
             prisma.shadowSessionOutcome.deleteMany({
               where: { sessionId: { in: sessionIds } },
             }),
-            prisma.shadowAuthEvent.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
+            // P-44 — retained, scrubbed, detached. See WHAT SURVIVES above.
             prisma.shadowConsentReceipt.updateMany({
               where: { sessionId: { in: sessionIds } },
-              data: { sessionId: null },
+              data: { sessionId: null, ...RECEIPT_CONTENT_SCRUB },
             }),
             prisma.shadowVoiceSession.deleteMany({
               where: { userId, startedAt: { lt: cutoff } },
@@ -176,12 +205,10 @@ async function handlePost(req: NextRequest, session: AuthSession): Promise<Respo
             prisma.shadowSessionOutcome.deleteMany({
               where: { sessionId: { in: sessionIds } },
             }),
-            prisma.shadowAuthEvent.deleteMany({
-              where: { sessionId: { in: sessionIds } },
-            }),
+            // P-44 — retained, scrubbed, detached. See WHAT SURVIVES above.
             prisma.shadowConsentReceipt.updateMany({
               where: { sessionId: { in: sessionIds } },
-              data: { sessionId: null },
+              data: { sessionId: null, ...RECEIPT_CONTENT_SCRUB },
             }),
             prisma.shadowVoiceSession.deleteMany({
               where: { userId, activeEntityId: entityId },
